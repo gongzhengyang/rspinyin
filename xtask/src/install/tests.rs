@@ -42,10 +42,20 @@ fn artifact(root: &Path, relative: &str, content: &str) {
 
 /// A scratch tree holding every artifact the payload table names, minus the icons,
 /// which are optional by design and absent from the repository.
+///
+/// One line per mandatory payload, so adding a payload to the table without teaching the
+/// fixture about it fails here rather than passing a plan that names a file no build
+/// produces.
 fn fixture(tag: &str) -> (PathBuf, Sources, Layout) {
     let root = scratch(tag);
     artifact(&root, "target/release/librspinyin.so", "library bytes");
+    artifact(&root, "target/release/librspinyin_ui.so", "library bytes");
     artifact(&root, "packaging/fcitx5/rspinyin.conf", "addon descriptor");
+    artifact(
+        &root,
+        "packaging/fcitx5/rspinyin-ui.conf",
+        "addon descriptor",
+    );
     artifact(&root, "packaging/fcitx5/rspinyin-im.conf", "input method");
     artifact(&root, "data/compiled/base.dict", "dictionary");
     let sources = Sources::new(root.clone());
@@ -73,7 +83,9 @@ fn test_plan_install_resolves_every_payload_and_skips_a_missing_optional_one() {
         destinations,
         vec![
             layout.addon_dir.join("librspinyin.so"),
+            layout.addon_dir.join("librspinyin_ui.so"),
             layout.addon_conf_dir.join("rspinyin.conf"),
+            layout.addon_conf_dir.join("rspinyin-ui.conf"),
             layout.input_method_dir.join("rspinyin.conf"),
             layout.data_dir.join("base.dict"),
         ],
@@ -81,8 +93,8 @@ fn test_plan_install_resolves_every_payload_and_skips_a_missing_optional_one() {
     );
     assert_eq!(
         plan.iter().filter(|file| file.is_addon_library).count(),
-        1,
-        "exactly one payload goes through the symbol check"
+        2,
+        "both cdylibs go through the symbol check, one per addon"
     );
     assert_eq!(
         plan.iter()
@@ -111,7 +123,7 @@ fn test_apply_installs_every_file_with_the_documented_mode() {
     let manifest = apply(&plan(&sources, &layout), &layout, Elevation::Direct)
         .expect("installing into a writable tree");
 
-    assert_eq!(manifest.entries.len(), 4);
+    assert_eq!(manifest.entries.len(), 6);
     assert_eq!(manifest.version, MANIFEST_VERSION);
     assert_eq!(manifest.package_version, PACKAGE_VERSION);
     assert!(
@@ -124,8 +136,13 @@ fn test_apply_installs_every_file_with_the_documented_mode() {
     );
     for (path, content) in [
         (layout.addon_dir.join("librspinyin.so"), "library bytes"),
+        (layout.addon_dir.join("librspinyin_ui.so"), "library bytes"),
         (
             layout.addon_conf_dir.join("rspinyin.conf"),
+            "addon descriptor",
+        ),
+        (
+            layout.addon_conf_dir.join("rspinyin-ui.conf"),
             "addon descriptor",
         ),
         (

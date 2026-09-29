@@ -118,7 +118,11 @@ impl Readiness {
     /// addons the architecture calls for are packaged separately, and a run that loaded
     /// only one has to say which one it lost.
     pub fn missing(&self, required: &[String]) -> Vec<String> {
-        required.iter().filter(|name| !self.is_loaded(name.as_str())).cloned().collect()
+        required
+            .iter()
+            .filter(|name| !self.is_loaded(name.as_str()))
+            .cloned()
+            .collect()
     }
 }
 
@@ -233,7 +237,9 @@ impl Sandbox {
     /// installed copy.
     pub fn check_isolation(&self) -> Result<(), SandboxError> {
         if self.staged_libraries()?.is_empty() {
-            return Err(SandboxError::NoAddonStaged { dir: self.addon_dir.clone() });
+            return Err(SandboxError::NoAddonStaged {
+                dir: self.addon_dir.clone(),
+            });
         }
         if let Some(shadowed) = self.shadowed_system_addons().first() {
             println!(
@@ -255,8 +261,8 @@ impl Sandbox {
             return Ok(Vec::new());
         };
         let maps = PathBuf::from(format!("/proc/{}/maps", child.id()));
-        let text = fs::read_to_string(&maps)
-            .map_err(|source| SandboxError::Io { path: maps, source })?;
+        let text =
+            fs::read_to_string(&maps).map_err(|source| SandboxError::Io { path: maps, source })?;
         Ok(parse_maps(&text, &self.root))
     }
 
@@ -287,7 +293,10 @@ impl Sandbox {
         loop {
             match self.start_and_wait(attempt) {
                 Ok(readiness) => {
-                    println!("testd: session ready, addons loaded: {:?}", readiness.loaded());
+                    println!(
+                        "testd: session ready, addons loaded: {:?}",
+                        readiness.loaded()
+                    );
                     return Ok(readiness);
                 }
                 Err(error) if attempt + 1 >= START_ATTEMPTS => return Err(error),
@@ -318,18 +327,26 @@ impl Sandbox {
     fn start_and_wait(&mut self, attempt: u32) -> Result<Readiness, SandboxError> {
         let log = self.log_path();
         self.resolve(&log)?;
-        let file = File::create(&log)
-            .map_err(|source| SandboxError::Io { path: log.clone(), source })?;
-        let errors = file
-            .try_clone()
-            .map_err(|source| SandboxError::Io { path: log.clone(), source })?;
+        let file = File::create(&log).map_err(|source| SandboxError::Io {
+            path: log.clone(),
+            source,
+        })?;
+        let errors = file.try_clone().map_err(|source| SandboxError::Io {
+            path: log.clone(),
+            source,
+        })?;
         let mut command = self.fcitx5_command();
         command
-            .env("DBUS_SESSION_BUS_ADDRESS", bus_address(&self.runtime_home, attempt))
+            .env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                bus_address(&self.runtime_home, attempt),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::from(file))
             .stderr(Stdio::from(errors));
-        let child = command.spawn().map_err(|source| SandboxError::FcitxSpawn { source })?;
+        let child = command
+            .spawn()
+            .map_err(|source| SandboxError::FcitxSpawn { source })?;
         self.child = Some(child);
         let readiness = self.wait_for_ready(&log)?;
         self.assert_own_libraries_mapped()?;
@@ -353,7 +370,11 @@ impl Sandbox {
             }
             // A refusal is not worth waiting out: the log has already said why the addon is
             // not there, and the deadline would only delay the same answer.
-            if let Some(failed) = readiness.failed().iter().find(|name| missing.contains(*name)) {
+            if let Some(failed) = readiness
+                .failed()
+                .iter()
+                .find(|name| missing.contains(*name))
+            {
                 return Err(SandboxError::FcitxAddonFailed {
                     addon: failed.clone(),
                     log: log.to_path_buf(),
@@ -378,7 +399,9 @@ impl Sandbox {
         let Some(child) = self.child.as_mut() else {
             return Ok(None);
         };
-        child.try_wait().map_err(|source| SandboxError::FcitxWait { source })
+        child
+            .try_wait()
+            .map_err(|source| SandboxError::FcitxWait { source })
     }
 
     /// Fails when the session did not map every library the sandbox staged.
@@ -388,7 +411,10 @@ impl Sandbox {
         if !staged.is_empty() && staged.iter().all(|path| loaded.contains(path)) {
             return Ok(());
         }
-        Err(SandboxError::ForeignAddonLoaded { loaded, root: self.root.clone() })
+        Err(SandboxError::ForeignAddonLoaded {
+            loaded,
+            root: self.root.clone(),
+        })
     }
 }
 
@@ -397,7 +423,10 @@ impl Sandbox {
 /// Each attempt gets a path of its own under the sandbox's runtime directory, so a bus left
 /// behind by a previous attempt cannot be mistaken for the current one.
 fn bus_address(runtime_home: &Path, attempt: u32) -> String {
-    format!("unix:path={}", runtime_home.join(format!("bus.{attempt}")).display())
+    format!(
+        "unix:path={}",
+        runtime_home.join(format!("bus.{attempt}")).display()
+    )
 }
 
 /// Reads `path` as text, tolerating a file that is being written and a file that is gone.

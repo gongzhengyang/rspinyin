@@ -2,9 +2,9 @@
 //! that decide which values may be used.
 //!
 //! Responsibility: define what a rspinyin configuration *is* -- the `[engine]`,
-//! `[ui]`, `[theme]`, `[keys]`, `[data]` and `[diagnostics]` sections of the design
-//! -- with the built-in defaults and the validation rules. The document those
-//! defaults are written out as, and every touch of the filesystem, belong to
+//! `[ui]`, `[theme]`, `[keys]`, `[phrases]`, `[data]` and `[diagnostics]` sections of
+//! the design -- with the built-in defaults and the validation rules. The document
+//! those defaults are written out as, and every touch of the filesystem, belong to
 //! `crate::reload`. Everything here is pure (0.4 rule 4): no filesystem, no clock,
 //! no environment, no global state.
 //!
@@ -33,6 +33,18 @@ pub const MAX_KEY_BINDINGS: usize = 8;
 
 /// The largest value `engine.max_raw_len` accepts, in characters of raw input.
 pub const MAX_RAW_LEN: u8 = 64;
+
+/// The largest `phrases.max_entries` accepts.
+///
+/// The phrase table is rebuilt from the document on every load and matched on every
+/// keystroke, so the limit bounds both the memory a document can claim and the work
+/// one load does. A document past it is read up to the limit and the surplus is
+/// reported rather than refused, because a phrase table is a convenience and must not
+/// be able to stop the input method from starting.
+pub const MAX_PHRASE_ENTRIES: u32 = 50_000;
+
+/// The entry limit the shipped configuration declares.
+pub const DEFAULT_PHRASE_ENTRIES: u32 = 5_000;
 
 /// The `keys.flip_keys` key.
 pub(crate) const KEY_FLIP_KEYS: &str = "keys.flip_keys";
@@ -146,7 +158,8 @@ closed_set! {
 /// rejected while the document is read. The design enumerates the whitelist only
 /// through the defaults it ships.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KeyName {    /// `-`.
+pub enum KeyName {
+    /// `-`.
     Minus,
     /// `=`.
     Equal,
@@ -264,7 +277,10 @@ impl TryFrom<&str> for Rgb {
                 (packed >> 8) as u8,
                 packed as u8,
             )),
-            None => Err(invalid("theme.accent", format!("not a #RRGGBB colour: {value}"))),
+            None => Err(invalid(
+                "theme.accent",
+                format!("not a #RRGGBB colour: {value}"),
+            )),
         }
     }
 }
@@ -350,6 +366,26 @@ pub struct KeysConfig {
     pub highlight_keys: Vec<KeyName>,
 }
 
+/// The `[phrases]` section: the shortcuts the user defined for their own text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PhraseConfig {
+    /// `enabled`: whether the phrase table takes part in a decode at all. With it off
+    /// the dictionary answers alone, which is what a user who wants no shortcut to
+    /// outrank a word asks for.
+    pub enabled: bool,
+    /// `file`: the phrase document to read. An empty string is the default location
+    /// under the user's configuration directory.
+    ///
+    /// The value is kept exactly as the document spells it rather than resolved into a
+    /// path: this layer is pure, and which directory an empty or relative value
+    /// resolves against is the host layer's business.
+    pub file: String,
+    /// `max_entries`: how many entries the table may hold, `1..=MAX_PHRASE_ENTRIES`.
+    /// Zero is refused rather than accepted, because a table that may hold nothing is a
+    /// disabled table and `enabled` is the key that says so.
+    pub max_entries: u32,
+}
+
 /// The `[data]` section.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DataConfig {
@@ -412,6 +448,8 @@ pub struct Config {
     pub theme: ThemeConfig,
     /// The `[keys]` section.
     pub keys: KeysConfig,
+    /// The `[phrases]` section.
+    pub phrases: PhraseConfig,
     /// The `[data]` section.
     pub data: DataConfig,
     /// The `[diagnostics]` section.
@@ -460,6 +498,14 @@ impl Default for Config {
                 flip_keys: vec![KeyName::Minus, KeyName::Equal, KeyName::Up, KeyName::Down],
                 highlight_keys: vec![KeyName::Tab, KeyName::ShiftTab],
             },
+            phrases: PhraseConfig {
+                enabled: true,
+                // Empty rather than a path: the default location is the host layer's to
+                // resolve, and a path spelled out here would be wrong on every machine
+                // but the one it was written on.
+                file: String::new(),
+                max_entries: DEFAULT_PHRASE_ENTRIES,
+            },
             data: DataConfig {
                 durability: Durability::Eventual,
             },
@@ -498,10 +544,11 @@ impl Warnings {
 
     /// Records that a section holds more entries than it may.
     pub(crate) fn report_limit(&mut self, section: &str, limit: usize) {
-        self.entries.push(ImeError::from(ConfigError::LimitExceeded {
-            section: String::from(section),
-            limit,
-        }));
+        self.entries
+            .push(ImeError::from(ConfigError::LimitExceeded {
+                section: String::from(section),
+                limit,
+            }));
     }
 
     /// Returns `value` when it lies inside `range`, and records a diagnostic and
@@ -621,6 +668,13 @@ impl Config {
             defaults.ui.animation.disappear_ms,
             "ui.animation.disappear_ms",
         );
+        let phrases = &mut self.phrases;
+        phrases.max_entries = warnings.in_range(
+            phrases.max_entries,
+            1..=MAX_PHRASE_ENTRIES,
+            defaults.phrases.max_entries,
+            "phrases.max_entries",
+        );
         repair_bindings(&mut self.keys.flip_keys, KEY_FLIP_KEYS, &mut warnings);
         repair_bindings(
             &mut self.keys.highlight_keys,
@@ -637,7 +691,8 @@ impl Config {
 /// The first position of a repeated key is the one that survives, so a list the user
 /// edited by hand keeps the order they gave it. The length bound is the stated
 /// contract rather than a bound the whitelist already implies.
-fn repair_bindings(names: &mut Vec<KeyName>, key: &str, warnings: &mut Warnings) {    let mut unique: Vec<KeyName> = Vec::with_capacity(names.len());
+fn repair_bindings(names: &mut Vec<KeyName>, key: &str, warnings: &mut Warnings) {
+    let mut unique: Vec<KeyName> = Vec::with_capacity(names.len());
     for name in names.iter().copied() {
         if unique.contains(&name) {
             warnings.report(key, format!("repeated key binding: {}", name.as_str()));
@@ -653,150 +708,4 @@ fn repair_bindings(names: &mut Vec<KeyName>, key: &str, warnings: &mut Warnings)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A configuration with one change applied.
-    fn tweaked(change: impl FnOnce(&mut Config)) -> Config {
-        let mut config = Config::default();
-        change(&mut config);
-        config
-    }
-
-    /// The `config/invalid` key of each diagnostic.
-    fn rejected(warnings: &[ImeError]) -> Vec<String> {
-        warnings
-            .iter()
-            .filter_map(|warning| match warning {
-                ImeError::ConfigInvalid { key, .. } => Some(key.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Every scalar rule, with a configuration that breaks it and the key its
-    /// diagnostic must name. `Config::repaired` is the single implementation of all of
-    /// them, so a rule missing from this table is a rule nothing checks.
-    fn scalar_breakers() -> Vec<(&'static str, fn(&mut Config))> {
-        vec![
-            ("schema_version", |c: &mut Config| c.schema_version = 2),
-            ("engine.max_raw_len", |c: &mut Config| c.engine.max_raw_len = 0),
-            ("ui.max_per_row", |c: &mut Config| c.ui.max_per_row = 2),
-            ("ui.max_width_dp", |c: &mut Config| c.ui.max_width_dp = 200),
-            ("ui.corner_radius_dp", |c: &mut Config| c.ui.corner_radius_dp = 4),
-            ("ui.animation.omega0", |c: &mut Config| c.ui.animation.omega0 = 100.0),
-            ("ui.animation.zeta", |c: &mut Config| c.ui.animation.zeta = 0.1),
-            ("ui.animation.appear_ms", |c: &mut Config| c.ui.animation.appear_ms = 700),
-            ("ui.animation.disappear_ms", |c: &mut Config| {
-                c.ui.animation.disappear_ms = 700;
-            }),
-        ]
-    }
-
-    #[test]
-    fn test_repaired_restores_the_default_of_every_scalar_key() {
-        let (defaults, warnings) = Config::default().repaired();
-        assert_eq!(defaults, Config::default());
-        assert!(warnings.is_empty(), "the defaults are valid");
-
-        let breakers = scalar_breakers();
-        assert!(breakers.len() >= 9, "every scalar rule is in the table");
-        for (key, break_it) in breakers {
-            let config = tweaked(break_it);
-            assert!(!config.validate().is_empty(), "breaking {key} is noticed");
-
-            let (repaired, warnings) = config.repaired();
-            assert_eq!(repaired, Config::default(), "the default of {key} is restored");
-            assert_eq!(rejected(&warnings), [String::from(key)], "diagnostic of {key}");
-        }
-    }
-
-    #[test]
-    fn test_repaired_repairs_the_key_binding_lists() {
-        // A repeat is reported and the first position survives.
-        let repeated = tweaked(|c| c.keys.flip_keys.push(KeyName::Minus));
-        let (repaired, warnings) = repeated.repaired();
-        assert_eq!(rejected(&warnings), [String::from(KEY_FLIP_KEYS)]);
-        assert_eq!(repaired.keys.flip_keys, Config::default().keys.flip_keys);
-        assert!(repaired.validate().is_empty());
-
-        // More entries than the bound allows: the surplus is dropped, as `ASM-19`
-        // requires, and what is left is still a usable list.
-        let over = tweaked(|c| {
-            c.keys.flip_keys = [
-                KeyName::Minus, KeyName::Equal, KeyName::Up, KeyName::Down, KeyName::Left,
-                KeyName::Right, KeyName::Tab, KeyName::ShiftTab, KeyName::PageUp,
-            ]
-            .to_vec();
-        });
-        assert_eq!(over.keys.flip_keys.len(), MAX_KEY_BINDINGS + 1);
-        let (repaired, warnings) = over.repaired();
-        assert_eq!(rejected(&warnings), [String::from(KEY_FLIP_KEYS)]);
-        assert_eq!(repaired.keys.flip_keys.len(), MAX_KEY_BINDINGS);
-        assert!(repaired.validate().is_empty());
-
-        // The same rule on the other list, so neither can be forgotten.
-        let highlight = tweaked(|c| c.keys.highlight_keys.push(KeyName::Tab));
-        let (repaired, warnings) = highlight.repaired();
-        assert_eq!(rejected(&warnings), [String::from(KEY_HIGHLIGHT_KEYS)]);
-        assert_eq!(
-            repaired.keys.highlight_keys,
-            Config::default().keys.highlight_keys
-        );
-    }
-
-    #[test]
-    fn test_validate_leaves_the_configuration_alone() {
-        let config = tweaked(|c| c.ui.max_per_row = 99);
-        let before = config.clone();
-        assert_eq!(rejected(&config.validate()), ["ui.max_per_row"]);
-        assert_eq!(config, before, "validate is the read-only view");
-    }
-
-    #[test]
-    fn test_key_name_whitelist_round_trips_through_as_str() {
-        // The whitelist and `as_str` are two halves of one mapping: pinning them
-        // together means neither can be extended without the other.
-        let names = [
-            "minus", "equal", "up", "down", "left", "right", "tab", "shift_tab", "page_up",
-            "page_down",
-        ];
-        assert!(
-            names.len() > MAX_KEY_BINDINGS,
-            "the length bound is reachable only while the whitelist is longer than it"
-        );
-        for name in names {
-            // An empty string is what a rejected name round-trips to, so the
-            // assertion below fails rather than silently passing.
-            let written = KeyName::parse(name, KEY_FLIP_KEYS)
-                .map(KeyName::as_str)
-                .unwrap_or_default();
-            assert_eq!(written, name);
-        }
-        assert!(KeyName::parse("", KEY_FLIP_KEYS).is_err());
-        assert!(KeyName::parse("空格", KEY_FLIP_KEYS).is_err());
-    }
-
-    #[test]
-    fn test_logs_input_characters_is_false_whatever_the_key_says() {
-        let off = Config::default().diagnostics;
-        assert!(!off.log_input_content, "the default is off");
-        assert!(!off.logs_input_characters());
-
-        let on = DiagnosticsConfig {
-            log_input_content: true,
-            ..off
-        };
-        assert!(on.log_input_content, "the key is carried");
-        assert!(!on.logs_input_characters(), "the key cannot turn logging on");
-        assert!(off.probes, "probes default to on");
-    }
-
-    #[test]
-    fn test_config_stays_inside_the_size_budget() {
-        // The design passes the configuration around as an `Arc`, and the budget is
-        // 2KB; a field that quietly grows the struct past it is a regression.
-        let size = size_of::<Config>();
-        assert!(size <= 2048, "Config is {size} bytes");
-    }
-}
+mod tests;

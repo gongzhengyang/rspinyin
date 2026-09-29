@@ -30,9 +30,11 @@
 
 pub mod coords;
 pub mod engine;
+pub mod env;
 pub mod input;
 pub mod keys;
 pub mod sandbox;
+pub mod uiframe;
 pub mod x11;
 
 use std::time::Duration;
@@ -49,7 +51,11 @@ use crate::testd::x11::Window;
 /// `FocusStolen` are different verdicts -- the first says the focus never arrived, the
 /// second says something took it while events were being sent -- and a test runner maps
 /// them onto different severities.
-#[derive(Debug, thiserror::Error)]
+///
+/// `PartialEq` is derived so a test can assert on a returned `Result` directly instead of
+/// matching every variant by hand. Every payload is a scalar, so the comparison is total
+/// and cheap.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum TestError {
     /// The X server could not be reached.
     #[error("cannot open the X display {display}: {detail}")]
@@ -222,7 +228,9 @@ fn inject(injector: &X11Injector, guard: &FocusGuard, args: &TestdArgs) -> Resul
 
 /// Sends the text and the named key the arguments asked for.
 fn inject_keys(injector: &X11Injector, guard: &FocusGuard, args: &TestdArgs) -> Result<()> {
-    let delay = args.delay_ms.map_or(DEFAULT_KEY_DELAY, Duration::from_millis);
+    let delay = args
+        .delay_ms
+        .map_or(DEFAULT_KEY_DELAY, Duration::from_millis);
     if let Some(text) = &args.text {
         let keys = keys::strokes(text)?.len();
         let rounds = args.repeat;
@@ -234,7 +242,13 @@ fn inject_keys(injector: &X11Injector, guard: &FocusGuard, args: &TestdArgs) -> 
     if let Some(name) = &args.key {
         let keysym = keys::named_keysym(name)
             .with_context(|| format!("`{name}` is not a key name this channel knows"))?;
-        let state = args.mods.as_deref().map_or(Ok(0), keys::modifier_mask)?;
+        // `keys` reports a bad modifier list as a plain message, which is what a
+        // scenario author needs to read; `anyhow` needs it boxed as an error first.
+        let state = args
+            .mods
+            .as_deref()
+            .map_or(Ok(0), keys::modifier_mask)
+            .map_err(anyhow::Error::msg)?;
         injector.key(guard, keysym, state)?;
         println!("testd: pressed {name} with modifiers {state:#06x}");
     }
@@ -296,7 +310,10 @@ fn report(injector: &X11Injector) {
 /// Parses a window id in decimal, or hexadecimal with a `0x` prefix.
 fn parse_window(text: &str) -> Result<Window, String> {
     let trimmed = text.trim();
-    let (digits, radix) = match trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+    let (digits, radix) = match trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
         Some(hex) => (hex, 16),
         None => (trimmed, 10),
     };

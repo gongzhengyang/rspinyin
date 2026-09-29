@@ -52,7 +52,10 @@ const WM_CLASS_BYTES: u32 = 256;
 const XTEST_MAJOR: u8 = 2;
 
 /// The XTEST minor version the channel asks for.
-const XTEST_MINOR: u8 = 2;
+///
+/// The wire field is 16 bits wide even though the extension has never gone past 2, so the
+/// value is carried at the width the request declares rather than narrowed at the call.
+const XTEST_MINOR: u16 = 2;
 
 /// The extension name the probe asks the server for.
 const XTEST_EXTENSION: &str = "XTEST";
@@ -62,8 +65,8 @@ const XTEST_EXTENSION: &str = "XTEST";
 pub struct XtestVersion {
     /// Major version; the channel needs 2.
     pub major: u8,
-    /// Minor version.
-    pub minor: u8,
+    /// Minor version, at the width the server reports it.
+    pub minor: u16,
 }
 
 /// One live X session, opened for injection.
@@ -107,15 +110,18 @@ impl X11Session {
         // The screen is read out of the setup before the connection is moved into the
         // session: the borrow of the setup ends here, and the session owns the connection.
         let (root, screen) = {
-            let screen = conn
-                .setup()
-                .roots
-                .get(screen_num)
-                .ok_or_else(|| TestError::NoDisplay {
-                    display: name.clone(),
-                    detail: format!("the server lists no screen {screen_num}"),
-                })?;
-            (screen.root, (screen.width_in_pixels, screen.height_in_pixels))
+            let screen =
+                conn.setup()
+                    .roots
+                    .get(screen_num)
+                    .ok_or_else(|| TestError::NoDisplay {
+                        display: name.clone(),
+                        detail: format!("the server lists no screen {screen_num}"),
+                    })?;
+            (
+                screen.root,
+                (screen.width_in_pixels, screen.height_in_pixels),
+            )
         };
         let xtest = probe_xtest(&conn, &name)?;
         let keymap = Keymap::load(&conn)?;
@@ -218,7 +224,7 @@ impl X11Session {
     /// Never.
     pub fn set_input_focus(&self, window: Window) -> Result<(), TestError> {
         self.conn
-            .set_input_focus(InputFocus::Parent, window, CURRENT_TIME)
+            .set_input_focus(InputFocus::PARENT, window, CURRENT_TIME)
             .map_err(request)?
             .check()
             .map_err(request)
@@ -294,7 +300,15 @@ impl X11Session {
     /// well-formed `FakeInput` can raise is one the next request would report anyway.
     fn fake(&self, kind: u8, detail: u8, root: Window, point: (i16, i16)) -> Result<(), TestError> {
         self.conn
-            .xtest_fake_input(kind, detail, CURRENT_TIME, root, point.0, point.1, CORE_DEVICE)
+            .xtest_fake_input(
+                kind,
+                detail,
+                CURRENT_TIME,
+                root,
+                point.0,
+                point.1,
+                CORE_DEVICE,
+            )
             .map_err(request)?;
         self.conn.flush().map_err(request)
     }
@@ -423,7 +437,10 @@ mod tests {
         let (width, height) = session.screen();
         assert!(width > 0 && height > 0, "a screen has a size");
         assert_eq!(session.xtest().major, XTEST_MAJOR, "the probe answered");
-        assert!(session.keycode(KS_SHIFT_L).is_ok(), "the layout has a shift key");
+        assert!(
+            session.keycode(KS_SHIFT_L).is_ok(),
+            "the layout has a shift key"
+        );
         assert!(session.keycode(KS_TAB).is_ok(), "the layout has a tab key");
         assert!(
             session.input_focus().is_ok(),

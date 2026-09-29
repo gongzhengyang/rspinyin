@@ -24,6 +24,7 @@ crc32fast.workspace = true
 ime-types.workspace = true
 ime-core.workspace = true
 ime-dict.workspace = true
+ime-diag.workspace = true                                              # budget --report: reads the probe snapshot the plugin writes
 
 [lints]
 workspace = true

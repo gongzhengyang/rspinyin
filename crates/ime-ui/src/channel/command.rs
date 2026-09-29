@@ -19,8 +19,8 @@
 //! Every one of those routes ends with the same wakeup, so a post is one lock
 //! (or one bounded spin), one store and one syscall on the host thread.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ime_types::{ThemeSpec, UiCommand, UiError, UiFrame};
 
@@ -389,6 +389,9 @@ mod tests {
         // The consumer side of the wakeup: draining must find the post and then
         // report an empty counter rather than blocking.
         channels.wakeup().drain().expect("the post woke the loop");
-        channels.wakeup().drain().expect("the counter is empty again");
+        channels
+            .wakeup()
+            .drain()
+            .expect("the counter is empty again");
     }
 }

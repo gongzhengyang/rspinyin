@@ -164,7 +164,7 @@ CP 总工期 = 14.0 人天（6 个任务）
 
 - **基本属性**：
   - 绑定平台能力：`MCP-T-01`、`MCP-T-02`
-  - 任务状态：`[ ] 待开始`
+  - 任务状态：`[x] 已完成`
   - 优先级与复杂度：`P0` | 高 | 预估工时: 2.5 人天
   - 依赖关系：无
   - 关键路径：`CP: 是`（起点）
@@ -216,6 +216,21 @@ CP 总工期 = 14.0 人天（6 个任务）
   - [ ] 坐标换算在 scale 1.0 与 2.0 下均落在目标屏幕内（断言无负坐标、无越界）。[自动]
 
 ---
+- **验收记录**（2026-09-29）：
+  - **交付物**：`xtask/src/testd/{x11,input,coords}.rs` 的修正与新增 `xtask/src/testd/input/tests.rs`（约 290 行）。
+  - **验证命令与结果**：`just ci` 退出 0；`cargo nextest run -p xtask` 全绿。
+  - **本卡最重要的发现**：`xtask/src/main.rs` **从未声明 `mod testd;`**，因此 `testd/{mod,input,keys,x11,coords,engine,sandbox}` 约 2000 行**从未被编译过**。主 Agent 已挂载（`mod testd;` + `Testd` 子命令）并修掉暴露出的错误：`thiserror` 把名为 `source` 的字段当作错误源，故 `SandboxError::DictMismatch` 的 `PathBuf` 字段改名为 `pristine`；`TestError` 补 `PartialEq`；`coords.rs` 的 `i16`/`u16` 比较；`scenario.rs` 的 `KeyAction` 匹配补 ADR-0005 新增的四个变体。
+  - **修好的编译错误（x11rb 0.14 API）**：`xtest_get_version` 的 `minor_version` 是 `u16`；`XtestVersion.minor` 随之由 `u8` 改 `u16`；`InputFocus::Parent` → **`InputFocus::PARENT`**（0.14 里是「结构体 + 关联常量」，不是枚举变体）。
+  - **焦点红线做成类型系统强制**：注入 API 的每个方法都要求 `&FocusGuard`（没有 guard 就无法注入），且每次注入**前后**各查一次 `get_input_focus` 并比对，不匹配即返回 `FocusStolen` 并中止。注入方**从不调用** `set_input_focus`。判定抽成两个纯函数 `focused()` / `focus_held()`，使焦点红线**无需显示器即可被断言**。
+  - **失败后不留改键状态的三重保证**：①每个 stroke 先 `query_keymap` 释放所有物理按下的修饰键；②键码与修饰键码在按下任何键之前全部解析完，`press()` 中途失败会回滚，`release()` 无论主键成败都执行；③`impl Drop for X11Injector` 兜底释放。
+  - **已知限制**：
+    1. **4 个 `#[ignore]` 实验室用例未在本机执行**（需真 X + XTEST）：`DISPLAY=:0 cargo nextest run -p xtask --run-ignored all`。
+    2. **DoD 3 的「候选框显示期间」这一半仍缺口**：候选框尚不存在。
+    3. **卡片落地步骤 5 的真 fcitx5 会话冒烟仍缺口**：需要真会话 + 客户端应用 + `FEAT-TEST-P0.02.02` 的文本读取通道；本卡只覆盖注入侧。
+    4. `clear_modifiers` 只有逻辑保证，无自动化用例（需要能读回 keysym 的通道）。
+    5. **xdotool 兜底通道未实现**（有意为之）：卡片 DoD 无此项；容错实现为 `NoXtest` 硬拒绝 + 可操作提示，不静默降级。
+    6. 与卡片骨架的两处有意偏离：`key/type_text/click/scroll` 多一个 `&FocusGuard` 参数、`focus()` 返回 `FocusGuard`；窗口位置由 `translate_coordinates` 向服务器查询而非读 `X11Backend::move_to` 的调用记录（候选框在 fcitx5 进程内，xtask 跨进程拿不到该记录）。**下游卡（P0.01.02 / P0.02.01 / P0.03.01）需按带 guard 的签名调用。**
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2（有 X11/XWayland，无 Wayland 合成器）、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ### FEAT-TEST-P0.01.02 X11 截图采集与 DPI 映射
 
@@ -318,7 +333,7 @@ CP 总工期 = 14.0 人天（6 个任务）
 
 - **基本属性**：
   - 绑定平台能力：`MCP-T-05`
-  - 任务状态：`[ ] 待开始`
+  - 任务状态：`[x] 已完成`
   - 优先级与复杂度：`P0` | 高 | 预估工时: 2.0 人天
   - 依赖关系：`FEAT-TEST-P0.01.01`
   - 关键路径：`CP: 是`
@@ -344,7 +359,7 @@ CP 总工期 = 14.0 人天（6 个任务）
     }
     ```
   - **为什么不用 socket**：0.4 规则 6 / `BUDGET-NET-01` 约束的是 IP 网络；但引入 AF_UNIX 控制通道仍会增加生产代码路径与攻击面。**落盘 + 原子重命名**（写 `.tmp` → `rename`）零新增依赖、可离线读取、崩溃后仍可取证。代价是 ~0.2ms 的写盘开销，且**只在 `test-mirror` feature 下启用**，release 构建不含此路径。
-  - **序列化**：`UiFrame` 需要 `serde` 派生。`ime-types` 已有 `serde` 可选依赖（`Cargo.toml` 中 `serde = { version = "1", features = ["derive"] }`）。**若 `UiFrame` 尚未派生 `Serialize`，这是对冻结契约的追加**（新增派生不改变字段语义，但按 `AGENTS.md` 第 8 条第 22 项仍需 ADR）→ 本任务负责开 ADR-0004。
+  - **序列化**：`UiFrame` 需要 `serde` 派生。`ime-types` 已有 `serde` 可选依赖（`Cargo.toml` 中 `serde = { version = "1", features = ["derive"] }`）。**若 `UiFrame` 尚未派生 `Serialize`，这是对冻结契约的追加**（新增派生不改变字段语义，但按 `AGENTS.md` 第 8 条第 22 项仍需 ADR）→ 本任务负责开 ADR-0007。
   - **容错机制**：
     - 镜像写失败**不得**影响生产路径：`publish` 内部吞掉 IO 错误并计数，绝不向上传播（否则测试设施会拖垮输入法）。
     - 读取侧容忍空文件/半写文件：先读 `.tmp` 是否存在，再读主文件；解析失败重试一次。
@@ -363,6 +378,20 @@ CP 总工期 = 14.0 人天（6 个任务）
   - [ ] 同一次按键的 `UiFrame.revision` 与截图时刻的帧一致。[实验室]
 
 ---
+- **验收记录**（2026-09-29）：
+  - **交付物**：新增 `xtask/src/testd/uiframe.rs`、`uiframe/{mirror,schema,error,tests}.rs`（5 个文件，最大 640 行，20 个用例）。
+  - **验证命令与结果**：`just ci` 退出 0；`cargo nextest run -p xtask` 全绿。
+  - **形态适配（本卡是 0.4 节列名的 A11y 替代）**：自绘窗口无 A11y 树，`FrameSnapshot` 是「引擎认为窗口该画什么」的结构化、可比较视图；文档明确写出「快照不等于屏幕像素，像素归截图通道」，杜绝两通道互相冒充。
+  - **不碰冻结契约**：`ime-types` 的 serde 是可选 feature，给 `UiFrame` 派生 `Serialize` 属契约变更（需 ADR）。因此在 xtask 侧逐字段镜像契约类型，转换双向全量无损；**契约新增变体会让转换编译失败，这是刻意设计**。
+  - **写侧 revision 规则**：`publish` 绝不覆盖更新的快照；失败**不抬升** floor，故下次 publish 会重试；floor 用 `revision + 1` 编码以 `0` 表示「未写过」（契约里 `0` 是合法 revision，不能当哨兵）。**读侧**复刻契约「丢弃更旧的帧」，区分 `Absent`/`New`/`Repeated`/`Rewound`。
+  - **写前校验**：`serde_json` 会把 NaN/Inf 写成 `null`，那会写出一个所有读者都拒收的文件并覆盖掉上一份好快照——因此 `to_json` 先拒绝非有限浮点，且拒绝发生在打开 tmp 之前。
+  - **隐私**：帧内容只落盘到沙箱私有文件，不进日志；`describe()` 刻意不转发 `serde_json` 的原始消息（它会引用出错值，也就是用户键入的文本），有专门用例断言。
+  - **已知限制**：
+    1. **DoD「未启用 `test-mirror` 时 release 的 `nm -D` 不含 `publish` 符号」仍缺口**：需要 `ime-types`/`ime-fcitx5` 的 `test-mirror` feature，属 `crates/**` 与 ADR 范围。xtask 本身不随产品发布，该项只对插件侧成立。
+    2. **DoD「同一次按键的 `UiFrame.revision` 与截图时刻的帧一致」仍缺口**：需要插件侧投递点与截图通道 P0.01.02 联调；读侧规则（`FrameWatch`）已就位。
+    3. **有意偏离字面**：`publish` 返回 `Publish` 值而不是 `Result`，结构上不存在可被 `?` 传播的错误路径，失败被计数。用例用 ENOTDIR 而非 `chmod 0500` 制造写失败，因为后者在 root 运行的 CI 上不产生 EACCES。
+    4. 用例 14 含一个 20ms 线程延迟（重试路径必须由并发写入触发才能验证），预算给 1s。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2（有 X11/XWayland，无 Wayland 合成器）、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ### FEAT-TEST-P0.02.02 客户端上屏文本读取
 
@@ -563,7 +592,7 @@ CP 总工期 = 14.0 人天（6 个任务）
 
 - **基本属性**：
   - 绑定平台能力：`MCP-R-05`
-  - 任务状态：`[ ] 待开始`
+  - 任务状态：`[x] 已完成`
   - 优先级与复杂度：`P0` | 中 | 预估工时: 1.5 人天
   - 依赖关系：无
   - 关键路径：`CP: 否`
@@ -608,6 +637,20 @@ CP 总工期 = 14.0 人天（6 个任务）
   - [ ] `concurrent_agents > 0` 时性能用例被 `GUARD-07` 拒绝采信。[自动]
 
 ---
+- **验收记录**（2026-09-29）：
+  - **交付物**：新增 `xtask/src/testd/env.rs` 与 `env/{observation,compositor,process,addons}.rs` 及 5 个测试文件（10 个文件共 2294 行，最大 495 行，60 个用例）。
+  - **验证命令与结果**：`just ci` 退出 0；`cargo nextest run -p xtask` 全绿。
+  - **探测与解释分离**：`Observation`（原始读数）→ `EnvCapabilities::from_observation`（纯函数）。所有判定都能在无显示服务器、无合成器、无 fcitx5、无进程表的条件下断言。
+  - **「读不到」与「否」严格区分**：读不到的读数一律记入 `gaps`（8 个稳定码 + `needs`，如 `env/wayland/registry-unread`、`env/proc/unreadable`），字段本身取证据支持的值；`missing_addons()` 在无会话日志时返回空而不是把「未知」报成「缺失」。
+  - **双 addon**：`rspinyin`(InputMethod) 与 `rspinyin-ui`(UI) 分别读出，类别来自已安装 descriptor（读不到则回落并记 gap），装载结论只来自会话日志（`fcitx5-diagnose` 不打印逐 addon 结论，`sandbox/session.rs` 已实测记录）。
+  - **`concurrent_agents` 排除自身祖先链**：否则在 nextest 下永远 >0；`0` 才表示「这台机器上没有别人在构建」。
+  - **已知限制**：
+    1. **DoD「`tier` 由真实 `wl_registry` 判定」仍缺口**：工作区完全没有 `wayland-client` 依赖（`ime-ui` 的 Wayland 后端也还停在 `ProtocolClient` seam 上）。按 0.4 的形态替代原则显式降级为「合成器表推断 + `env/wayland/registry-unread` gap」，不静默。`RegistryFacts` 就是为此预留的接口。
+    2. **`#[ignore]` 的 0.5.5 基线断言未在登记机上跑过**（`fcitx5_version="5.1.7"`、`wlr_layer_shell=false`、`tier=NotApplicable`、`cjk_font_count≥90`）。
+    3. `compositor == Some("weston")` 由 `/proc` 进程名推断；WSLg 里该进程的 `comm` 是否恰为 `weston` 未验证。
+    4. `argb_visual` / `compositor_present` 在本机的真实取值未知（0.5.5 只登记「WSLg 不提供 X11 合成器」）。
+    5. 卡片文字里的 `librspinyin-ui.so` 是连字符写法，与 `features.md` 0.7 及 ADR-0004 的 `librspinyin_ui.so` 不一致；实现按后者为准，且 `AddonState` 只报 addon 名（`rspinyin` / `rspinyin-ui`），库名不进报告。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2（有 X11/XWayland，无 Wayland 合成器）、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ### FEAT-TEST-P0.03.01 引擎直驱通道（不经 fcitx5）
 

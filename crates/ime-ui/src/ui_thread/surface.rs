@@ -74,17 +74,27 @@ impl SurfaceUpdate {
 ///
 /// # Concurrency
 ///
-/// The trait is `Send` because the surface is built on the UI thread and must be
-/// free to own a display connection that another thread could in principle have
-/// created; it is deliberately not `Sync`, because every method takes `&mut self`
-/// and a surface is single-threaded. Implementations must not block beyond the
-/// call itself -- a surface that waits on the compositor would stall the wakeup
-/// the host thread depends on -- and must never take keyboard focus: a candidate
-/// window that steals focus is the project's highest-severity defect.
+/// The trait is deliberately **not** `Send`. An earlier version required it, on the
+/// reasoning that a surface "must be free to own a display connection that another
+/// thread could in principle have created". That reasoning does not hold: the
+/// `Box<dyn UiSurface>` is built by the factory, which the UI thread runs, and is
+/// consumed by the UI loop on the same thread, so the box never crosses a thread
+/// boundary and the bound bought nothing. What it cost was the production
+/// implementation -- the Slint-backed surface owns a platform object and a component
+/// handle, both reference-counted and therefore never `Send`, so the bound made the
+/// real surface impossible to write while the headless test surface satisfied it
+/// trivially. The constraint the old doc was reaching for is real, and it is enforced
+/// where it belongs: a connection must be created on the thread that will poll it.
+///
+/// It is likewise not `Sync`, because every method takes `&mut self` and a surface is
+/// single-threaded. Implementations must not block beyond the call itself -- a surface
+/// that waits on the compositor would stall the wakeup the host thread depends on --
+/// and must never take keyboard focus: a candidate window that steals focus is the
+/// project's highest-severity defect.
 ///
 /// Methods are called from the UI thread only, never reentrantly, and never from
 /// inside another method of the same surface.
-pub trait UiSurface: Send {
+pub trait UiSurface {
     /// The descriptor the loop adds to its `poll` set, if the surface has one.
     ///
     /// Returning `None` is correct for a surface with no connection of its own:

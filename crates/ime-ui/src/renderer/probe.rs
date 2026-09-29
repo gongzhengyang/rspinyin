@@ -18,11 +18,11 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use ime_types::UiError;
+use slint::ComponentHandle as _;
 use slint::LogicalSize;
 use slint::PlatformError as SlintError;
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Platform, WindowAdapter};
-use slint::ComponentHandle as _;
 
 use super::raster::Argb8888Pixel;
 
@@ -250,13 +250,20 @@ mod tests {
     #[test]
     fn test_count_ink_counts_only_pixels_with_alpha() {
         let mut pixels = vec![Argb8888Pixel::TRANSPARENT; 4 * 4];
+        // Column 0 of rows 0 and 1: the walk has to cover every row of the strip, not
+        // just the first one.
         pixels[0] = Argb8888Pixel::from_rgb(1, 1, 1);
-        pixels[3] = Argb8888Pixel::pack(0, 0, 0, 1);
         pixels[5] = Argb8888Pixel::from_rgb(2, 2, 2);
-        assert_eq!(count_ink(&pixels, 4, 0..2), 1);
+        // Column 3 of row 0: an antialiased edge is partially transparent rather than
+        // absent, and any alpha above zero still counts as ink.
+        pixels[3] = Argb8888Pixel::pack(0, 0, 0, 1);
+        assert_eq!(count_ink(&pixels, 4, 0..2), 2);
         assert_eq!(count_ink(&pixels, 4, 2..4), 1);
-        assert_eq!(count_ink(&pixels, 4, 0..4), 2);
+        assert_eq!(count_ink(&pixels, 4, 0..4), 3);
         assert_eq!(count_ink(&pixels, 4, 4..4), 0);
+        // A strip holding only transparent pixels stays at zero, which is what keeps a
+        // blank probe frame from being read as a font stack that drew something.
+        assert_eq!(count_ink(&pixels, 4, 1..2), 1, "row 0 column 1 is empty");
     }
 
     #[test]

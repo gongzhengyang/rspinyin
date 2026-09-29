@@ -74,8 +74,11 @@ fn packaging(root: &Path) -> PathBuf {
         "[Addon]\nName=Rust Pinyin\nCategory=InputMethod\nVersion=0.1.0\nLibrary=librspinyin\n",
     )
     .expect("writing the addon descriptor");
-    fs::write(dir.join("rspinyin-im.conf"), "[InputMethod]\nName=Rust Pinyin\nAddon=rspinyin\n")
-        .expect("writing the input-method descriptor");
+    fs::write(
+        dir.join("rspinyin-im.conf"),
+        "[InputMethod]\nName=Rust Pinyin\nAddon=rspinyin\n",
+    )
+    .expect("writing the input-method descriptor");
     dir
 }
 
@@ -101,16 +104,31 @@ fn test_create_with_dict_builds_the_plugin_layout_inside_the_root() {
     assert_eq!(sandbox.data_home(), expected.join("data").as_path());
     assert_eq!(sandbox.config_home(), expected.join("config").as_path());
     assert_eq!(sandbox.data_dir(), expected.join("data/rspinyin").as_path());
-    assert_eq!(sandbox.config_dir(), expected.join("config/rspinyin").as_path());
-    assert_eq!(sandbox.user_db(), expected.join("data/rspinyin/user.redb").as_path());
-    assert_eq!(sandbox.config_file(), expected.join("config/rspinyin/config.toml").as_path());
+    assert_eq!(
+        sandbox.config_dir(),
+        expected.join("config/rspinyin").as_path()
+    );
+    assert_eq!(
+        sandbox.user_db(),
+        expected.join("data/rspinyin/user.redb").as_path()
+    );
+    assert_eq!(
+        sandbox.config_file(),
+        expected.join("config/rspinyin/config.toml").as_path()
+    );
     assert_eq!(sandbox.mirror_dir(), expected.join("runtime/rspinyin-test"));
     assert_eq!(mode_of(&expected), DIR_MODE);
     assert_eq!(mode_of(sandbox.data_dir()), DIR_MODE);
-    assert!(sandbox.dict_path().is_file(), "the dictionary copy is seeded");
+    assert!(
+        sandbox.dict_path().is_file(),
+        "the dictionary copy is seeded"
+    );
     assert!(sandbox.dict_matches_source().expect("hashing the copy"));
     assert!(!sandbox.user_db().exists(), "a fresh sandbox has no store");
-    assert!(!sandbox.config_file().exists(), "a fresh sandbox has no configuration");
+    assert!(
+        !sandbox.config_file().exists(),
+        "a fresh sandbox has no configuration"
+    );
 }
 
 #[test]
@@ -171,8 +189,15 @@ fn test_reset_of_a_clean_sandbox_is_a_noop() {
     let (_root, mut sandbox) = fresh("clean");
     let report = sandbox.reset().expect("resetting a clean sandbox");
 
-    assert!(report.moved.is_empty(), "nothing was there to move: {:?}", report.moved);
-    assert!(!report.dict_restored, "the dictionary copy already matched its source");
+    assert!(
+        report.moved.is_empty(),
+        "nothing was there to move: {:?}",
+        report.moved
+    );
+    assert!(
+        !report.dict_restored,
+        "the dictionary copy already matched its source"
+    );
     assert!(sandbox.dict_matches_source().expect("hashing the copy"));
 }
 
@@ -181,28 +206,55 @@ fn test_reset_moves_dirty_state_aside() {
     let (_root, mut sandbox) = fresh("dirty");
     fs::write(sandbox.user_db(), b"learned frequencies").expect("writing the store");
     fs::write(sandbox.config_file(), b"max_per_row = 3").expect("writing the configuration");
-    fs::write(sandbox.mirror_dir().join("ui_frame.json"), b"{\"revision\":7}")
-        .expect("writing the frame mirror");
+    fs::write(
+        sandbox.mirror_dir().join("ui_frame.json"),
+        b"{\"revision\":7}",
+    )
+    .expect("writing the frame mirror");
 
     let report = sandbox.reset().expect("resetting a dirty sandbox");
 
-    assert!(!sandbox.user_db().exists(), "the store is gone from its own name");
-    assert!(!sandbox.config_file().exists(), "the configuration is gone from its own name");
+    assert!(
+        !sandbox.user_db().exists(),
+        "the store is gone from its own name"
+    );
+    assert!(
+        !sandbox.config_file().exists(),
+        "the configuration is gone from its own name"
+    );
     let live: Vec<String> = fs::read_dir(sandbox.mirror_dir())
         .expect("reading the mirror")
-        .map(|entry| entry.expect("a directory entry").file_name().to_string_lossy().into_owned())
+        .map(|entry| {
+            entry
+                .expect("a directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .filter(|name| !name.contains(RESET_MARK))
         .collect();
     assert!(
         live.is_empty(),
         "the mirror holds no live entry, so the next case starts at revision zero: {live:?}"
     );
-    let aside: Vec<PathBuf> = report
+    let aside: Vec<String> = report
         .moved
         .iter()
-        .map(|path| path.file_name().expect("a name").to_string_lossy().into_owned())
+        .map(|path| {
+            path.file_name()
+                .expect("a name")
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
-    assert_eq!(aside, vec!["user.redb.reset.0", "config.toml.reset.0", "ui_frame.json.reset.0"]);
+    assert_eq!(
+        aside,
+        vec![
+            "user.redb.reset.0",
+            "config.toml.reset.0",
+            "ui_frame.json.reset.0"
+        ]
+    );
     assert_eq!(
         fs::read(sandbox.data_dir().join("user.redb.reset.0")).expect("reading the artifact"),
         b"learned frequencies",
@@ -218,7 +270,10 @@ fn test_reset_restores_a_mutated_dictionary_copy() {
 
     let report = sandbox.reset().expect("resetting a mutated sandbox");
 
-    assert!(report.dict_restored, "the copy no longer hashed to its source");
+    assert!(
+        report.dict_restored,
+        "the copy no longer hashed to its source"
+    );
     assert!(sandbox.dict_matches_source().expect("hashing the copy"));
     assert_eq!(
         fs::read(sandbox.data_dir().join("base.dict.reset.0")).expect("reading the artifact"),
@@ -258,7 +313,10 @@ fn test_resolve_refuses_a_path_outside_the_root() {
         matches!(result, Err(SandboxError::OutsideRoot { .. })),
         "the sandbox root is the only region a reset may write to"
     );
-    assert!(sandbox.resolve(sandbox.data_dir()).is_ok(), "a path inside is accepted");
+    assert!(
+        sandbox.resolve(sandbox.data_dir()).is_ok(),
+        "a path inside is accepted"
+    );
 }
 
 #[test]
@@ -289,11 +347,26 @@ fn test_env_redirects_every_variable_into_the_sandbox() {
             .map(|entry| entry.1.clone())
             .expect("the variable is set")
     };
-    assert_eq!(value("XDG_DATA_HOME"), expected.join("data").display().to_string());
-    assert_eq!(value("XDG_CONFIG_HOME"), expected.join("config").display().to_string());
-    assert_eq!(value("XDG_CACHE_HOME"), expected.join("cache").display().to_string());
-    assert_eq!(value("XDG_RUNTIME_DIR"), expected.join("runtime").display().to_string());
-    assert_eq!(value("FCITX_ADDON_DIRS"), expected.join("addon").display().to_string());
+    assert_eq!(
+        value("XDG_DATA_HOME"),
+        expected.join("data").display().to_string()
+    );
+    assert_eq!(
+        value("XDG_CONFIG_HOME"),
+        expected.join("config").display().to_string()
+    );
+    assert_eq!(
+        value("XDG_CACHE_HOME"),
+        expected.join("cache").display().to_string()
+    );
+    assert_eq!(
+        value("XDG_RUNTIME_DIR"),
+        expected.join("runtime").display().to_string()
+    );
+    assert_eq!(
+        value("FCITX_ADDON_DIRS"),
+        expected.join("addon").display().to_string()
+    );
     assert!(
         value("FCITX_DATA_DIRS").starts_with(&format!("{}:", expected.join("share").display())),
         "the sandbox's data directory comes first"
@@ -332,7 +405,12 @@ fn test_check_isolation_refuses_a_sandbox_with_no_staged_addon() {
         matches!(result, Err(SandboxError::NoAddonStaged { .. })),
         "a session with nothing staged would exercise the installed build"
     );
-    assert!(sandbox.staged_libraries().expect("listing the addon directory").is_empty());
+    assert!(
+        sandbox
+            .staged_libraries()
+            .expect("listing the addon directory")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -342,15 +420,30 @@ fn test_stage_plugin_copies_descriptors_and_the_library_they_name() {
         .stage_plugin(&packaging(&root), &build(&root))
         .expect("staging the plugin");
 
-    assert_eq!(addons, vec!["rspinyin"], "only the addon descriptor names an addon");
-    assert_eq!(sandbox.required_addons().to_vec(), vec!["rspinyin".to_owned()]);
+    assert_eq!(
+        addons,
+        vec!["rspinyin"],
+        "only the addon descriptor names an addon"
+    );
+    assert_eq!(
+        sandbox.required_addons().to_vec(),
+        vec!["rspinyin".to_owned()]
+    );
     assert!(sandbox.check_isolation().is_ok(), "a library was staged");
     assert_eq!(
-        sandbox.staged_libraries().expect("listing the addon directory"),
+        sandbox
+            .staged_libraries()
+            .expect("listing the addon directory"),
         vec![root.join("sandbox/addon/librspinyin.so")]
     );
-    assert!(root.join("sandbox/share/fcitx5/addon/rspinyin.conf").is_file());
-    assert!(root.join("sandbox/share/fcitx5/inputmethod/rspinyin-im.conf").is_file());
+    assert!(
+        root.join("sandbox/share/fcitx5/addon/rspinyin.conf")
+            .is_file()
+    );
+    assert!(
+        root.join("sandbox/share/fcitx5/inputmethod/rspinyin-im.conf")
+            .is_file()
+    );
 }
 
 #[test]
@@ -393,7 +486,10 @@ E2026-09-29 10:00:00.300000 addonmanager.cpp:133] Failed to create addon: clipbo
 
     let readiness = parse_addons(log);
 
-    assert_eq!(readiness.loaded().to_vec(), vec!["core".to_owned(), "rspinyin".to_owned()]);
+    assert_eq!(
+        readiness.loaded().to_vec(),
+        vec!["core".to_owned(), "rspinyin".to_owned()]
+    );
     assert_eq!(
         readiness.failed().to_vec(),
         vec!["rspinyin-ui".to_owned(), "clipboard".to_owned()]
@@ -409,14 +505,21 @@ E2026-09-29 10:00:00.300000 addonmanager.cpp:133] Failed to create addon: clipbo
 fn test_parse_addons_reports_an_addon_the_log_never_mentions() {
     let log = "I2026-09-29 10:00:00.000000 addonmanager.cpp:120] Loaded addon core\n";
     let readiness = parse_addons(log);
-    let required = ["core".to_owned(), "rspinyin".to_owned(), "rspinyin-ui".to_owned()];
+    let required = [
+        "core".to_owned(),
+        "rspinyin".to_owned(),
+        "rspinyin-ui".to_owned(),
+    ];
 
     assert_eq!(
         readiness.missing(&required),
         vec!["rspinyin".to_owned(), "rspinyin-ui".to_owned()],
         "an addon the log never mentions is reported by name rather than assumed"
     );
-    assert!(readiness.failed().is_empty(), "nothing was refused, it simply never loaded");
+    assert!(
+        readiness.failed().is_empty(),
+        "nothing was refused, it simply never loaded"
+    );
 }
 
 #[test]
@@ -452,15 +555,22 @@ fn test_real_dir_witness_reports_a_changed_directory() {
 
     fs::write(watched.join("user.redb"), b"learned frequencies").expect("writing into the tree");
     let changed = witness.changed();
-    assert_eq!(changed, vec![watched], "a write into the real directory is reported");
-    assert!(matches!(witness.assert_unchanged(), Err(SandboxError::RealDirsChanged { .. })));
+    assert_eq!(
+        changed,
+        vec![watched],
+        "a write into the real directory is reported"
+    );
+    assert!(matches!(
+        witness.assert_unchanged(),
+        Err(SandboxError::RealDirsChanged { .. })
+    ));
 }
 
 #[test]
 fn test_real_dir_witness_reports_a_directory_that_appeared() {
     let root = Scratch::new("witness-created");
     let absent = root.join("rspinyin");
-    let witness = RealDirWitness::of(&[absent.clone()]);
+    let witness = RealDirWitness::of(std::slice::from_ref(&absent));
 
     fs::create_dir_all(&absent).expect("creating the directory after the witness");
 
@@ -475,21 +585,30 @@ fn test_real_dir_witness_reports_a_directory_that_appeared() {
 fn test_two_sandboxes_under_one_parent_do_not_share_state() {
     let root = Scratch::new("two-cases");
     let source = dictionary(&root);
-    let mut first = Sandbox::create_with_dict(&root.join("case-one/sandbox"), &source)
+    let first = Sandbox::create_with_dict(&root.join("case-one/sandbox"), &source)
         .expect("creating the first sandbox");
     let mut second = Sandbox::create_with_dict(&root.join("case-two/sandbox"), &source)
         .expect("creating the second sandbox");
 
     fs::write(first.user_db(), b"the first case's frequencies").expect("writing the store");
-    fs::write(first.mirror_dir().join("ui_frame.json"), b"{\"revision\":9}")
-        .expect("writing the frame mirror");
+    fs::write(
+        first.mirror_dir().join("ui_frame.json"),
+        b"{\"revision\":9}",
+    )
+    .expect("writing the frame mirror");
 
     let report = second.reset().expect("resetting the second sandbox");
 
-    assert!(report.moved.is_empty(), "the second sandbox never saw the first one's state");
+    assert!(
+        report.moved.is_empty(),
+        "the second sandbox never saw the first one's state"
+    );
     assert!(
         !second.user_db().exists() && !second.mirror_dir().join("ui_frame.json").exists(),
         "no state carried over from the first case"
     );
-    assert!(first.user_db().exists(), "the first sandbox is untouched by the second reset");
+    assert!(
+        first.user_db().exists(),
+        "the first sandbox is untouched by the second reset"
+    );
 }

@@ -117,6 +117,11 @@ pub const FLAG_TERM: u8 = 0b0000_0100;
 pub const FLAG_USER: u8 = 0b0000_1000;
 
 /// Every bit of `DictEntry::flags` defined by version 1.
+///
+/// A record carrying a bit outside this mask is not rejected: the bit is a flag a later version
+/// defined, and a word that carries one is still a word. The header's `flags` is the opposite
+/// case and is still checked against [`FLAG_MASK`], because it describes the container's own
+/// structure: a reader that does not understand a bit in it cannot parse the file safely.
 pub const ENTRY_FLAG_MASK: u8 = FLAG_SURNAME | FLAG_PLACE | FLAG_TERM | FLAG_USER;
 
 /// Encoded size of one `UNIGRAM` element: `u32 hash, u16 prob_q12, u16 pad`.
@@ -246,6 +251,9 @@ pub struct DictEntry {
     /// Number of syllables the canonical key consumes, in `1..=MAX_SYL_COUNT`.
     pub syl_count: u8,
     /// Bit set of `FLAG_*`.
+    ///
+    /// Bits this version does not define are preserved rather than rejected, so a record
+    /// written by a later compiler still decodes; see [`ENTRY_FLAG_MASK`].
     pub flags: u8,
     /// Ranking weight used to order words that share a key.
     pub weight: u32,
@@ -297,8 +305,8 @@ impl DictEntry {
     /// # Errors
     /// Returns [`DictError::LengthOutOfRange`] when `bytes` is shorter than
     /// [`ENTRY_SIZE`], or when the decoded record violates the layout contract
-    /// (a zero `syl_count`, an over-long `word_len`, an undefined `flags` bit or
-    /// a non-zero padding word).
+    /// (a `word_len` outside `1..=MAX_WORD_LEN`, a `syl_count` outside
+    /// `1..=MAX_SYL_COUNT`, or a non-zero padding word).
     pub fn decode(bytes: &[u8]) -> Result<Self, DictError> {
         let entry = Self {
             word_off: read_u32(bytes, 0, "word_off")?,
@@ -323,7 +331,7 @@ impl DictEntry {
     /// # Errors
     /// Returns [`DictError::LengthOutOfRange`] naming the offending field when
     /// `word_len` exceeds [`MAX_WORD_LEN`], `syl_count` is zero or above
-    /// [`MAX_SYL_COUNT`], `flags` has an undefined bit set, or `_pad` is not zero.
+    /// [`MAX_SYL_COUNT`], or `_pad` is not zero.
     pub fn validate(&self) -> Result<(), DictError> {
         if self.word_len == 0 || self.word_len > MAX_WORD_LEN {
             return Err(DictError::LengthOutOfRange {
@@ -337,12 +345,9 @@ impl DictEntry {
                 value: u64::from(self.syl_count),
             });
         }
-        if self.flags & !ENTRY_FLAG_MASK != 0 {
-            return Err(DictError::LengthOutOfRange {
-                field: "entry_flags",
-                value: u64::from(self.flags),
-            });
-        }
+        // `flags` is deliberately left unchecked: a bit this version does not define is a flag
+        // a later version added, and refusing the record would turn a newer dictionary into an
+        // unreadable one, while keeping the byte lets the reader pick out the bits it knows.
         if self._pad != 0 {
             return Err(DictError::LengthOutOfRange {
                 field: "_pad",
@@ -665,7 +670,6 @@ mod tests {
             DictEntry::new(0, MAX_WORD_LEN + 1, 1, 0, 0),
             DictEntry::new(0, 6, 0, 0, 0),
             DictEntry::new(0, 6, MAX_SYL_COUNT + 1, 0, 0),
-            DictEntry::new(0, 6, 1, 0b1000_0000, 0),
             padded,
         ];
         for entry in cases {
@@ -675,6 +679,18 @@ mod tests {
             );
         }
         assert!(DictEntry::new(0, 3, 1, FLAG_SURNAME, 7).validate().is_ok());
+    }
+
+    #[test]
+    fn test_dict_entry_keeps_flag_bits_it_does_not_know() {
+        // Forward compatibility: a later version that defines a new flag must not make its
+        // dictionary unreadable here. The bit survives the round trip, and the bits this
+        // version knows are still extractable from it.
+        let future = DictEntry::new(0, 6, 1, FLAG_SURNAME | 0b1000_0000, 7);
+        assert!(future.validate().is_ok(), "an undefined bit is not a fault");
+        let decoded = DictEntry::decode(&future.encode()).expect("decoding");
+        assert_eq!(decoded.flags, FLAG_SURNAME | 0b1000_0000);
+        assert_eq!(decoded.flags & ENTRY_FLAG_MASK, FLAG_SURNAME);
     }
 
     #[test]

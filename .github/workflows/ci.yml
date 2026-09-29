@@ -1,18 +1,35 @@
 # rspinyin CI baseline.
 #
-# Four jobs, per the architecture spec's CI matrix:
+# Seven jobs, per the architecture spec's CI matrix:
 #
-#   quality   the four fixed commands of features.md 0.3, on a machine without
-#             the Fcitx5 development packages, so the pure-Rust path is proven
-#   host-abi  the C ABI link against a real libfcitx5core
-#   audit     the architecture rules of 0.4 and the licence obligations of
-#             ADR-0000, plus the self-tests of the audit scripts and the budget
-#             cross-check
-#   bench     budget regression; only on main and on PRs labelled `bench`
+#   quality       `just ci` -- the gate suite of features.md 0.3 plus every
+#                 architecture and licence audit, on a machine without the Fcitx5
+#                 development packages, so the pure-Rust path is proven
+#   host-abi      the same gates with a real libfcitx5core linked in, which is why
+#                 this is the job that installs the Fcitx5 development packages
+#   audit         the architecture rules of 0.4 and the licence obligations of
+#                 ADR-0000, plus the self-tests of the audit scripts and the budget
+#                 cross-check; today a strict subset of `just ci`
+#   bench         budget regression; only on main and on PRs labelled `bench`
+#   reproducible  two clean release builds of one commit must agree byte for byte,
+#                 and the hardened link must be visible in the ELF headers
+#   dictionary    the dictionary build: the raw sources are cached, the compile is
+#                 asserted to need no network and to be byte-for-byte reproducible,
+#                 and the result is uploaded as the artifact a release packages
+#   size          the packaged release against the size budgets and the delivery
+#                 contract: stripped, exporting the addon factory, and matching the
+#                 manifest it ships with
+#
+# `--all-features` is never passed to the workspace as a whole: it would turn on
+# `ime-fcitx5/fcitx5-host` and `ime-ui-addon/fcitx5-host`, whose build scripts
+# abort when pkg-config cannot find the Fcitx5 development packages. `just ci`
+# encodes that split -- the two addon crates are gated on their default feature
+# set, and the C ABI link lives in `just check-host`, which only the host-abi
+# job can run.
 #
 # The audit scripts are bash + python3 (shipped by the runner image), and
-# `just`/`cargo-nextest`/`cargo-public-api` come from prebuilt binaries so the
-# quality job stays inside its cold-cache budget.
+# `just`/`cargo-nextest`/`cargo-audit`/`cargo-deny`/`cargo-public-api` come from
+# prebuilt binaries so the quality job stays inside its cold-cache budget.
 
 name: ci
 
@@ -28,12 +45,25 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Reproducible builds: the timestamp embedded in the C++ glue's debug info and in any
+  # __DATE__/__TIME__ expansion must not depend on when the job ran. It is also the epoch
+  # `xtask package` stamps the archive's members and the release manifest with, so the two
+  # records of when a release was built cannot disagree.
+  SOURCE_DATE_EPOCH: 1790899200
+  # The `cc` crate reads CXXFLAGS, so the prefix map reaches the C++ glue without touching
+  # build.rs. It rewrites absolute build paths to a stable token, which is what makes two
+  # builds of the same tree byte-identical.
+  CXXFLAGS: "-ffile-prefix-map=${{ github.workspace }}=. -fdebug-prefix-map=${{ github.workspace }}=."
 
 jobs:
   quality:
     name: quality
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # The full suite: the four fixed commands of features.md 0.3, the audits and
+    # the script self-tests. The Fcitx5 development packages are deliberately
+    # not installed here -- a host-ABI build in this job would mean the
+    # dependency-free path had stopped being dependency-free.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned toolchain
@@ -42,27 +72,43 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: just,cargo-nextest
+      - name: Install cargo-public-api for the Slint-leak audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-public-api
+      - name: Install the nightly toolchain for the public-API audit
+        # `just check-slint` drives `cargo public-api`, which needs a nightly
+        # rustdoc. The workspace build itself stays on the toolchain pinned by
+        # rust-toolchain.toml; this only gives that one audit its compiler.
+        run: rustup toolchain install nightly --profile minimal
       - name: Cache the cargo build
         uses: Swatinem/rust-cache@v2
-      - name: Run the quality gates
-        run: just check
+      - name: Run the full gate suite
+        run: just ci
 
   host-abi:
     name: host-abi
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: Install the Fcitx5 development packages
+        # All three, not just Fcitx5Core: the build scripts probe
+        # Fcitx5Core, Fcitx5Utils and Fcitx5Config before compiling the glue.
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libfcitx5core-dev
+          sudo apt-get install --yes --no-install-recommends \
+            libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev
       - name: Install the pinned toolchain
         run: rustup show active-toolchain
+      - name: Install just and cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest
       - name: Cache the cargo build
         uses: Swatinem/rust-cache@v2
-      - name: Check the C ABI build
-        run: cargo check -p ime-fcitx5 --features fcitx5-host
+      - name: Lint, test and doctest with the real C ABI linked
+        run: just check-host
 
   audit:
     name: audit
@@ -72,18 +118,29 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install the pinned toolchain
         run: rustup show active-toolchain
-      - name: Install just and cargo-public-api
+      - name: Install just, cargo-public-api, cargo-audit and cargo-deny
         uses: taiki-e/install-action@v2
         with:
-          tool: just,cargo-public-api
+          tool: just,cargo-public-api,cargo-audit,cargo-deny
+      - name: Install the nightly toolchain for the public-API audit
+        # `check-slint` drives `cargo public-api`, which needs a nightly rustdoc.
+        run: rustup toolchain install nightly --profile minimal
       - name: Cache the cargo build
         uses: Swatinem/rust-cache@v2
       - name: Run the architecture and licence audits
-        run: just check-deps check-unsafe check-net check-slint check-dict
+        run: just check-deps check-unsafe check-net check-slint check-ui check-dict
       - name: Self-test the audit scripts
         run: just check-self-tests
       - name: Cross-check the performance budgets
         run: just check-budget
+      - name: Scan the dependency closure for advisories and licence drift
+        # This is the one job that may reach the network, and it is why
+        # `check-advisories` is deliberately absent from `just ci`: `cargo audit`
+        # contacts the registry to check whether a version has been yanked, so
+        # putting it in the gate would make the whole suite fail on an offline
+        # machine. `deny.toml` carries the licence policy and the written
+        # exemptions; the audit step is where they are enforced.
+        run: just check-advisories
 
   bench:
     name: bench
@@ -102,3 +159,223 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Run the benchmarks
         run: just bench-quick
+
+  reproducible:
+    name: reproducible
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Fcitx5 development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Build both addons
+        run: |
+          cargo build --release -p ime-fcitx5 --features fcitx5-host
+          cargo build --release -p ime-ui-addon --features fcitx5-host
+      - name: Record the first digests
+        run: |
+          mkdir -p target/reproducible
+          sha256sum target/release/librspinyin.so target/release/librspinyin_ui.so \
+            | tee target/reproducible/first.sha256
+      - name: Build again from a clean tree
+        run: |
+          cargo clean -p ime-fcitx5 -p ime-ui-addon
+          cargo build --release -p ime-fcitx5 --features fcitx5-host
+          cargo build --release -p ime-ui-addon --features fcitx5-host
+      - name: Assert the two builds agree
+        run: |
+          sha256sum --check target/reproducible/first.sha256 \
+            || { echo "dist/verify/build-not-reproducible: two builds of the same commit differ" >&2; exit 1; }
+      - name: Assert the hardening flags took effect
+        # Both libraries, not just the engine: the UI addon links Slint and is the larger
+        # of the two, so it is the one a missing `-z relro` would matter most for.
+        run: |
+          for library in target/release/librspinyin.so target/release/librspinyin_ui.so; do
+            readelf -lW "$library" | grep -q 'GNU_RELRO' \
+              || { echo "dist/verify/no-relro: $library was linked without GNU_RELRO" >&2; exit 1; }
+            readelf -dW "$library" | grep -q 'BIND_NOW' \
+              || { echo "dist/verify/no-bind-now: $library was linked without -z now" >&2; exit 1; }
+          done
+
+  dictionary:
+    name: dictionary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Restore the raw dictionary sources
+        id: raw
+        uses: actions/cache@v4
+        with:
+          path: data/raw
+          # The key covers the pinned allowlist *and* the derived sources that live in the
+          # same directory and are committed. `data/sources.toml` alone would not do: the
+          # committed `base.tsv` and `polyphone.tsv` change independently of it, and a
+          # restore overwrites what the checkout put there, so a key that ignored them
+          # could silently compile an older word list than the commit under test.
+          # data/fetch.sh re-verifies whatever was restored against the digests, so a
+          # restored fetched file is checked rather than trusted.
+          key: dict-raw-${{ hashFiles('data/sources.toml', 'data/raw/base.tsv', 'data/raw/polyphone.tsv') }}
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Fetch the sources
+        # On a cache hit this is a verification pass: every source that already matches
+        # its pin is left alone and only a missing or mismatched one is downloaded.
+        run: bash data/fetch.sh
+      - name: Compile the dictionary
+        id: compile
+        run: |
+          started=$(date +%s)
+          cargo run --quiet -p xtask -- dictc
+          echo "seconds=$(( $(date +%s) - started ))" >> "$GITHUB_OUTPUT"
+      - name: Assert the dictionary rebuilds offline and byte for byte
+        # This is the build-time half of the zero-network promise, which is a different
+        # claim from the runtime one BUDGET-NET-01 makes: the compile must not reach the
+        # network even though it runs on a machine that has one. CARGO_NET_OFFLINE covers
+        # cargo, and the proxy variables are unset so a source cannot be refreshed by
+        # accident through one of them. Reproducibility is asserted in the same step: the
+        # digest a release manifest records is only worth recording if the same inputs
+        # produce the same bytes, and a release ships this file.
+        run: |
+          set -eu
+          first="$(sha256sum data/compiled/base.dict | cut -d' ' -f1)"
+          rm -f data/compiled/base.dict
+          env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+            CARGO_NET_OFFLINE=true \
+            cargo run --quiet -p xtask -- dictc
+          second="$(sha256sum data/compiled/base.dict | cut -d' ' -f1)"
+          test "$first" = "$second" \
+            || { echo "dist/verify/dict-not-reproducible: $first != $second" >&2; exit 1; }
+          echo "the dictionary rebuilds from the cached sources with no network: $second"
+      - name: Upload the compiled dictionary
+        uses: actions/upload-artifact@v4
+        with:
+          name: base-dict
+          path: data/compiled/base.dict
+          retention-days: 30
+      - name: Assert the installer takes a prebuilt dictionary
+        # A smoke check rather than the end-to-end one: actually staging a dictionary
+        # needs the Fcitx5 development packages to resolve the destination layout, and
+        # this job deliberately does not install them. What is asserted is that the option
+        # is parsed before anything else runs, and that a value-less `--dict` is a usage
+        # error instead of a silent fallback to compiling a dictionary nobody asked for.
+        # The install job exercises the staging path itself.
+        run: |
+          set -eu
+          bash packaging/install.sh --help | grep -q -- '--dict PATH'
+          status=0
+          bash packaging/install.sh --dict >/dev/null 2>&1 || status=$?
+          test "$status" -eq 2 \
+            || { echo "dist/verify/dict-option-not-refused: exit $status" >&2; exit 1; }
+      - name: Record the cache and the build time
+        # `always()` so that a failed or slow build still reports its figures: the point
+        # of the record is to make a cache that stopped hitting, or a build that doubled
+        # in cost, visible in the pull request rather than only in the job log.
+        if: always()
+        run: |
+          size="$(stat -c%s data/compiled/base.dict 2>/dev/null || echo 'not built')"
+          {
+            echo "### Dictionary build"
+            echo
+            echo "| item | value |"
+            echo "|---|---|"
+            echo "| raw-source cache | ${{ steps.raw.outputs.cache-hit == 'true' && 'hit' || 'miss' }} |"
+            echo "| compile time | ${{ steps.compile.outputs.seconds || 'n/a' }}s |"
+            echo "| base.dict | ${size} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  size:
+    name: size
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Fcitx5 development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Restore the raw dictionary sources
+        # Restore only: the `dictionary` job owns this cache key, and two jobs saving the
+        # same key would race for it. The key is shared so that a run which already built
+        # the dictionary here re-verifies the digests instead of downloading again; it
+        # must stay identical to the one in the `dictionary` job.
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw
+          key: dict-raw-${{ hashFiles('data/sources.toml', 'data/raw/base.tsv', 'data/raw/polyphone.tsv') }}
+      - name: Build the dictionary
+        # A release carries base.dict, so the job has to produce one. The raw sources are
+        # fetched rather than committed, which is why this step needs the network on a
+        # cold cache; `xtask package` then requires the file rather than skipping it.
+        run: |
+          bash data/fetch.sh
+          cargo run --quiet -p xtask -- dictc
+      - name: Build and package the addons
+        run: just package
+      - name: Assert the size budgets
+        run: cargo run --quiet -p xtask -- budget --measure
+      - name: Assert what left the repository is stripped and still loadable
+        # The packager checks both of these itself, with its own ELF reader. This step
+        # checks them again with binutils, because the promise is about the file rather
+        # than about the tool that produced it.
+        run: |
+          for library in dist/librspinyin.so dist/librspinyin_ui.so; do
+            if file "$library" | grep -q 'not stripped'; then
+              echo "dist/verify/not-stripped: $library left the repository unstripped" >&2
+              exit 1
+            fi
+            nm -D --defined-only "$library" | grep -q 'fcitx_addon_factory_instance' \
+              || { echo "dist/verify/factory-symbol-missing: $library exports no addon factory" >&2; exit 1; }
+          done
+      - name: Verify the manifest and the checksum list against the release
+        run: |
+          (cd dist && sha256sum --check SHA256SUMS)
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+
+          release = pathlib.Path("dist")
+          manifest = json.loads((release / "rspinyin-release.json").read_text())
+          for artifact in manifest["artifacts"]:
+              path = release / artifact["name"]
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              assert digest == artifact["sha256"], (artifact["name"], digest)
+              assert path.stat().st_size == artifact["size_bytes"], artifact["name"]
+          print(f"manifest: {len(manifest['artifacts'])} artifacts match their recorded digests")
+          PY
+      - name: Record the measured sizes
+        run: |
+          {
+            echo "### Release artifact sizes"
+            echo
+            echo 'A size budget is a ceiling, not a target. `base.dict` measures the'
+            echo 'dictionary content, which is still being filled in: a value far below'
+            echo 'the ceiling means the dictionary is incomplete, not that the artifact'
+            echo 'is small.'
+            echo
+            echo '| file | bytes |'
+            echo '|---|---|'
+            find dist -maxdepth 1 -type f -printf '| %f | %s |\n' | sort
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the release
+        uses: actions/upload-artifact@v4
+        with:
+          name: rspinyin-release
+          path: dist/

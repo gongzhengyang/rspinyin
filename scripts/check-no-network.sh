@@ -33,6 +33,14 @@
 #
 # Self-test: `--self-test` injects banned packages, a banned feature and a
 # benign look-alike into the real metadata document and asserts the outcomes.
+# It also snapshots the working tree before the injections and compares it
+# afterwards, which is the assertion behind "the self-test has no side effects":
+# the original design added a banned dependency to a real Cargo.toml and had to
+# put it back, and this script injects into an in-memory copy instead precisely
+# so that there is nothing to restore. The guard proves that rather than
+# asserting it, and it compares before against after instead of demanding a
+# clean tree, because a developer's tree is expected to be dirty while they
+# work -- what must not change is the tree *because of this run*.
 #
 # Requires python3 (present by default on every distro in the platform baseline).
 
@@ -299,6 +307,44 @@ expect_clean() {
     return 0
 }
 
+# Repository-state guard. See the note at the top of this file: the pair proves
+# the self-test left the tree as it found it. `side_effect_tracked` distinguishes
+# "the tree is clean" from "the tree could not be observed", which an empty
+# snapshot cannot do on its own.
+side_effect_snapshot=""
+side_effect_tracked=0
+
+snapshot_repository() {
+    if ! command -v git >/dev/null 2>&1; then
+        echo "check-no-network: git is unavailable; the self-test cannot observe the working tree"
+        return 0
+    fi
+    if ! side_effect_snapshot="$(git -C "$root" status --porcelain 2>/dev/null)"; then
+        side_effect_snapshot=""
+        echo "check-no-network: $root is not a git work tree; the self-test cannot observe the working tree"
+        return 0
+    fi
+    side_effect_tracked=1
+    return 0
+}
+
+assert_repository_unchanged() {
+    [ "$side_effect_tracked" -eq 1 ] || return 0
+    local after
+    if ! after="$(git -C "$root" status --porcelain 2>/dev/null)"; then
+        return 0
+    fi
+    if [ "$after" = "$side_effect_snapshot" ]; then
+        return 0
+    fi
+    echo "check-no-network: self-test FAILED - the self-test modified the working tree" >&2
+    echo "check-no-network: git status --porcelain before:" >&2
+    printf '%s\n' "$side_effect_snapshot" >&2
+    echo "check-no-network: git status --porcelain after:" >&2
+    printf '%s\n' "$after" >&2
+    return 1
+}
+
 expect_violation() {
     # expect_violation MODE EXPECTED_TEXT DESCRIPTION
     local mode="$1" expected_text="$2" description="$3" status=0 output=""
@@ -326,6 +372,7 @@ expect_violation() {
 
 if [ "$mode" = "self-test" ]; then
     echo "check-no-network: self-test (injecting packages into the real metadata document)"
+    snapshot_repository
     expect_clean none "the unmodified workspace"
     expect_violation banned-crate "reqwest" "a banned crate (reqwest)"
     expect_violation banned-variant "openssl-sys" "a banned variant (openssl-sys)"
@@ -334,7 +381,8 @@ if [ "$mode" = "self-test" ]; then
     expect_clean benign-lookalike "an unrelated name (surface-nets)"
     expect_clean benign-tls-lookalike "a medial tls that means thread-local storage (scoped-tls-hkt)"
     expect_clean none "the workspace after removing the violations"
-    echo "check-no-network: self-test PASS (4 injected violations detected, clean graph accepted)"
+    assert_repository_unchanged
+    echo "check-no-network: self-test PASS (4 injected violations detected, clean graph accepted, no side effects)"
     exit 0
 fi
 

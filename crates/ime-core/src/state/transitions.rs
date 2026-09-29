@@ -81,8 +81,12 @@ impl Session {
             KeyAction::EnterTempEnglish => self.temp_english = true,
             // Everything else has nothing to act on without a composition, and is
             // handed back to the host. The mode keys are the engine's: it owns the
-            // Chinese / English, full-width and punctuation bits, and writes them into
-            // the frame context itself.
+            // Chinese / English, full-width, punctuation and script bits, and writes
+            // them into the frame context itself.
+            //
+            // The three user-word actions have no highlight to act on here for the
+            // same reason `CommitHighlighted` does not: there is no candidate list
+            // and no session to change.
             KeyAction::Backspace
             | KeyAction::CommitHighlighted
             | KeyAction::CommitRaw
@@ -94,6 +98,10 @@ impl Session {
             | KeyAction::ToggleLang
             | KeyAction::ToggleFullWidth
             | KeyAction::TogglePunct
+            | KeyAction::ToggleScript
+            | KeyAction::ForgetHighlighted
+            | KeyAction::PinHighlighted
+            | KeyAction::AddPhrase
             | KeyAction::Escape
             | KeyAction::Ignore => {}
         }
@@ -124,6 +132,22 @@ impl Session {
                 // context; the status strip in the window just has to catch up.
                 self.emit_frame(ctx.cfg, ctx);
             }
+            KeyAction::ToggleScript => {
+                // Switching script keeps the session exactly as it is: the composing
+                // input is what the user typed and a display toggle must not discard
+                // it (0.4 rule 10). Only the frame is re-sent, which bumps the
+                // revision so the window knows the older one is stale.
+                self.emit_frame(ctx.cfg, ctx);
+            }
+            // The pin set and a writable user store do not exist yet, and reporting
+            // that through `dict/unsupported` is what the contract reserves that code
+            // for; the cards that build those subsystems replace these arms. A silent
+            // no-op here would look to the user like a key that does nothing, with no
+            // diagnostic to explain it.
+            KeyAction::ForgetHighlighted | KeyAction::PinHighlighted => {
+                ctx.push(Effect::Diagnose(ImeError::Unsupported));
+            }
+            KeyAction::AddPhrase => self.add_phrase(ctx),
             // The host decides what `Ignore` means, and the session agrees: nothing.
             KeyAction::Ignore => {}
         }
@@ -219,6 +243,29 @@ impl Session {
         ctx.push(Effect::Commit(text));
     }
 
+    /// Saves the highlighted candidate as a phrase the user defined.
+    ///
+    /// The session cannot write the phrase document -- it touches no file (0.4 rule 4)
+    /// -- so the input and the candidate's text leave as an effect, and the host layer
+    /// appends the row for the next load of that document to pick up. The composition
+    /// is left exactly as it is: the user may go on typing, and no frame is re-sent
+    /// because nothing the window shows has changed.
+    ///
+    /// The key is the raw input folded to lower case, which is the alphabet a phrase
+    /// key is written and matched in. The input buffer accepts nothing outside that
+    /// alphabet, so no character can be lost by folding here.
+    fn add_phrase(&mut self, ctx: &mut Ctx<'_>) {
+        let Some(candidate) = self.highlighted_candidate() else {
+            return;
+        };
+        let text = String::from(candidate.text.as_str());
+        let key = self.buf.raw().to_ascii_lowercase();
+        if key.is_empty() {
+            return;
+        }
+        ctx.push(Effect::AddPhrase { key, text });
+    }
+
     /// Takes the composition back without committing anything.
     fn cancel(&mut self, ctx: &mut Ctx<'_>) {
         self.state = SessionState::Cancelling;
@@ -239,7 +286,9 @@ impl Session {
         match event {
             // A render receipt carries no business meaning; the probes read it.
             UiEvent::Rendered { .. } => {}
-            UiEvent::Select { revision, index, .. } => {
+            UiEvent::Select {
+                revision, index, ..
+            } => {
                 if !self.accept_revision(revision, ctx) {
                     return;
                 }
@@ -311,10 +360,7 @@ impl Session {
         if next.max_per_row == self.paging.page_size {
             return;
         }
-        let prev_text = self.highlighted_candidate().map(|held| held.text.clone());
-        self.paging.set_page_size(next.max_per_row);
-        self.paging
-            .reconcile(prev_text.as_deref(), &self.decoded.candidates);
+        self.adopt_page_size(next.max_per_row);
         if self.state == SessionState::Composing {
             self.emit_frame(next, ctx);
         }
@@ -420,7 +466,7 @@ impl Session {
 
     /// Returns the number of candidates the session is holding.
     fn candidate_count(&self) -> u16 {
-        u16::try_from(self.decoded.candidates.len()).unwrap_or(u16::MAX)
+        u16::try_from(self.decoded().candidates.len()).unwrap_or(u16::MAX)
     }
 }
 
@@ -430,4 +476,131 @@ impl Session {
 /// apostrophe that pins a syllable boundary.
 fn is_input_char(ch: char) -> bool {
     ch.is_ascii_alphabetic() || ch == '\''
+}
+
+/// Tests for the arms this file gained on their own.
+///
+/// The rest of the transition table is covered by the table-driven suite next door;
+/// this module holds the phrase a user saves from a highlighted candidate, which is
+/// the one action of this file that hands work to a subsystem that exists today, and
+/// the reload property that action's card requires of a live session.
+#[cfg(test)]
+mod tests {
+    use ime_types::KeyAction;
+
+    use crate::state::SessionConfig;
+    use crate::state::machine::{Effect, Session, SessionEvent, SessionState, step};
+    use crate::state::tests::Fixture;
+
+    /// A session with `raw` typed into it, and the sources it was decoded against.
+    fn composing(raw: &str) -> (Session, Fixture) {
+        let fixture = Fixture::new();
+        let mut session = Session::new();
+        let cfg = SessionConfig::default();
+        for ch in raw.chars() {
+            let effects = session.handle_key(KeyAction::InputChar(ch), &cfg, &fixture.env());
+            assert!(!effects.is_empty(), "typing {ch:?} composes");
+        }
+        assert_eq!(session.state, SessionState::Composing);
+        (session, fixture)
+    }
+
+    /// The text of the candidate the highlight is on.
+    fn highlighted(session: &Session) -> String {
+        session
+            .highlighted_candidate()
+            .map(|held| held.text.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn test_add_phrase_arm_records_the_highlighted_candidate() {
+        let (mut session, fixture) = composing("ni");
+        let expected = highlighted(&session);
+        assert!(
+            !expected.is_empty(),
+            "a composition has a candidate to save"
+        );
+
+        let effects = session.handle_key(
+            KeyAction::AddPhrase,
+            &SessionConfig::default(),
+            &fixture.env(),
+        );
+        assert_eq!(effects.len(), 1, "the arm emits exactly one effect");
+        assert!(
+            matches!(effects.first(), Some(Effect::AddPhrase { .. })),
+            "the arm saves the phrase rather than reporting it unsupported"
+        );
+        if let Some(Effect::AddPhrase { key, text }) = effects.first() {
+            assert_eq!(key.as_str(), "ni", "the key is the input the user typed");
+            assert_eq!(text.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn test_add_phrase_arm_leaves_the_composition_alone() {
+        let (mut session, fixture) = composing("ni");
+        let before = session.decoded().clone();
+        let raw = String::from(session.buf.raw());
+        let id = session.id;
+
+        let effects = session.handle_key(
+            KeyAction::AddPhrase,
+            &SessionConfig::default(),
+            &fixture.env(),
+        );
+        assert_eq!(session.state, SessionState::Composing);
+        assert_eq!(session.id, id, "the composition is the same one");
+        assert_eq!(session.buf.raw(), raw.as_str());
+        assert_eq!(
+            session.decoded(),
+            &before,
+            "the candidate list is untouched"
+        );
+        assert_eq!(effects.len(), 1, "nothing is re-sent to the window");
+    }
+
+    #[test]
+    fn test_add_phrase_arm_does_nothing_without_a_composition() {
+        let fixture = Fixture::new();
+        let mut session = Session::new();
+        let effects = session.handle_key(
+            KeyAction::AddPhrase,
+            &SessionConfig::default(),
+            &fixture.env(),
+        );
+        assert!(effects.is_empty(), "there is no highlight to save");
+        assert_eq!(session.state, SessionState::Idle);
+    }
+
+    #[test]
+    fn test_reload_preserves_active_session() {
+        // A reload of the configuration -- the phrase table included, which is swapped
+        // in the layer that owns it -- never resets a composition in progress (0.4
+        // rule 10): the input, the candidates and the session's own identity all
+        // survive it, and only the frame is re-sent under the new values.
+        let (mut session, fixture) = composing("ni");
+        let cfg = SessionConfig::default();
+        let before = session.decoded().clone();
+        let raw = String::from(session.buf.raw());
+        let id = session.id;
+
+        let next = SessionConfig {
+            max_per_row: 7,
+            ..SessionConfig::default()
+        };
+        let effects = step(
+            &mut session,
+            SessionEvent::ConfigReloaded(next),
+            &cfg,
+            &fixture.env(),
+        );
+        assert_eq!(session.state, SessionState::Composing);
+        assert_eq!(session.id, id, "the composition is not restarted");
+        assert_eq!(session.buf.raw(), raw.as_str());
+        assert_eq!(session.decoded(), &before);
+        assert_eq!(effects.len(), 1, "only the frame is re-sent");
+        assert!(matches!(effects.first(), Some(Effect::SendFrame(_))));
+    }
 }

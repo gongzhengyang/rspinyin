@@ -9,10 +9,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ime_types::{Candidate, CandidateSource, DecodeResult, KeyAction, Lexicon, UserFreqSource};
 
+use super::doubles::{LookupFailure, MockLexicon, MockUserFreq};
+// Imported from the submodule rather than through `super`'s re-exports: the re-exports
+// exist for callers outside this file, and routing the tests through them made the
+// non-test build report them as unused, since `mod tests` is `#[cfg(test)]`.
+use super::scenario::{
+    DictionarySpec, EngineFixture, Expectation, Scenario, SingleRow, Step, parse_scenario,
+};
 use super::{
-    DictionarySpec, EngineFixture, Expectation, LookupFailure, MockLexicon, MockUserFreq,
-    REPEAT_RUNS, Scenario, SingleRow, Step, assert_repeatable, parse_scenario, project_page,
-    refused_a_lookup, run_scenario, scenarios,
+    REPEAT_RUNS, assert_repeatable, project_page, refused_a_lookup, run_scenario, scenarios,
 };
 
 /// Every frozen code the built-in set must assert, with a scenario that does so.
@@ -112,9 +117,21 @@ fn test_run_scenario_wrong_expectation_names_step_expected_and_actual() {
 
     assert_eq!(divergence.step, 0);
     assert_eq!(divergence.action, "input-char:z");
-    assert!(divergence.expected.contains('你'), "{}", divergence.expected);
-    assert!(divergence.actual.contains("count=1"), "{}", divergence.actual);
-    assert!(divergence.reason.contains("candidates"), "{}", divergence.reason);
+    assert!(
+        divergence.expected.contains('你'),
+        "{}",
+        divergence.expected
+    );
+    assert!(
+        divergence.actual.contains("count=1"),
+        "{}",
+        divergence.actual
+    );
+    assert!(
+        divergence.reason.contains("candidates"),
+        "{}",
+        divergence.reason
+    );
     let report = divergence.describe();
     assert!(report.contains("step 0"), "{report}");
     assert!(report.contains("expected:"), "{report}");
@@ -154,7 +171,11 @@ fn test_run_scenario_undriven_action_is_reported_at_its_step() {
 
     assert_eq!(divergence.step, 1);
     assert_eq!(divergence.action, "commit-highlighted");
-    assert!(divergence.reason.contains("Backspace"), "{}", divergence.reason);
+    assert!(
+        divergence.reason.contains("Backspace"),
+        "{}",
+        divergence.reason
+    );
 }
 
 #[test]
@@ -163,10 +184,7 @@ fn test_run_scenario_pass_through_answer_reports_no_dictionary_code() {
     // answers with the pass-through candidate and no lookup is ever refused. Claiming the
     // dictionary code here would be the harness inventing a fact.
     let spec = DictionarySpec {
-        failures: BTreeMap::from([(
-            String::from("ni'hao"),
-            String::from("dict/unavailable"),
-        )]),
+        failures: BTreeMap::from([(String::from("ni'hao"), String::from("dict/unavailable"))]),
         ..DictionarySpec::default()
     };
     let scenario = Scenario::new(
@@ -188,7 +206,11 @@ fn test_run_scenario_pass_through_answer_reports_no_dictionary_code() {
     )
     .expect_err("no lookup was refused");
 
-    assert!(divergence.reason.contains("surfaced"), "{}", divergence.reason);
+    assert!(
+        divergence.reason.contains("surfaced"),
+        "{}",
+        divergence.reason
+    );
 }
 
 #[test]
@@ -356,7 +378,9 @@ fn test_engine_fixture_rejects_a_fallback_that_is_not_a_syllable() {
 #[test]
 fn test_mock_lexicon_unknown_key_answers_an_empty_list() {
     let lexicon = MockLexicon::default();
-    let words = lexicon.lookup("ni'hao").expect("an unknown key is not an error");
+    let words = lexicon
+        .lookup("ni'hao")
+        .expect("an unknown key is not an error");
     assert_eq!(words.len(), 0);
     assert_eq!(
         lexicon

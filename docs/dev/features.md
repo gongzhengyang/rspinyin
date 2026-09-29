@@ -115,11 +115,11 @@ cargo test --workspace --doc                        # doctest 单独补跑
 
 | 维度 | 基线 | 说明 |
 |---|---|---|
-| 发行版 | Ubuntu 22.04 LTS / 24.04 LTS、Fedora 40+、Arch Linux | 低于基线不做部分降级：加载自检报 `platform/start/unsupported-os` 后禁用自绘 UI |
+| 发行版 | Ubuntu 24.04 LTS、Fedora 40+、Arch Linux。**Ubuntu 22.04 LTS 不支持** | 22.04 的 fcitx5 是 5.0.x，低于两个 addon 描述符声明的 `core:5.1.0` 门槛。`[Addon/Dependencies]` 的每一项都是**必需**依赖，所以 Fcitx5 会因依赖不满足而**静默不加载该 addon**——用户看到的是"输入法不在列表里"，没有任何诊断。低于基线不做部分降级，也不产出兼容构建（`R-06` 待评估）。其余档位见 0.5.2 |
 | 架构 | x86_64 优先；aarch64 待评估 | 纯 Rust + 无 SIMD 内在函数的首版实现天然可移植 |
 | glibc | 2.35+ | 与 Ubuntu 22.04 对齐 |
 | Rust 工具链 | 1.98.0（本机实测版本） | `rust-version = "1.85"` 作为 workspace MSRV，CI 用 1.98 稳定版构建 |
-| Fcitx5 | 5.1.x（`Fcitx5Core` / `Fcitx5Utils` / `Fcitx5Config` 开发包） | 运行时通过 `fcitx::Instance::version()` 校验，不匹配时报 `platform/fcitx5/version-mismatch` 并禁用自绘 UI |
+| Fcitx5 | 5.1.x（`Fcitx5Core` / `Fcitx5Utils` / `Fcitx5Config` 开发包） | 运行时校验的是**本插件自己的 C ABI 版本**（`ime_types::version::check_abi`，`RSPINYIN_ABI_VERSION`），不是 fcitx5 的版本号：两个 cdylib 各自编译自己的 C++ 胶水，握手失败时报 `platform/fcitx5/version-mismatch` 并禁用自绘 UI。**fcitx5 自身的版本门槛由 addon 描述符的 `core:` 依赖表达、由宿主在加载期判定**（见上一行的发行版说明），代码里没有 `fcitx::Instance::version()` 调用 |
 | 合成器（X11） | 需要 Composite 扩展 + 活跃合成器（picom / mutter / kwin_x11） | 无合成器时自动切换为不透明背景（检测 `_NET_WM_CM_S<n>` selection owner） |
 | 合成器（Wayland） | Sway / Hyprland / labwc（wlroots）、KWin、Mutter | 见 0.5.2 分档 |
 | 显示缩放 | 1.0 / 1.25 / 1.5 / 2.0 整数与小数缩放 | 以 `InputContext::scaleFactor()` 与 `wl_surface.enter` 的 `wl_output.scale` 取整为设备像素 |
@@ -252,11 +252,20 @@ Phase 1 的 39 个任务按依赖分层划分为 6 个执行波次。同一波�
 | `MOD-FOUND` | 01 | 6 工程暗线与交付基础设施域（前置段） | 仓库根、`crates/ime-types`、`.github/`、`scripts/` | 1.01.01 ~ 1.01.03 | Track C |
 | `MOD-CORE` | 02 | 1 核心业务处理域 | `crates/ime-core` | 1.02.01 ~ 1.02.07 | Track A |
 | `MOD-DATA` | 03 | 2 状态与数据模型域 | `crates/ime-dict`、`crates/ime-config`、`crates/ime-core/src/state` | 1.03.01 ~ 1.03.07 | Track A |
-| `MOD-RT` | 04 | 4 运行时与环境集成域 | `crates/ime-fcitx5`、`crates/ime-ui/src/platform` | 1.04.01 ~ 1.04.07 | Track B |
+| `MOD-RT` | 04 | 4 运行时与环境集成域 | `crates/ime-fcitx5`（引擎 addon）、`crates/ime-ui-addon`（UI addon）、`crates/ime-ui/src/platform` | 1.04.01 ~ 1.04.07 | Track B |
 | `MOD-UI` | 05 | 3 交互与视图呈现域 | `crates/ime-ui`、`crates/ime-ui/ui/*.slint` | 1.05.01 ~ 1.05.08 | Track B |
 | `MOD-SEC` | 06 | 5 权限、安全与合规域 | 跨 crate + `scripts/check-*.sh` | 1.06.01 ~ 1.06.03 | Track C |
 | `MOD-SHIP` | 07 | 6 工程暗线与交付基础设施域（后置段） | `packaging/`、`xtask/` | 1.07.01 | Track C |
 | `MOD-DIAG` | 08 | 7 诊断、监控与可靠性域 | `crates/ime-diag` | 1.08.01 ~ 1.08.03 | Track C |
+
+**模块 04 由两个 cdylib 组成**（`ADR-0003` 裁定，`ADR-0004` 落地）。序列号 04 覆盖两者，因为它们共享同一批任务卡与同一条并行通道：
+
+| 产物 | crate | addon 类别 | 描述符 |
+|---|---|---|---|
+| `librspinyin.so` | `crates/ime-fcitx5` | `Category=InputMethod` | `packaging/fcitx5/rspinyin.conf` |
+| `librspinyin_ui.so` | `crates/ime-ui-addon` | `Category=UI`（`UIPriority=10`） | `packaging/fcitx5/rspinyin-ui.conf` |
+
+两个库互不链接、无共享静态状态、无 IPC，唯一的交汇点是宿主的 `InputContext`（见 2.1 边界 5）。产物名用下划线而非连字符，因为 Cargo 拒绝 `[lib] name` 含连字符，而 Fcitx5 把 `Library=` 的值原样加 `.so` 解析（`ADR-0004` 决策 4）。
 
 **Phase 1 任务总览**（详细任务卡见 5.2）：
 
@@ -349,20 +358,37 @@ Phase 1 的 39 个任务按依赖分层划分为 6 个执行波次。同一波�
 │   ├─ Frontend: xcb / wayland / wayland-im / dbus                              │
 │   ├─ InputContext 生命周期与焦点管理                                            │
 │   ├─ 全局按键捕获与 KeyEvent 路由                                              │
-│   └─ AddonManager ── dlopen("librspinyin.so") ────────────────┐               │
-└───────────────────────────────────────────────────────────────┼───────────────┘
-                                                                │ C ABI (v1, 冻结)
-┌───────────────────────────────────────────────────────────────▼───────────────┐
-│ 模块 04  MOD-RT  crates/ime-fcitx5          【宿主线程 / fcitx5 main loop】     │
+│   ├─ AddonManager ── dlopen("librspinyin.so")     ────────────┐               │
+│   │                 └─ dlopen("librspinyin_ui.so") ────────┐  │               │
+│   └─ UserInterfaceManager: 按 UIPriority 遍历 Category=UI 的 addon，           │
+│      取第一个 available() 为真者（ADR-0003 / ADR-0004 决策 1）                 │
+└────────────────────────────────────────────────────────────┼──┼───────────────┘
+                                                             │  │ C ABI v2 (冻结)
+┌────────────────────────────────────────────────────────────┼──┼───────────────┐
+│ 模块 04a  MOD-RT-ENGINE  crates/ime-fcitx5     【宿主线程 / fcitx5 main loop】 │
+│  addon 类别 Category=InputMethod                                             │
 │  ┌─────────────────────────────────────────────────────────────────────────┐ │
-│  │ ffi/ (唯一允许 unsafe 与 extern "C" 的目录之一)                          │ │
-│  │  ├─ addon_glue.cpp   : fcitx::AddonInstance 子类 + FCITX_ADDON_FACTORY   │ │
-│  │  ├─ ui_glue.cpp      : fcitx::UserInterface 子类，接收 InputPanel 更新    │ │
+│  │ ffi/ (unsafe 与 extern "C" 的允许目录之一)                                │ │
+│  │  ├─ addon_glue.cpp   : fcitx::AddonInstance 子类 + 工厂符号导出           │ │
 │  │  └─ engine_glue.cpp  : fcitx::InputMethodEngine 子类，接收 KeyEvent      │ │
 │  ├─────────────────────────────────────────────────────────────────────────┤ │
 │  │ engine.rs  : KeyEvent → SessionState → 解码请求 → 上屏/翻页               │ │
+│  └─────────────────────────────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────────┬───────────────┘
+        ▲                                                      │ 经 InputContext
+        │ 引擎只把 preedit / 候选写进 InputContext，              │ 的 inputPanel()
+        │ 不持有任何窗口或渲染资源                                ▼ 单向传递
+┌───────────────────────────────────────────────────────────────┴───────────────┐
+│ 模块 04b  MOD-RT-UI  crates/ime-ui-addon       【宿主线程 + 自有 UI 线程】      │
+│  addon 类别 Category=UI（UIPriority=10、UIType=PhysicalKeyboard）              │
+│  ┌─────────────────────────────────────────────────────────────────────────┐ │
+│  │ ffi/ (unsafe 与 extern "C" 的允许目录之一)                                │ │
+│  │  ├─ ui_addon_glue.cpp : UI addon 工厂、握手与生命周期                     │ │
+│  │  └─ ui_glue.cpp       : fcitx::UserInterface 子类，读 inputPanel()        │ │
+│  ├─────────────────────────────────────────────────────────────────────────┤ │
 │  │ ui_impl.rs : InputPanel 更新 → UiFrame → 投递 UI 线程                    │ │
 │  │ cursor.rs  : 宿主坐标 → 屏幕物理坐标（多屏 / 缩放 / 夹取）                │ │
+│  │ screen.rs  : 宿主屏幕枚举与缩放接缝                                      │ │
 │  └─────────────────────────────────────────────────────────────────────────┘ │
 └──────┬──────────────────────────────────────────────┬─────────────────────────┘
        │ SPSC 队列 (UiCommand) + eventfd 唤醒          │ SPSC 队列 (UiEvent)
@@ -398,12 +424,13 @@ Phase 1 的 39 个任务按依赖分层划分为 6 个执行波次。同一波�
        └────────────────────────────────────────────────────┘
 ```
 
-**运行时隔离模型的四条硬边界**：
+**运行时隔离模型的五条硬边界**：
 
 1. **宿主线程 ↔ UI 线程**：物理隔离。宿主线程（fcitx5 主循环）只做"按键 → 解码 → 生成 `UiFrame` → 投递"的同步工作，绝不阻塞在渲染上；UI 线程独占 Wayland 连接、Slint 平台对象与软件光栅缓冲。跨线程唤醒通过 `eventfd` 注入 UI 线程的 `poll()` 集合，唤醒延迟 ≤ 50µs，**不使用轮询定时器**（这是 `BUDGET-CPU-01` 空闲占用 = 0.3% 的前提）。
 2. **引擎 ↔ 词库**：`ime-core` 不持有文件句柄，只持有 `&dyn Lexicon` / `&dyn UserFreqSource` trait 对象。`ime-dict` 通过只读 `mmap` 提供零拷贝访问。这条边界使 `ime-core` 可在纯内存 mock 词库下做确定性单元测试。
 3. **UI ↔ 引擎**：单向数据流。UI 只读 `UiFrame`（不可变快照），只发 `UiEvent`（不可变事件）。UI 不得持有 `InputContext` 指针，上屏动作一律经 `UiEvent::Select` 回到宿主线程执行。
-4. **插件 ↔ 宿主**：仅通过 `crates/ime-fcitx5/src/ffi/` 的 C ABI 交互，ABI 版本号 `RSPINYIN_ABI_VERSION = 1`，不匹配时拒绝加载并输出诊断（见 2.2.3）。
+4. **插件 ↔ 宿主**：仅通过 `crates/ime-fcitx5/src/ffi/` 与 `crates/ime-ui-addon/src/ffi/` 两个 C ABI 交互，各自的握手校验 `RSPINYIN_ABI_VERSION = 2`，不匹配时拒绝加载并输出诊断（见 2.2.3）。
+5. **两个 cdylib 之间**：**无链接期关系、无共享静态状态、无 IPC**。Fcitx5 独立 `dlopen` 两个库；它们唯一的交汇点是宿主的 `InputContext`——引擎把 preedit 与候选写进去，UI 侧从 `InputContext::inputPanel()` 读回来。这是 `ADR-0003` 的裁定与 `ADR-0004` 的落地结果：两个库在 `scripts/check-deps.sh` 的 `LAYERS` 中**同为 rank 5**，等秩即禁止互相依赖。**任何试图让两库通过共享 crate 传递状态的改动都会破坏这条边界**——`ADR-0004` 决策 3 为此放弃了把崩溃护栏抽成公共 crate 的方案，宁可在两个库各复制一份。
 
 ### 2.2 边界交互契约 (Boundary Contract)
 
@@ -678,6 +705,19 @@ pub enum ImeError {
     UnsupportedOs { detail: String },
     #[error("ffi/invalid-commit")]
     FfiInvalidCommit,
+    #[error("dict/unsupported")]
+    Unsupported,
+    // ---- 以下由 ADR-0005 追加（增量功能的契约扩展）----
+    #[error("data/backup-failed: {reason}")]
+    DataBackupFailed { reason: String },
+    #[error("decode/scheme-unsupported: scheme={scheme}")]
+    SchemeUnsupported { scheme: u8 },
+    #[error("config/migrated: from={from} to={to} backup={backup}")]
+    ConfigMigrated { from: u16, to: u16, backup: String },
+    #[error("dict/user-word-not-found")]
+    UserWordNotFound,
+    #[error("dict/export-too-large: bytes={bytes} limit={limit}")]
+    ExportTooLarge { bytes: u64, limit: u64 },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -689,7 +729,36 @@ pub enum DictError {
     #[error("fst error: {0}")] Fst(String),
     #[error("io: {0}")] Io(#[from] std::io::Error),
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ConfigError {
+    #[error("config/invalid: {key} ({reason})")]
+    Invalid { key: String, reason: String },
+    #[error("config/limit-exceeded: {section} limit={limit}")]
+    LimitExceeded { section: String, limit: usize },
+    // 由 ADR-0005 追加：一次**成功**的迁移，不是失败。级别为 `info`。
+    #[error("config/migrated: from={from} to={to} backup={backup}")]
+    Migrated { from: u16, to: u16, backup: String },
+}
 ```
+
+**本代码块与 `crates/ime-types/src/error.rs` 必须逐字一致。** 它是契约的可读副本，不是独立来源；两处不一致时以源码为准并回写本块（`AGENTS.md` §7）。
+
+**未在 `ImeError` 中登记的运行期诊断码**：以下码由具体子系统直接产生，同样遵循 `领域/动作/原因` 约定且不得改写，但**没有**对应的 `ImeError` 变体——它们要么是信息级（不是错误），要么只在本 crate 内可见。
+
+`已落地` 一列的判定口径是**代码中存在该字面量**（`grep '"<码>"' crates/`）。标为「已预留」的码只有约定、没有产生方：它们由尚未落地的卡承接，**现在无法产生**，写在这里是为了让后续实现直接用这个拼写而不是另起一个。
+
+| 诊断码 | 产生方 | 含义 | 已落地 |
+|---|---|---|---|
+| `data/commit/slow-disk` | `ime-dict` 的用户词频库 | 连续三次 flush 超时，批处理窗口被放宽（`SLOW_COMMIT_STREAK`） | 是 |
+| `data/user-db/large` | `ime-dict` 的用户词频库 | 词条数超过 `HYDRATE_CAP`，改为按需读而非整表载入内存 | 是 |
+| `ui/slint/component` | `ime-ui` | Slint 组件实例化失败 | 是 |
+| `ui/slint/surface` | `ime-ui` | surface 映射/解除映射失败 | 是 |
+| `ui/select/timeout` | `ime-ui` 的通道 | 点击在自旋预算内未能投递，按设计放弃而非排队 | 是（探针计数器，非错误） |
+| `ui/click/debounced` | `ime-ui` 的交互层 | 防抖窗口内被吞掉的重复点击计数 | 是（探针计数器，非错误） |
+| `config/migration-failed` | `ime-config` | 配置迁移失败，以默认值启动并保留原件 | **否**（预留，承接卡 `ADD-FEAT-P0.03.02`） |
+| `ui/script/unavailable` | 简繁转换 | 简繁表缺失，降级为原样输出 | **否**（预留，承接卡 `ADD-FEAT-P0.02.05`） |
+| `phrase/table-unavailable` | 短语引擎 | 短语表缺失或不可读 | **否**（预留，承接卡 `ADD-FEAT-P0.01.03`） |
 
 **FFI 层的诊断码（v1.3 新增登记）**：`TASK-1.04.01` 的 C ABI 边界在 `ime-fcitx5` 内直接产生一批诊断码。它们**不是** `ImeError` 的变体（跨 FFI 边界的失败无法用 Rust 错误类型表达），但同样遵循 `领域/动作/原因` 的稳定字符串约定，写入崩溃/诊断通道，且不得改写：
 
@@ -1200,6 +1269,8 @@ pub enum DictError {
 
 编号规则：`TASK-[阶段].[模块序列].[任务序号]`。模块序列见 0.7（按依赖分层排序）。**依赖只能指向编号更小的任务**，比较顺序为 `(阶段, 模块序列, 任务序号)` 的字典序。
 
+**模块 04 的锚点分布在两个 crate 上**：`crates/ime-fcitx5`（引擎 addon，产出 `librspinyin.so`）与 `crates/ime-ui-addon`（UI addon，产出 `librspinyin_ui.so`）。本表按 `ADR-0004` 的实际落点逐行登记；凡锚点指向 `ime-ui-addon` 的行，都是 UI 角色的代码，不参与引擎库的编译。
+
 | 任务 ID | 所属功能域 | 并行通道 | 核心职责 | 前置依赖 | 关键路径 | 代码落地锚点 |
 |---|---|---|---|---|---|---|
 | `TASK-1.01.01` | 6 交付基础设施 | Track C | Cargo workspace 骨架、依赖锁定、`git init`、Fcitx5 构建探测 | 无 | **是** | `Cargo.toml`、`crates/*/Cargo.toml`、`crates/ime-fcitx5/build.rs` |
@@ -1221,9 +1292,9 @@ pub enum DictError {
 | `TASK-1.03.07` | 2 状态与数据模型 | Track A | 输入会话状态机与翻页/选择语义 | `TASK-1.02.04`、`TASK-1.03.03`（软）、`TASK-1.03.06` | 否 | `crates/ime-core/src/state/{mod,machine,paging}.rs` |
 | `TASK-1.04.01` | 4 运行时集成 | Track B | `fcitx5-sys`：C++ 胶水、C ABI 契约、工厂符号导出 | `TASK-1.01.01`、`TASK-1.01.03` | **是** | `crates/ime-fcitx5/build.rs`、`src/ffi/abi.rs`、`src/ffi/cpp/addon_glue.cpp` |
 | `TASK-1.04.02` | 4 运行时集成 | Track B | Addon 注册、生命周期与 `rspinyin.conf` | `TASK-1.04.01` | **是** | `crates/ime-fcitx5/src/addon.rs`、`packaging/fcitx5/rspinyin.conf` |
-| `TASK-1.04.03` | 4 运行时集成 | Track B | 自定义 `UserInterface` 接管与 ClassicUI 抑制 | `TASK-1.04.02` | 否 | `src/ffi/cpp/ui_glue.cpp`、`src/ui_impl.rs` |
-| `TASK-1.04.04` | 4 运行时集成 | Track B | 按键事件路由与 Fcitx5 状态机协作 | `TASK-1.03.07`、`TASK-1.04.02` | 否 | `src/ffi/cpp/engine_glue.cpp`、`src/engine.rs` |
-| `TASK-1.04.05` | 4 运行时集成 | Track B | 光标坐标提取、多屏与缩放归一化 | `TASK-1.04.02` | **是** | `crates/ime-fcitx5/src/cursor.rs`、`src/screen.rs` |
+| `TASK-1.04.03` | 4 运行时集成 | Track B | 自定义 `UserInterface` 接管与 ClassicUI 抑制 | `TASK-1.04.02` | 否 | `crates/ime-ui-addon/src/ffi/cpp/{ui_addon_glue,ui_glue}.cpp`、`crates/ime-ui-addon/src/ui_impl.rs` |
+| `TASK-1.04.04` | 4 运行时集成 | Track B | 按键事件路由与 Fcitx5 状态机协作 | `TASK-1.03.07`、`TASK-1.04.02` | 否 | `crates/ime-fcitx5/src/ffi/cpp/engine_glue.cpp`、`crates/ime-fcitx5/src/engine.rs` |
+| `TASK-1.04.05` | 4 运行时集成 | Track B | 光标坐标提取、多屏与缩放归一化 | `TASK-1.04.02` | **是** | `crates/ime-ui-addon/src/cursor.rs`、`crates/ime-ui-addon/src/screen.rs` |
 | `TASK-1.04.06` | 4 运行时集成 | Track B | X11 ARGB 透明窗口后端（`SurfaceBackend`） | `TASK-1.04.05`、`TASK-1.01.03` | 否 | `crates/ime-ui/src/platform/x11.rs` |
 | `TASK-1.04.07` | 4 运行时集成 | Track B | Wayland 四档窗口后端（layer-shell/popup/canvas/兜底） | `TASK-1.04.05`、`TASK-1.01.03` | **是** | `crates/ime-ui/src/platform/wayland/{mod,layer_shell,popup,canvas_popup}.rs` |
 | `TASK-1.05.01` | 3 交互与视图呈现 | Track B | 自定义 Slint `Platform` 与软件光栅渲染器接入 | `TASK-1.04.06`、`TASK-1.04.07`、`TASK-1.01.03` | **是** | `crates/ime-ui/src/slint_platform.rs`、`src/renderer.rs` |
@@ -1776,7 +1847,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.01.03`、`TASK-1.02.01`、`TASK-1.02.03`
   - 代码落地锚点：`crates/ime-core/src/viterbi/{mod,kbest}.rs`
   - 复杂度：高 | 预估工时：4.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：在音节 DAG 上构建词格并做 K-best 动态规划，输出 ≤ 45 个有序候选（含消耗音节数）。完成的定义：对给定输入，候选列表稳定（同输入同词库必得同结果）、有序、且第 1 个候选是"最合理"的整句切分。
 - **架构设计与数据流**：
   - 上游：`SyllableDag`、`&dyn Lexicon`、`&dyn UserFreqSource`、`&dyn LanguageModel`。下游：`TASK-1.03.07`（会话状态机取候选）、`TASK-1.02.05`（preedit 用最优切分）。
@@ -1829,6 +1900,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. 候选数量 ≤ `max_candidates`，且每页 9 个时总页数 ≤ 5（`ASM-07`）。[自动]
 
 ---
+- **验收记录**（2026-09-29）：
+  - **交付物**：`crates/ime-core/src/viterbi/{mod,kbest,lattice}.rs` 的测试面（mod 481→551、kbest 296→312、lattice 778→794）；产品代码本次未改动。
+  - **验证命令与结果**：`just ci` 退出 0；`cargo nextest run -p ime-core` 全绿。
+  - **DoD 对账**：1（四输入 × 100 次逐字节一致）、3（空词库 / 无路径 / 单音节 / 64 字节 / 65 字节五类边界）、4（`TopK` 的 K > 元素数、K = 1、重复值）、5（候选上限与 `state::paging::MAX_REACHABLE_CANDIDATES` 绑死）均已满足；本次补齐的用例包括 `test_topk_new_lowers_the_capacity_to_the_storage_it_was_lent`、`test_build_lattice_stops_spelling_spans_at_the_word_length_limit`、`test_decode_merges_a_dictionary_reading_with_the_users_own_word`、`test_decode_config_validate_names_the_field_it_refuses`。
+  - **已知限制**：
+    1. **DoD 2 仍缺口**：P99 ≤ 3ms / P99.9 ≤ 8ms 需要 criterion 基准 `decode/viterbi`，该基准的**目标与断言**由 `TASK-1.02.07` 交付，**实测数值未取**——本轮全程有其他 agent 占用 CPU，任何数字都不可信。
+    2. **卡片 NFR 与自身冻结的签名冲突**：卡片要求单次解码的临时分配 ≤ 3 次并复用 `Decoder` 内的缓冲，但卡片同时冻结 `decode(&self, ...)` 并把 `Decoder` 记为 `Send + Sync` 可重入；`Decoder` 实际只持 `{cfg, scorer}`，一次解码有 5–8 次临时分配。该要求由 `PERF-P0.01.01`（`DecodeScratch`）承接，不在本卡内解决。
+    3. `WORDS_PER_KEY = 8` / `DEFAULT_BEAM_K = 16` / `DEFAULT_MAX_CANDIDATES = 45` 是卡片明示的设计上限，未为让测试通过而改动；单音节输入因此最多 8 个候选。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143、criterion 0.8.2、proptest 1.11.0。
 
 #### `TASK-1.02.05` Preedit 生成与拼音切分高亮段
 
@@ -1838,7 +1918,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.02.01`
   - 代码落地锚点：`crates/ime-core/src/preedit.rs`
   - 复杂度：低 | 预估工时：1.5 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：把原始输入串转换为带切分标记的 `Preedit`（文本 + 光标 + 高亮段），供候选框 Header 渲染"拼音高亮 + 切分线"。完成的定义：`spans` 覆盖 `text` 的全部字节且无重叠，`caret` 落在 UTF-8 字符边界。
 - **架构设计与数据流**：
   - 上游：`InputBuffer::raw()`、`InputBuffer::caret()`、`SyllableDag` 的最优切分。下游：`TASK-1.05.03`（Header 渲染）、`TASK-1.04.04`（`ic->setPreedit`）。
@@ -1873,6 +1953,16 @@ CP 总工期 = 29.0 人天（9 个任务）
   4. 空输入、无路径输入、含被丢弃字符的输入三类边界均满足不变量。[自动]
 
 ---
+- **验收记录**（2026-09-29）：
+  - **交付物**：`crates/ime-core/src/preedit.rs`（800 → 405 行）与新增 `crates/ime-core/src/preedit/tests.rs`（495 行）；实现未改，测试整体外移并新增 4 个用例。
+  - **验证命令与结果**：`just ci` 退出 0；`cargo nextest run -p ime-core` 全绿，含 10000 例 proptest 不变量检查。
+  - **DoD 对账**：1（四条不变量）、2（5 个快照输入）、4（空输入 / 无路径 / 含被丢弃字符）已满足；3a 满足并**修正了卡片自身的算术错误**（见限制 1）。
+  - **已知限制**：
+    1. **卡片 DoD 3a 的算术错误**：卡片称 64 字节输入下 `text.len() ≤ 96`（推算「最多 32 个分隔符」）。实际 64 个单字节音节需要 63 个分隔符，真实上界是 `2n-1 = 127`（`lvlvlv` 取到等号）。代码不截断——截断会隐藏用户输入——模块文档已写明真实上界，由 Header 从左侧裁。
+    2. **DoD 3b 仍缺口**：`build_preedit` ≤ 200µs 需要 criterion 基准，`ime-core` 的测试不得读时钟（AGENTS.md 3.6），故未用「测试内计时」凑数。
+    3. **卡片规则 4「丢弃字符记入 `Preedit.dropped`」不落地**：`Preedit` 是冻结契约且无该字段。信息未丢失——`SyllableDag::dropped_chars()` 带 raw 偏移承载它，`first_error()` 给出 `decode/invalid-char`。加字段属冻结契约变更，需单独 ADR。
+    4. **卡片不变量「spans 按 start 严格升序」不可满足**：卡片自己的实施步骤 2 要求 caret 处零宽 span 位于 `start == end == caret`，而 caret 可为 0 或音节起点，此时必然与同起点 span 并列。实现采用并文档化了「有序，允许零宽 Cursor span 与同起点 span 并列」。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143、criterion 0.8.2、proptest 1.11.0。
 
 #### `TASK-1.02.06` 非拼音输入直通与临时英文模式
 
@@ -2152,7 +2242,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.03.02`
   - 代码落地锚点：`crates/ime-dict/src/{entry,mmap}.rs`
   - 复杂度：中 | 预估工时：2.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
   - **说明**：本任务与 `TASK-1.03.02` 共享 `mmap.rs` 的 `unsafe` 边界，但职责分离：`1.03.02` 负责"索引 → 条目区间"的定位，本任务负责"条目 → UTF-8 文本"的零拷贝解引用与全部安全校验。分离的理由是文本访问是所有候选渲染与上屏的必经路径，必须独立可测。
 - **目标与职责**：把 `ENTRIES` + `STRPOOL` 两段封装为可安全迭代的 `WordRef` 序列，并在**每次访问**时校验边界。完成的定义：任何被篡改的 `word_off`/`word_len` 都不会导致越界或非法 UTF-8 进入上层。
 - **架构设计与数据流**：
@@ -2203,6 +2293,17 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. 同一畸形索引被访问 100 次只产生 1 条诊断记录。[自动]
 
 ---
+- **验收记录**（2026-09-29）：
+  - **交付物**：`crates/ime-dict/src/{entry,mmap,fst_index}.rs`、`fst_index/read.rs`、`fst_index/tests.rs`、`format/mod.rs`、`benches/dict.rs`。三处调用点接线完成；新增 `WordPool<'a>` 证明载体。
+  - **验证命令与结果**：`just ci` 退出 0（含 `check-unsafe`：231 个 Rust 文件扫描，`unsafe` 仍只落在受审计路径）。
+  - **两处设计裁决（本次落定并写入注释）**：
+    1. **未知 flag 位改为忽略**：`DictEntry::validate()` 原先拒绝未知位，与冻结契约 `ime-types::WordFlags` 的「Unknown bits are ignored on the way in, so a dictionary compiled by a newer build stays readable」冲突。契约不能改，故放宽读取侧。**刻意保留的不对称**：`Header::flags` 仍拒绝未知位——表头 flags 描述容器自身结构（如 BIGRAM 段是否存在），读不懂就无法安全解析文件；条目 flags 只是词元数据。写入侧（`dictc` 的 TSV 解析）保持严格拒绝，「写严读宽」正是前向兼容该有的形状。
+    2. **`pool_text` 从「带前置条件的 safe fn」改为 `WordPool<'a>`**：safe fn 无法阻止 crate 内调用方传任意字节，是真正的不健全。改为让义务随值流动——`WordPool` 只能由 `FstLexicon::load_with` 在容器校验通过后构造，其 `word()` 在 `mmap.rs` 内完成边界检查与转换，因此**是**安全的（与本 crate 既有的 `MappedFile::static_bytes` 同一套论证）。连带把 `EntryTable` 降为 `pub(crate)`。
+  - **已知限制**：
+    1. **Miri 未运行**：卡片 DoD 1 括号内要求，`AGENTS.md` §2 的门禁清单里没有它，未执行。
+    2. `crates/ime-dict/src/format/mod.rs` 已 792 行，仅剩 8 行余量。
+    3. `FstLexicon::entry_to_ref` 定为 `pub`（`EntryTable` 仍 crate 内）：DoD 2 的 `dict/entry_to_ref` 基准是独立 crate，必须能调用它。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143、criterion 0.8.2、proptest 1.11.0。
 
 #### `TASK-1.03.04` 用户词频库（redb）与提交/降级策略
 
@@ -2742,7 +2843,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.03.07`、`TASK-1.04.02`
   - 代码落地锚点：`crates/ime-fcitx5/src/ffi/cpp/engine_glue.cpp`、`crates/ime-fcitx5/src/engine.rs`
   - 复杂度：高 | 预估工时：3.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：实现 `InputMethodEngine::keyEvent` 的完整路由：`FcitxKeyEvent` → `KeyAction` → `Session::step` → 执行 `Effect`。完成的定义：3.5 的快捷键表逐行可验证，且"不该消费的键"必须返回 `false` 交还宿主。
 - **架构设计与数据流**：
   - 上游：fcitx5 的 `KeyEvent`。下游：`TASK-1.03.07` 的 `step`、`TASK-1.04.03` 的 UI 投递、fcitx5 的 `ic->commitString()`。
@@ -2820,6 +2921,18 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. `Ctrl+Space` 切换后 fcitx5 的 `ic->isEnabled()` 状态与预期一致（英文模式下应用直接收到按键）。[实验室]
 
 ---
+- **验收记录**（2026-09-29）：
+  - **交付物**：`crates/ime-fcitx5/src/engine.rs`（407 行）、新增 `engine/{host,router}.rs` 与 `engine/tests{,/table,/routing,/effects}.rs`；共 51 个用例。
+  - **验证命令与结果**：`just ci` 退出 0；`cargo nextest run -p ime-fcitx5` 全绿。
+  - **本次补齐的两处收尾事件**（卡片未写，不做会让会话卡死）：`Commit` 后立刻送 `SessionEvent::CommitDone`；`SetClientPreedit(None)` 后立刻送 `SessionEvent::PreeditCleared`。否则 `Committing` / `Cancelling` 状态会吞掉后续所有按键。
+  - **「绝不吞键」的判据**：只在插件真的做了事时返回 `true`（非 `Diagnose` 的 Effect 至少一条，或引擎自有的模式位变化，或临时英文位改变）；`Ignore`、key release、表未命名的键、空闲态无对象的键一律 `false`。两个扫描用例各 800 例。
+  - **已知限制（本卡交付的是路由层，接线尚未落地）**：
+    1. **`ffi/abi/engine.rs` 的 `// Stub:` 仍在**：`on_key_event` / `on_activate` / `on_deactivate` / `on_reset` 尚未接到 `KeyRouter`。不接 `on_activate` 时所有按键都走 `ffi/stale-ic` 并被交还——与当前行为一致，不回归但也不生效。
+    2. **`trait Host` 的生产实现需要 Rust→宿主方向的新导出符号**（`commit_string` / `set_preedit` / `clear_preedit` / `post_ui` / `toggle_enabled` / `diagnose`），现有 vtable 只有宿主→引擎方向。建议按 ADR-0002 的「新增导出符号、不动 vtable 槽位」路径在 `engine_glue.cpp` 增加自由函数，**无需 bump `RSPINYIN_ABI_VERSION`**。这是跨边界新增，属主 Agent 决策。
+    3. 插件上下文要持有数据源与 `KeyRouter`（`SessionEnv` 借用四个 trait 对象，须先由 addon 拥有）；`UiCommand` 的跨 addon 传输尚不存在，故 `Host::post_ui` 目前只能是 no-op。
+    4. **DoD 3（`on_key_event` P99 ≤ 2ms）与 DoD 5（真实 `ic->isEnabled()`）仍缺口**：需真机与探针。
+    5. **Shift 单击不认领**：3.5 的「Shift 按住临时中/英」由宿主承担。若由本插件消费 Shift，会吃掉每个大写字母的前半拍并把输入法意外切成英文。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143、criterion 0.8.2、proptest 1.11.0。
 
 #### `TASK-1.04.05` 光标坐标提取、多屏与缩放归一化
 
@@ -3347,7 +3460,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.05.03`
   - 代码落地锚点：`crates/ime-ui/ui/theme.slint`、`crates/ime-ui/src/theme.rs`
   - 复杂度：中 | 预估工时：2.5 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：实现 3.2 的全部颜色 Token、深浅色切换与亚克力材质的合成器协商。完成的定义：亮暗两套主题的对比度全部达标，且系统主题切换在 300ms 内生效。
 - **架构设计与数据流**：
   - 上游：`TASK-1.03.06` 的 `[theme]` 配置、XDG Portal 的 `color-scheme` 与 `accent-color`。下游：`TASK-1.05.03`/`1.05.05`/`1.05.06` 的全部视觉。
@@ -3427,6 +3540,17 @@ CP 总工期 = 29.0 人天（9 个任务）
   6. 亮暗切换后 `CandidateWindow` 的组件实例数不变（无重建）。[自动]
 
 ---
+- **验收记录**（2026-09-29）：
+  - **交付物**：`crates/ime-ui/src/theme.rs`（755 行）、新增 `crates/ime-ui/src/theme/slint_palette.rs`（336 行）、`theme/tests.rs`（593 行）、`ui/theme.slint`（仅注释）。
+  - **验证命令与结果**：`just ci` 退出 0；`cargo nextest run -p ime-ui` 323/323 通过。
+  - **本次发现并修复的真实缺陷**：`ui/theme.slint` 与 `src/theme.rs` 都声称「逐字节一致」，实际有 **7 个 token 的 alpha 字节相差 1/255**。根因是 Slint 的两条转换路径不同：`i-slint-compiler` 的 `rgba()` 内建**截断**（`(255. * a).max(0.).min(255.) as u8`），`i-slint-core` 的 `with_alpha()` **四舍五入**（`(alpha * 255.).round() as u8`）。Rust 侧改为渲染器实际画出的值，逐条带注释；新增测试按 Slint 自己的规则求值 `theme.slint` 并双向断言字节相等。**若日后决定以四舍五入为准，必须同时改字节与测试的求值规则——两者不能各说各话。**
+  - **已知限制**：
+    1. **DoD 1 的「脚本化比对」未用 `check-ui-spec.sh`**（该脚本属 `TASK-1.05.03`，不存在）。改用 Rust 测试完成同等比对，且双向（无多无少）。
+    2. **DoD 5 的 Portal 客户端整体不存在**：仓库无 `zbus`、无 `org.freedesktop.appearance` 读取、无 `SettingChanged` 后台线程；`resolve_scheme` 只消费调用方传入的 `SchemeSignals`。要做需主 Agent 决策引入 `zbus`。
+    3. `crates/ime-config/src/schema.rs` 的 `ThemeConfig` 只有 `scheme` / `accent`，**缺 `acrylic` 与 `base_alpha` 键**，而卡片要求 `[theme] acrylic = false` 可跳过协商、`ui.base_alpha` 默认 0.85；契约层 `ime-types::ThemeSpec` 已有这两个字段。
+    4. **DoD 3（300ms 切换、无闪烁）需真实合成器**，本机不可验证。
+    5. 卡片说「18 个 Token」，3.2 表格实际 17 行；第 18 个是 `surface-fill`（`surface.base` 在 `base-alpha` 下的填充色），`theme.slint` 与 `ThemeTokens` 都显式暴露它，测试按 18 项断言。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143、criterion 0.8.2、proptest 1.11.0。
 
 #### `TASK-1.05.05` 候选网格、数字快捷键标签与首选项高亮
 
@@ -3436,7 +3560,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.05.03`
   - 代码落地锚点：`crates/ime-ui/ui/candidate_grid.slint`、`crates/ime-ui/src/adapter.rs`
   - 复杂度：中 | 预估工时：2.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：实现候选单元网格、数字快捷键标签、注音、五态表现与 3.1.3 的截断规则。完成的定义：3.4 的五态表格逐行可验证，且长候选的截断与上屏文本分离正确。
 - **架构设计与数据流**：
   - 上游：`UiFrame.candidates` / `UiFrame.page` / `UiFrame.layout`。下游：`TASK-1.05.06`（鼠标命中测试）、`TASK-1.05.08`（高亮滑动）。
@@ -3507,6 +3631,20 @@ CP 总工期 = 29.0 人天（9 个任务）
   6. 第 10 个及以后的候选无数字标签，但可被鼠标点击。[自动]
 
 ---
+- **验收记录**（2026-09-30）：
+  - **交付物**：新增 `crates/ime-ui/ui/candidate_grid.slint`（190 行）与 `crates/ime-ui/src/adapter/cell.rs`（657 行）+ `cell/tests.rs`（约 330 行，23 个用例）；`adapter/frame.rs` 增 `cells`/`show_annotation`/`pointer` 与 `update_cached`/`resolve_states`/`write_cells`（测试模块原样移到 `adapter/frame/tests.rs`）；`adapter.rs` 增 `items` 模型与 `apply_pointer`/`write_items`。
+  - **验证命令与结果**：`just ci` 退出 0（fmt、clippy `-D warnings`、nextest 1521 个用例、doctest、9 个审计脚本及其自检、25 条预算阈值全部通过）。
+  - **本次由主 Agent 修正的三处**：
+    1. `ui/candidate_grid.slint` 未登记进 `build.rs` 的 `rerun-if-changed`——Slint 在编译根文件时读取 import，所以改被 import 的文件不会触发重新生成。已补一行并写明理由。
+    2. `test_adapter_apply_pointer_redraws_the_grid_only_when_it_changes` 在元组里先移动悬停再读单元格，而元组从左到右求值，于是断言的是**移动之后**的状态、与自己的期望相反。已把读取移到移动之前。
+    3. **一处真实缺陷（渲染器层面）**：`opacity` 在本项目的 Slint 软件渲染器下**不生效**。实测——把一个 Text 的 `opacity` 设成 0.1，再改成 `with-alpha(0.1)` 的颜色，采样到的 ink 都停在 515,630 对 515,833（启用格），差 0.04%。因此 3.1.1 的序号 `0.55`、3.2 的注音 `0.50` 与 3.4 的 Disabled `0.32` 目前都画成了全强度。`check-ui-spec.sh` 抓不到，因为它断言的是 `.slint` **源码**里的 token 值，而那些值是对的。网格仍携带该因子（`dim` 属性折进每个绘制的子元素），因为源码是规范被校验的地方；本卡的透明度断言已收窄为它**能观测到**的模型级事实，并把该限制写进测试。**已记入待办，需要一张卡决定是换一种渲染方式还是把偏离登记到 3.1.1/3.2/3.4。**
+  - **已知限制**：
+    1. **DoD 1 的 `Active` 行未实现**：3.4 的 `scale 0.97 / 60ms` 属 `TASK-1.05.08`，且当前 UI 循环的 `render()` 返回 `None` 不驱动动画帧，静态 transform 会呈现为跳变。
+    2. **DoD 4（网格计算 ≤ 300µs）未取数**：无 `[[bench]]`；已提供确定性代理断言（9 候选仅 1 次文本测量、重复帧 0 次）。
+    3. **`Adapter::apply_pointer` 尚无生产调用方**：`UiFrame` 不携带 highlight（`Paging.highlight` 在引擎侧），接线需 `ui_thread/surface.rs` 把 `InteractionState` 的 hovered/pressed 与 `Paging.highlight` 经 `PointerState::for_page` 传入。
+    4. 3.4 的 Hover 行写 `border-radius 8dp`，与 3.1.1 的同心圆角 `4dp`（被 `check-ui-spec.sh` 钉死）冲突；实现统一用 4dp，建议在 `features.md` 3.4 补一句裁决。
+    5. 3.1.3 的「屏幕过窄把 `max_per_row` 降到 3」属摆放阶段（`TASK-1.05.07`），`DrawState` 只拿到配置上限而非屏幕宽度。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 #### `TASK-1.05.06` 鼠标交互：悬停、点击、滚轮翻页
 
@@ -3516,7 +3654,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.05.02`、`TASK-1.05.03`
   - 代码落地锚点：`crates/ime-ui/src/interaction.rs`
   - 复杂度：中 | 预估工时：2.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：把 `SurfaceEvent` 的指针事件翻译为 `UiEvent`（`Hover` / `Select` / `Page` / `Dismiss`），并实现命中测试、节流与坐标转换。完成的定义：鼠标点击候选必定上屏该候选；滚轮翻页与键盘翻页语义一致。
 - **架构设计与数据流**：
   - 上游：`SurfaceEvent::Pointer*` / `Axis`（来自 `TASK-1.04.06`/`1.04.07`）。下游：`UiEvent` → 宿主线程 → `Session::step`。
@@ -3582,6 +3720,17 @@ CP 总工期 = 29.0 人天（9 个任务）
   7. `translate` ≤ 5µs（`criterion` 基准 `ui/interaction`）。[性能]
 
 ---
+- **验收记录**（2026-09-29）：
+  - **交付物**：新增 `crates/ime-ui/src/interaction.rs` 与 `crates/ime-ui/src/interaction/tests.rs`（33 个用例）。
+  - **验证命令与结果**：`just ci` 退出 0；`cargo nextest run -p ime-ui -E 'test(interaction)'` 33/33 通过。
+  - **DoD 对账**：1（8 条翻译规则）、2（阴影预留区与容器空白区不产生 `Select`）、3（按下与释放不同候选不产生 `Select`）、4（16ms 内 10 次移动只投递最终落点）已满足。
+  - **已知限制**：
+    1. **DoD 4 分两层实现**：`interaction.rs` 保证「同格只报一次、跨格每次都报」；16ms 的通知节流与 latest-wins 由 `channel/event.rs` 的 `HoverGate` 承担。若要求节流也落在 `interaction.rs` 内，会在指针停下时丢掉最终落点（本线程没有定时器去补投）。
+    2. **DoD 5（真实环境 100 次点击必定上屏）与 DoD 6 的「候选框关闭」半句仍缺口**：需 X11/Wayland 实机与会话。
+    3. **DoD 7（`translate` ≤ 5µs）仍缺口**：需要 `crates/ime-ui/benches/` 与 `Cargo.toml` 的 `[[bench]]` 条目。按代码路径（≤45 次矩形比较、零分配、零锁）判断预算宽裕，但这是**读代码的推断，不是实测**。
+    4. **接线未做**：`ui_thread/surface.rs` 需要按 `SurfaceEvent` 调 `translate_at`、把结果路由到 `post_hover` / `post_select` / `post_ordered`，并在帧或几何变化后调 `adopt_frame`、每次事件后查 `take_repaint()`。该文件由 `UI-OPT-P0.02.02` 拥有，接线顺延。
+    5. `hit_map` / `status_rects` 未做成缓存字段：几何会在窗口重新摆放（缩放、光标移动）时更新而 revision 不变，按 revision 刷缓存会在这些场景下拿旧图命中测试。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143、criterion 0.8.2、proptest 1.11.0。
 
 #### `TASK-1.05.07` 屏幕避让与几何计算（底部翻转/边缘夹取）
 
@@ -3870,7 +4019,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.01.02`
   - 代码落地锚点：`scripts/check-no-network.sh`、`scripts/runtime-socket-check.sh`、`scripts/gen-licenses.sh`、`docs/dev/licenses.md`、`docs/dev/NOTICE`、`README.md`、`README.zh.md`
   - 复杂度：低 | 预估工时：1.5 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：把"零网络"与"许可证合规"变成 CI 门禁。完成的定义：依赖闭包中不存在任何网络库；运行期 socket 数为 0；全部依赖的许可证被登记且与 `Apache-2.0 OR MIT` 兼容。
 - **架构设计与数据流**：
   - 上游：`TASK-1.01.02` 的 `scripts/check-no-network.sh` 骨架。下游：`TASK-1.07.02`（CI 集成）、发布流程。
@@ -3929,6 +4078,19 @@ CP 总工期 = 29.0 人天（9 个任务）
   10. **词源审计通过**：`data/sources.toml` 的全部来源许可证在宽松允许清单内；`permissive = false` 的来源数量为 0；`data/raw/` 下无未登记来源的 TSV。[自动]
 
 ---
+- **验收记录**（2026-09-29）：
+  - **交付物**：`deny.toml`（新建，依赖策略：`[graph]`/`[advisories]`/`[licenses]`/`[bans]`/`[sources]`）、`scripts/check-no-network.sh` 与 `scripts/runtime-socket-check.sh` 各新增「仓库无副作用」断言、`docs/dev/licenses.md` §1 计数修正与 §8 登记、`scripts/gen-licenses.sh` 的 `REVIEWED["NCSA"]` 理由更正。
+  - **验证命令与结果**：`cargo deny check` → `advisories ok, bans ok, licenses ok, sources ok`；两个脚本的 `--self-test` 全绿（`check-no-network` 4 个注入违规 + 2 个良性形近词不误报；`runtime-socket-check` 5 类违规 + 3 类良性 + 采集器灵敏度复验）。
+  - **本次由主 Agent 修正的一处**：`[licenses] allow` 缺 `NCSA`。交付时的判断是「`libfuzzer-sys` 是 `rav1e` 的 `fuzzing` 可选依赖、本 workspace 从不启用，故不在解析图内」——**该判断有误**：可选依赖仍被钉在 `Cargo.lock` 里，而 cargo-deny 走的是锁文件而非 feature 解析图，所以它可见。`libfuzzer-sys` 的表达式是 `(MIT OR Apache-2.0) AND NCSA`，`AND` 使 MIT 分支救不了它。已按本文件既有风格补上 `NCSA` 并写明理由（OSI 认可、FSF 自由、宽松许可，与 `gen-licenses.sh` 的 `REVIEWED` 表口径一致），同时把「为什么初稿漏了它」记进注释。
+  - **已授予的豁免（逐条理由均写在 `deny.toml` 内）**：`RUSTSEC-2026-0009`（`time`，指向 `.cargo/audit.toml`，不构成第二套口径）；四个 unmaintained crate——`paste`（上游归档，经 `image` 的编解码栈引入，纯编译期 token 拼接宏）、`bincode`（仅经 Slint 的**构建期** `.slint` 编译器，不入发布闭包）、`rustybuzz` 与 `ttf-parser`（Slint 的字形排版/字体解析器，**已注明它们会解析字体文件，若出现漏洞通告必须重新判定**）；`[[licenses.exceptions]]` 的 BSL-1.0 → `clipboard-win`/`error-code`（仅 Windows、不在 Linux 构建闭包）。**明确未授予** NCSA 的例外（改为直接进 allow 清单）。
+  - **schema 正确性**（本次最大的坑，已逐条核实）：`[[licenses.exceptions]]` 只接受 crate spec 与 `allow`，加 `reason` 会解析失败——理由因此写在注释里；`{ id, reason }` 只在 `[advisories] ignore` 与 `[bans] deny` 合法；`unused-license-exception` 是 0.18.6 才有的键，已避免使用。
+  - **已知限制**：
+    1. **`cargo deny check` 未接入任何 CI job**：`check-advisories` 不在 `just ci` 里（`cargo audit` 需联网），而 CI 的 `quality` job 装了 `cargo-deny` 却从不调用。落点应是 `audit` job（唯一联网的 job）。
+    2. **`check-no-network.sh` 未补卡片要求的 `getrandom` 按 feature 判定项**：该脚本用 `--all-features` 且不做 `--filter-platform`，节点 feature 列表是各平台并集，wasm 侧 feature 会误报。需先跑一次 `cargo metadata` 确认 `getrandom` 的实际 feature 集。
+    3. **DoD 2 的 `[实验室]` 真实会话断言仍缺口**：需在有 fcitx5 会话的机器上跑 `just check-net-runtime`。
+    4. **DoD 7 的 `--check-links` 可达性未跑**（需网络）。
+    5. `cargo deny check` 报 `warning[advisory-not-detected]`：`bincode` 的豁免条目从未触发（`bincode` 在锁文件中、通告也在本地 DB 中，但 cargo-deny 未报出该 unmaintained）。这些豁免条目因此是「备用」而非「在用」；不影响门禁结果。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、cargo-deny 0.20.2、cargo-audit 0.22.2、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
 
 #### `TASK-1.07.01` Fcitx5 插件安装布局与一键安装脚本
 
@@ -4153,7 +4315,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.02.07`、`TASK-1.08.01`
   - 代码落地锚点：`crates/ime-diag/src/{probe,report}.rs`、`docs/dev/budgets.json`
   - 复杂度：中 | 预估工时：2.5 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
   - **说明**：本任务把 `docs/dev/budgets.json`（`TASK-1.01.02` 建立）从"静态阈值文件"变成"运行期可验证的看板"，是 `BUDGET-LAT-01`/`04`/`CPU-02` 的唯一测量手段。
 - **目标与职责**：实现低开销的运行时探针，采集端到端延迟、解码延迟、帧耗时、资源占用，并产出可读的预算报告。完成的定义：连续输入 5 分钟后 `xtask report` 输出一份含 P50/P90/P99/P999 的延迟报告，并与 `budgets.json` 逐项比对给出 PASS/FAIL。
 - **架构与数据流**：
@@ -4328,6 +4490,20 @@ Phase 3 的详细任务卡见 [`./docs/dev/features/phase-3.md`](features/phase-
 | `R-10` | **特定应用兼容问题**：终端（`vim` 的 insert 模式、`tmux`）、Electron 应用、游戏（全屏独占）下候选框位置错误或输入异常 | 中 | 中 | `TASK-1.04.05`、`TASK-2.04.02` | `TASK-1.04.05` 的 spike 覆盖终端/Electron；对全屏独占游戏，由 fcitx5 自身处理（候选框可能不可见，属已知限制）；`TASK-2.04.02` 的 per-app profile 支持按应用关闭自绘 UI。 |
 | `R-11` | **长期运行的资源占用**：日志 + 崩溃文件 + 探针在数月运行后占用大量磁盘 | 低 | 低 | `TASK-1.08.01` | 日志滚动上限 32MB（8MB × 4）；崩溃文件在启动时清理 30 天前的记录；探针只在内存中。**`TASK-3.08.01` 的长稳压测覆盖此项。** |
 | `R-12` | **并行开发下的契约漂移**：三条 Track 并行时，某一方私自在业务 crate 内新增跨边界类型，导致另一方的实现编译失败或语义错位 | 中 | 中（返工） | `TASK-1.01.03`、`TASK-1.01.02` | `TASK-1.01.02` 的 `check-deps.sh` 已强制依赖单向；追加一条 CI 检查：`ime-types` 之外不得出现 `pub struct/enum` 且被 ≥ 2 个 crate 使用（用 `cargo public-api` 或简化为"跨 crate 的 `pub` 类型必须来自 `ime-types`"的 grep 断言）。**5.1.1 的契约冻结纪律必须在每个波次开始时重申。** |
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-diag/src/probe.rs` + `probe/{histogram,counters,metric,snapshot,tests}.rs`；`report.rs` + `report/{render,tests}.rs`；`xtask/src/report.rs` 与 `Report` 子命令；`crates/ime-diag/src/lib.rs` 两条 `pub mod`；`xtask/Cargo.toml` 增 `ime-diag`（由主 Agent 补）。
+  - **验证命令与结果**：`just ci` 退出 0（fmt、clippy `-D warnings`、nextest 1521 个用例、doctest、9 个审计脚本及其自检、25 条预算阈值全部通过）。
+  - **`Histogram`**：编译期 Fibonacci 桶边界（1,2,3,5,8,13…µs），24 档后饱和到 `TOP_US = 100_000`；**恰好 536 字节**（有 `size_of` 断言）；百分位取所在桶的**上界**，只高不低。
+  - **`ProbeSnapshot`** 是行式文本（不引入序列化依赖），按**不可信输入**解析——未知键/未知指标/重复键/非 `key=value`/非整数一律带行号报 `InvalidData`；`write_to` 用 `perms::create_private`（0600）并显式 `set_len(0)`（否则短快照会留下长快照的尾巴）。
+  - **`report`** 只声明「哪个阈值管哪个指标」，数值一律从 `budgets.json` 读；一行可带多条阈值，结论取**最低的越界百分位**；按键数 < 500 标注 `insufficient samples`，丢失率 > 10% 标注 `incomplete samples`；文本与 JSON 两种渲染都有「全 ASCII」断言。
+  - **本次由主 Agent 补的三处**：①`xtask/Cargo.toml` 增 `ime-diag`；②`budgets.json` 增 `bench.ui_wakeup_latency_us = 50`，并同步 `budget.rs` 的 `Bench` 结构 + `Binding`、`schema.rs` 的读取与阈值表、`bench.rs` 的 `CaseBinding`（现在 `budget --validate` 报 **25** 条阈值）；③`test_compare_calls_a_lossy_sample_incomplete` 的 183 落在 1832 键的 9.989%——**刚好在 10% 容差之下**，断言的是它名字的反面，改为 200。
+  - **已知限制**：
+    1. **打点接线未做**：`on_key_event` 入口 → `begin_key_to_present`、渲染回执 → `end_key_to_present`、UI 线程的 wakeup/first_visible/raster 都未接入；`KeyToken` 需要随 `UiFrame` 的旁路字段或包装类型传递，涉及 `ime-types`/`ime-ui`，属主 Agent 决策。因此 DoD 7 的脚本化 grep 断言现在还不能通过。
+    2. **SIGUSR1 写快照未接线**：`ProbeSnapshot::write_to` 已交付，但「信号处理器里不能做文件 IO」约束下的实际写出路径（置标志 + 由 UI 线程/侧线程落盘）需在 addon 侧接线。
+    3. **`live` 模式（Unix socket 拉取）刻意未实现**：卡片自己标注「这会引入 socket」；`xtask report --input <FILE>` 与 `--input -`（stdin）已可用。
+    4. DoD 1（`record` ≤ 20ns）与 DoD 4（关闭后 ≤ 2ns）的 criterion 数值未取；机制已在代码路径上（一次查表 + 2~3 次 `fetch_add(Relaxed)`）。
+    5. 卡片架构节提到的 `event_loop_key` 2ms 阈值仍未进 `budgets.json`，`report.rs` 的 `PENDING_KEYS` 记着它并有测试防止清单与文档互相漂移。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 #### 6.1.1 已冻结的上游决策（Go/No-Go 结论）
 
@@ -4460,6 +4636,20 @@ Phase 3 的详细任务卡见 [`./docs/dev/features/phase-3.md`](features/phase-
 7. `just ci` 全绿；`docs/dev/` 下的 `budgets.json`、`licenses.md`、`privacy.md`、`adr/0000-upstream-decisions.md`、`adr/0001-*.md`、`spikes/*.md` 齐备。[文档]
 8. **许可合规（ADR-0000）**：`OB-1` 归属徽章已上线（README 双语的徽章与链接可达）；`OB-4` 的 `check-slint-leak.sh` 在 CI 中生效且通过；`OB-3` 的嵌入式排除声明已写入 `licenses.md`；`data/sources.toml` 的词源全部为宽松许可且无未登记来源。[自动]
 9. 至少 20 人（或 3 名测试人员 × 1 周）的真实使用无崩溃、无输入丢失。[实验室]
+
+**出口准则的当前状态（2026-09-29 复核，**不是** Phase 1 已完成）**：39 张卡中 10 张为 `[x]`，其余仍在推进，因此本节整体仍未达成。逐条而言：
+
+| 准则 | 状态 | 依据 |
+|---|---|---|
+| 1 全部卡验收通过 | **未达成** | 10/39 |
+| 2 两档位可用 | **未达成** | 候选框尚未接通（`TASK-1.05.05`/`1.05.06` 的宿主不存在） |
+| 3 延迟预算 | **未达成** | 基准**目标与断言**已由 `TASK-1.02.07` 交付（24 条阈值），**实测数值未取** |
+| 4 内存/CPU/体积/网络预算 | **部分达成** | `BUDGET-NET-01`（= 0）由 `check-no-network.sh` 断言并通过（602 包，无网络能力）；其余需基准与体积门禁 |
+| 5 视觉验收 | **未达成** | 需真实合成器截图；`check-ui-spec.sh` 已把 3.1/3.2 的规范变成可执行断言，但不等于截图比对 |
+| 6 隐私零痕迹 | **未达成** | `docs/dev/privacy.md` 第 6 节登记了 5 处尚未接线的机制（C ABI 未上行 `CapabilityFlag`、`apply_effects` 不存在等） |
+| 7 `just ci` 全绿 + 文档齐备 | **已达成** | `just ci` 退出 0（1264 测试 + doctest + 8 个审计脚本及其自检）；`budgets.json`、`licenses.md`、`privacy.md`、`adr/0000`、`adr/0001`、`spikes/` 均存在 |
+| 8 许可合规 | **部分达成** | `OB-1` 徽章已上线（`gen-licenses.sh --check` 通过），`OB-4` 的 `check-slint-leak.sh` 在 `ci` 中生效且通过（1516 行公共 API 无 Slint 符号），`OB-3` 的嵌入式排除声明已在 `licenses.md`，词源全部宽松许可；**未达成的是 `OB-1` 链接的 HTTP 可达性实测**（`--check-links` 需网络） |
+| 9 真实使用 | **未达成** | 尚未开始 |
 
 #### Phase 2（工艺级打磨与暗线就绪）— 36 个任务
 

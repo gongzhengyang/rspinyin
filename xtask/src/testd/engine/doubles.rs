@@ -106,9 +106,14 @@ pub enum LookupFailure {
 impl LookupFailure {
     /// Returns the stable `domain/action/reason` code the failure renders as.
     ///
+    /// The inverse of [`LookupFailure::parse`], and it exists for the tests that pin the
+    /// code mapping. Gated on `cfg(test)` so the shipped binary does not carry an
+    /// accessor nothing in it calls.
+    ///
     /// # Panics
     ///
     /// Never panics.
+    #[cfg(test)]
     pub fn code(self) -> &'static str {
         match self {
             Self::Unavailable => "dict/unavailable",

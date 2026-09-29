@@ -29,7 +29,8 @@
 //! started in the background. A frame that arrives before that start-up reports ready
 //! commits its text and draws no candidate window, which is what
 //! [`candidate_window_available`] answers and what the `ui/not-ready` diagnostic
-//! records.
+//! records — at most one line per second, because the throttle in [`crate::ffi`] counts
+//! the repeats instead of writing one line per keystroke.
 //!
 //! # Degradation
 //!
@@ -250,8 +251,11 @@ pub fn candidate_window_ready() -> bool {
 /// Answers `false` until the background start-up reports ready — the first few hundred
 /// milliseconds of the process, and the whole of a start-up that failed. A caller that
 /// receives `false` must still commit the text it holds: only the window is skipped,
-/// never the input. Each declined frame records `ui/not-ready`, which is the diagnostic
-/// that explains a candidate window which is briefly absent.
+/// never the input. Each declined frame records `ui/not-ready`, the diagnostic that
+/// explains a candidate window which is briefly absent; the throttle behind it writes
+/// that code once per second and carries the count of what it swallowed on the next
+/// line, so a session that never becomes ready costs a rate rather than a line per
+/// keystroke.
 pub fn candidate_window_available() -> bool {
     match gate_candidate_window(candidate_window_ready()) {
         Ok(()) => true,

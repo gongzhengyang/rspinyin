@@ -130,7 +130,9 @@ pub fn container_rect(
         x: x as i32,
         y: y as i32,
         w: window_width.saturating_sub(margin.saturating_mul(2)).max(1),
-        h: window_height.saturating_sub(margin.saturating_mul(2)).max(1),
+        h: window_height
+            .saturating_sub(margin.saturating_mul(2))
+            .max(1),
     }
 }
 
@@ -287,7 +289,11 @@ fn to_u8(value: usize) -> u8 {
 
 /// Rounds a logical size to whole logical pixels, refusing values that cannot describe one.
 fn whole_dp(dp: f32) -> u32 {
-    if dp.is_finite() && dp > 0.0 { dp as u32 } else { 0 }
+    if dp.is_finite() && dp > 0.0 {
+        dp as u32
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -308,7 +314,12 @@ mod tests {
     fn panel(item_count: usize, total_pages: usize, per_row: u8, measured: f32) -> ContainerSize {
         let metrics = parsed();
         let grid = grid(item_count, total_pages, per_row, &metrics);
-        let cell = cell_width(&uniform_widths(item_count, measured), per_row, 720.0, &metrics);
+        let cell = cell_width(
+            &uniform_widths(item_count, measured),
+            per_row,
+            720.0,
+            &metrics,
+        );
         container_size(&grid, cell.width, metrics.max_width, &metrics)
     }
 
@@ -476,14 +487,24 @@ mod tests {
     #[test]
     fn test_container_rect_insets_the_panel_by_the_shadow_margin() {
         let rect = container_rect(284, 151, 1.0, &parsed());
-        let expected = RectI { x: 32, y: 32, w: 220, h: 87 };
+        let expected = RectI {
+            x: 32,
+            y: 32,
+            w: 220,
+            h: 87,
+        };
         assert_eq!(rect, expected);
     }
 
     #[test]
     fn test_container_rect_scales_with_the_surface() {
         let rect = container_rect(568, 302, 2.0, &parsed());
-        let expected = RectI { x: 64, y: 64, w: 440, h: 174 };
+        let expected = RectI {
+            x: 64,
+            y: 64,
+            w: 440,
+            h: 174,
+        };
         assert_eq!(rect, expected);
     }
 

@@ -6,16 +6,26 @@
 //! so this module re-reads both and fails on any disagreement.
 //!
 //! The comparison is bidirectional: every threshold in the JSON must be bound to
-//! a spec row and carry exactly the value that row states, every binding must be
-//! backed by a threshold, and a missing section, missing row, unknown key, or
-//! unreadable cell is an error rather than a silent pass.
+//! a spec cell and carry exactly the value that cell states, every binding must be
+//! backed by a threshold, and a missing section, missing cell, unknown key, or
+//! unreadable number is an error rather than a silent pass.
 //!
-//! Comparing criterion output against these thresholds is a separate action.
+//! Comparing criterion output against these thresholds is [`bench`]'s job: it
+//! reads the estimates a benchmark run left behind and asserts the cases the design
+//! names, using the same thresholds this module validates.
+//!
+//! Measuring the release artifacts against the two size thresholds is [`measure`]'s:
+//! it reads the files `xtask package` wrote and fails on any that is past its ceiling,
+//! so an artifact that grew is a gate failure rather than something a reviewer has to
+//! notice.
 //!
 //! The module is split by responsibility: this root holds the document types, the
 //! binding table and the entry points, [`schema`] turns the document's text into
-//! those types, and [`spec`] reads the spec's table and compares the two.
+//! those types, [`spec`] reads the spec's cells and compares the two, and [`bench`]
+//! turns a criterion run into a verdict.
 
+mod bench;
+mod meta;
 mod schema;
 mod spec;
 
@@ -25,7 +35,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, ensure};
 
 use self::SpecCell::{MetricAfter, ThresholdAfter, ThresholdFirst, ThresholdZero};
-pub(crate) use self::spec::{compare, parse_spec_table};
+pub(crate) use self::spec::{Spec, compare};
 
 #[cfg(test)]
 mod tests;
@@ -104,6 +114,26 @@ pub struct Robustness {
     pub pass_rate_pct: f64,
 }
 
+/// Thresholds one benchmark case is asserted against.
+///
+/// These are the per-case numbers a criterion run is compared with, and they are
+/// not rows of the section 0.5.3 table: each one is stated by the acceptance
+/// criterion of the card that owns the case. Every field name carries its unit, the
+/// same way the `latency_ms` section does, and the binding table says which
+/// criterion owns which field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bench {
+    /// One `passthrough/classify` call, in nanoseconds.
+    pub passthrough_classify_ns: f64,
+    /// One `push_char` and one `backspace`, in microseconds.
+    pub buffer_ops_us: f64,
+    /// One full pass over the held-out evaluation set, in seconds.
+    pub decode_holdout_s: f64,
+    /// One wakeup of the UI thread, from the host's post to the surface seeing it, in
+    /// microseconds.
+    pub ui_wakeup_latency_us: f64,
+}
+
 /// The parsed contents of `docs/dev/budgets.json`.
 ///
 /// Fields are public so callers can build a modified copy and re-run [`compare`]
@@ -122,6 +152,8 @@ pub struct Budgets {
     pub size_mb: SizeMb,
     /// Robustness thresholds.
     pub robustness: Robustness,
+    /// Per-case benchmark thresholds.
+    pub bench: Bench,
     /// Process-external sockets allowed at runtime; the spec requires zero.
     pub net_sockets: u64,
 }
@@ -150,7 +182,7 @@ pub struct Report {
     pub checked: usize,
 }
 
-/// Where in a spec row a bound threshold is written.
+/// Where in a spec cell a bound threshold is written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpecCell {
     /// Threshold column, first number in the cell.
@@ -163,16 +195,20 @@ enum SpecCell {
     ThresholdZero(&'static str),
 }
 
-/// Binds one value of `budgets.json` to the spec row that owns it.
+/// Binds one value of `budgets.json` to the spec cell that owns it.
 ///
-/// Fields, in order: the dotted path of the value in the budget document, the
-/// spec row that states it, and where in that row the value is written.
+/// Fields, in order: the dotted path of the value in the budget document, the cell
+/// that states it, and where in that cell the number is written.
+///
+/// The cell is named either by a `BUDGET-*` id, which resolves to a row of the
+/// section 0.5.3 table, or by `TASK-*#n`, which resolves to the `n`th acceptance
+/// criterion of that task card -- the form the per-case thresholds are stated in.
 struct Binding(&'static str, &'static str, SpecCell);
 
 /// The correspondence between the budget document and the spec table.
 ///
 /// This table is the only place where a number is not written down twice: it
-/// records *which* spec row owns each JSON value, never the value itself.
+/// records *which* spec cell owns each JSON value, never the value itself.
 const BINDINGS: &[Binding] = &[
     Binding(
         "latency_ms.key_to_present_p50",
@@ -238,50 +274,258 @@ const BINDINGS: &[Binding] = &[
         MetricAfter("RSS"),
     ),
     Binding("robustness.pass_rate_pct", "BUDGET-ROB-01", ThresholdFirst),
+    Binding(
+        "bench.passthrough_classify_ns",
+        "TASK-1.02.06#2",
+        ThresholdAfter("≤"),
+    ),
+    Binding(
+        "bench.input_buffer_ops_us",
+        "TASK-1.02.02#4",
+        ThresholdAfter("≤"),
+    ),
+    Binding(
+        "bench.decode_holdout_s",
+        "TASK-1.02.03#7",
+        ThresholdAfter("耗时"),
+    ),
+    Binding(
+        "bench.ui_wakeup_latency_us",
+        "TASK-1.05.02#1",
+        ThresholdAfter("≤"),
+    ),
     Binding("net_sockets", "BUDGET-NET-01", ThresholdFirst),
 ];
 
-/// Validate the repository's budget document against the spec table.
+/// Validate the repository's budget document against the spec.
 ///
 /// `root` is the repository root; both files are resolved relative to it.
 ///
 /// # Errors
 /// Returns an error when either file cannot be read or parsed, or when any
-/// threshold disagrees with the spec table.
+/// threshold disagrees with the spec cell that owns it.
 pub fn validate(root: &Path) -> Result<Report> {
+    let budgets = read_budgets(root)?;
     let spec_path = root.join(SPEC_FILE);
-    let budgets_path = root.join(BUDGETS_FILE);
-    let spec = fs::read_to_string(&spec_path)
+    let text = fs::read_to_string(&spec_path)
         .with_context(|| format!("cannot read {}", spec_path.display()))?;
-    let text = fs::read_to_string(&budgets_path)
-        .with_context(|| format!("cannot read {}", budgets_path.display()))?;
-    let table = parse_spec_table(&spec)
+    let spec = Spec::parse(&text)
         .with_context(|| format!("{}: unusable budget table", spec_path.display()))?;
-    let budgets = Budgets::from_json(&text)
-        .with_context(|| format!("{}: invalid budget document", budgets_path.display()))?;
-    compare(&budgets, &table)
+    compare(&budgets, &spec)
+}
+
+/// Reads and schema-checks the repository's budget document.
+///
+/// # Errors
+/// Returns an error when the file cannot be read or does not satisfy the schema.
+pub(crate) fn read_budgets(root: &Path) -> Result<Budgets> {
+    let path = root.join(BUDGETS_FILE);
+    let text =
+        fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
+    Budgets::from_json(&text)
+        .with_context(|| format!("{}: invalid budget document", path.display()))
+}
+
+/// What the command line asked the budget gate to do.
+///
+/// The three modes are independent and may be combined: `--validate` cross-checks the
+/// document against the specification, `--check` asserts the criterion measurements, and
+/// `--measure` asserts the release artifacts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Actions<'a> {
+    /// Compare every threshold with the authoritative table in the spec.
+    pub validate: bool,
+    /// Compare the criterion measurements under `target/criterion` against the
+    /// thresholds.
+    pub check: bool,
+    /// Compare the release artifacts under `dist` against the size thresholds.
+    pub measure: bool,
+    /// Narrow `--check` to one criterion group, e.g. `decode`.
+    pub bench_group: Option<&'a str>,
+    /// Directory the release artifacts `--measure` reads.
+    pub dist: &'a Path,
+}
+
+/// One release artifact the size gate measures, and the threshold it is measured against.
+///
+/// Fields, in order: the file's name in the release directory, and the dotted path of the
+/// threshold in the budget document. The name is a key into the release layout and never a
+/// number, and the threshold is read from the document, so neither is written down twice.
+/// A test asserts the names are the ones the packager writes.
+struct MeasuredArtifact(&'static str, &'static str);
+
+/// The release artifacts `--measure` reads, in the order they are measured.
+///
+/// The two libraries and the dictionary are the three files whose size the specification
+/// budgets: everything else a release ships is text or artwork whose size nobody is
+/// claiming anything about.
+const MEASURED_ARTIFACTS: &[MeasuredArtifact] = &[
+    MeasuredArtifact("librspinyin.so", "size_mb.so_stripped"),
+    MeasuredArtifact("librspinyin_ui.so", "size_mb.so_stripped"),
+    MeasuredArtifact("base.dict", "size_mb.base_dict"),
+];
+
+/// Outcome of a size measurement run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SizeReport {
+    /// Files that were measured and are inside their threshold, one message each.
+    pub passed: Vec<String>,
+    /// Files that are past their threshold, one message each.
+    pub violations: Vec<String>,
 }
 
 /// Entry point for `xtask budget`.
 ///
+/// `--validate` compares the document against the spec table, `--check` compares the
+/// criterion measurements under `target/criterion` against the thresholds, optionally
+/// narrowed to one group by `--bench`, and `--measure` measures the release artifacts
+/// under `--dist`. The three are independent and may be combined.
+///
 /// # Errors
-/// Returns an error when no action was selected, or when the validation fails.
-pub fn run(validate_requested: bool) -> Result<()> {
+///
+/// Returns an error when no action was selected, when the validation fails, when the
+/// benchmark gate finds a missing or exceeded measurement, and when a release artifact is
+/// missing or past its size threshold.
+pub fn run(actions: Actions<'_>) -> Result<()> {
     ensure!(
-        validate_requested,
+        actions.validate || actions.check || actions.measure,
         "xtask budget: no action selected; pass --validate to compare {BUDGETS_FILE} \
-         with {SPEC_FILE} section {SPEC_SECTION}"
+         with {SPEC_FILE} section {SPEC_SECTION}, --check to compare the criterion \
+         measurements under target/criterion against the thresholds, or --measure to \
+         measure the release artifacts under {}",
+        actions.dist.display()
     );
-    let report = validate(&repo_root()?)?;
+    if actions.validate {
+        let report = validate(&repo_root()?)?;
+        println!(
+            "budget: schema v{} - {} thresholds match {SPEC_FILE} section {SPEC_SECTION} ({BUDGETS_FILE} verified)",
+            report.version, report.checked
+        );
+    }
+    if actions.check {
+        run_check(actions.bench_group)?;
+    }
+    if actions.measure {
+        run_measure(actions.dist)?;
+    }
+    Ok(())
+}
+
+/// Entry point for the benchmark-budget gate, `xtask budget --check --bench <group>`.
+///
+/// `group` narrows the assertion to one criterion group (`decode`, `input`,
+/// `passthrough`, ...); `None` asserts every case that has a binding. The command
+/// fails when a bound case has no criterion output at all, and when a measured case
+/// is past its threshold.
+///
+/// # Errors
+/// Returns an error when the budget document is invalid, when the criterion output
+/// cannot be read, when a bound case is missing from it, or when any measured case
+/// is past its threshold.
+pub fn run_check(group: Option<&str>) -> Result<()> {
+    let root = repo_root()?;
+    let dir = bench::criterion_dir(&root);
+    let recorded = meta::write(&dir)?;
+    println!("budget: run environment recorded in {}", recorded.display());
+    let budgets = read_budgets(&root)?;
+    let report = bench::check(&budgets, &dir, group)?;
+    for case in &report.unbound {
+        println!("budget: {case} is measured but no threshold is bound to it");
+    }
+    for case in &report.passed {
+        println!("budget: {case} within budget");
+    }
+    ensure!(
+        report.missing.is_empty(),
+        "no criterion output for {}; run the benchmark first (`cargo bench --workspace`)",
+        report.missing.join(", ")
+    );
+    ensure!(
+        report.violations.is_empty(),
+        "{} benchmark case(s) past their budget:\n  {}",
+        report.violations.len(),
+        report.violations.join("\n  ")
+    );
     println!(
-        "budget: schema v{} - {} thresholds match {SPEC_FILE} section {SPEC_SECTION} ({BUDGETS_FILE} verified)",
-        report.version, report.checked
+        "budget: {} benchmark case(s) within budget, {} unasserted",
+        report.passed.len(),
+        report.unbound.len()
     );
     Ok(())
 }
 
+/// Entry point for the size gate, `xtask budget --measure`.
+///
+/// # Errors
+///
+/// Returns an error when a release artifact is missing from `dir`, and when one is past
+/// its threshold; the failure carries `dist/verify/size-budget-exceeded`.
+pub fn run_measure(dir: &Path) -> Result<()> {
+    let budgets = read_budgets(&repo_root()?)?;
+    let report = measure(&budgets, dir)?;
+    for passed in &report.passed {
+        println!("budget: {passed} within budget");
+    }
+    ensure!(
+        report.violations.is_empty(),
+        "{} release artifact(s) past their budget:\n  {}",
+        report.violations.len(),
+        report.violations.join("\n  ")
+    );
+    println!(
+        "budget: {} release artifact(s) within budget",
+        report.passed.len()
+    );
+    Ok(())
+}
+
+/// Measures the release artifacts in `dir` against `budgets`.
+///
+/// `dir` is the release directory `xtask package` writes, and what is measured is what
+/// that step produced: the stripped libraries, not the build tree's own copies, which are
+/// larger and are not what a user downloads. The document is a parameter rather than
+/// something this function reads for itself, so that a test can drive the measurement
+/// with a threshold it made impossible -- which is what shows the assertion reads the
+/// document rather than a constant.
+///
+/// # Errors
+///
+/// Returns an error when a threshold the table names is not in the document, when an
+/// artifact the release must carry is not in `dir`, and when a file cannot be read.
+pub fn measure(budgets: &Budgets, dir: &Path) -> Result<SizeReport> {
+    let mut report = SizeReport::default();
+    for &MeasuredArtifact(name, key) in MEASURED_ARTIFACTS {
+        let path = dir.join(name);
+        let limit = bench::threshold(budgets, key).with_context(|| {
+            format!("{name}: bound to {key}, which {BUDGETS_FILE} does not carry")
+        })?;
+        ensure!(
+            path.is_file(),
+            "dist/verify/artifact-missing: {name} is not in {}; run `just package` first",
+            dir.display()
+        );
+        let bytes = fs::metadata(&path)
+            .with_context(|| format!("reading {}", path.display()))?
+            .len();
+        let size_mb = bytes as f64 / (1024.0 * 1024.0);
+        let measured = format!(
+            "{} {name} {size_mb:.2}MiB of {limit:.2}MiB",
+            bench::owner(key)
+        );
+        if size_mb > limit {
+            // The delivery-channel code the contract defines for this condition, so a
+            // release pipeline can match on it instead of on prose.
+            let violation = format!("dist/verify/size-budget-exceeded: {measured}");
+            report.violations.push(violation);
+        } else {
+            report.passed.push(measured);
+        }
+    }
+    Ok(report)
+}
+
 /// Repository root, derived from the compile-time location of this crate.
-fn repo_root() -> Result<PathBuf> {
+pub(crate) fn repo_root() -> Result<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     manifest
         .parent()

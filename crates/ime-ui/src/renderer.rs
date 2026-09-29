@@ -23,6 +23,13 @@
 //! accumulating into the first list, which is what makes the copy correct again once a
 //! buffer comes back.
 //!
+//! The two regions are folded into one bounding box and copied in a single pass. They
+//! overlap heavily in the steady state -- a keystroke moves the highlight within the cells
+//! the previous keystroke damaged -- so copying them one after the other copied the overlap
+//! twice. The box is a superset of both, a superset is always safe for a copy, and that is
+//! the same argument the pending-list collapse already relies on. Only the copy is merged:
+//! what the compositor is told is still this frame's damage alone.
+//!
 //! # The licence boundary
 //!
 //! `SlintWindowAdapter` implements Slint's `WindowAdapter` and is therefore private: an
@@ -47,7 +54,7 @@ use slint::platform::software_renderer::{PhysicalRegion, RepaintBufferType, Soft
 use slint::platform::{Renderer, WindowAdapter, WindowEvent};
 use slint::{PhysicalSize, PlatformError as SlintError, Window};
 
-use self::raster::{PixelScratch, clip_rect, union_rect};
+use self::raster::{PixelScratch, clip_rect, union_pair, union_rect};
 
 pub use self::probe::{FontStatus, probe_fonts};
 
@@ -71,9 +78,21 @@ pub enum RenderOutcome {
     Rendered {
         /// The bounding box of the damage, in physical pixels relative to the surface's
         /// top-left corner.
+        ///
+        /// This is what the frame *changed*, which is what the compositor is told; it is not
+        /// the region the copy covered, which is the union of this damage with the previous
+        /// frame's.
         bounding: RectI,
         /// How many rectangles the damage was reported as.
         rectangles: u32,
+        /// How many copies of the scratch into the surface buffer this frame cost: one for a
+        /// frame with anything to carry over, zero for one that had nothing.
+        ///
+        /// A frame copies at most one region, because the two lists the copy covers are
+        /// folded into their bounding box first. The count is what the frame-copy budget is
+        /// asserted on: a steady-state keystroke pays one copy rather than the two the
+        /// two-list form charged for the same overlapping damage.
+        copies: u32,
     },
     /// The backend had no free buffer. The frame stays dirty and is retried on the next
     /// wake-up; the surface is unchanged.
@@ -153,6 +172,62 @@ impl FrameState {
             self.pending.push(bounding);
         }
     }
+}
+
+/// Copies everything one committed frame has to carry over into its surface buffer.
+///
+/// The two lists are folded into a single bounding box, so a frame costs one copy however
+/// many rectangles it damaged. The box is a superset of both lists, which is safe for a copy
+/// because every pixel outside them is the same in the scratch and in the buffer being
+/// written -- that is what the induction the module documentation describes rests on.
+///
+/// # Parameters
+///
+/// * `state` -- the frame state whose scratch holds the frame that is on screen and whose
+///   two damage lists say what the acquired buffer is missing.
+/// * `dst`, `dst_stride` -- the acquired surface buffer and its row length in bytes.
+/// * `width_px`, `height_px` -- the surface size the region is clipped to.
+///
+/// # Returns
+///
+/// The region that was copied, or `None` when neither list held anything inside the surface.
+///
+/// # Errors
+///
+/// Returns [`PlatformError::Unavailable`] when the destination buffer is too short for the
+/// region, which is a backend defect: the copy is refused rather than clamped.
+fn copy_frame(
+    state: &FrameState,
+    dst: &mut [u8],
+    dst_stride: usize,
+    width_px: u32,
+    height_px: u32,
+) -> Result<Option<RectI>, PlatformError> {
+    let Some(bounds) = copy_bounds(&state.pending, &state.shown, width_px, height_px) else {
+        return Ok(None);
+    };
+    state.scratch.blit_into(dst, dst_stride, bounds)?;
+    Ok(Some(bounds))
+}
+
+/// The bounding box of everything one committed frame has to copy.
+///
+/// Written as an explicit fold over both lists rather than by building a combined one: the
+/// per-frame path may not allocate, and both lists are already in the state the caller owns.
+/// Every rectangle is clipped first, so the box is inside the surface and
+/// [`PixelScratch::blit_into`] is handed a region it can refuse rather than clamp.
+fn copy_bounds(pending: &[RectI], shown: &[RectI], width_px: u32, height_px: u32) -> Option<RectI> {
+    let mut bounds: Option<RectI> = None;
+    for rect in pending.iter().chain(shown.iter()) {
+        let Some(clipped) = clip_rect(*rect, width_px, height_px) else {
+            continue;
+        };
+        bounds = Some(match bounds {
+            None => clipped,
+            Some(current) => union_pair(current, clipped),
+        });
+    }
+    bounds
 }
 
 /// The `WindowAdapter` Slint draws the candidate window through.
@@ -251,15 +326,23 @@ impl SlintWindowAdapter {
             // Slint marked the window dirty but nothing on it changed.
             return Ok(RenderOutcome::Idle);
         }
-        self.commit(state)
+        self.commit(state, width_px, height_px)
     }
 
-    /// Copies the pending regions into a surface buffer and commits it.
+    /// Copies what the frame has to carry over into a surface buffer and commits it.
+    ///
+    /// `width_px` and `height_px` are the surface the frame was rasterized for, which is what
+    /// the copy region is clipped to.
     ///
     /// # Errors
     ///
     /// Propagates a backend failure other than "no buffer is free".
-    fn commit(&self, state: &mut FrameState) -> Result<RenderOutcome, PlatformError> {
+    fn commit(
+        &self,
+        state: &mut FrameState,
+        width_px: u32,
+        height_px: u32,
+    ) -> Result<RenderOutcome, PlatformError> {
         let mut backend = self.backend.borrow_mut();
         let buffer = match backend.acquire_buffer() {
             Ok(buffer) => buffer,
@@ -272,9 +355,11 @@ impl SlintWindowAdapter {
             }
             Err(error) => return Err(error),
         };
-        for rect in state.pending.iter().chain(state.shown.iter()) {
-            state.scratch.blit_into(buffer.data, buffer.stride, *rect)?;
-        }
+        // One copy over the union of both lists rather than one per rectangle: the lists
+        // overlap in the steady state, and the union is a superset of what either needs.
+        let copied = copy_frame(state, buffer.data, buffer.stride, width_px, height_px)?;
+        // Only this frame's damage is new to the compositor; the previous frame's was
+        // reported when it was committed, so the union must not be sent in its place.
         backend.commit(&state.pending)?;
         std::mem::swap(&mut state.shown, &mut state.pending);
         state.pending.clear();
@@ -287,6 +372,7 @@ impl SlintWindowAdapter {
         Ok(RenderOutcome::Rendered {
             bounding: union_rect(&state.shown),
             rectangles: state.shown.len().min(u32::MAX as usize) as u32,
+            copies: u32::from(copied.is_some()),
         })
     }
 

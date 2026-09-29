@@ -49,6 +49,12 @@
 # disagreement, and benign AF_UNIX/loopback/wildcard-UDP sockets -- and then
 # repeats the exercise against real helper processes holding exactly those
 # sockets, so the collectors are proven sensitive rather than just the parser.
+# It also snapshots the working tree before the exercise and compares it
+# afterwards, which is the assertion behind "the self-test has no side effects":
+# the helpers bind sockets and write into a scratch directory, never into the
+# repository. The guard compares before against after rather than demanding a
+# clean tree, because a developer's tree is expected to be dirty while they
+# work -- what must not change is the tree *because of this run*.
 #
 # Requires python3, iproute2 (`ss`) and `lsof`; the runtime half additionally
 # needs a real fcitx5 session (see the `[实验室]` tag on the task card).
@@ -407,6 +413,45 @@ expect_violation() {
     return 0
 }
 
+# Repository-state guard. See the note at the top of this file: the pair proves
+# the self-test left the tree as it found it. `side_effect_tracked` distinguishes
+# "the tree is clean" from "the tree could not be observed", which an empty
+# snapshot cannot do on its own.
+side_effect_snapshot=""
+side_effect_tracked=0
+side_effect_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+snapshot_repository() {
+    if ! command -v git >/dev/null 2>&1; then
+        echo "runtime-socket-check: git is unavailable; the self-test cannot observe the working tree"
+        return 0
+    fi
+    if ! side_effect_snapshot="$(git -C "$side_effect_root" status --porcelain 2>/dev/null)"; then
+        side_effect_snapshot=""
+        echo "runtime-socket-check: $side_effect_root is not a git work tree; the self-test cannot observe the working tree"
+        return 0
+    fi
+    side_effect_tracked=1
+    return 0
+}
+
+assert_repository_unchanged() {
+    [ "$side_effect_tracked" -eq 1 ] || return 0
+    local after
+    if ! after="$(git -C "$side_effect_root" status --porcelain 2>/dev/null)"; then
+        return 0
+    fi
+    if [ "$after" = "$side_effect_snapshot" ]; then
+        return 0
+    fi
+    echo "runtime-socket-check: self-test FAILED - the self-test modified the working tree" >&2
+    echo "runtime-socket-check: git status --porcelain before:" >&2
+    printf '%s\n' "$side_effect_snapshot" >&2
+    echo "runtime-socket-check: git status --porcelain after:" >&2
+    printf '%s\n' "$after" >&2
+    return 1
+}
+
 # non_loopback_ipv4: the first routable IPv4 address of this host, if any.
 #
 # The address list comes from the kernel through SIOCGIFADDR: no name
@@ -578,6 +623,7 @@ PY
 
 run_self_test() {
     scratch="$(mktemp -d "${TMPDIR:-/tmp}/rspinyin-sockets.XXXXXX")"
+    snapshot_repository
     run_fixture_self_test
     if command -v ss >/dev/null 2>&1 && command -v lsof >/dev/null 2>&1; then
         run_live_self_test
@@ -585,7 +631,8 @@ run_self_test() {
         echo "runtime-socket-check: self-test (ss or lsof is not installed;"
         echo "runtime-socket-check: the live half of the self-test is skipped)"
     fi
-    echo "runtime-socket-check: self-test PASS (fixtures and live collectors)"
+    assert_repository_unchanged
+    echo "runtime-socket-check: self-test PASS (fixtures and live collectors, no side effects)"
 }
 
 if [ "$mode" = "self-test" ]; then

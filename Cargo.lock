@@ -2169,6 +2169,7 @@ dependencies = [
 name = "ime-ui"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "ime-config",
  "ime-types",
  "rustix 1.1.5",
@@ -5693,6 +5694,7 @@ dependencies = [
  "crc32fast",
  "fst",
  "ime-core",
+ "ime-diag",
  "ime-dict",
  "ime-types",
  "serde",

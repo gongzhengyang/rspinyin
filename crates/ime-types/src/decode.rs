@@ -40,11 +40,15 @@ impl From<SyllableId> for u16 {
 bitflags::bitflags! {
     /// Per-request decode switches.
     ///
-    /// Phase 1 exercises exactly one bit, `USER_DICT`; every other bit is part of
-    /// the frozen namespace and is switched on by the Phase 2 decode extensions
-    /// (fuzzy syllables, initial-letter abbreviations). Adding a class means
-    /// adding a bit here first: the decode pipeline may not invent flags of its
-    /// own.
+    /// Phase 1 exercises exactly one bit, `USER_DICT`; the fuzzy and abbreviation
+    /// bits are part of the frozen namespace and are switched on by the Phase 2
+    /// decode extensions. Adding a class means adding a bit here first: the decode
+    /// pipeline may not invent flags of its own.
+    ///
+    /// The three bits from `SHUANGPIN` up were appended by ADR-0005. A bitfield is
+    /// forward-compatible by construction -- a reader built before the addition
+    /// drops the bit through `from_bits_truncate` and ignores it -- which is why
+    /// this extension did not need a version bump the way a struct change does.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct DecodeFlags: u16 {
         /// Master switch for fuzzy syllable matching; the class bits below only
@@ -71,6 +75,15 @@ bitflags::bitflags! {
         const ABBREV = 1 << 9;
         /// Merge the user's learned words and frequencies into the candidates.
         const USER_DICT = 1 << 10;
+        /// The input is a double-pinyin scheme's keystrokes and has to be mapped
+        /// back to a full-pinyin spelling before segmentation. The scheme itself
+        /// travels in [`DecodeRequest::scheme`]; this bit only says that the
+        /// mapping is wanted.
+        const SHUANGPIN = 1 << 11;
+        /// Merge the user's own phrases into the candidates.
+        const PHRASE = 1 << 12;
+        /// Convert the committed text to the script selected by `ScriptConfig`.
+        const SCRIPT = 1 << 13;
     }
 }
 
@@ -105,6 +118,74 @@ impl<'de> serde::Deserialize<'de> for DecodeFlags {
     }
 }
 
+/// Which double-pinyin scheme the user's keystrokes follow.
+///
+/// A newtype rather than a bare `u8` so that a scheme cannot be confused with the
+/// several other small integers travelling beside it. `Full` is the identity
+/// scheme: the input is already full pinyin, and the decoder maps nothing. It is
+/// also the default, so a caller that has never heard of double pinyin keeps the
+/// Phase 1 behaviour exactly.
+///
+/// The numbering is part of the contract -- it is what a configuration file
+/// stores -- so a scheme is appended, never renumbered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SchemeId(u8);
+
+impl SchemeId {
+    /// Full pinyin: the input is used as typed.
+    pub const FULL: Self = Self(0);
+    /// Xiaohe (小鹤双拼).
+    pub const XIAOHE: Self = Self(1);
+    /// Ziranma (自然码).
+    pub const ZIRANMA: Self = Self(2);
+    /// Microsoft's scheme.
+    pub const MICROSOFT: Self = Self(3);
+    /// Sogou's scheme.
+    pub const SOGOU: Self = Self(4);
+    /// Ziguang (紫光).
+    pub const ZIGUANG: Self = Self(5);
+    /// How many schemes the numbering defines, including [`SchemeId::FULL`].
+    pub const COUNT: u8 = 6;
+
+    /// Wraps a raw scheme number.
+    ///
+    /// Kept `const` and total so that a scheme read out of a configuration file can
+    /// be represented even when this build does not know it; the decode layer is
+    /// what rejects an unknown one, with `decode/scheme-unsupported`, rather than
+    /// this constructor panicking on input the user can type.
+    pub const fn from_u8(value: u8) -> Self {
+        Self(value)
+    }
+
+    /// The raw scheme number, as stored in a configuration file.
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+
+    /// Whether this build implements the scheme.
+    ///
+    /// A number past [`SchemeId::COUNT`] is one a newer build wrote and this one
+    /// cannot honour; the caller reports `decode/scheme-unsupported` and falls back
+    /// to full pinyin instead of refusing to start.
+    pub const fn is_known(self) -> bool {
+        self.0 < Self::COUNT
+    }
+
+    /// The identity scheme, used when the caller has no preference.
+    pub const fn full() -> Self {
+        Self::FULL
+    }
+}
+
+impl Default for SchemeId {
+    /// Full pinyin, so that a [`DecodeRequest`] built without a scheme decodes the
+    /// way it did before double-pinyin support existed.
+    fn default() -> Self {
+        Self::FULL
+    }
+}
+
 /// One decode request: the normalized ASCII input plus the switch set.
 ///
 /// `raw` is the input buffer as typed (lower-case ASCII letters plus `'` as the
@@ -118,20 +199,35 @@ pub struct DecodeRequest {
     pub raw: String,
     /// Decode switches for this request.
     pub flags: DecodeFlags,
+    /// Which double-pinyin scheme `raw` follows.
+    ///
+    /// Appended by ADR-0005, which lists this as the one breaking change in the
+    /// extension: the struct has no `#[non_exhaustive]`, so every construction site
+    /// had to be updated in the same commit. Every site in this workspace uses
+    /// [`DecodeRequest::new`], which is why the change was cheap here and is why
+    /// the constructors exist at all.
+    pub scheme: SchemeId,
 }
 
 impl DecodeRequest {
-    /// Builds a request for `raw` with the default switch set.
+    /// Builds a request for `raw` with the default switch set and full pinyin.
     pub fn new(raw: impl Into<String>) -> Self {
         Self {
             raw: raw.into(),
             flags: DecodeFlags::default(),
+            scheme: SchemeId::default(),
         }
     }
 
     /// Overrides the decode switches.
     pub fn with_flags(mut self, flags: DecodeFlags) -> Self {
         self.flags = flags;
+        self
+    }
+
+    /// Overrides the double-pinyin scheme.
+    pub fn with_scheme(mut self, scheme: SchemeId) -> Self {
+        self.scheme = scheme;
         self
     }
 }
@@ -209,14 +305,52 @@ mod tests {
 
     #[test]
     fn test_decode_flags_all_covers_every_defined_bit() {
-        assert_eq!(DecodeFlags::all().bits(), 0x07FF);
+        // Widened from 0x07FF by ADR-0005, which appended SHUANGPIN, PHRASE and
+        // SCRIPT. This assertion is the guard that makes an appended bit a
+        // deliberate act rather than a silent widening of the namespace.
+        assert_eq!(DecodeFlags::all().bits(), 0x3FFF);
     }
 
     #[test]
     fn test_decode_flags_unknown_bits_are_truncated() {
         let truncated = DecodeFlags::from_bits_truncate(u16::MAX);
         assert!(truncated.contains(DecodeFlags::USER_DICT));
-        assert_eq!(truncated.bits(), 0x07FF);
+        assert_eq!(truncated.bits(), 0x3FFF);
+    }
+
+    #[test]
+    fn test_scheme_id_defaults_to_full_pinyin() {
+        assert_eq!(SchemeId::default(), SchemeId::FULL);
+        assert_eq!(SchemeId::default().value(), 0);
+        assert!(SchemeId::default().is_known());
+    }
+
+    #[test]
+    fn test_scheme_id_round_trips_every_defined_number() {
+        for value in 0..SchemeId::COUNT {
+            let scheme = SchemeId::from_u8(value);
+            assert_eq!(scheme.value(), value);
+            assert!(scheme.is_known(), "scheme {value} is inside COUNT");
+        }
+    }
+
+    #[test]
+    fn test_scheme_id_reports_a_number_past_the_table_as_unknown() {
+        // A configuration written by a newer build must not panic here: it is
+        // representable, and the decode layer is what reports
+        // `decode/scheme-unsupported` and falls back to full pinyin.
+        let future = SchemeId::from_u8(SchemeId::COUNT);
+        assert!(!future.is_known());
+        assert_eq!(future.value(), SchemeId::COUNT);
+        assert!(!SchemeId::from_u8(u8::MAX).is_known());
+    }
+
+    #[test]
+    fn test_decode_request_with_scheme_overrides_full_pinyin() {
+        let request = DecodeRequest::new("nihao").with_scheme(SchemeId::XIAOHE);
+        assert_eq!(request.raw, "nihao");
+        assert_eq!(request.scheme, SchemeId::XIAOHE);
+        assert_eq!(request.flags, DecodeFlags::default());
     }
 
     #[test]

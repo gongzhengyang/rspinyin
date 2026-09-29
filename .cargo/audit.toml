@@ -1,0 +1,35 @@
+# cargo-audit configuration.
+#
+# The one entry here is an exemption, and it is written down rather than silenced in the
+# command line so that the reason travels with the repository. `AGENTS.md` section 3.9
+# requires a finding to be either fixed or exempted in writing; this is the writing.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0009: stack exhaustion in `time`'s RFC 2822 parser.
+    #
+    # The advisory's own `affected.functions` list names only the parsing entry points --
+    # `time::Date::parse`, `time::Time::parse`, `time::UtcOffset::parse`,
+    # `time::PrimitiveDateTime::parse`, `time::OffsetDateTime::parse`,
+    # `time::UtcDateTime::parse` and `time::parsing::Parsed::parse_item` -- and its impact
+    # section says the attack "relies on formally deprecated and rarely-used features that
+    # are part of the RFC 2822 format used in a malicious manner", i.e. it needs
+    # attacker-controlled input handed to the RFC 2822 parser.
+    #
+    # `time` reaches this workspace through exactly one path: `ime-diag` -> `tracing-appender`
+    # -> `time`. `tracing-appender` uses the crate only for *formatting* a rolling log file's
+    # timestamp from the system clock (`time::format_description`, `OffsetDateTime::now_utc`,
+    # `PrimitiveDateTime`). It never calls a parse entry point, and it never handles the
+    # RFC 2822 format at all. Nothing in this workspace parses a time string, from any source.
+    # The vulnerable code path is therefore unreachable, and no amount of input can reach it.
+    #
+    # Why the fix is not applied: the patched versions (`time >= 0.3.47`) declare
+    # `rust-version = "1.88.0"`, while this workspace's MSRV is 1.85 -- a number stated in
+    # `Cargo.toml`, `AGENTS.md` section 3.1, both READMEs, and ten other places including a
+    # test assertion. Taking the fix would silently make every one of those claims false, to
+    # close a path that cannot be reached. Keeping the MSRV honest and recording the finding
+    # is the smaller lie, and it is the one that is written down.
+    #
+    # Revisit when either the MSRV is deliberately raised or `tracing-appender` drops `time`.
+    "RUSTSEC-2026-0009",
+]

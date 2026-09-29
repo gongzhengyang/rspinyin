@@ -246,7 +246,7 @@
 
   关闭 `KEY-DEF-16` 的**通路**部分：让速查面板有地方可去。
 
-  **本卡是本方案唯一需要新增 ADR 的地方**（`ASM-08`）。上级文档的《待建 ADR》表已登记 `ADR-0004`，倾向的方案是**新增 `UiCommand::Overlay` 通道**而不是给 `UiFrame` 加字段。理由：
+  **本卡是本方案唯一需要新增 ADR 的地方**（`ASM-08`）。上级文档的《待建 ADR》表已登记 `ADR-0006`，倾向的方案是**新增 `UiCommand::Overlay` 通道**而不是给 `UiFrame` 加字段。理由：
 
   | 方案 | 优点 | 缺点 | 结论 |
   |---|---|---|---|
@@ -294,7 +294,7 @@
   5. 写契约测试：`UiCommand::Overlay` 的 latest-wins 语义（覆盖两次取最新）、`size_of::<OverlayFrame>()` 的预算断言。
   6. 更新 `crates/ime-types/src/ui.rs` 的模块文档与 `docs/dev/adr/0001-frozen-boundary-contracts.md` 的契约清单。
 - **验收标准 (DoD)**：
-  - [ ] `ADR-0004` 已落盘并经主 agent 决策（`AGENTS.md` 第 8 节禁止事项 22）；
+  - [ ] `ADR-0006` 已落盘并经主 agent 决策（`AGENTS.md` 第 8 节禁止事项 22）；
   - [ ] `UiCommand` 的通道表（`ui.rs:10-21`）新增一行，且与实现一致；
   - [ ] `UiFrame` **零改动**，`size_of::<UiFrame>() <= 256` 断言不回归；
   - [ ] `UiCommand::Overlay` 是 latest-wins：连续投递三次只保留最新；

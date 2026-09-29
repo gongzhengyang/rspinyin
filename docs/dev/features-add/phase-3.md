@@ -2,7 +2,7 @@
 
 > 分片版本: v1.0 ｜ 主文档: [../features-add.md](../features-add.md) ｜
 > 系统形态: Desktop GUI（Linux 桌面输入法） ｜ 架构基线: Rust 2024 + Slint 1.x + Fcitx5 5.1 ｜
-> 关联 ADR: [../adr/0000-upstream-decisions.md](../adr/0000-upstream-decisions.md)、[../adr/0001-frozen-boundary-contracts.md](../adr/0001-frozen-boundary-contracts.md)、[../adr/0003-ui-role-separate-addon.md](../adr/0003-ui-role-separate-addon.md)、ADR-0004（待决策）｜
+> 关联 ADR: [../adr/0000-upstream-decisions.md](../adr/0000-upstream-decisions.md)、[../adr/0001-frozen-boundary-contracts.md](../adr/0001-frozen-boundary-contracts.md)、[../adr/0003-ui-role-separate-addon.md](../adr/0003-ui-role-separate-addon.md)、ADR-0005（待决策）｜
 > 最后同步 Commit: `ee0dbfb` ｜
 > 维护约定: 任务状态变更必须回写主文档 5.1 追溯表；假设变更必须回写主文档第 2 节
 

@@ -82,8 +82,8 @@ impl Wakeup {
     /// This function does not panic.
     pub fn wake(&self) -> Result<(), UiError> {
         // An `eventfd` rejects a write that is not exactly eight bytes wide.
-        let mut counter = 1u64.to_ne_bytes();
-        match write(self.fd.as_fd(), &mut counter[..]) {
+        let counter = 1u64.to_ne_bytes();
+        match write(self.fd.as_fd(), &counter[..]) {
             Ok(_) => Ok(()),
             // A saturated counter means a wakeup is already pending, which is
             // the state the caller asked for; reporting a failure here would

@@ -104,7 +104,11 @@ impl CrashRecord {
         let mut text = String::with_capacity(1024);
         text.push_str(RECORD_HEADER);
         let _ = writeln!(text, "timestamp_unix_ms={}", self.timestamp_unix_ms);
-        let _ = writeln!(text, "thread_name={}", escape_line(&self.thread_name, MAX_NAME_CHARS));
+        let _ = writeln!(
+            text,
+            "thread_name={}",
+            escape_line(&self.thread_name, MAX_NAME_CHARS)
+        );
         let _ = writeln!(text, "thread_id={:016x}", self.thread_id);
         match &self.location {
             Some(location) => {
@@ -112,9 +116,17 @@ impl CrashRecord {
             }
             None => text.push_str("location=<none>\n"),
         }
-        let _ = writeln!(text, "payload={}", escape_line(&self.payload, MAX_PAYLOAD_CHARS));
+        let _ = writeln!(
+            text,
+            "payload={}",
+            escape_line(&self.payload, MAX_PAYLOAD_CHARS)
+        );
         for (key, value) in self.context.iter() {
-            let _ = writeln!(text, "{key}={}", escape_line(value, MAX_CONTEXT_VALUE_CHARS));
+            let _ = writeln!(
+                text,
+                "{key}={}",
+                escape_line(value, MAX_CONTEXT_VALUE_CHARS)
+            );
         }
         text.push_str("backtrace:\n");
         for frame in self.backtrace.lines().take(MAX_BACKTRACE_FRAMES) {
@@ -244,7 +256,10 @@ pub fn write_record(dir: &Path, record: &CrashRecord) -> std::io::Result<PathBuf
             Err(error) => return Err(error),
         }
     }
-    Err(Error::new(ErrorKind::AlreadyExists, "every crash record name was taken"))
+    Err(Error::new(
+        ErrorKind::AlreadyExists,
+        "every crash record name was taken",
+    ))
 }
 
 /// Creates and narrows the record file `name` inside `dir`.
@@ -408,7 +423,10 @@ mod tests {
         assert!(text.contains("timestamp_unix_ms=1759142112345"), "{text}");
         assert!(text.contains("thread_name=ui"), "{text}");
         assert!(text.contains("thread_id=000000001f3a2c1d"), "{text}");
-        assert!(text.contains("location=ime-ui/src/ui_thread.rs:214:9"), "{text}");
+        assert!(
+            text.contains("location=ime-ui/src/ui_thread.rs:214:9"),
+            "{text}"
+        );
         assert!(text.contains("payload=a decode invariant failed"), "{text}");
         assert!(text.contains("session_state=composing"), "{text}");
         assert!(text.contains("revision=12"), "{text}");
@@ -423,7 +441,10 @@ mod tests {
 
         let text = record.render();
 
-        assert!(text.contains("payload=first\\nsession_state=forged"), "{text}");
+        assert!(
+            text.contains("payload=first\\nsession_state=forged"),
+            "{text}"
+        );
         assert!(text.contains("thread_name=ui\\nINFO forged"), "{text}");
         assert!(
             !text.lines().any(|line| line == "session_state=forged"),
@@ -442,7 +463,9 @@ mod tests {
     #[test]
     fn test_crash_record_render_bounds_the_backtrace_frames() {
         let mut record = record();
-        record.backtrace = (0..200).map(|index| format!("   {index}: frame\n")).collect();
+        record.backtrace = (0..200)
+            .map(|index| format!("   {index}: frame\n"))
+            .collect();
 
         let text = record.render();
         let frames = text
@@ -556,7 +579,10 @@ mod tests {
         let first = write_record(&dir, &record()).expect("writing the first record");
         let second = write_record(&dir, &record()).expect("writing the second record");
 
-        assert_ne!(first, second, "the second write must not overwrite the first");
+        assert_ne!(
+            first, second,
+            "the second write must not overwrite the first"
+        );
         assert!(first.is_file() && second.is_file());
         let name = second.file_name().unwrap_or_default().to_string_lossy();
         assert!(is_record_name(&name), "{name} is still a record name");
@@ -569,7 +595,7 @@ mod tests {
         let elsewhere = root.join("elsewhere");
         std::fs::create_dir_all(&elsewhere).expect("creating the link target");
         let dir = root.join("crash");
-        symlink(&elsewhere, &dir);
+        symlink(&elsewhere, &dir).expect("creating the symlink");
 
         let outcome = write_record(&dir, &record());
 
@@ -586,7 +612,7 @@ mod tests {
     fn test_write_record_refuses_a_path_that_is_not_a_directory() {
         let root = scratch_root("not-a-dir");
         let dir = root.join("crash");
-        std::fs::write(&dir, b"not a directory");
+        std::fs::write(&dir, b"not a directory").expect("writing the file");
 
         assert!(write_record(&dir, &record()).is_err());
     }
@@ -623,6 +649,9 @@ mod tests {
 
         assert!(!armed.exists(), "an armed but unused record is removed");
         assert!(written.exists(), "a written record is kept");
-        assert!(foreign.exists(), "a file that is not a record is left alone");
+        assert!(
+            foreign.exists(),
+            "a file that is not a record is left alone"
+        );
     }
 }

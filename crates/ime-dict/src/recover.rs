@@ -131,9 +131,7 @@ impl RecoveryOutcome {
     /// that wants to tell the user where their data went asks here.
     pub fn quarantine_path(&self) -> Option<&Path> {
         let path = match self {
-            Self::UserDbRebuilt { quarantine } | Self::DictMissing { quarantine, .. } => {
-                quarantine
-            }
+            Self::UserDbRebuilt { quarantine } | Self::DictMissing { quarantine, .. } => quarantine,
             Self::Healthy | Self::ReadonlyMode { .. } => return None,
         };
         (!path.as_os_str().is_empty()).then_some(path.as_path())
@@ -475,5 +473,8 @@ fn write_and_rename(temp: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> 
 /// can act on, and any other write failure is not. `StorageFull` is `ENOSPC`;
 /// `QuotaExceeded` is `EDQUOT`, the same condition seen through a quota.
 pub fn is_out_of_space(error: &io::Error) -> bool {
-    matches!(error.kind(), ErrorKind::StorageFull | ErrorKind::QuotaExceeded)
+    matches!(
+        error.kind(),
+        ErrorKind::StorageFull | ErrorKind::QuotaExceeded
+    )
 }

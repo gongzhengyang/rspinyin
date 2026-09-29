@@ -15,7 +15,14 @@
 # Usage:
 #   data/fetch.sh              fetch every upstream source
 #   data/fetch.sh <id>...      fetch only the named sources
+#   data/fetch.sh --force      download even when the cached copy already matches
 #   data/fetch.sh --record     fetch, then print the digests to paste into sources.toml
+#
+# A source whose file under data/raw/ already hashes to the value recorded in
+# data/sources.toml is not downloaded again. The digest is what decides, never the file's
+# presence: a cache that restores data/raw/ is re-verified rather than trusted, and only a
+# file that fails the comparison goes to the network. `--force` overrides the check, and
+# `--record` implies it because that mode exists to measure what upstream serves today.
 
 set -euo pipefail
 
@@ -44,6 +51,22 @@ for src in doc.get("source", []):
         print(src.get("sha256", "") or "")
         break
 PY
+}
+
+# Whether the copy already under data/raw/ is the file the pin describes.
+#
+# Only the digest decides. A cached file that matches is byte for byte what a download
+# followed by normalisation would have produced, so re-fetching it costs a transfer and
+# proves nothing; a file that does not match is downloaded and re-verified below, which is
+# where an upstream change and an accidental change to the normalisers are caught. An
+# unpinned source has nothing to compare against and is always fetched.
+cached_source_matches() {
+    local id="$1" path="${raw_dir}/${id}.tsv" expected actual
+    [[ -s "$path" ]] || return 1
+    expected="$(recorded_sha256 "$id")"
+    [[ -n "$expected" ]] || return 1
+    actual="$(sha256sum "$path" | cut -d' ' -f1)"
+    [[ "$expected" == "$actual" ]]
 }
 
 download() {
@@ -148,7 +171,11 @@ PY
 }
 
 fetch_one() {
-    local id="$1" staging
+    local id="$1" force="$2" staging
+    if [[ "$force" != true ]] && cached_source_matches "$id"; then
+        echo "fetch: ${id}: cached copy matches the recorded digest"
+        return 0
+    fi
     staging="$(mktemp -d)"
     # Guarded and self-disarming: a `RETURN` trap stays installed for later function
     # returns too, so without the guard it fires again in `main`, where `staging` is
@@ -192,20 +219,26 @@ fetch_one() {
 
 main() {
     mkdir -p "$raw_dir"
-    local record=false ids=()
+    local record=false force=false ids=()
     for arg in "$@"; do
         case "$arg" in
             --record) record=true ;;
+            --force) force=true ;;
             *) ids+=("$arg") ;;
         esac
     done
     if [[ ${#ids[@]} -eq 0 ]]; then
         ids=(pinyin-data jieba-dict unihan)
     fi
+    # `--record` exists to measure what upstream serves today, so it must not accept the
+    # cached copy it is about to re-measure.
+    if [[ "$record" == true ]]; then
+        force=true
+    fi
 
     local failed=0
     for id in "${ids[@]}"; do
-        if ! fetch_one "$id"; then
+        if ! fetch_one "$id" "$force"; then
             failed=1
         fi
     done

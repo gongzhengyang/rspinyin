@@ -224,10 +224,10 @@ impl UiEventQueue {
             if let Some(event) = self.try_pop() {
                 return Some(event);
             }
-            let remaining = match deadline {
-                None => return None,
-                Some(deadline) => deadline.saturating_duration_since(Instant::now()),
-            };
+            // `?` on the `Option` is the `None => return None` arm: an absent deadline
+            // means the caller asked to wait forever, and there is nothing left to wait
+            // for once the queue is empty.
+            let remaining = deadline?.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return None;
             }
@@ -312,10 +312,7 @@ mod tests {
     }
 
     fn hover(index: Option<u16>) -> UiEvent {
-        UiEvent::Hover {
-            revision: 1,
-            index,
-        }
+        UiEvent::Hover { revision: 1, index }
     }
 
     fn page() -> UiEvent {
@@ -337,6 +334,11 @@ mod tests {
 
     #[test]
     fn test_event_queue_select_is_never_dropped_while_the_host_drains() {
+        // The queue is bounded (`select_capacity`) and a click that cannot get in within
+        // the budget is *reported* rather than queued -- the timeout test below covers
+        // that half. What this asserts is the other half: an accepted click is never
+        // dropped, and a refused one is never silently lost. So the producer retries, and
+        // every index it eventually got in has to come out, in order.
         let queue = Arc::new(queue());
         let draining = Arc::clone(&queue);
         let host = thread::spawn(move || {
@@ -348,10 +350,19 @@ mod tests {
             }
             seen
         });
+        let mut refusals = 0u64;
         for index in 0..256u16 {
-            queue
-                .post_select(select(index))
-                .expect("the host is draining, so nothing is abandoned");
+            let mut attempt = select(index);
+            loop {
+                match queue.post_select(attempt) {
+                    Ok(()) => break,
+                    Err(UiError::SelectTimeout) => {
+                        refusals += 1;
+                        attempt = select(index);
+                    }
+                    Err(other) => panic!("only a full queue is expected, got {other:?}"),
+                }
+            }
         }
         let seen = host.join().expect("the drain thread finishes");
         let expected: Vec<u16> = (0..256).collect();
@@ -363,15 +374,23 @@ mod tests {
             })
             .collect();
         assert_eq!(observed, expected, "every click arrives, in order");
-        assert_eq!(queue.select_timeouts(), 0);
+        // Every refusal reached the caller, which retried it. A refusal the queue had
+        // swallowed would leave the counter short and the click lost for good.
+        assert_eq!(
+            queue.select_timeouts(),
+            refusals,
+            "each refusal is reported exactly once"
+        );
     }
 
     #[test]
     fn test_event_queue_select_reports_timeout_when_nobody_drains() {
-        let mut config = ChannelConfig::default();
         // A budget of zero turns the wait into a single attempt, which is what
         // makes the overflow path testable without waiting half a millisecond.
-        config.select_spin = Duration::ZERO;
+        let config = ChannelConfig {
+            select_spin: Duration::ZERO,
+            ..ChannelConfig::default()
+        };
         let queue = UiEventQueue::new(&config);
         for index in 0..config.select_capacity {
             queue
@@ -455,9 +474,11 @@ mod tests {
 
     #[test]
     fn test_event_queue_ordered_events_collapse_to_the_newest_when_full() {
-        let mut config = ChannelConfig::default();
-        config.page_capacity = 1;
-        config.page_spin = Duration::ZERO;
+        let config = ChannelConfig {
+            page_capacity: 1,
+            page_spin: Duration::ZERO,
+            ..ChannelConfig::default()
+        };
         let queue = UiEventQueue::new(&config);
         queue.post_ordered(page());
         queue.post_ordered(UiEvent::Page {
@@ -483,7 +504,9 @@ mod tests {
         let now = Instant::now();
         queue.post_hover(hover(Some(4)), now);
         queue.post_ordered(page());
-        queue.post_select(select(2));
+        queue
+            .post_select(select(2))
+            .expect("the select slot is free");
         assert_eq!(queue.poll(Duration::ZERO), Some(select(2)));
         assert_eq!(queue.poll(Duration::ZERO), Some(page()));
         assert_eq!(queue.poll(Duration::ZERO), Some(hover(Some(4))));
@@ -513,7 +536,9 @@ mod tests {
         // Give the host a moment to start waiting, then post; a missed wakeup
         // would make this take the whole timeout.
         thread::sleep(Duration::from_millis(20));
-        posting.post_select(select(1));
+        posting
+            .post_select(select(1))
+            .expect("the select slot is free");
         let received = host.join().expect("the host thread finishes");
         assert_eq!(received, Some(select(1)));
         assert!(start.elapsed() < Duration::from_millis(400));

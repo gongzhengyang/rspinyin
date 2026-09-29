@@ -36,8 +36,13 @@
 //! descriptor with [`Destination::AddonDescriptor`]. Uninstall needs no change at all:
 //! it works from the manifest, which is written from the same table.
 
-mod elf;
-mod layout;
+// `elf` and `layout` are visible to the rest of the crate because `xtask package` reuses
+// them: the packager resolves its payloads through the same artifact lookup and reads the
+// same dynamic symbol table before it lets a library out of the repository. The remaining
+// submodules stay private -- the manifest and the uninstall record describe an installed
+// system, which is not what a release is.
+pub(crate) mod elf;
+pub(crate) mod layout;
 mod manifest;
 mod takeover;
 mod uninstall;
@@ -61,7 +66,7 @@ use self::manifest::{Elevation, Entry, EntryState, FILE_MODE, MANIFEST_VERSION, 
 /// A library that does not export it loads and provides no addon at all, so an install
 /// that cannot find it is refused. The name is fixed by Fcitx5's addon factory macro
 /// and is the same one `ime-fcitx5`'s build script forces the linker to keep.
-const FACTORY_SYMBOL: &str = "fcitx_addon_factory_instance";
+pub(crate) const FACTORY_SYMBOL: &str = "fcitx_addon_factory_instance";
 
 /// Version this build installs.
 ///
@@ -69,18 +74,18 @@ const FACTORY_SYMBOL: &str = "fcitx_addon_factory_instance";
 /// [`crate::versions::run`] has already asserted that the addon descriptor advertises
 /// the same value, so recording it in the manifest needs no second parse of either
 /// file.
-const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Where the compiled dictionary is looked for, in the order it is tried.
 ///
 /// The specification names `target/dict/base.dict` and `xtask dictc` writes
 /// `data/compiled/base.dict` by default. Both are build artifacts of the same file, so
 /// both are accepted and whichever is present is the one installed.
-const DICTIONARY: &[&str] = &["target/dict/base.dict", "data/compiled/base.dict"];
+pub(crate) const DICTIONARY: &[&str] = &["target/dict/base.dict", "data/compiled/base.dict"];
 
 /// Which size budget a payload is measured against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Budget {
+pub(crate) enum Budget {
     /// `BUDGET-SIZE-01`: the release addon library, measured after stripping.
     StrippedLibrary,
     /// `BUDGET-SIZE-02`: the built-in base dictionary.
@@ -89,7 +94,7 @@ enum Budget {
 
 impl Budget {
     /// The budget identifier as the specification writes it.
-    fn id(self) -> &'static str {
+    pub(crate) fn id(self) -> &'static str {
         match self {
             Self::StrippedLibrary => "BUDGET-SIZE-01",
             Self::BaseDictionary => "BUDGET-SIZE-02",
@@ -98,23 +103,23 @@ impl Budget {
 }
 
 /// Size thresholds, read from the machine-readable budget document.
-struct SizeBudgets {
+pub(crate) struct SizeBudgets {
     /// `BUDGET-SIZE-01`, in mebibytes.
-    library_mb: f64,
+    pub(crate) library_mb: f64,
     /// `BUDGET-SIZE-02`, in mebibytes.
-    dictionary_mb: f64,
+    pub(crate) dictionary_mb: f64,
 }
 
 impl SizeBudgets {
     /// Reads the thresholds from `docs/dev/budgets.json`.
     ///
     /// Read rather than written into this file so that a budget change reaches the
-    /// installer, the benchmarks and the specification's table together.
+    /// installer, the packager, the benchmarks and the specification's table together.
     ///
     /// # Errors
     ///
     /// Returns an error when the document cannot be read or parsed.
-    fn load(sources: &Sources) -> Result<Self> {
+    pub(crate) fn load(sources: &Sources) -> Result<Self> {
         let path = sources.root.join(crate::budget::BUDGETS_FILE);
         let text =
             fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
@@ -127,7 +132,7 @@ impl SizeBudgets {
     }
 
     /// The threshold one budget names, in mebibytes.
-    fn limit(&self, budget: Budget) -> f64 {
+    pub(crate) fn limit(&self, budget: Budget) -> f64 {
         match budget {
             Budget::StrippedLibrary => self.library_mb,
             Budget::BaseDictionary => self.dictionary_mb,
@@ -377,10 +382,46 @@ fn plan_install(
     Ok(plan)
 }
 
-/// Strips every addon library into the staging directory and verifies it.
+/// What a caller wants done when `strip` is not installed on the machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StripPolicy {
+    /// Keep going with the unstripped copy and let the size check decide.
+    ///
+    /// `xtask install` writes into a running system, where an unstripped library still
+    /// works: a machine without binutils must not be unable to install the plugin, and
+    /// the size budget still fails the install if the library is too large.
+    Tolerate,
+    /// Refuse to produce the copy.
+    ///
+    /// `xtask package` produces the files that leave the repository, and "every shipped
+    /// library has been stripped" is the one promise the packaging step makes. It is
+    /// also the only chance to make it: `strip = true` in the release profile would pass
+    /// `--strip-all` to the linker and take [`FACTORY_SYMBOL`] out of the dynamic symbol
+    /// table, which produces a library that loads and contains no addon.
+    Require,
+}
+
+/// Copies one addon library into the staging directory, strips the copy and verifies it.
 ///
-/// The build tree is left as cargo produced it: `strip` rewrites its argument in place,
-/// and an artifact a later step can no longer inspect is a worse trade than a copy.
+/// Shared by `xtask install` and `xtask package`: both hand the next step a stripped,
+/// symbol-checked copy of each addon library rather than the build tree's own file, and
+/// neither may ship a library Fcitx5 would load and find no addon in. The build tree is
+/// left as cargo produced it -- `strip` rewrites its argument in place, and an artifact
+/// a later step can no longer inspect is a worse trade than a copy.
+///
+/// # Errors
+///
+/// Returns an error when the copy cannot be written, when `strip` runs and fails, when
+/// `strip` is missing under [`StripPolicy::Require`], and when the staged library does
+/// not export [`FACTORY_SYMBOL`].
+pub(crate) fn stage_library_file(source: &Path, staged: &Path, policy: StripPolicy) -> Result<()> {
+    fs::copy(source, staged)
+        .with_context(|| format!("staging {} at {}", source.display(), staged.display()))?;
+    strip(staged, policy)?;
+    verify_factory_symbol(staged)
+}
+
+/// Strips every addon library into the staging directory and verifies it.
 ///
 /// # Errors
 ///
@@ -394,11 +435,7 @@ fn stage_library(sources: &Sources, plan: &mut [PlannedFile]) -> Result<()> {
         .with_context(|| format!("creating {}", sources.staging_dir.display()))?;
     for file in plan.iter_mut().filter(|file| file.is_addon_library) {
         let staged = sources.staging_dir.join(file.name);
-        fs::copy(&file.source, &staged).with_context(|| {
-            format!("staging {} at {}", file.source.display(), staged.display())
-        })?;
-        strip(&staged)?;
-        verify_factory_symbol(&staged)?;
+        stage_library_file(&file.source, &staged, StripPolicy::Tolerate)?;
         file.source = staged;
     }
     Ok(())
@@ -417,8 +454,8 @@ fn verify_factory_symbol(path: &Path) -> Result<()> {
         elf::exports_path(path, FACTORY_SYMBOL)?,
         "install: {} does not export `{FACTORY_SYMBOL}`, so Fcitx5 would load it and find no \
          addon. `strip --strip-all` removes that name from the dynamic symbol table; rebuild \
-         with `cargo build --release -p ime-fcitx5 --features fcitx5-host` and let this \
-         installer strip the copy.",
+         with `cargo build --release -p ime-fcitx5 --features fcitx5-host` and let the \
+         installer or the packager strip the copy.",
         path.display()
     );
     Ok(())
@@ -428,24 +465,33 @@ fn verify_factory_symbol(path: &Path) -> Result<()> {
 ///
 /// `--strip-unneeded` rather than `--strip-all`: the latter drops
 /// [`FACTORY_SYMBOL`] from the dynamic symbol table, which produces exactly the broken
-/// library [`stage_library`] refuses to install. A `strip` that is not installed is
-/// reported and skipped -- the size check still runs, so a build that cannot be
-/// stripped fails on its size rather than quietly shipping unstripped.
+/// library [`stage_library_file`] refuses to hand on. What to do when `strip` is not
+/// installed at all is the caller's decision, and [`StripPolicy`] is where it is made.
 ///
 /// # Errors
 ///
-/// Returns an error when `strip` runs and fails.
-fn strip(path: &Path) -> Result<()> {
+/// Returns an error when `strip` runs and fails, and when it is missing under
+/// [`StripPolicy::Require`].
+fn strip(path: &Path, policy: StripPolicy) -> Result<()> {
     let output = match Command::new("strip")
         .arg("--strip-unneeded")
         .arg(path)
         .output()
     {
         Ok(output) => output,
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            println!("install: `strip` is not installed; installing the library unstripped");
-            return Ok(());
-        }
+        Err(error) if error.kind() == ErrorKind::NotFound => match policy {
+            StripPolicy::Tolerate => {
+                println!("install: `strip` is not installed; installing the library unstripped");
+                return Ok(());
+            }
+            StripPolicy::Require => anyhow::bail!(
+                "`strip` is not installed, so a stripped copy of {} cannot be produced and no \
+                 release can be packaged. binutils is the dependency; `strip --strip-all` is \
+                 not an alternative, because it removes `{FACTORY_SYMBOL}` from the dynamic \
+                 symbol table and leaves a library that loads and contains no addon.",
+                path.display()
+            ),
+        },
         Err(error) => {
             return Err(error).with_context(|| format!("running strip on {}", path.display()));
         }
@@ -484,20 +530,33 @@ fn verify_sizes(plan: &[PlannedFile], budgets: &SizeBudgets) -> Result<()> {
 ///
 /// Returns an error naming the budget, the measured size and the threshold.
 fn check_size(budget: Budget, path: &Path, limit_mb: f64) -> Result<()> {
+    check_size_in("install", budget, path, limit_mb)
+}
+
+/// Fails when a file passes its size budget, reporting under `scope`.
+///
+/// `scope` is the command the measurement belongs to (`install`, `package`), so a
+/// failure says which of the two stopped rather than leaving the reader to guess from
+/// the paths.
+///
+/// # Errors
+///
+/// Returns an error naming the budget, the measured size and the threshold.
+pub(crate) fn check_size_in(scope: &str, budget: Budget, path: &Path, limit: f64) -> Result<()> {
     let bytes = fs::metadata(path)
         .with_context(|| format!("reading {}", path.display()))?
         .len();
     let size_mb = bytes as f64 / (1024.0 * 1024.0);
-    if size_mb > limit_mb {
-        report_sections(path);
+    if size_mb > limit {
+        report_sections(scope, path);
         anyhow::bail!(
-            "install: {} failed: {} is {size_mb:.2}MiB, over the {limit_mb:.2}MiB threshold",
+            "{scope}: {} failed: {} is {size_mb:.2}MiB, over the {limit:.2}MiB threshold",
             budget.id(),
             path.display()
         );
     }
     println!(
-        "install: {} {} is {size_mb:.2}MiB, within {limit_mb:.2}MiB",
+        "{scope}: {} {} is {size_mb:.2}MiB, within {limit:.2}MiB",
         budget.id(),
         path.display()
     );
@@ -508,7 +567,7 @@ fn check_size(budget: Budget, path: &Path, limit_mb: f64) -> Result<()> {
 ///
 /// Neither `bloaty` nor `cargo-bloat` is a build dependency, so a machine without them
 /// gets the measured size and nothing more rather than a failure for the wrong reason.
-fn report_sections(path: &Path) {
+fn report_sections(scope: &str, path: &Path) {
     let breakdown = Command::new("bloaty")
         .arg("-n")
         .arg("0")
@@ -519,12 +578,12 @@ fn report_sections(path: &Path) {
     match breakdown {
         Ok(output) if output.status.success() => {
             println!(
-                "install: per-section breakdown\n{}",
+                "{scope}: per-section breakdown\n{}",
                 String::from_utf8_lossy(&output.stdout)
             );
         }
         _ => println!(
-            "install: no `bloaty` on this system, so no per-section breakdown; \
+            "{scope}: no `bloaty` on this system, so no per-section breakdown; \
              `cargo bloat` against the build tree is the alternative"
         ),
     }

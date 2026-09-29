@@ -8,14 +8,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use ime_types::{RectI, SurfaceBackend, SurfaceEvent};
+use ime_types::{PlatformError, RectI, SurfaceBackend, SurfaceEvent};
 use slint::platform::WindowAdapter as _;
 use slint::platform::software_renderer::PhysicalRegion;
 use slint::{ComponentHandle as _, PhysicalSize};
 
 use super::mock::{MockState, MockSurface, on_own_thread};
-use super::raster::BYTES_PER_PIXEL;
-use super::{FrameState, RenderOutcome, SlintWindowAdapter};
+use super::raster::{Argb8888Pixel, BYTES_PER_PIXEL, union_pair, union_rect};
+use super::{FrameState, RenderOutcome, SlintWindowAdapter, copy_bounds, copy_frame};
 use crate::slint_platform::RspinyinPlatform;
 
 /// The scene the pixel assertions are made on.
@@ -37,6 +37,11 @@ mod scene {
             background: transparent;
 
             in-out property <bool> highlight: false;
+
+            // Drawn only while `corner` is set, far from the highlight, so two frames in a
+            // row can damage two rectangles that do not overlap. That is what tells the
+            // damage a frame reports apart from the region its copy has to cover.
+            in-out property <bool> corner: false;
 
             // A rounded rectangle whose corners must stay transparent.
             Rectangle {
@@ -66,6 +71,16 @@ mod scene {
                 height: 32px;
                 visible: highlight;
                 background: #00ff00;
+            }
+
+            // Far from the highlight and drawn only while `corner` is set.
+            Rectangle {
+                x: 120px;
+                y: 44px;
+                width: 24px;
+                height: 16px;
+                visible: corner;
+                background: #0000ff;
             }
         }
     }
@@ -110,21 +125,22 @@ fn show_card() -> (RspinyinPlatform, scene::RenderCard, Arc<Mutex<MockState>>) {
 
 #[test]
 fn test_render_card_paints_the_rounded_rectangle_and_the_gradient() {
-    let (transparent, corner, centre, gradient_top, gradient_bottom, commits) = on_own_thread(|| {
-        let (platform, _card, state) = show_card();
-        platform
-            .render_if_dirty()
-            .expect("the first frame is committed");
-        let state = state.lock().expect("the mock is not poisoned");
-        (
-            state.pixel(STRIDE, 0, 0),
-            state.pixel(STRIDE, 4, 4),
-            state.pixel(STRIDE, 24, 20),
-            state.pixel(STRIDE, 62, 6),
-            state.pixel(STRIDE, 62, 34),
-            state.commits,
-        )
-    });
+    let (transparent, corner, centre, gradient_top, gradient_bottom, commits) =
+        on_own_thread(|| {
+            let (platform, _card, state) = show_card();
+            platform
+                .render_if_dirty()
+                .expect("the first frame is committed");
+            let state = state.lock().expect("the mock is not poisoned");
+            (
+                state.pixel(STRIDE, 0, 0),
+                state.pixel(STRIDE, 4, 4),
+                state.pixel(STRIDE, 24, 20),
+                state.pixel(STRIDE, 62, 6),
+                state.pixel(STRIDE, 62, 34),
+                state.commits,
+            )
+        });
     assert_eq!(commits, 1, "the first frame reaches the surface once");
     assert_eq!(transparent[3], 0, "the window background stays transparent");
     assert_eq!(
@@ -141,10 +157,7 @@ fn test_render_card_paints_the_rounded_rectangle_and_the_gradient() {
     let dark = gradient_top[2].min(gradient_bottom[2]);
     let light = gradient_top[2].max(gradient_bottom[2]);
     assert!(dark < 40, "one end of the gradient is nearly black: {dark}");
-    assert!(
-        light > 215,
-        "the other end is nearly white: {light}"
-    );
+    assert!(light > 215, "the other end is nearly white: {light}");
     assert_ne!(
         gradient_top, gradient_bottom,
         "the gradient is a ramp, not a flat fill"
@@ -161,7 +174,9 @@ fn test_partial_repaint_keeps_the_pixels_the_frame_did_not_touch() {
         let (platform, card, state) = show_card();
         // Settle the first layout, then change exactly one rectangle.
         for _ in 0..4 {
-            platform.render_if_dirty().expect("a settling frame is handled");
+            platform
+                .render_if_dirty()
+                .expect("a settling frame is handled");
         }
         card.set_highlight(true);
         let outcome = platform
@@ -175,7 +190,11 @@ fn test_partial_repaint_keeps_the_pixels_the_frame_did_not_touch() {
         )
     });
     assert!(rendered, "a changed property produces a frame");
-    assert_eq!(changed, [0, 255, 0, 255], "the highlighted rectangle is green");
+    assert_eq!(
+        changed,
+        [0, 255, 0, 255],
+        "the highlighted rectangle is green"
+    );
     assert_eq!(
         untouched,
         [0, 0, 255, 255],
@@ -191,17 +210,27 @@ fn test_render_if_dirty_commits_nothing_once_the_scene_settles() {
         let (platform, _card, state) = show_card();
         let mut outcomes = Vec::new();
         for _ in 0..3 {
-            outcomes.push(platform.render_if_dirty().expect("a settling frame is handled"));
+            outcomes.push(
+                platform
+                    .render_if_dirty()
+                    .expect("a settling frame is handled"),
+            );
         }
         let before = state.lock().expect("the mock is not poisoned").commits;
         for _ in 0..3 {
-            outcomes.push(platform.render_if_dirty().expect("an idle frame is handled"));
+            outcomes.push(
+                platform
+                    .render_if_dirty()
+                    .expect("an idle frame is handled"),
+            );
         }
         let after = state.lock().expect("the mock is not poisoned").commits;
         (before, after, outcomes)
     });
     assert!(
-        outcomes[3..].iter().all(|outcome| *outcome == RenderOutcome::Idle),
+        outcomes[3..]
+            .iter()
+            .all(|outcome| *outcome == RenderOutcome::Idle),
         "the window goes idle once its layout has settled: {outcomes:?}"
     );
     assert_eq!(
@@ -317,7 +346,10 @@ fn test_apply_scale_rescales_the_physical_size() {
 #[test]
 fn test_frame_state_starts_with_a_full_repaint_and_adds_nothing_for_an_empty_region() {
     let mut state = FrameState::new();
-    assert!(state.full, "the first frame has no previous contents to keep");
+    assert!(
+        state.full,
+        "the first frame has no previous contents to keep"
+    );
     state.record_damage(&PhysicalRegion::default(), 160, 64);
     assert_eq!(
         state.pending,
@@ -333,6 +365,281 @@ fn test_frame_state_starts_with_a_full_repaint_and_adds_nothing_for_an_empty_reg
     state.pending.clear();
     state.record_damage(&PhysicalRegion::default(), 160, 64);
     assert!(state.pending.is_empty(), "an empty region damages nothing");
+}
+
+/// A frame state whose scratch holds a pattern that makes a misplaced copy visible.
+///
+/// Every pixel is a function of its position, so a copy that lands at the wrong offset, that
+/// skips a row or that stops one row early changes the byte comparison instead of hiding in
+/// a flat fill.
+/// The byte every buffer in these tests starts out filled with.
+const INITIAL_FILL: u8 = 0x5a;
+
+/// Whether `(x, y)` is inside `rect`.
+fn inside(rect: RectI, x: i32, y: i32) -> bool {
+    let right = rect.x + rect.w as i32;
+    let bottom = rect.y + rect.h as i32;
+    x >= rect.x && y >= rect.y && x < right && y < bottom
+}
+
+fn patterned_state(width_px: u32, height_px: u32) -> FrameState {
+    let mut state = FrameState::new();
+    state.scratch.ensure(width_px, height_px);
+    let stride = state.scratch.stride;
+    for (index, pixel) in state.scratch.pixels.iter_mut().enumerate() {
+        let x = (index % stride) as u8;
+        let y = (index / stride) as u8;
+        *pixel = Argb8888Pixel::pack(x, y, x ^ y, 0xff);
+    }
+    state
+}
+
+#[test]
+fn test_copy_bounds_folds_both_lists_into_one_region() {
+    let (width_px, height_px) = (160u32, 64u32);
+    let pending = [RectI {
+        x: 8,
+        y: 8,
+        w: 8,
+        h: 8,
+    }];
+    let shown = [RectI {
+        x: 24,
+        y: 8,
+        w: 8,
+        h: 8,
+    }];
+    assert_eq!(
+        copy_bounds(&[], &[], width_px, height_px),
+        None,
+        "two empty lists have nothing to copy"
+    );
+    assert_eq!(
+        copy_bounds(&pending, &[], width_px, height_px),
+        Some(pending[0]),
+        "one list copies as itself"
+    );
+    assert_eq!(
+        copy_bounds(&pending, &shown, width_px, height_px),
+        Some(union_pair(pending[0], shown[0])),
+        "both lists are folded into one region, which is what makes a frame cost one copy"
+    );
+    // A rectangle outside the surface is dropped and one that straddles the edge is clipped
+    // before it is folded in, so the region handed to the copy is always inside the surface.
+    let outside = [RectI {
+        x: 200,
+        y: 0,
+        w: 8,
+        h: 8,
+    }];
+    assert_eq!(copy_bounds(&outside, &[], width_px, height_px), None);
+    let straddling = [RectI {
+        x: 156,
+        y: 60,
+        w: 32,
+        h: 32,
+    }];
+    assert_eq!(
+        copy_bounds(&straddling, &[], width_px, height_px),
+        Some(RectI {
+            x: 156,
+            y: 60,
+            w: 4,
+            h: 4
+        })
+    );
+    // `i32::MIN` must not overflow the fold.
+    let extreme = [RectI {
+        x: i32::MIN,
+        y: i32::MIN,
+        w: u32::MAX,
+        h: u32::MAX,
+    }];
+    assert_eq!(
+        copy_bounds(&extreme, &[], width_px, height_px),
+        Some(RectI {
+            x: 0,
+            y: 0,
+            w: 160,
+            h: 64
+        })
+    );
+}
+
+#[test]
+fn test_copy_frame_matches_the_per_rectangle_copy() {
+    // The acceptance criterion for merging the copy: what reaches the surface is what the
+    // per-rectangle form wrote. `reference` is that form -- the loop the frame path used to
+    // run, over the same scratch and the same two lists -- and `actual` is the merged copy,
+    // both starting from the same buffer contents.
+    let (width_px, height_px) = (64u32, 32u32);
+    let stride = width_px as usize * BYTES_PER_PIXEL;
+    let mut state = patterned_state(width_px, height_px);
+    let overlapping = RectI {
+        x: 8,
+        y: 4,
+        w: 16,
+        h: 12,
+    };
+    let other = RectI {
+        x: 20,
+        y: 10,
+        w: 24,
+        h: 16,
+    };
+    state.pending = vec![other];
+    state.shown = vec![overlapping];
+    let mut reference = vec![INITIAL_FILL; stride * height_px as usize];
+    let mut actual = reference.clone();
+    for rect in state.pending.iter().chain(state.shown.iter()) {
+        state
+            .scratch
+            .blit_into(&mut reference, stride, *rect)
+            .expect("the reference copy covers its rectangle");
+    }
+    let copied = copy_frame(&state, &mut actual, stride, width_px, height_px)
+        .expect("the merged copy covers the union of both lists");
+    let union = union_pair(overlapping, other);
+    assert_eq!(copied, Some(union));
+    // Compared pixel by pixel inside the two rectangles, not buffer against buffer. The
+    // merged copy writes the *bounding box*, so it also touches the pixels inside the box
+    // that neither rectangle names -- those it fills from the scratch, while the reference
+    // leaves the initial fill there. Comparing whole buffers would therefore fail on
+    // pixels the property under test says nothing about. What the property is about is
+    // that every pixel the per-rectangle form wrote, the merged form wrote the same value.
+    for y in union.y..union.y + union.h as i32 {
+        for x in union.x..union.x + union.w as i32 {
+            let named = inside(overlapping, x, y) || inside(other, x, y);
+            if !named {
+                continue;
+            }
+            for byte in 0..BYTES_PER_PIXEL {
+                let at = y as usize * stride + x as usize * BYTES_PER_PIXEL + byte;
+                assert_eq!(
+                    actual[at], reference[at],
+                    "pixel ({x}, {y}) byte {byte} differs between the two copies"
+                );
+            }
+        }
+    }
+    // And the box's extra pixels really were written, rather than left as the initial fill:
+    // that is what makes the merge a superset rather than a smaller copy in disguise.
+    let mut extra_written = 0usize;
+    for y in union.y..union.y + union.h as i32 {
+        for x in union.x..union.x + union.w as i32 {
+            if inside(overlapping, x, y) || inside(other, x, y) {
+                continue;
+            }
+            let at = y as usize * stride + x as usize * BYTES_PER_PIXEL;
+            if actual[at..at + BYTES_PER_PIXEL] != [INITIAL_FILL; BYTES_PER_PIXEL] {
+                extra_written += 1;
+            }
+        }
+    }
+    assert!(
+        extra_written > 0,
+        "the merged copy writes the whole box, which is the price the merge pays"
+    );
+    // The union is strictly larger than either list, so the merged copy also writes pixels
+    // neither list names. That is allowed -- those pixels are the same on both sides -- and
+    // it is the price the merge pays for one pass instead of two.
+    assert!(
+        union.w > overlapping.w && union.h > overlapping.h,
+        "the two lists must overlap for this case to say anything"
+    );
+    assert_eq!(
+        actual.len(),
+        reference.len(),
+        "the copy never writes outside the buffer"
+    );
+}
+
+#[test]
+fn test_copy_frame_skips_an_empty_region_and_refuses_a_short_buffer() {
+    let (width_px, height_px) = (32u32, 16u32);
+    let stride = width_px as usize * BYTES_PER_PIXEL;
+    let mut state = patterned_state(width_px, height_px);
+    let mut destination = vec![0x11u8; stride * height_px as usize];
+    assert_eq!(
+        copy_frame(&state, &mut destination, stride, width_px, height_px),
+        Ok(None),
+        "a frame with nothing to carry over copies nothing"
+    );
+    assert!(
+        destination.iter().all(|byte| *byte == 0x11),
+        "and leaves the buffer exactly as it found it"
+    );
+    // A destination that cannot hold the region is refused rather than clamped: writing part
+    // of a frame would put pixels in the wrong place.
+    state.pending = vec![RectI {
+        x: 0,
+        y: 0,
+        w: 8,
+        h: 8,
+    }];
+    let mut short = vec![0u8; stride * 4];
+    assert_eq!(
+        copy_frame(&state, &mut short, stride, width_px, height_px),
+        Err(PlatformError::Unavailable)
+    );
+}
+
+#[test]
+fn test_steady_state_keystroke_copies_the_damage_once() {
+    // A committed frame has two regions to carry over -- what it just rendered and what the
+    // surface is still showing -- and it copies their union in a single pass. The two frames
+    // below damage different rectangles, so the copy covers strictly more than the frame
+    // reports: that is exactly the case the per-rectangle form charged a second copy for.
+    let (outcome, reported, previous) = on_own_thread(|| {
+        let (platform, card, state) = show_card();
+        for _ in 0..4 {
+            platform
+                .render_if_dirty()
+                .expect("a settling frame is handled");
+        }
+        let settled = state.lock().expect("the mock is not poisoned").damage.len();
+        card.set_highlight(true);
+        platform
+            .render_if_dirty()
+            .expect("the changed frame is committed");
+        let changed = state.lock().expect("the mock is not poisoned").damage.len();
+        card.set_corner(true);
+        let outcome = platform
+            .render_if_dirty()
+            .expect("the second frame is committed");
+        let state = state.lock().expect("the mock is not poisoned");
+        (
+            outcome,
+            state.damage[changed..].to_vec(),
+            state.damage[settled..changed].to_vec(),
+        )
+    });
+    let RenderOutcome::Rendered { .. } = outcome else {
+        panic!("the changed scene produces a frame: {outcome:?}");
+    };
+    assert!(!reported.is_empty(), "the frame reports damage of its own");
+    assert!(
+        !previous.is_empty(),
+        "and the frame before it reported damage the copy still has to carry over, which is \
+         the second copy the merge removes"
+    );
+    assert_ne!(
+        union_rect(&previous),
+        union_rect(&reported),
+        "the two frames damaged different rectangles, so the copy covered more than this \
+         frame's damage"
+    );
+    // One copy over the union of both lists, reporting this frame's own damage and nothing
+    // else: the per-rectangle form charged two copies for the same two lists.
+    assert_eq!(
+        outcome,
+        RenderOutcome::Rendered {
+            bounding: union_rect(&reported),
+            rectangles: reported.len() as u32,
+            copies: 1,
+        },
+        "the frame reports its own damage and pays one copy for both lists"
+    );
 }
 
 #[test]
@@ -361,5 +668,8 @@ fn test_text_scene_renders_with_a_font_backend() {
         }
         ink
     });
-    assert!(ink > 0, "the text scene paints glyphs once a font backend exists");
+    assert!(
+        ink > 0,
+        "the text scene paints glyphs once a font backend exists"
+    );
 }

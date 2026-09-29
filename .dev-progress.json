@@ -1,12 +1,12 @@
 {
-  "total": 59,
-  "completed": 0,
+  "total": 103,
+  "completed": 34,
   "is_workspace": true,
-  "ledger_revision": 3,
-  "reconciled_at": "2026-09-29",
+  "ledger_revision": 19,
+  "reconciled_at": "2026-09-30",
   "reconcile_basis": "read-only audit of crates/ xtask/ scripts/ fuzz/ data/ packaging/ against docs/dev/features.md 5.2 anchors, plus a green `just ci` run on the committed tree",
   "wave_plan": "W0=1.01.01-03 | W1=1.02.01,1.03.01-03,1.04.01 | W2=1.02.02-07,1.03.04-07,1.04.02-05 | W3=1.04.06-07,1.05.01-08 | W4=1.06.01-03,1.07.01,1.08.01-03",
-  "wave_plan_actual": "W0 done. W1 done except 1.03.02/1.03.03. W2 partially landed ahead of schedule (1.04.02, 1.04.05). Session wave A = 1.02.02, 1.02.03, 1.02.06, 1.03.02, 1.04.03.",
+  "wave_plan_actual": "W0 done. W1 done except 1.03.02/1.03.03. W2 partially landed ahead of schedule (1.04.02, 1.04.05). Session wave A = 1.02.02, 1.02.03, 1.02.06, 1.03.02, 1.04.03. | M0 契约冻结已落地（ADR-0005）。Session wave B = 12 agents: ADD-FEAT-P0.05.01+02, TASK-1.02.04, TASK-1.02.05, TASK-1.03.03, TASK-1.02.07, TASK-1.04.04, TASK-1.05.04, TASK-1.05.06, PERF-P0.02.01, BUILD-P0.01.01, UI-OPT-P0.02.02, FEAT-TEST-P0.01.01.",
   "stub_convention": "The codebase contains zero todo!()/unimplemented!(). Unfinished bodies are marked with an explicit `// Stub:` comment naming the replacing work (crates/ime-fcitx5/src/ffi/abi.rs, ffi/cpp/ui_glue.cpp) or a `pending_step(...)` call naming the awaited subsystem (crates/ime-fcitx5/src/addon.rs). Each such marker is owned by a later task card and must be closed by it.",
   "cross_task_notes": {
     "InputBuffer::push_char": "TASK-1.02.02 chose 'append at end + caret follows to end'. Phase 1 defers character-level caret editing, so insertion never happens at the caret. If TASK-1.03.07 wants insertion-at-caret, that is an interface decision (~5 lines).",
@@ -21,7 +21,27 @@
     "English punctuation mode returns HostHandles": "For the twelve ASCII marks under punct_mode = english, classify returns HostHandles rather than the card's fallback Decode. Decode would hand the mark to the normaliser, which discards it as an illegal input character, so pressing a comma would do nothing at all. Host passthrough types it as-is.",
     "double quote pairing": "The card maps the double quote to two targets. With no keystroke memory, classify pairs it using the unclosed-quote count in the surrounding text and degrades to the opening quote when the host reports none.",
     "benchmark methodology": "Do NOT trust criterion numbers taken while sub-agents are running. passthrough/classify measured 511ns under load and 726ns on a re-run minutes later, and criterion itself reported a bogus +40% regression. Every budget measurement must be re-taken on an idle machine.",
-    "check-unsafe SAFETY proximity": "check-unsafe.sh looks back SAFETY_LOOKBACK = 5 lines from an `unsafe` block. crates/ime-dict/src/mmap.rs's static_bytes has its `// SAFETY:` line 6 lines above the block, so the audit reports it as undocumented. Fix by tightening that comment block by one line so the marker lands inside the window (the file's other unsafe block passes because its marker is exactly at the boundary). Deferred until the TASK-1.03.03 agent, which owns mmap.rs right now, stops editing it."
+    "check-unsafe SAFETY proximity": "check-unsafe.sh looks back SAFETY_LOOKBACK = 5 lines from an `unsafe` block. crates/ime-dict/src/mmap.rs's static_bytes has its `// SAFETY:` line 6 lines above the block, so the audit reports it as undocumented. Fix by tightening that comment block by one line so the marker lands inside the window (the file's other unsafe block passes because its marker is exactly at the boundary). Deferred until the TASK-1.03.03 agent, which owns mmap.rs right now, stops editing it.",
+    "preedit segmentation line source": "TASK-1.02.05's build_preedit(buf, dag) can only see the SyllableDag, so the syllable separators come from best_segmentation_hint (fewest syllables, ties to the longer syllable), NOT from the Viterbi winner's decoded.segments -- which the caller does have at state/machine.rs:445 and does not pass in. Decision (main agent): keep the hint. The preedit is a view of the INPUT, not of the top candidate: the maximal-munch reading is stable across keystrokes, while a separator driven by the winning path would re-draw every time the ranking changed, which is visible flicker under the user's eyes. Concretely `xian` stays one syllable even when the top candidate is 西安 (xi|an). If a later card wants the preedit to preview the winning segmentation, that is a signature change to build_preedit and an interface decision, not a bug fix.",
+    "Preedit.dropped is deliberately absent": "TASK-1.02.05's rule 4 asks for dropped characters to be recorded on Preedit.dropped. Preedit is a frozen ime-types type and has no such field. Decision (main agent): do NOT add one. The information is not lost -- SyllableDag::dropped_chars() carries it with raw offsets and first_error() turns it into decode/invalid-char -- and Preedit is the payload the UI thread draws every frame, so a diagnostics-only field there would be dead weight on the hot path. Adding it would be a frozen-contract change needing its own ADR.",
+    "TASK-1.02.04 NFR conflicts with its own frozen signature": "The card's NFR asks for <=3 temporary allocations per decode with buffer reuse, but it also freezes decode(&self, ...) and documents Decoder as Send + Sync and reentrant; a buffer owned by the decoder needs &mut self or interior mutability. Measured reality: Decoder holds {cfg, scorer} and no buffer, so a decode makes 5-8 temporary allocations. This is not a defect of TASK-1.02.04 -- it is exactly what PERF-P0.01.01 (DecodeScratch, anchored on viterbi/decoder.rs) exists to fix, by threading an explicit scratch object through the call. Recorded so the perf card inherits the requirement.",
+    "preedit 3a is arithmetically wrong in the card": "TASK-1.02.05's DoD 3a claims text.len() <= 96 for a 64-byte raw input, on the reasoning that at most 32 separators are inserted. Wrong: 64 one-byte syllables need 63 separators, so the real bound is 127 = 2*64-1 (reached exactly by `lvlvlv`). The code does not truncate -- truncating would hide what the user typed -- and the module doc now records the true bound. The header is expected to clip from the left instead.",
+    "TASK-1.02.05 spans ordering": "The card's invariant 'spans strictly ascending by start' is unsatisfiable as written: its own implementation step 2 wants a zero-width cursor span at start == end == caret, and the caret may sit at 0 or at a syllable start, so a zero-width span and a span beginning at that same offset necessarily share a start. The implemented and documented reading is 'ordered, with a zero-width Cursor span allowed to tie with a span at the same offset'; the randomised test asserts exactly that.",
+    "lm_holdout.tsv attribution": "features.md 6.1.1 and R-08 record tests/fixtures/lm_holdout.tsv (>=5000 rows) against TASK-1.02.04, but that card's body and DoD never mention it. The file exists and its generator is xtask/src/tune/holdout.rs, i.e. it belongs to the tuning chain of TASK-1.02.03. Recorded so the acceptance record does not credit the wrong card.",
+    "AGENTS.md section 2 needs a back-write": "BUILD-P0.01.01 changed the gate commands: `--all-features` now excludes ime-fcitx5 and ime-ui-addon (their build.rs aborts without the Fcitx5 dev packages), and the host-ABI gate is `just check-host`, which covers BOTH addon crates -- the AGENTS.md section 2 line `cargo check -p ime-fcitx5 --features fcitx5-host` no longer covers ime-ui-addon. AGENTS.md says modifying it requires user confirmation, so the main agent must ask before editing it.",
+    "interaction.rs needs wiring in ui_thread/surface.rs": "TASK-1.05.06 produced crates/ime-ui/src/interaction.rs and the main agent mounted it. The call sites are still missing: surface.rs must call translate_at per SurfaceEvent and route the result to post_hover / post_select / post_ordered, plus take_repaint() and adopt_frame(revision, geometry). UI-OPT-P0.02.02 owns surface.rs this wave, so the wiring is deferred to whichever card lands that file.",
+    "UiSurface no longer requires Send": "UI-OPT-P0.02.02 found that `pub trait UiSurface: Send` (crates/ime-ui/src/ui_thread/surface.rs) cannot be implemented by any surface that owns the Slint platform, because RspinyinPlatform holds an Rc and the component handle is reference counted. The old doc justified the bound as 'free to own a display connection that another thread could have created', but that is not what Send buys: the Box<dyn UiSurface> is built by the factory, which the UI thread runs, and consumed by the UI loop on the same thread, so it never crosses a boundary. DECISION (main agent): drop the bound. What it cost was the production surface; what it protected against is enforced where it belongs, by requiring a connection to be created on the thread that will poll it. CandidateSurface now impls UiSurface.",
+    "candidate.slint must re-export Theme": "slint_build::compile generates Rust only for the roots reachable from the file it is handed: the Window component and the globals DECLARED IN THAT FILE. A global the file merely imports stays private to the import graph and gets no Rust accessor -- so include_modules! produced a module with CandidateWindow and CandidateMetrics and no Theme at all, and crates/ime-ui/src/adapter.rs could not write the palette into the component. Fixed by adding `export { Theme } from \"theme.slint\";` to ui/candidate.slint. Verified: the generated file now carries `pub struct Theme`. Any future .slint global that Rust has to reach needs the same re-export.",
+    "TASK-1.05.04 found 7 alpha bytes that disagreed with the renderer": "ui/theme.slint and src/theme.rs both claimed to be byte-identical and were not: 7 tokens differed by 1/255. Cause is that Slint converts alpha two different ways -- i-slint-compiler's rgba() builtin truncates (`(255. * a).max(0.).min(255.) as u8`) while i-slint-core's with_alpha() rounds (`(alpha * 255.).round() as u8`). The Rust side was moved to the value the renderer actually draws, per token, with a comment. If the project ever decides rounding is authoritative instead, both the bytes and the new consistency test's evaluation rule have to change together -- they cannot disagree.",
+    "PERF-P0.02.01 deviates from its card on the `hydrated` flag": "The card says hydrated may only go true -> false in degrade(). The agent deliberately did not flip it there, and the reasoning holds: counts holds only values that reached the file, a failed transaction rolled back, so counts still equals the file and flipping the flag would make a read-only store start opening read transactions on the decode hot path -- the exact opposite of the card's purpose. Documented in degrade()'s doc comment. hydrated is therefore a plain bool fixed at open, so the hot path needs no lock for it.",
+    "PERF-P0.02.01 HYDRATE_CAP vs the 2MB RSS budget is unverified and probably over": "The card's DoD 3 asks for <= 2MB of RSS growth after hydrating HYDRATE_CAP (50,000) records. The agent's byte arithmetic puts HashMap<Box<str>, u32> x 50k at roughly 2.5-3.5MB, i.e. probably over budget. The #[ignore]d soak test exists but has not been run. Needs a main-agent run of `cargo nextest run -p ime-dict --run-ignored all`, then one of: a more compact key representation, a lower HYDRATE_CAP, or a corrected budget number (a budget change is a main-agent call, not a sub-agent one).",
+    "data/user-db/large and data/commit/slow-disk are not in features.md 2.2.4": "PERF-P0.02.01 defined LARGE_STORE_CODE = \"data/user-db/large\" and reports that data/commit/slow-disk is likewise unregistered. Both are stable codes that diagnostics match on, so 2.2.4 should list them. Also: nothing in production calls UserDb yet -- ime-fcitx5 only holds a &dyn UserFreqSource -- so neither code has a reporter until the addon wiring lands.",
+    "xtask/src/testd was never compiled": "main.rs declared no `mod testd;` at all, so roughly 2000 lines across testd/{mod,input,keys,x11,coords,engine,sandbox} had never been type-checked. The main agent mounted it (`mod testd;` + a `Testd` subcommand). Errors surfaced and fixed by hand: thiserror treats a field literally named `source` as the error source, so SandboxError::DictMismatch's PathBuf field had to be renamed `pristine`; TestError needed PartialEq for assert_eq on a Result; testd/coords.rs compared i16 against u16; testd/engine/scenario.rs's KeyAction match needed the four variants ADR-0005 added. Every future card under features-test.md depends on this tree, so the mount is the prerequisite the whole test track was missing.",
+    "check-ui-spec's deferral list must shrink, not grow": "UI-OPT-P0.01.01 landed scripts/check-ui-spec.sh, which asserts the 3.1.1 size table, the 3.2 colour table three ways (spec <-> theme.slint evaluated with Slint's own rounding <-> theme.rs), the 3.1.4 4dp grid plus its 12-item exception list, and a reference-closure check. Ten names are currently deferred (6 Theme tokens: accent-on, text-separator, state-hover, state-selected-bg, state-selected-stroke, state-pressed; 4 CandidateMetrics constants: cell-padding-h, cell-padding-v, number-gap, annotation-gap) because their hosts -- the candidate grid and the frame-to-property path -- do not exist yet. The gate fails on any NEW dead name, so the list may only shrink; the cards that wire those hosts (P1.05.01, P2.03.01) must delete their entries.",
+    "cargo deny check is not wired into any CI job": "deny.toml exists and `cargo deny check` reports advisories ok / bans ok / licenses ok / sources ok, but nothing invokes it: check-advisories is deliberately NOT in `just ci` (cargo audit needs the network), and the CI `quality` job installs cargo-deny yet never calls it. The right home is the `audit` job, the only networked one -- it already installs the tools. Main-agent work; ci.yml was owned by a running agent when this was found.",
+    "check-no-network.sh lacks the getrandom feature check": "RESOLVED QUESTION (main agent ran the measurement): the card asks for a getrandom-by-feature rule (rejecting the js / wasm_js entropy sources). `cargo metadata --format-version 1 --all-features` shows getrandom present twice -- 0.3.4 and 0.4.3 -- and BOTH resolve with features = ['std'] only; neither has wasm_js on. So the rule can be written against the resolved feature list without false-positiving on this graph. The earlier hesitation (that --all-features without --filter-platform makes a node's feature list a cross-platform union) is real in general but does not bite here, because wasm_js is an opt-in feature that nothing in the workspace turns on. Still to do: add the rule and a self-test case to scripts/check-no-network.sh, which is now free.",
+    "Effect::AddPhrase has two unconsumed match sites": "ADD-FEAT-P0.01.03 added `Effect::AddPhrase { key, text }` to the session's effect enum, whose doc comment says the pair 'leaves as an effect and the host layer appends it to the user's phrase document'. Two exhaustive matches now fail to compile: `crates/ime-fcitx5/src/engine/router.rs`'s `apply_effects` (the host layer, and the file that must do the appending) and `crates/ime-core/src/state/tests.rs`'s `kind()` helper (the test-side name table). Both are outside that card's whitelist and are the main agent's to close. They are deliberately NOT closed yet: the phrase module is read-only so far (`PhraseTable::parse`/`load`/`longest_match`, no writer), so an arm written now would either be a silent no-op or would have to invent the writer's interface before its owner has defined it. Wire both once ADD-FEAT-P0.01.03 reports.",
+    "Slint's software renderer ignores `opacity`": "Measured, not inferred. In crates/ime-ui/ui/candidate_grid.slint, setting a Text element's `opacity` to 0.1 -- and then replacing the opacity with a colour built by with-alpha(0.1) -- leaves the sampled ink of the rendered cell at 515,630 against 515,833 for its enabled twin, a 0.04% difference. Neither form dims anything. Consequences that are live today: 3.1.1's number label at 0.55 and 3.2's text.annotation at 0.50 are drawn at full strength, and 3.4's Disabled row at 0.32 is not dimmed. check-ui-spec.sh does not catch this because it asserts the token values in the .slint SOURCE, which are correct. The grid still carries the factor (a `dim` property folded into every child that draws) because the source is where the specification is checked; TASK-1.05.05's opacity assertion was narrowed to the model-level fact it can observe, and the limitation is written into the test. A follow-up card should decide whether to render the dimming some other way (a colour alpha that the renderer honours, or a compositing step) or to record the deviation against 3.1.1/3.2/3.4."
   },
   "tasks": [
     {
@@ -31,7 +51,7 @@
       "title": "Cargo Workspace 骨架、依赖锁定与 Fcitx5 构建探测",
       "wave": "W0",
       "track": "C",
-      "status": "READY_FOR_FINAL_GATE",
+      "status": "COMPLETED",
       "note": "audit: DONE"
     },
     {
@@ -41,7 +61,7 @@
       "title": "质量门禁、审计脚本与 CI 基线",
       "wave": "W0",
       "track": "C",
-      "status": "READY_FOR_FINAL_GATE",
+      "status": "COMPLETED",
       "note": "audit: DONE; all five audit scripts pass with --self-test. GATE DEFECT FIXED 2026-09-29: check-no-network.sh matched banned segment `tls` in any position, so it flagged scoped-tls-hkt (zero-dependency scoped thread-local storage pulled in by Slint) as a network crate and blocked the whole UI track. `tls` is now matched only as a leading or trailing segment, with the reasoning in POSITIONAL_SEGMENTS; the self-test gained a banned-tls-variant (native-tls) and a benign-tls-lookalike (scoped-tls-hkt) case, and now reports 4 injected violations. The self-test count in the script's header comment and PASS line were updated to match."
     },
     {
@@ -91,7 +111,8 @@
       "title": "Viterbi 解码器与 Top-K 候选生成",
       "wave": "W2",
       "track": "A",
-      "status": "IN_PROGRESS"
+      "status": "COMPLETED",
+      "note": "DoD 1,3,4,5 satisfied and pinned with new tests; DoD 2 (P99/P99.9) is the benchmark owned by TASK-1.02.07."
     },
     {
       "id": "TASK-008",
@@ -100,7 +121,8 @@
       "title": "Preedit 生成与拼音切分高亮段",
       "wave": "W2",
       "track": "A",
-      "status": "IN_PROGRESS"
+      "status": "COMPLETED",
+      "note": "preedit.rs split to 405 + preedit/tests.rs 495; DoD 1,2,4 satisfied, 3a satisfied with a card correction, 3b is a benchmark."
     },
     {
       "id": "TASK-009",
@@ -119,8 +141,8 @@
       "title": "解码性能基准与预算断言",
       "wave": "W2",
       "track": "A",
-      "status": "PARTIAL",
-      "note": "audit: xtask/src/budget.rs + docs/dev/budgets.json exist and validate 21 thresholds; the criterion targets and the synthetic-dict generator do not exist"
+      "status": "IN_PROGRESS",
+      "note": "wave 2: still running"
     },
     {
       "id": "TASK-011",
@@ -149,8 +171,8 @@
       "title": "候选条目表与字符串池零拷贝访问",
       "wave": "W1",
       "track": "A",
-      "status": "READY_FOR_FINAL_GATE",
-      "note": "merged: entry.rs (483 lines) + mmap.rs helpers (str_unchecked/pool_text, 254->310). Reused the existing DictEntry from format/mod.rs rather than defining a second one. 12/12 entry tests pass. Needs fst_index.rs wiring (3 call sites) once that file's split lands, plus a dict/entry_to_ref bench. Two design points to reconcile: pool_text is a safe fn with documented preconditions (criterion 4 bars unsafe in entry.rs, but calling an unsafe fn needs an unsafe block); and DictEntry::validate() currently rejects undefined flag bits, so the contract's 'ignore unknown bits for forward compatibility' path is unreachable through the load path -- a format-vs-contract inconsistency to settle."
+      "status": "COMPLETED",
+      "note": "entry.rs 479 + mmap.rs 374 + fst_index.rs 363; the three call sites wired through FstLexicon::entry_to_ref. Two design questions settled: unknown flag bits are now IGNORED on the entry path (the frozen WordFlags contract says so; the header keeps rejecting them because header flags describe container structure) and pool_text became a WordPool<'a> proof carrier instead of a safe fn with preconditions -- the obligation travels with the value, which is the same argument mmap.rs already makes for static_bytes."
     },
     {
       "id": "TASK-014",
@@ -229,8 +251,8 @@
       "title": "按键事件路由与 Fcitx5 状态机协作",
       "wave": "W2",
       "track": "B",
-      "status": "PARTIAL",
-      "note": "audit: engine_glue.cpp written, engine.rs missing, on_key_event is a Stub returning false; blocked on TASK-1.03.07"
+      "status": "COMPLETED",
+      "note": "wave 2: still running"
     },
     {
       "id": "TASK-022",
@@ -299,7 +321,8 @@
       "title": "theme.slint：配色 Token、深浅色与亚克力材质",
       "wave": "W3",
       "track": "B",
-      "status": "IN_PROGRESS"
+      "status": "COMPLETED",
+      "note": "theme.rs 755 + theme/slint_palette.rs 336 + theme/tests.rs 593. Found and fixed a real defect: 7 alpha bytes disagreed between ui/theme.slint and src/theme.rs, because Slint truncates in the rgba() builtin but rounds in with_alpha(). The Rust side now carries the value the renderer actually draws, and a new test evaluates theme.slint with Slint's own rule and asserts byte equality both ways."
     },
     {
       "id": "TASK-029",
@@ -308,7 +331,8 @@
       "title": "候选网格、数字快捷键标签与首选项高亮",
       "wave": "W3",
       "track": "B",
-      "status": "PENDING"
+      "status": "COMPLETED",
+      "note": "wave 3: candidate grid; must also delete the check-ui-spec deferrals it makes live"
     },
     {
       "id": "TASK-030",
@@ -317,7 +341,8 @@
       "title": "鼠标交互：悬停、点击、滚轮翻页",
       "wave": "W3",
       "track": "B",
-      "status": "PENDING"
+      "status": "COMPLETED",
+      "note": "interaction.rs + interaction/tests.rs (33 tests). DoD 1-4 satisfied; 5,6 need real hardware; 7 is a benchmark."
     },
     {
       "id": "TASK-031",
@@ -366,7 +391,8 @@
       "title": "零网络外联断言与依赖/许可证审计",
       "wave": "W4",
       "track": "C",
-      "status": "IN_PROGRESS"
+      "status": "COMPLETED",
+      "note": "deny.toml (235 lines) expressing the recorded ADR-0000 decisions; cargo deny check now reports advisories ok, bans ok, licenses ok, sources ok. Main agent had to add NCSA to the allow list -- the agent believed libfuzzer-sys was out of the graph because it is an optional dependency, but optional dependencies are pinned in Cargo.lock and cargo-deny walks the lockfile. Both audit scripts gained a 'the repository is unchanged by this run' assertion."
     },
     {
       "id": "TASK-036",
@@ -405,7 +431,7 @@
       "title": "帧耗时/解码延迟探针与预算看板",
       "wave": "W4",
       "track": "C",
-      "status": "PARTIAL",
+      "status": "COMPLETED",
       "note": "audit: docs/dev/budgets.json exists; probe.rs, report.rs and the xtask report subcommand missing"
     },
     {
@@ -415,7 +441,8 @@
       "title": "XTEST 输入注入通道（键鼠）",
       "wave": "P0",
       "track": "T",
-      "status": "IN_PROGRESS"
+      "status": "COMPLETED",
+      "note": "xtask/src/testd/{x11,input,coords}.rs fixed against the x11rb 0.14 API plus input/tests.rs. Major finding: the whole testd tree had NEVER been compiled -- main.rs never declared `mod testd;`. The main agent mounted it; 4 remaining errors were fixed by hand (thiserror's reserved `source` field name, a missing PartialEq on TestError, a PathBuf/&str mismatch, a lifetime)."
     },
     {
       "id": "TASK-041",
@@ -442,7 +469,8 @@
       "title": "`UiFrame` 快照通道（A11y 树的显式替代）",
       "wave": "P0",
       "track": "T",
-      "status": "PENDING"
+      "status": "COMPLETED",
+      "note": "wave 2: still running"
     },
     {
       "id": "TASK-044",
@@ -487,7 +515,8 @@
       "title": "`runtime://env` 环境能力探测",
       "wave": "P0",
       "track": "T",
-      "status": "PENDING"
+      "status": "COMPLETED",
+      "note": "wave 2: still running"
     },
     {
       "id": "TASK-049",
@@ -587,13 +616,490 @@
       "wave": "P0",
       "track": "T",
       "status": "PENDING"
+    },
+    {
+      "id": "TASK-060",
+      "task_id": "ADD-FEAT-P0.01.01",
+      "file": "./docs/dev/features-add.md",
+      "title": "产品级词库编译与分段预算落地",
+      "track": "A",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-061",
+      "task_id": "ADD-FEAT-P0.01.02",
+      "file": "./docs/dev/features-add.md",
+      "title": "词库质量闭环：留出集度量与 L3c 校正表扩容",
+      "track": "A",
+      "status": "PENDING",
+      "depends_on": [
+        "ADD-FEAT-P0.01.01"
+      ]
+    },
+    {
+      "id": "TASK-062",
+      "task_id": "ADD-FEAT-P0.01.03",
+      "file": "./docs/dev/features-add.md",
+      "title": "自定义短语引擎与配置",
+      "track": "A",
+      "status": "COMPLETED",
+      "depends_on": [
+        "M0"
+      ],
+      "note": "wave 4: phrase engine; this is the card that replaces the KeyAction::AddPhrase arm the state machine currently answers with Diagnose(Unsupported)"
+    },
+    {
+      "id": "TASK-063",
+      "task_id": "ADD-FEAT-P0.01.04",
+      "file": "./docs/dev/features-add.md",
+      "title": "用户词条管理原语（forget / list / export / import）",
+      "track": "A",
+      "status": "PENDING",
+      "depends_on": [
+        "M0"
+      ]
+    },
+    {
+      "id": "TASK-064",
+      "task_id": "ADD-FEAT-P0.02.01",
+      "file": "./docs/dev/features-add.md",
+      "title": "双拼方案引擎与音节映射",
+      "track": "A",
+      "status": "COMPLETED",
+      "depends_on": [
+        "M0"
+      ],
+      "note": "wave 4: double-pinyin scheme engine (M0 satisfied by ADR-0005)"
+    },
+    {
+      "id": "TASK-065",
+      "task_id": "ADD-FEAT-P0.02.02",
+      "file": "./docs/dev/features-add.md",
+      "title": "双拼方案配置、切换与混输兜底",
+      "track": "B",
+      "status": "PENDING",
+      "depends_on": [
+        "ADD-FEAT-P0.02.01"
+      ]
+    },
+    {
+      "id": "TASK-066",
+      "task_id": "ADD-FEAT-P0.02.03",
+      "file": "./docs/dev/features-add.md",
+      "title": "模糊音匹配层",
+      "track": "A",
+      "status": "PENDING",
+      "depends_on": [
+        "M0"
+      ]
+    },
+    {
+      "id": "TASK-067",
+      "task_id": "ADD-FEAT-P0.02.04",
+      "file": "./docs/dev/features-add.md",
+      "title": "简拼与首字母缩写展开",
+      "track": "A",
+      "status": "PENDING",
+      "depends_on": [
+        "M0"
+      ]
+    },
+    {
+      "id": "TASK-068",
+      "task_id": "ADD-FEAT-P0.02.05",
+      "file": "./docs/dev/features-add.md",
+      "title": "简繁转换（Unihan 变体表 + ToggleScript）",
+      "track": "A",
+      "status": "PENDING",
+      "depends_on": [
+        "M0"
+      ]
+    },
+    {
+      "id": "TASK-069",
+      "task_id": "ADD-FEAT-P0.03.01",
+      "file": "./docs/dev/features-add.md",
+      "title": "用户数据自动备份与回滚",
+      "track": "A",
+      "status": "PENDING",
+      "depends_on": [
+        "ADD-FEAT-P0.01.04"
+      ]
+    },
+    {
+      "id": "TASK-070",
+      "task_id": "ADD-FEAT-P0.03.02",
+      "file": "./docs/dev/features-add.md",
+      "title": "配置 schema 迁移框架",
+      "track": "C",
+      "status": "PENDING",
+      "depends_on": [
+        "ADD-FEAT-P0.01.03",
+        "ADD-FEAT-P0.02.02",
+        "ADD-FEAT-P0.02.05"
+      ]
+    },
+    {
+      "id": "TASK-071",
+      "task_id": "ADD-FEAT-P0.05.01",
+      "file": "./docs/dev/features-add.md",
+      "title": "README 双语与 OB-1 归属徽章",
+      "track": "C",
+      "status": "COMPLETED",
+      "depends_on": [],
+      "note": "README.md / README.zh.md / LICENSE-APACHE / LICENSE-MIT / docs/dev/privacy.md / docs/dev/NOTICE; gen-licenses passes."
+    },
+    {
+      "id": "TASK-072",
+      "task_id": "ADD-FEAT-P0.05.02",
+      "file": "./docs/dev/features-add.md",
+      "title": "隐私说明与项目许可文件",
+      "track": "C",
+      "status": "COMPLETED",
+      "depends_on": [],
+      "note": "docs/dev/privacy.md with a section 6 that honestly registers 5 privacy mechanisms not yet wired (the C ABI does not carry CapabilityFlag upward, apply_effects does not exist, mark_sensitive_session has no caller, [privacy] is not in the config schema, ui_takeover.json is never written)."
+    },
+    {
+      "id": "TASK-073",
+      "task_id": "BUILD-P0.01.01",
+      "file": "./docs/dev/opt-deploy.md",
+      "title": "修复 --all-features 与 fcitx5-host 的构建冲突",
+      "track": "A",
+      "status": "COMPLETED",
+      "depends_on": [],
+      "note": "justfile + ci.yml: --all-features now excludes the two addon crates, host ABI moved to just check-host. Needs an AGENTS.md section 2 back-write (main agent)."
+    },
+    {
+      "id": "TASK-074",
+      "task_id": "BUILD-P0.01.02",
+      "file": "./docs/dev/opt-deploy.md",
+      "title": "aarch64 构建与验证通道",
+      "track": "A",
+      "status": "PENDING",
+      "depends_on": [
+        "BUILD-P0.01.01"
+      ]
+    },
+    {
+      "id": "TASK-075",
+      "task_id": "BUILD-P0.01.03",
+      "file": "./docs/dev/opt-deploy.md",
+      "title": "链接期硬化与可复现构建基线",
+      "track": "A",
+      "status": "COMPLETED",
+      "depends_on": [
+        "BUILD-P0.01.01"
+      ],
+      "note": "wave 3: link-time hardening chain (this, then P0.02.01, then P0.02.02), one agent"
+    },
+    {
+      "id": "TASK-076",
+      "task_id": "BUILD-P0.02.01",
+      "file": "./docs/dev/opt-deploy.md",
+      "title": "产物剥离、工厂符号校验与打包流水线化",
+      "track": "A",
+      "status": "COMPLETED",
+      "depends_on": [
+        "BUILD-P0.01.03"
+      ],
+      "note": "wave 3: same agent as BUILD-P0.01.03"
+    },
+    {
+      "id": "TASK-077",
+      "task_id": "BUILD-P0.02.02",
+      "file": "./docs/dev/opt-deploy.md",
+      "title": "体积预算 CI 断言",
+      "track": "A",
+      "status": "COMPLETED",
+      "depends_on": [
+        "BUILD-P0.02.01"
+      ],
+      "note": "wave 3: same agent as BUILD-P0.01.03"
+    },
+    {
+      "id": "TASK-078",
+      "task_id": "BUILD-P0.03.01",
+      "file": "./docs/dev/opt-deploy.md",
+      "title": "补齐第二个 cdylib 与 UI addon 描述符",
+      "track": "B",
+      "status": "COMPLETED",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-079",
+      "task_id": "BUILD-P0.03.02",
+      "file": "./docs/dev/opt-deploy.md",
+      "title": "图标资源落地",
+      "track": "B",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-080",
+      "task_id": "BUILD-P0.03.03",
+      "file": "./docs/dev/opt-deploy.md",
+      "title": "词库产物化与离线构建",
+      "track": "B",
+      "status": "COMPLETED",
+      "depends_on": [],
+      "note": "wave 4: dictionary artifact and offline build (same agent as BUILD-P0.03.04)"
+    },
+    {
+      "id": "TASK-081",
+      "task_id": "BUILD-P0.03.04",
+      "file": "./docs/dev/opt-deploy.md",
+      "title": "fcitx5 版本依赖与发行版基线对齐",
+      "track": "B",
+      "status": "COMPLETED",
+      "depends_on": [],
+      "note": "wave 4: fcitx5 version floor and distro baseline (same agent as BUILD-P0.03.03)"
+    },
+    {
+      "id": "TASK-082",
+      "task_id": "BUILD-P0.05.01",
+      "file": "./docs/dev/opt-deploy.md",
+      "title": "CI 收敛到 just ci 全量门禁",
+      "track": "C",
+      "status": "PENDING",
+      "depends_on": [
+        "BUILD-P0.01.01"
+      ]
+    },
+    {
+      "id": "TASK-083",
+      "task_id": "BUILD-P0.05.02",
+      "file": "./docs/dev/opt-deploy.md",
+      "title": "安装/卸载可逆性与产物装载验证",
+      "track": "C",
+      "status": "PENDING",
+      "depends_on": [
+        "BUILD-P0.02.01",
+        "BUILD-P0.03.03"
+      ]
+    },
+    {
+      "id": "TASK-084",
+      "task_id": "KEY-P0.01.01",
+      "file": "./docs/dev/opt-keymap.md",
+      "title": "分层按键上下文总线与优先级拦截树",
+      "track": "A",
+      "status": "COMPLETED",
+      "depends_on": [],
+      "note": "wave 3: layered key context bus"
+    },
+    {
+      "id": "TASK-085",
+      "task_id": "KEY-P0.01.02",
+      "file": "./docs/dev/opt-keymap.md",
+      "title": "声明-可执行仲裁器（Claim Arbitrator）",
+      "track": "A",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P0.01.01"
+      ]
+    },
+    {
+      "id": "TASK-086",
+      "task_id": "KEY-P0.01.03",
+      "file": "./docs/dev/opt-keymap.md",
+      "title": "修饰键持有状态机（Modifier Hold）",
+      "track": "A",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P0.01.01"
+      ]
+    },
+    {
+      "id": "TASK-087",
+      "task_id": "KEY-P0.01.04",
+      "file": "./docs/dev/opt-keymap.md",
+      "title": "序列按键与 Leader Key 状态机",
+      "track": "A",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P0.01.03"
+      ]
+    },
+    {
+      "id": "TASK-088",
+      "task_id": "KEY-P0.01.05",
+      "file": "./docs/dev/opt-keymap.md",
+      "title": "Config → KeyBindings 投影与热重载",
+      "track": "B",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P0.01.02"
+      ]
+    },
+    {
+      "id": "TASK-089",
+      "task_id": "PERF-P0.01.01",
+      "file": "./docs/dev/opt-perf.md",
+      "title": "解码工作区复用（DecodeScratch）",
+      "track": "A",
+      "status": "COMPLETED",
+      "depends_on": [],
+      "note": "wave 3: same agent as PERF-P0.01.02"
+    },
+    {
+      "id": "TASK-090",
+      "task_id": "PERF-P0.01.02",
+      "file": "./docs/dev/opt-perf.md",
+      "title": "词典查找零分配（WordIter 内联槽位）",
+      "track": "A",
+      "status": "COMPLETED",
+      "depends_on": [],
+      "note": "wave 3: lexer allocations (this, then P0.01.01), one agent"
+    },
+    {
+      "id": "TASK-091",
+      "task_id": "PERF-P0.01.03",
+      "file": "./docs/dev/opt-perf.md",
+      "title": "帧快照零拷贝化（Preedit / Candidate 复用）",
+      "track": "A",
+      "status": "COMPLETED",
+      "depends_on": [
+        "PERF-P0.01.01"
+      ],
+      "note": "wave 3: frame snapshot buffer reuse"
+    },
+    {
+      "id": "TASK-092",
+      "task_id": "PERF-P0.02.01",
+      "file": "./docs/dev/opt-perf.md",
+      "title": "用户词频热路径去 redb",
+      "track": "A",
+      "status": "COMPLETED",
+      "depends_on": [],
+      "note": "user_db.rs 769 + new user_db/{cache,hydrate}.rs; freq() in the hydrated state opens zero redb read transactions (asserted over 1000 lookups). Durability contract preserved untouched: COMMIT_BATCH / COMMIT_INTERVAL_MS / PENDING_CAPACITY, SLOW_COMMIT_STREAK = 3, read-only degradation, idle sweep. PENDING: the HYDRATE_CAP RSS ceiling is unverified and the agent's own arithmetic says it is probably over 2MB."
+    },
+    {
+      "id": "TASK-093",
+      "task_id": "PERF-P0.02.02",
+      "file": "./docs/dev/opt-perf.md",
+      "title": "宿主线程阻塞点清除（异步落盘 + 通道不自旋）",
+      "track": "A",
+      "status": "PENDING",
+      "depends_on": [
+        "PERF-P0.02.01"
+      ]
+    },
+    {
+      "id": "TASK-094",
+      "task_id": "PERF-P0.02.03",
+      "file": "./docs/dev/opt-perf.md",
+      "title": "诊断发射节流（去掉每帧 stderr 写）",
+      "track": "A",
+      "status": "COMPLETED",
+      "depends_on": [],
+      "note": "wave 2: diag emission throttle; card's file list corrected for the ADR-0004 move (ui_impl is in ime-ui-addon now)"
+    },
+    {
+      "id": "TASK-095",
+      "task_id": "PERF-P0.03.01",
+      "file": "./docs/dev/opt-perf.md",
+      "title": "帧拷贝路径：合并 damage 并建立基准",
+      "track": "A",
+      "status": "IN_PROGRESS",
+      "depends_on": [],
+      "note": "wave 3: frame copy path and damage merging"
+    },
+    {
+      "id": "TASK-096",
+      "task_id": "PERF-P0.04.01",
+      "file": "./docs/dev/opt-perf.md",
+      "title": "宿主线程路径探针与预算断言",
+      "track": "A",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-097",
+      "task_id": "UI-OPT-P0.01.01",
+      "file": "./docs/dev/opt-ui.md",
+      "title": "材质与尺寸 Token 引用闭环 + check-ui-spec 门禁落地",
+      "track": "U",
+      "status": "COMPLETED",
+      "depends_on": [],
+      "note": "scripts/check-ui-spec.sh (1085 lines, 9-case --self-test) + StatusCluster in candidate.slint. Gate asserts 3.1.1 sizes, 3.2 colours three ways, the 3.1.4 4dp grid with its 12 exceptions, and reference closure. Verified: PASS on the real tree and 9/9 self-test. 10 names remain deferred because their hosts do not exist yet; the gate fails on any NEW dead name."
+    },
+    {
+      "id": "TASK-098",
+      "task_id": "UI-OPT-P0.01.02",
+      "file": "./docs/dev/opt-ui.md",
+      "title": "CJK 字体栈、字阶基线与 4dp 网格规范冲突处置",
+      "track": "U",
+      "status": "PENDING",
+      "depends_on": [
+        "UI-OPT-P0.01.01"
+      ]
+    },
+    {
+      "id": "TASK-099",
+      "task_id": "UI-OPT-P0.02.01",
+      "file": "./docs/dev/opt-ui.md",
+      "title": "容器几何基线：同心圆角体系与内边距对齐",
+      "track": "U",
+      "status": "PENDING",
+      "depends_on": [
+        "UI-OPT-P0.01.01"
+      ]
+    },
+    {
+      "id": "TASK-100",
+      "task_id": "UI-OPT-P0.02.02",
+      "file": "./docs/dev/opt-ui.md",
+      "title": "组件实例化与 UiFrame → Slint 绑定底座",
+      "track": "U",
+      "status": "COMPLETED",
+      "depends_on": [],
+      "note": "adapter.rs + adapter/{frame,tests}.rs + surface.rs (745); CandidateSurface now impls UiSurface. Required two main-agent fixes: UiSurface's Send bound had to go, and candidate.slint had to re-export Theme or the generated module had no Theme accessor at all."
+    },
+    {
+      "id": "TASK-101",
+      "task_id": "UI-OPT-P0.02.03",
+      "file": "./docs/dev/opt-ui.md",
+      "title": "候选框定位偏移修正：阴影预留必须从光标间隙中扣除",
+      "track": "U",
+      "status": "PENDING",
+      "depends_on": [
+        "UI-OPT-P0.02.02"
+      ]
+    },
+    {
+      "id": "TASK-102",
+      "task_id": "UI-OPT-P0.06.01",
+      "file": "./docs/dev/opt-ui.md",
+      "title": "三层景深材质重写：真衰减外阴影 + 1dp/2dp 内阴影",
+      "track": "U",
+      "status": "PENDING",
+      "depends_on": [
+        "UI-OPT-P0.01.01"
+      ]
+    },
+    {
+      "id": "TASK-103",
+      "task_id": "UI-OPT-P0.08.01",
+      "file": "./docs/dev/opt-ui.md",
+      "title": "动效属性落点：把 AnimationSet 接到 .slint 上",
+      "track": "U",
+      "status": "PENDING",
+      "depends_on": [
+        "UI-OPT-P0.02.02"
+      ]
     }
   ],
   "concurrency": 10,
   "concurrency_note": "The harness caps concurrent subagents at 20 (CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS); the requested 50 cannot be reached from inside the session.",
   "scopes": [
     "docs/dev/features.md (39 engineering cards)",
-    "docs/dev/features-test.md (20 test-platform cards)"
+    "docs/dev/features-test.md (20 test-platform cards)",
+    "docs/dev/features-add.md (13 incremental P0 cards)",
+    "docs/dev/opt-deploy.md (11 build/distribution cards)",
+    "docs/dev/opt-keymap.md (5 key-binding cards)",
+    "docs/dev/opt-perf.md (8 performance cards)",
+    "docs/dev/opt-ui.md (7 UI-craft cards)"
   ],
   "blockers": [
     "workspace compiles; 3 residual warnings in ime-diags test build",
@@ -601,5 +1107,23 @@
     "no benchmark has been run on an idle machine - every number taken today is under 20 concurrent agents and untrustworthy",
     "the Slint build wiring compiles but the .slint sources have not been rendered end to end",
     "the system-installed librspinyin.so is the pre-fix build that segfaults; a lab run without FCITX_ADDON_DIRS reproduces it"
-  ]
+  ],
+  "scopes_note": "features-add.md / opt-deploy.md / opt-keymap.md / opt-perf.md / opt-ui.md each carry P1/P2 continuation shards in a sibling directory (docs/dev/<name>/phase-*.md). Those shards are NOT matched by the default globs `docs/dev/features-*.md` and `docs/dev/opt-*.md` (they are files inside a subdirectory, not files directly under docs/dev/), so they are out of scope for this round and remain unregistered. Registering them is a follow-up decision, not an oversight. | 2026-09-29 session: the four gate commands and every audit script in `just ci` are green (1264 tests: 1118 workspace + 146 host-feature, plus doctests). 19 of 103 cards are `[x]` with a written acceptance record. The remaining 84 are unstarted or partial; the ledger's statuses are read back out of the task documents, which are the authority.",
+  "milestones": {
+    "M0": {
+      "title": "增量功能的契约扩展（crates/ime-types）",
+      "status": "COMPLETED",
+      "deliverable": "docs/dev/adr/0005-incremental-contract-extension.md + 契约代码",
+      "evidence": "cargo check -p ime-types --all-targets 绿; cargo nextest run -p ime-types 48/48 绿; cargo check -p ime-core --lib 绿",
+      "note": "features-add.md 起草时把这件 ADR 命名为 0004，但 0004 已被 UI addon 拆分占用，故改用 0005。ADR 记录了对 4.2.1 表的两处偏离：UserFreqSource::list/export_tsv 的默认实现返回 ImeError::Unsupported 而非 DictUnavailable（后者携带 PathBuf/DictError，无法在不伪造路径的前提下构造）；ImeError 增加 ConfigMigrated，否则 4.2.1 已列出的稳定码 config/migrated 无任何渲染路径。",
+      "unblocks": [
+        "ADD-FEAT-P0.01.03",
+        "ADD-FEAT-P0.01.04",
+        "ADD-FEAT-P0.02.01",
+        "ADD-FEAT-P0.02.03",
+        "ADD-FEAT-P0.02.04",
+        "ADD-FEAT-P0.02.05"
+      ]
+    }
+  }
 }

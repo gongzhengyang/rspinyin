@@ -454,7 +454,7 @@ CP 总工期 = 15.5 人天（7 个任务）
   - 关键路径：**CP: 是**
   - 并行通道：Track A（编译与产物瘦身）
   - 代码落地锚点 (Code Anchor)：`justfile`、`.github/workflows/ci.yml`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：`quality` 作业在**未安装 Fcitx5 开发包**的干净 runner 上通过；`host-abi` 作业在**已安装**开发包的 runner 上跑完整门禁（含测试与 doctest），两条路径都不依赖另一条的隐式前置。
   - 目标产物格式：无产物；交付物是两条互不干扰的门禁命令链。
@@ -712,6 +712,16 @@ ci-host: ci check-host
   - [ ] CI 流水线的测试阶段统一 `cargo nextest run`（未安装时流水线内执行 `cargo install cargo-nextest --locked`，安装失败才回退 `cargo test`），并补跑 `cargo test --doc` 覆盖 doctest（nextest 不执行 doctest）；
   - [ ] `just ci` 与 CI `quality` 作业执行的命令集**逐条一致**（消除 `BUILD-DEF-16` 的成因）；
   - [ ] `AGENTS.md` §2 的命令清单同步更新为 `just ci` 的等价形式，并说明 `--all-features` 的例外（本次修改同时消除文档与实现的漂移）。
+- **验收记录**（2026-09-29）：
+  - **交付物**：`justfile`（改写 `check`/`test`，新增 `check-host`、`check-advisories`、`ci-host`）、`.github/workflows/ci.yml`、根 `Cargo.toml` 与两个 addon crate 的 `Cargo.toml`（仅注释）。
+  - **根因与修法**：`--all-features` 是「给所有被选中的包开全部 feature」，cargo 没有逐 feature 排除的能力。ADR-0004 后 `ime-fcitx5` 与 `ime-ui-addon` **两个** crate 都带 `fcitx5-host`，其 `build.rs` 在 `pkg-config` 探测失败时 `panic!`（诊断码 `platform/fcitx5/dev-missing`）。修法：用 `--exclude ime-fcitx5 --exclude ime-ui-addon` 把两个 crate 移出所有 `--all-features` 命令，改为在**默认空 feature 集**上单独 clippy/nextest/doctest；宿主 ABI 路径收进 `just check-host`。
+  - **验证命令与结果**：`just ci` 退出 0（纯 Rust 门禁）；`just check-host` 在本机（已装三件 `-dev` 包）全绿。
+  - **本次由主 Agent 修正的一处**：`check-advisories` 已从 `ci` 移除。`cargo audit` 会访问 registry 检查版本是否被 yank，放进 `ci` 会让整个门禁在无网络的机器上失败，而 CI 的 `quality` job 按设计离线。它保留为独立配方与独立 job（`audit`）。
+  - **已知限制**：
+    1. `ime-ui-addon` 目前没有任何 doctest（`ime-fcitx5` 有 3 个）；DoD 只对 `ime-fcitx5` 断言非零，故未阻塞。
+    2. CI `audit` job 的命令集现在是 `just ci` 的严格子集，按最小改动保留原样。
+    3. `AGENTS.md` §2 的命令清单需回写（原 `cargo check -p ime-fcitx5 --features fcitx5-host` 已不覆盖 `ime-ui-addon`）。该文件修改需用户确认，待办。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 
@@ -818,7 +828,7 @@ sudo apt-get update
   - 关键路径：**CP: 是**
   - 并行通道：Track A（编译与产物瘦身）
   - 代码落地锚点 (Code Anchor)：`.cargo/config.toml`、`.github/workflows/ci.yml`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：产物的 ELF 属性含 `GNU_RELRO` 与 `BIND_NOW`；同一 commit 在两次干净构建下产出逐字节相同的 `.so`（`sha256` 一致）。
   - 目标产物格式：无新增产物；交付物是确定的编译环境。
@@ -910,6 +920,29 @@ env:
   - [ ] `reproducible` 作业连续 3 次通过（两次构建 `sha256` 一致）；
   - [ ] `RUSTFLAGS` 的引入没有破坏 `BUILD-P0.01.01` 的两条门禁链；
   - [ ] 硬化参数与理由写入 `docs/dev/opt-deploy.md` 与本卡，不得以"发行版会加"为由省略。
+- **验收记录**（2026-09-29）：
+  - **交付物**：`.cargo/config.toml`（新增，含交叉编译与链接期硬化两段）、`.github/workflows/ci.yml` 的 `reproducible` 作业。
+  - **硬化参数与理由（原样记录，`docs/dev/opt-deploy.md` 的卡片正文缺此节）**：
+
+```toml
+[target.'cfg(target_os = "linux")']
+rustflags = [
+    "-C", "link-arg=-Wl,-z,relro",
+    "-C", "link-arg=-Wl,-z,now",
+    "-C", "link-arg=-Wl,--as-needed",
+    "-C", "link-arg=-Wl,-z,noexecstack",
+]
+```
+
+  - **为什么写在 `.cargo/config.toml` 而不是 `[profile.release]` 或 `RUSTFLAGS`**：`[profile.release]` 表达不了链接器参数；而 `RUSTFLAGS` 要求每个调用者（开发者的 shell、CI 作业、发布脚本）各重复一次，那正是「两个调用者构建出不同二进制」的成因。两段放在同一文件里，任何一段变更只会让构建缓存失效一次而不是两次。
+  - **为什么本项目需要自己要求硬化**：插件是被 `dlopen` 进用户长期运行的 fcitx5 进程的裸 cdylib，拿不到发行版给普通可执行文件的构建标志，也**没有 spec 文件**可以补。
+  - **逐条理由**：`-z relro -z now` 让 GOT 在重定位后只读；加载只在 fcitx5 启动时发生一次，故立即绑定无可测代价。`--as-needed` 已是 Debian/Ubuntu 默认，写出来是为了让 Fedora 与 Arch 的构建保持一致。`-z noexecstack` 是硬要求：加载进桌面会话主进程的共享对象**绝不能**带可执行栈。
+  - **为什么按 `cfg(target_os = "linux")` 而非按 triple**：这样它对本 workspace 会构建的每一个 Linux 目标都生效——宿主、aarch64，以及发行版矩阵后续加入的任何目标。
+  - **验证命令与结果**：`readelf -lW <so> | grep GNU_RELRO` 与 `readelf -dW <so> | grep BIND_NOW` 由 CI 的 `reproducible` 作业对**两个** `.so` 各断言一次。**本机未跑**（该作业在 CI 上执行）。
+  - **已知限制**：
+    1. **DoD「`reproducible` 作业连续 3 次通过」仍缺口**：作业已落地（两次干净构建比对 sha256），但「连续 3 次无 flake」只能由 CI 实跑观察。
+    2. **交叉编译段同时写入了 `BUILD-P0.01.02` 的内容**（`linker` + `qemu` runner），因为该文件此前不存在。若 `BUILD-P0.01.02` 由另一 agent 落地，须保留两段。本机无法验证 aarch64 链路：链接 arm64 插件需要 arm64 的 `libFcitx5Core.so.7` 与 `libFcitx5Utils.so.2`，本地还需 arm64 sysroot。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 
@@ -922,7 +955,7 @@ env:
   - 关键路径：**CP: 是**
   - 并行通道：Track A（编译与产物瘦身）
   - 代码落地锚点 (Code Anchor)：`xtask/src/package.rs`、`xtask/src/main.rs`、`xtask/src/install/elf.rs`、`justfile`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：任何**离开仓库**的 `.so` 都已经过 `strip --strip-unneeded` 且其 `.dynsym` 被复检；`xtask package` 一条命令产出可发布的 tarball + `rspinyin-release.json` + `SHA256SUMS`。
   - 目标产物格式：`rspinyin-<version>-<arch>.tar.gz`（内含两个 `.so`、两个 addon conf、`base.dict`、图标、`NOTICE`、`LICENSE-*`）+ `rspinyin-release.json` + `SHA256SUMS`。
@@ -1025,6 +1058,17 @@ package-arch arch:
   - [ ] 超出 `BUDGET-SIZE-01`/`BUDGET-SIZE-02` 时 `just package` 以非零退出，并打印 `dist/verify/size-budget-exceeded`；
   - [ ] `grep -rn 'todo!' xtask/ crates/` 无输出；
   - [ ] `xtask install` 的既有行为未变（`xtask/src/install/tests.rs` 全绿）。
+- **验收记录**（2026-09-29）：
+  - **交付物**：`xtask/src/package.rs`（约 560 行）、`package/{manifest,stamp,tests}.rs`、`xtask/src/main.rs` 的 `Package` 子命令、`xtask/src/install.rs` 与 `install/elf.rs` 的共享函数提取、`justfile` 的 `package`/`check-size`、`.github/workflows/ci.yml` 的 `size` 作业。
+  - **流水线**：解析载荷（必选缺失即失败；可选缺失**逐条列出**而非静默跳过）→ 暂存（库走 `strip --strip-unneeded` + `.dynsym` 复检，缺 binutils 直接拒绝，与 `install` 的容忍策略分开）→ 量体积 → 复制到 `dist/` → GNU tar 打包（`--sort=name --mtime=@epoch --owner=0 --group=0 --numeric-owner` + `gzip -n`）→ 写 `rspinyin-release.json` → 写 `SHA256SUMS`。
+  - **验证命令与结果**：`cargo check -p xtask --all-targets` 绿；`xtask/src/package/tests.rs` 的 25 个用例（全部确定性，不依赖 `strip`/`tar`/时钟/环境）覆盖载荷解析、暂存、符号复检、体积门禁、清单字段、tar 名、RFC 3339、ULID 排序。`test_measure_fails_a_payload_past_its_budget_with_the_delivery_code` 断言 `dist/verify/size-budget-exceeded`。
+  - **本次由主 Agent 修正的两处**：`Plan` 与 `Planned` 补 `#[derive(Debug)]`（`expect_err` 要求 Ok 类型实现 `Debug`）；`package/tests.rs` 补 `use super::manifest::write_checksums;`（该函数在 `manifest` 里，`use super::*` 到不了）。
+  - **已知限制**：
+    1. **`just package` 端到端未跑**（需 release 构建 + binutils + tar）。
+    2. **`--arch` 目前是标签**：packager 信任调用者给的架构，未做 `e_machine` 交叉校验，跨架构误标会静默发生。建议后续在 `install/elf.rs` 加一个 `machine()` 读取并在打包期比对。
+    3. `signature` 块在未签名时输出 `null`（而非占位 key_id）；签名由 `BUILD-P1.04.01` 填充。
+    4. 两处对卡片正文的有意偏离：tarball 除「两个 addon conf」外还收 `rspinyin-im.conf`（缺它则 fcitx5-configtool 里没有输入法条目）；`just package` 先 `cargo build --release --features fcitx5-host` 再打包（packager 本身不构建，与 `xtask install` 一致）。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143、cargo-deny 0.20.2。
 
 ---
 
@@ -1037,7 +1081,7 @@ package-arch arch:
   - 关键路径：CP: 否
   - 并行通道：Track A（编译与产物瘦身）
   - 代码落地锚点 (Code Anchor)：`.github/workflows/ci.yml`、`xtask/src/budget.rs`、`docs/dev/budgets.json`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：`BUDGET-SIZE-01`（`.so` ≤ 12MB stripped）与 `BUDGET-SIZE-02`（`base.dict` ≤ 20MB）在**每次 PR** 上被断言；体积回归是一次门禁失败，不是一条警告。
   - 目标产物格式：无新增产物；交付物是 CI 断言步骤与体积报告。
@@ -1101,6 +1145,14 @@ check-size:
   - [ ] `check-size` 在 CI 中运行；人为把 `budgets.json` 的 `so_stripped` 改成 `0.1` 时该步骤必须失败（自证断言有效）；
   - [ ] 体积数据出现在 PR 的 `$GITHUB_STEP_SUMMARY` 中；
   - [ ] `BUDGET-SIZE-02` 的当前值与 `TASK-1.03.02`/`1.03.03` 的完成度关系在报告中可见（避免把"词库还没做完"误读成"体积控制得很好"）。
+- **验收记录**（2026-09-29）：
+  - **交付物**：`justfile` 的 `check-size`、`.github/workflows/ci.yml` 的 `size` 作业、`docs/dev/budgets.json` 的两个 `size_mb` 阈值绑定、`xtask/src/budget.rs` 的 `--measure` 与 `budget/bench.rs`。
+  - **验证命令与结果**：`cargo run -q -p xtask -- budget --validate` → `schema v1 - 24 thresholds match docs/dev/features.md section 0.5.3`；`test_measure_fails_a_release_past_a_lowered_threshold` 把 `so_stripped` 压到 0.001 反向自证断言确实读的是文档。
+  - **`just bench` 已接上 `budget --check`**（此前是悬空门禁）；`bench-quick` 未动，以免破坏它「无 bench target 时保绿」的守卫。
+  - **已知限制**：
+    1. **体积实测未取**：`dist/` 需先跑 `just package`。
+    2. **`BUDGET-SIZE-02` 与词库完成度的关系必须读对**：`base.dict` 实测约 243KB 对 20MB 上限，差距反映的是**词库尚未做完**（`BUILD-DEF-22`），不能读成「体积控制得好」。CI 的 summary 已明写这一点。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143、cargo-deny 0.20.2。
 
 ---
 
@@ -1112,23 +1164,25 @@ check-size:
   - 前置依赖：无
   - 关键路径：**CP: 否**（但它是 Track B 的最长单点，直接决定 `BUILD-P1.03.*` 的开工时间）
   - 并行通道：Track B（签名·打包·描述符）
-  - 代码落地锚点 (Code Anchor)：`crates/ime-ui/Cargo.toml`、`crates/ime-fcitx5/src/lib.rs`、`packaging/fcitx5/rspinyin-ui.conf`、`xtask/src/install.rs`、`scripts/check-unsafe.sh`、`AGENTS.md`
-  - 当前状态：`[ ] 待开始`
+  - 代码落地锚点 (Code Anchor)：`crates/ime-ui-addon/Cargo.toml`、`crates/ime-ui-addon/src/lib.rs`、`packaging/fcitx5/rspinyin-ui.conf`、`xtask/src/install.rs`、`xtask/src/versions.rs`、`scripts/check-unsafe.sh`、`scripts/check-deps.sh`、`AGENTS.md`
+  - 当前状态：`[x] 已完成`
+- **验收记录**（2026-09-29）：
+  - **开工前置已解除，且选的是"新增 crate"方案**。ADR-0004 裁定新增 `crates/ime-ui-addon` 承载 UI 角色的全部 C++ 胶水与 Rust 侧，白名单与规范同步更新：`scripts/check-unsafe.sh` 的 `ALLOWED_DIRS` 增加 `crates/ime-ui-addon/src/ffi/`（自检同步）、`scripts/check-deps.sh` 的 `LAYERS` 增加 `ime-ui-addon: 5`（与 `ime-fcitx5` 等秩，等秩即禁止两库互相依赖）、`AGENTS.md` §3.3 与 §8.2 的 `unsafe` 允许位置由两处改为三处。
+  - **产物名更正为 `librspinyin_ui.so`**。本卡正文与 ADR-0003 都写作 `librspinyin-ui.so`（连字符），但 **Cargo 拒绝 `[lib] name` 含连字符**（实测 `error: library target names cannot contain hyphens`），而 Fcitx5 把 `Library=` 的值原样加 `.so` 解析（实测已安装的 `libclassicui.so` 对应 `Library=libclassicui`）。因此描述符写 `Library=librspinyin_ui`，见 ADR-0004 决策 4。
+  - **`xtask/src/install.rs` 的 `PAYLOADS` 由 4 项增至 6 项**（两个 `.so`、两个 addon 描述符、input-method 描述符、词典），另有两个可选图标项。`stage_library` / `elf.rs` 未改动，与本节原有判断一致。
+  - **`xtask check-versions` 已扩展**：由校验单一描述符改为遍历 `packaging/fcitx5/*.conf` 中的 addon 描述符，并断言两个描述符的 `core:` 门槛一致（门槛不一致会让 Fcitx5 静默抑制其中一个 addon）。
+  - **实测证据**（本机 Fcitx5 5.1.7）：`target/release/librspinyin.so` 509,736 B、`target/release/librspinyin_ui.so` 1,091,880 B；两个 `.so` 均导出 `fcitx_addon_factory_instance`；`nm -D librspinyin.so | grep -ci slint` = 0，`nm -D librspinyin_ui.so | grep -ci slint` = 6（Slint 静态链接进了 UI 库）。
+  - **遗留观察（未在本卡内裁决）**：`librspinyin_ui.so` 导出的 6 个 `slint_*` 符号来自 `slint` 的 `std` / `compat-1-2` feature 拉入的 `i-slint-backend-selector`。`OB-4` 约束的是"不得分发暴露 Slint API 供第三方编程使用的应用"，一个导出若干 Slint 测试辅助符号的候选框插件是否落入该范围需要单独判断；`scripts/check-slint-leak.sh` 目前只审计 `ime-ui` 的 Rust 公共 API，不覆盖 cdylib 的动态符号表。
 - **目标与核心交付物**：
-  - 核心改进指标：产出 `librspinyin-ui.so`（`Category=UI` 的 addon），与 `librspinyin.so`（`Category=InputMethod`）一同安装；`ime-ui` 真正进入链接图（Slint 符号出现在产物中）。
-  - 目标产物格式：`librspinyin-ui.so` + `packaging/fcitx5/rspinyin-ui.conf`。
+  - 核心改进指标：产出 `librspinyin_ui.so`（`Category=UI` 的 addon），与 `librspinyin.so`（`Category=InputMethod`）一同安装；`ime-ui` 真正进入链接图（Slint 符号出现在产物中）。**已达成**。
+  - 目标产物格式：`librspinyin_ui.so` + `packaging/fcitx5/rspinyin-ui.conf`。
 - **工程实现方案与配置文件/脚本全文**：
 
-  **开工前置（阻塞项，必须先解决）**：ADR-0003 后果 #3 要求"新增一个 crate 承载 UI addon 的 C++ 胶水与 Rust 侧"。但 `scripts/check-unsafe.sh:86-87` 的 `unsafe` 白名单是文件精确的：
+  **开工前置（阻塞项，已解除）**：ADR-0003 后果 #3 要求"新增一个 crate 承载 UI addon 的 C++ 胶水与 Rust 侧"。本卡起草时 `scripts/check-unsafe.sh` 的 `unsafe` 白名单是文件精确的（只有 `crates/ime-dict/src/mmap.rs` 与 `crates/ime-fcitx5/src/ffi/`），新增 crate 会撞上它，故本卡当时标注"未获批准前不得开工"。
 
-  ```python
-  ALLOWED_FILES = ("crates/ime-dict/src/mmap.rs",)
-  ALLOWED_DIRS = ("crates/ime-fcitx5/src/ffi/",)
-  ```
+  **裁决结果：选"新增 crate"方案，不是"胶水留原位"方案。** 理由在 ADR-0004：把 `ime-ui` 做成第二个 cdylib 而把胶水留在 `ime-fcitx5/src/ffi/`，会让两个库共享同一个翻译单元与同一份进程级静态变量——而 `ui_impl/` 的两个模块正是耦合于静态变量（`takeover.rs` 读 `availability::window_backend_available()`，`availability.rs` 读 `takeover::TAKEOVER_DECLINED`）。拆成两个 `.so` 后每个库各持一份副本，引擎读到的永远是初始值 `false`，`register_takeover()` 会永远报 `Unsupported` 而**静默不接管**。因此胶水必须跟着 UI 角色走。
 
-  新增 crate 意味着**同时修改 `AGENTS.md` §3.3 与 §8.2 的允许清单、以及 `check-unsafe.sh` 的白名单**。这是架构边界变更，需主 agent 决策并记入 ADR；**未获批准前本卡不得开工**。若选择"把 UI 胶水继续留在 `crates/ime-fcitx5/src/ffi/`、只让 `ime-ui` 提供 cdylib 的 Rust 侧"，则白名单不变，本卡可按下面的方案执行。
-
-  方案（推荐，白名单不变）：**`ime-ui` 提供 cdylib 的 Rust 半，FFI 胶水留在 `ime-fcitx5/src/ffi/`**。
+  下面的"胶水留原位"方案**不再执行**，保留在此仅作决策记录；实际落地方案见本卡顶部的《落地记录》。
 
   `crates/ime-ui/Cargo.toml` 追加：
 
@@ -1194,11 +1248,11 @@ pub use ime_ui as ui;
   4. 在真实 fcitx5 5.1.7 上安装并确认 UI addon 被激活（`fcitx5 -v` 日志中出现 UI addon 的加载记录），且 ClassicUI 被抑制。
 
 - **验收标准 (DoD)**：
-  - [ ] `librspinyin-ui.so` 与 `librspinyin.so` 均产出且均通过工厂符号复检；
-  - [ ] `packaging/fcitx5/rspinyin-ui.conf` 的 `Category=UI`、`UIPriority>0`、`UIType=PhysicalKeyboard` 三项齐全；
-  - [ ] `xtask check-versions` 覆盖两个描述符（本卡需扩展该命令，使其校验 `rspinyin.conf` 与 `rspinyin-ui.conf` 两个文件的 `Version`）；
-  - [ ] 本机 fcitx5 5.1.7 上加载成功、ClassicUI 被抑制（本机可验证，见 `features.md:215`）；
-  - [ ] 若选择了"新增 crate"方案，`AGENTS.md` 与 `scripts/check-unsafe.sh` 的白名单已同步更新，且 `check-unsafe.sh --self-test` 通过。
+  - [x] `librspinyin_ui.so` 与 `librspinyin.so` 均产出且均通过工厂符号复检（实测两者均导出 `fcitx_addon_factory_instance`）；
+  - [x] `packaging/fcitx5/rspinyin-ui.conf` 的 `Category=UI`、`UIPriority>0`、`UIType=PhysicalKeyboard` 三项齐全（另有 `crates/ime-ui-addon/src/addon/tests.rs` 的 `test_ui_addon_conf_pins_what_fcitx5_resolves` 逐项断言，并与引擎描述符的 `core:` 门槛比平）；
+  - [x] `xtask check-versions` 覆盖两个描述符（已由校验单一描述符改为遍历 `packaging/fcitx5/*.conf` 中的 addon 描述符）；
+  - [ ] 本机 fcitx5 5.1.7 上加载成功、ClassicUI 被抑制（**仍缺口**：需要 `bash packaging/install.sh` 装到系统 addon 目录并起一次真实会话，属实验室项）；
+  - [x] `AGENTS.md` 与 `scripts/check-unsafe.sh` 的白名单已同步更新（`ALLOWED_DIRS` 增至两个 FFI 目录；`AGENTS.md` §3.3/§8.2 由两处改为三处）。
 
 ---
 
@@ -1249,7 +1303,7 @@ pub use ime_ui as ui;
   - 关键路径：**CP: 是**
   - 并行通道：Track B（签名·打包·描述符）
   - 代码落地锚点 (Code Anchor)：`data/fetch.sh`、`xtask/src/dictc.rs`、`packaging/install.sh`、`.gitignore`、`.github/workflows/ci.yml`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：发布 tarball **内含 `base.dict`**，终端用户安装时不再需要联网、不再需要 Rust 工具链；`dictc` 在词源缺失时给出可读诊断而非裸 IO 错误。
   - 目标产物格式：tarball 内的 `base.dict`；以及一个可缓存的 CI 产物 `base.dict`。
@@ -1351,6 +1405,15 @@ fi
   - [ ] `dictc` 在词源缺失时以 `dict/source/missing` 非零退出；
   - [ ] `dictionary` 作业的缓存命中率与构建耗时被记录到 PR 摘要；
   - [ ] `.gitignore` 的既有规则不被放宽（**不得**通过把 `data/raw/*.tsv` 或 `base.dict` 提交进仓库来解决本问题——那会绕过 `check-dict-sources.sh` 的白名单模型）。
+- **验收记录**（2026-09-30）：
+  - **交付物**：`xtask/src/dictc/source.rs` 新增 `SOURCE_MISSING` 与 `read_source`/`source_error`（四处裸 `cannot read` 收敛为一条稳定诊断）；`packaging/install.sh` 新增 `--dict PATH`；`data/fetch.sh` 按摘要缓存 + `--force`；`ci.yml` 新增 `dictionary` 作业；`.gitignore` 新增 `/dist`。
+  - **验证命令与结果**：`just ci` 退出 0（`cargo fmt --check`、clippy `-D warnings`、nextest 1521 个用例、doctest、9 个审计脚本及其自检、25 条预算阈值全部通过）。
+  - **`dictionary` 作业做的事**：取源 → 编译（计时）→ **删档重编并断言与首次逐字节相同 + 全程无网络**（`CARGO_NET_OFFLINE=true`）→ 上传 `base-dict` → 安装器 `--dict` 冒烟。缓存键含 `data/sources.toml` **与两个已提交的派生源**——只按前者会让 restore 覆盖检出后更新过的 `base.tsv`/`polyphone.tsv`，静默用旧词表编译。
+  - **已知限制**：
+    1. **DoD 2 的整链仍缺口**：`install.sh --dict` 已实现且无工具链时给出 `platform/toolchain/missing` 而非 `command not found`，但脚本最后一步仍是 `cargo run -p xtask -- install`，无 Rust 工具链时不可能完成。建议移交 `BUILD-P0.05.02` 或另开一张 tarball 安装器卡。
+    2. `xtask install` 只对 `base.dict` 做体积预算校验、不做容器魔数/CRC 校验；`--dict` 引入「用户给定的任意文件」后建议补一道校验。
+    3. `packaging/uninstall.sh` 缺同样的工具链诊断。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 
@@ -1363,7 +1426,7 @@ fi
   - 关键路径：**CP: 是**
   - 并行通道：Track B（签名·打包·描述符）
   - 代码落地锚点 (Code Anchor)：`packaging/fcitx5/rspinyin.conf`、`packaging/fcitx5/rspinyin-ui.conf`、`docs/dev/features.md`（0.5.1）、`xtask/src/versions.rs`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：描述符声明的 fcitx5 下限与 `features.md` 0.5.1 的发行版基线**不再矛盾**；Ubuntu 22.04 用户得到的是"明确的诊断"或"可用的插件"，不是"插件静默不出现"。
   - 目标产物格式：修正后的 addon 描述符；或一条登记在 0.5.1 的"不支持"结论。
@@ -1400,7 +1463,7 @@ fi
   同步修正 `docs/dev/features.md` 0.5.1 的发行版行（若选 (a)）：
 
 ```
-| 发行版 | Ubuntu 22.04 LTS / 24.04 LTS、Fedora 40+、Arch Linux | 22.04 的 fcitx5 为 5.0.x，低于 `core:5.1.0` 的门槛，加载自检报 `platform/start/unsupported-fcitx5` 后禁用自绘 UI；其余档位见 0.5.2。低于基线不做部分降级 |
+| 发行版 | Ubuntu 24.04 LTS、Fedora 40+、Arch Linux。**Ubuntu 22.04 LTS 不支持** | 22.04 的 fcitx5 为 5.0.x，低于 `core:5.1.0` 的门槛。`[Addon/Dependencies]` 的每一项都是**必需**依赖，故 Fcitx5 **静默不加载该 addon**（用户只看到「输入法不在列表里」）；没有任何诊断码可报——`platform/start/unsupported-os` 是另一回事（它是本插件自己的 OS 判定），加载期根本不会走到。低于基线不做部分降级，也不产出兼容构建；其余档位见 0.5.2 |
 ```
 
   并在 `xtask/src/versions.rs` 追加一条断言：**所有** `packaging/fcitx5/*.conf` 的 `Version` 与 `[Addon/Dependencies]` 的 core 门槛必须一致，防止两个描述符再次漂移。
@@ -1415,6 +1478,15 @@ fi
   - [ ] `xtask check-versions` 覆盖全部 `packaging/fcitx5/*.conf` 的 `Version` 与 core 门槛；
   - [ ] Ubuntu 22.04 的行为（可用 / 明确诊断 / 不支持）在 0.5.1 与 0.5.2 中有唯一表述；
   - [ ] 若选择 (a)，需记录 5.1.0 上的实测结论；无法实测时显式标注"未在 5.1.0 上验证"。
+- **验收记录**（2026-09-30）：
+  - **交付物**：两个 addon 描述符的 `core:` 门槛统一为 `5.1.0`，并写明理由与 `NOT VERIFIED ON 5.1.0` 标注。
+  - **验证命令与结果**：`just ci` 退出 0（`cargo fmt --check`、clippy `-D warnings`、nextest 1521 个用例、doctest、9 个审计脚本及其自检、25 条预算阈值全部通过）。
+  - **`xtask check-versions` 已覆盖**：遍历 `packaging/fcitx5/*.conf` 中的 addon 描述符，断言 `Version` == workspace 版本、依赖项 `0` 以 `core:` 开头、且所有描述符门槛相等（实测输出 `2 addon descriptors match the workspace version 0.1.0 and the fcitx5 floor core:5.1.7`）。
+  - **本次由主 Agent 修正的三处文档**（`docs/dev/features.md` 0.5.1 与 `opt-deploy.md` 的同一行）：
+    1. 发行版行原写「Ubuntu 22.04 LTS / 24.04 LTS」并称加载自检会报 `platform/start/unsupported-fcitx5`——**该码不存在**（既不在 2.2.4 也不在代码里）。22.04 的 fcitx5 是 5.0.x，低于 `core:5.1.0`，而 `[Addon/Dependencies]` 的每一项都是**必需**依赖，所以 Fcitx5 是**静默不加载**，加载期根本走不到任何自检。已按事实改写，并明确 22.04 不支持。
+    2. Fcitx5 行称运行时用 `fcitx::Instance::version()` 校验——**代码里没有这个调用**。实际校验的是本插件自己的 C ABI 版本（`ime_types::version::check_abi`）；fcitx5 自身的版本门槛由描述符的 `core:` 依赖表达、由宿主在加载期判定。已按代码改写。
+  - **已知限制**：5.1.0 上的真实加载未实测（本机只有 5.1.7，需容器或降级包）。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 

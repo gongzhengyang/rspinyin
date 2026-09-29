@@ -119,7 +119,10 @@ mod tests {
         // the degraded case: a panic before the layout exists is reported on stderr and
         // costs no file.
         let outcome = catch_unwind(|| handle_panic(None, String::from("deliberate failure")));
-        assert!(outcome.is_ok(), "the hook may not panic while handling a panic: {outcome:?}");
+        assert!(
+            outcome.is_ok(),
+            "the hook may not panic while handling a panic: {outcome:?}"
+        );
     }
 
     #[test]
@@ -142,7 +145,10 @@ mod tests {
 
         handle_panic(None, String::from("deliberate failure"));
 
-        assert!(RECOVERED.load(Ordering::Acquire), "the session is cleared after a crash");
+        assert!(
+            RECOVERED.load(Ordering::Acquire),
+            "the session is cleared after a crash"
+        );
     }
 
     #[test]

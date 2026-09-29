@@ -1,0 +1,45 @@
+# Cargo configuration: cross-compilation and link-time hardening.
+#
+# Two concerns live here because both are properties of the link, and keeping them in one
+# file means a change to either invalidates the build cache exactly once rather than
+# twice. Neither is a per-crate setting: `[profile.release]` in the workspace manifest
+# cannot express linker arguments, and a `RUSTFLAGS` environment variable would have to be
+# repeated by every caller -- the developer's shell, the CI job, the release script --
+# which is exactly how two of them end up building different binaries.
+
+# Running an aarch64 test binary needs an emulator on an x86_64 host. The native arm64 CI
+# runner does not use this entry, but a developer cross-checking locally does, and without
+# it `cargo nextest` reports "exec format error" rather than a test result.
+#
+# `aarch64-linux-gnu-gcc` is the cross linker the distribution's `gcc-aarch64-linux-gnu`
+# package installs. Linking an addon is not a freestanding build: it needs the arm64
+# `libFcitx5Core.so.7` and `libFcitx5Utils.so.2` to link against, which is why the local
+# path also needs an arm64 sysroot or an arm64 root, and why CI prefers the native runner.
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+runner = ["qemu-aarch64-static", "-L", "/usr/aarch64-linux-gnu"]
+
+# Linker hardening.
+#
+# The addon is dlopen'd into the user's long-lived fcitx5 process, so the hardening a
+# normal CLI would get from its distribution's build flags has to be requested here
+# instead -- this project ships a bare cdylib, not a packaged binary whose spec file could
+# add them.
+#
+# `-z relro -z now` makes the GOT read-only after relocation; the load happens once at
+# fcitx5 start, so the eager binding costs nothing measurable.
+# `--as-needed` is already the Debian/Ubuntu default and is stated to keep the Fedora and
+# Arch builds identical.
+# `-z noexecstack` is a hard requirement: a shared object loaded into a desktop session's
+# main process must never carry an executable stack.
+#
+# The flags are stated for `cfg(target_os = "linux")` rather than per triple so that they
+# apply to every Linux target this workspace builds -- the host, aarch64, and whatever the
+# distribution matrix adds next.
+[target.'cfg(target_os = "linux")']
+rustflags = [
+    "-C", "link-arg=-Wl,-z,relro",
+    "-C", "link-arg=-Wl,-z,now",
+    "-C", "link-arg=-Wl,--as-needed",
+    "-C", "link-arg=-Wl,-z,noexecstack",
+]

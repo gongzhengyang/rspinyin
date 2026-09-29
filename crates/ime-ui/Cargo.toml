@@ -18,5 +18,18 @@ x11rb.workspace = true
 [build-dependencies]
 slint-build.workspace = true
 
+[dev-dependencies]
+criterion.workspace = true
+
+# criterion supplies its own harness, so the default libtest harness must be turned off
+# per target; an auto-discovered bench would otherwise fail to link two `main`s.
+[[bench]]
+name = "frame"
+harness = false
+
+[[bench]]
+name = "wakeup_latency"
+harness = false
+
 [lints]
 workspace = true

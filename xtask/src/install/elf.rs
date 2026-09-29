@@ -225,7 +225,7 @@ fn cstring(table: &[u8], offset: usize) -> Result<&str> {
 /// difference between a name this image defines and one that is merely present in its
 /// string table, and only a fixture that says which is which can assert that.
 #[cfg(test)]
-pub(super) fn synthetic_image(symbols: &[(&str, bool)]) -> Vec<u8> {
+pub(crate) fn synthetic_image(symbols: &[(&str, bool)]) -> Vec<u8> {
     let (shstrtab, names) = string_table(&[".shstrtab", ".dynstr", ".dynsym"]);
     let symbol_names: Vec<&str> = symbols.iter().map(|(name, _)| *name).collect();
     let (dynstr, offsets) = string_table(&symbol_names);

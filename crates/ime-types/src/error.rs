@@ -64,6 +64,50 @@ pub enum ImeError {
     /// by ADR-0001 so that the position of every variant above stays unchanged.
     #[error("dict/unsupported")]
     Unsupported,
+    /// The user's data could not be backed up.
+    ///
+    /// Appended by ADR-0005. The code sits in the existing `data/*` segment rather
+    /// than opening a new domain, which is the rule for every appended code.
+    #[error("data/backup-failed: {reason}")]
+    DataBackupFailed { reason: String },
+    /// The requested double-pinyin scheme is one this build does not implement.
+    ///
+    /// Appended by ADR-0005. `scheme` is the raw number from the configuration
+    /// file, which is why it is a `u8` rather than a `SchemeId`: reporting the
+    /// number a newer build wrote is the point of the diagnostic, and a caller
+    /// must be able to raise it without first constructing a scheme it knows is
+    /// invalid.
+    #[error("decode/scheme-unsupported: scheme={scheme}")]
+    SchemeUnsupported { scheme: u8 },
+    /// An older configuration document was migrated forward.
+    ///
+    /// Appended by ADR-0005 alongside the `ConfigError` variant of the same shape.
+    /// It is carried on both types on purpose. `config/migrated` is in the ADR's
+    /// stable-code list, and a code that no rendering can produce is a code no
+    /// diagnostic or test can match; but more than that, the alternative was to
+    /// fold a *successful* migration onto [`ImeError::ConfigInvalid`] in the `From`
+    /// conversion, which would tell the user their configuration failed when in
+    /// fact it was repaired. A level of `info` at the call site keeps it out of the
+    /// error path's noise.
+    #[error("config/migrated: from={from} to={to} backup={backup}")]
+    ConfigMigrated { from: u16, to: u16, backup: String },
+    /// Nothing was recorded under the key the caller asked to drop.
+    ///
+    /// Appended by ADR-0005. The code sits in the existing `dict/*` segment, but the
+    /// variant lives here rather than on [`DictError`]: that type is documented as
+    /// the failures raised "while validating and reading the compiled dictionary",
+    /// and this one describes a lookup that succeeded and found nothing. Putting it
+    /// there forced every `DictError` classifier to invent an answer -- the
+    /// quarantine logic in `ime-dict`'s recovery pass would have had to decide
+    /// whether "the word was not found" means the *file* is damaged.
+    #[error("dict/user-word-not-found")]
+    UserWordNotFound,
+    /// The export would write more than the caller allows.
+    ///
+    /// Appended by ADR-0005, for the same reason as
+    /// [`ImeError::UserWordNotFound`].
+    #[error("dict/export-too-large: bytes={bytes} limit={limit}")]
+    ExportTooLarge { bytes: u64, limit: u64 },
 }
 
 /// Dictionary-container failures.
@@ -147,6 +191,17 @@ pub enum ConfigError {
     /// A section holds more entries than the schema allows; the surplus is ignored.
     #[error("config/limit-exceeded: {section} limit={limit}")]
     LimitExceeded { section: String, limit: usize },
+    /// An older configuration document was migrated forward.
+    ///
+    /// Appended by ADR-0005. This is an *informational* outcome, not a failure --
+    /// the migration succeeded and the plugin starts normally -- but it travels
+    /// through `ConfigError` because that is the type the loader already reports
+    /// through, and a caller that ignores it loses the one record of why the
+    /// user's file changed under them. `backup` names the file the original was
+    /// moved to, so the diagnostic can point at it without the loader having to
+    /// hand back a second value.
+    #[error("config/migrated: from={from} to={to} backup={backup}")]
+    Migrated { from: u16, to: u16, backup: String },
 }
 
 /// Platform-backend failures (`platform/backend/*` codes).
@@ -191,6 +246,11 @@ impl From<ConfigError> for ImeError {
                 key: section,
                 reason: format!("limit exceeded: {limit}"),
             },
+            // A migration that succeeded keeps its own identity rather than being
+            // folded onto `ConfigInvalid`: see `ImeError::ConfigMigrated`.
+            ConfigError::Migrated { from, to, backup } => {
+                ImeError::ConfigMigrated { from, to, backup }
+            }
         }
     }
 }

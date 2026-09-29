@@ -68,12 +68,17 @@ pub enum SandboxError {
         path: PathBuf,
     },
     /// The dictionary copy does not hash to the source it was made from.
-    #[error("the dictionary copy {copy} does not match the source {source}")]
+    ///
+    /// The second field is named `pristine` rather than `source` on purpose: `thiserror`
+    /// treats a field with that exact name as the error's `source()`, and requires it to
+    /// implement `std::error::Error`. A `PathBuf` does not, so naming it `source` makes
+    /// the derive emit a call to `as_dyn_error` on a path and the crate stops compiling.
+    #[error("the dictionary copy {copy} does not match the source {pristine}")]
     DictMismatch {
         /// The sandbox copy.
         copy: PathBuf,
         /// The pristine source.
-        source: PathBuf,
+        pristine: PathBuf,
     },
     /// Every reset name beside a file is taken.
     #[error("every reset name beside {path} is taken")]

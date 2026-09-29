@@ -9,7 +9,7 @@ pub mod schema;
 
 pub use crate::reload::{ConfigStore, FILE_NAME, ReloadOutcome, default_path};
 pub use crate::schema::{
-    AnimationConfig, Config, DataConfig, DiagnosticsConfig, Durability, DigitZero, EngineConfig,
+    AnimationConfig, Config, DataConfig, DiagnosticsConfig, DigitZero, Durability, EngineConfig,
     KeyName, KeysConfig, LogLevel, PunctMode, Rgb, ThemeConfig, ThemeScheme, UiConfig,
     VerifyDictOnLoad,
 };

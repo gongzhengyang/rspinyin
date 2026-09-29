@@ -221,7 +221,9 @@ impl Paging {
         if pages == 0 {
             return false;
         }
-        let last = u16::from(pages).saturating_mul(self.size()).saturating_sub(1);
+        let last = u16::from(pages)
+            .saturating_mul(self.size())
+            .saturating_sub(1);
         let current = self.highlight.min(last).min(total - 1);
         let target = if delta < 0 {
             current.saturating_sub(u16::from(delta.unsigned_abs()))
@@ -535,10 +537,13 @@ mod tests {
         assert_eq!(paging.digit_target(6, 45), None);
         assert_eq!(paging.digit_target(0, 45), None);
         assert_eq!(paging.digit_target(10, 45), None);
-        // A partly filled last page answers for the digits that name something.
+        // A page boundary does not renumber the digits: page 1 shows indices 5..9, so
+        // its digits run 1..=5 again and 6 still names nothing. The guard is against the
+        // page on show, not against the list.
         assert!(paging.flip(PageDir::Next, 45));
         assert_eq!(paging.digit_target(1, 45), Some(5));
-        assert_eq!(paging.digit_target(6, 45), Some(10));
+        assert_eq!(paging.digit_target(5, 45), Some(9));
+        assert_eq!(paging.digit_target(6, 45), None);
 
         let mut short = Paging::with_page_size(5);
         assert_eq!(short.digit_target(3, 2), None);

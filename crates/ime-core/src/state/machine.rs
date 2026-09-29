@@ -61,7 +61,7 @@ use crate::segment::{HINT_INLINE_BOUNDARIES, SyllableDag};
 use crate::state::SessionConfig;
 use crate::state::boundaries::map_to_raw;
 use crate::state::paging::Paging;
-use crate::viterbi::Decoder;
+use crate::viterbi::{DecodeScratch, Decoder};
 
 /// Most effects one [`step`] produces.
 ///
@@ -106,10 +106,27 @@ pub struct Session {
     pub buf: InputBuffer,
     /// Segmentation graph of the input in [`Session::buf`]. It describes the input
     /// the last refresh segmented, and is emptied when a session ends.
-    pub dag: SyllableDag,
-    /// The candidate list and the cut of the winning path, as the last decode left
-    /// them. Empty while the session is idle.
-    pub decoded: DecodeResult,
+    dag: SyllableDag,
+    /// The decode workspace of this session: the graph a decode builds, its beams and
+    /// drafts, and the candidate list it answers with, all kept across keystrokes.
+    ///
+    /// It is the one set of decode buffers a session owns; [`Session::decoded`] is the
+    /// read side of it. The workspace is borrowed mutably for the length of a decode,
+    /// which is exactly the concurrency the decoder promises -- decoding is serial per
+    /// session.
+    scratch: DecodeScratch,
+    /// The candidate list of the refresh before the last one, parked outside the
+    /// workspace.
+    ///
+    /// [`Session::refresh`] reads the text the highlight follows out of it as a borrow,
+    /// while the decode below needs the workspace mutably; holding one answer here is
+    /// what lets that borrow and the decode exist at the same time without copying the
+    /// text. The buffers it carries go back into the workspace before the next decode,
+    /// so the decode writes into storage that is already sized.
+    previous: DecodeResult,
+    /// The request the last decode was built from, refilled per keystroke rather than
+    /// built again, which is what keeps a keystroke from allocating the input string.
+    request: DecodeRequest,
     /// Which page is shown and which candidate is highlighted.
     pub paging: Paging,
     /// Revision of the frame the window holds. It advances with every frame, and
@@ -245,6 +262,19 @@ pub enum Effect {
         /// How strongly to weigh it.
         weight_hint: u16,
     },
+    /// Save the highlighted candidate as a phrase the user defined on purpose.
+    ///
+    /// The session holds no phrase table and writes no file, so the pair leaves as an
+    /// effect and the host layer appends it to the user's phrase document, where the
+    /// next load of that document picks it up. The composition is not touched: the
+    /// candidate list and the preedit stay exactly as they were, and nothing is
+    /// re-sent to the window.
+    AddPhrase {
+        /// The input the user typed, folded to the lower-case key alphabet of a phrase.
+        key: String,
+        /// The text of the candidate the highlight was on, which becomes the phrase.
+        text: String,
+    },
     /// Report a diagnostic.
     ///
     /// The payload is built from the stable `domain/action/reason` codes and from
@@ -304,7 +334,9 @@ impl Session {
             state: SessionState::Idle,
             buf: InputBuffer::new(),
             dag: SyllableDag::new(),
-            decoded: empty_result(),
+            scratch: DecodeScratch::new(),
+            previous: empty_result(),
+            request: DecodeRequest::new(""),
             paging: Paging::new(),
             revision: Revision::new(0),
             temp_english: false,
@@ -346,13 +378,38 @@ impl Session {
         &self.preedit
     }
 
+    /// Returns the segmentation graph of the input in [`Session::buf`].
+    ///
+    /// The graph describes the input the last refresh segmented, and is empty while the
+    /// session is idle.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn dag(&self) -> &SyllableDag {
+        &self.dag
+    }
+
+    /// Returns the candidate list and the cut of the winning path, as the last decode
+    /// left them.
+    ///
+    /// The list is empty while the session is idle, which is what a session that has
+    /// composed nothing holds.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn decoded(&self) -> &DecodeResult {
+        self.scratch.result()
+    }
+
     /// Returns the candidate the highlight is on, or `None` when there is none.
     ///
     /// # Panics
     ///
     /// Never panics.
     pub fn highlighted_candidate(&self) -> Option<&Candidate> {
-        self.decoded
+        self.decoded()
             .candidates
             .get(usize::from(self.paging.highlight))
     }
@@ -401,7 +458,13 @@ impl Session {
     /// composition and the callers that take one back set it themselves.
     pub(super) fn clear_input(&mut self) {
         self.buf.clear();
-        self.decoded = empty_result();
+        // The candidate list goes with the input: taking the answer out of the workspace
+        // leaves it holding an empty one, which is what `Session::decoded` reports
+        // between compositions. The answer parked in `previous` is emptied the same way,
+        // so that no list of a finished composition stays in the session -- its buffers
+        // stay, and the next composition's first decode writes into them.
+        let _ = self.scratch.take_result();
+        clear_result(&mut self.previous);
         self.paging.reset();
         self.preedit = empty_preedit();
         self.pending = None;
@@ -433,37 +496,45 @@ impl Session {
     /// The candidate text the highlight is on is read before the decode and handed to
     /// [`Paging::reconcile`], so a keystroke moves the highlight with the word the
     /// user had chosen rather than resetting it to the first candidate.
+    ///
+    /// That text is read as a borrow rather than copied: the copy this used to take
+    /// existed only to outlive the decode below, which needs the workspace mutably, and
+    /// the borrow ends at the `reconcile` call. The list is parked in
+    /// [`Session::previous`] for the length of the decode, and the buffers of the answer
+    /// before it go back into the workspace, so that the decode writes into storage that
+    /// is already sized. The two fields are named directly instead of through
+    /// [`Session::highlighted_candidate`], because that accessor borrows the whole
+    /// session and the mutable borrow `reconcile` takes of the paging state would
+    /// collide with it.
     pub(super) fn refresh(&mut self, env: &SessionEnv<'_>) {
-        let prev_text = self.highlighted_candidate().map(|held| held.text.clone());
         self.resegment();
-        let request = DecodeRequest::new(self.buf.raw());
-        self.decoded = env
-            .decoder
-            .decode(&request, env.lexicon, env.user_freq, env.lm);
+        let parked = core::mem::replace(&mut self.previous, self.scratch.take_result());
+        self.scratch.recycle(parked);
+        let prev = self
+            .previous
+            .candidates
+            .get(usize::from(self.paging.highlight))
+            .map(|held| held.text.as_str());
+        self.request.raw.clear();
+        self.request.raw.push_str(self.buf.raw());
+        env.decoder.decode_into(
+            &mut self.scratch,
+            &self.request,
+            env.lexicon,
+            env.user_freq,
+            env.lm,
+        );
         self.paging
-            .reconcile(prev_text.as_deref(), &self.decoded.candidates);
+            .reconcile(prev, &self.scratch.result().candidates);
         build_preedit_into(&self.buf, &self.dag, &mut self.preedit);
     }
 
     /// Rebuilds the segmentation graph and writes its syllable grid into the buffer.
-    ///
-    /// The grid is written back only when the input is segmentable. A failed
-    /// segmentation reports the whole input as one pass-through range, and adopting
-    /// that would make a single Backspace delete everything the user typed.
     fn resegment(&mut self) {
         if self.dag.build(self.buf.raw()).is_err() {
             return;
         }
-        let mut hint = SmallVec::<[u16; HINT_INLINE_BOUNDARIES]>::new();
-        if !self.dag.best_segmentation_hint(&mut hint) {
-            return;
-        }
-        let raw = self.buf.raw();
-        let mut grid = SmallVec::<[u16; HINT_INLINE_BOUNDARIES]>::new();
-        if !map_to_raw(raw, &hint, &mut grid) {
-            return;
-        }
-        self.buf.set_boundaries(&grid);
+        write_boundaries(&mut self.buf, &self.dag);
     }
 
     /// Rebuilds the preedit from the current input and graph.
@@ -471,15 +542,45 @@ impl Session {
         build_preedit_into(&self.buf, &self.dag, &mut self.preedit);
     }
 
+    /// Adopts a new page size and puts the highlight back on the word it was on.
+    ///
+    /// The candidate list is read from the workspace and the highlight is written into
+    /// the paging state, which are different fields of the session; the list stays
+    /// borrowed while the paging state is written, which is why this is one call here
+    /// rather than two calls from the transition. A transition reaches the list only
+    /// through [`Session::decoded`], and that accessor borrows the whole session, so it
+    /// cannot be held across a mutable borrow of the paging state.
+    pub(super) fn adopt_page_size(&mut self, size: u8) {
+        let prev = self
+            .scratch
+            .result()
+            .candidates
+            .get(usize::from(self.paging.highlight))
+            .map(|held| held.text.as_str());
+        self.paging.set_page_size(size);
+        self.paging
+            .reconcile(prev, &self.scratch.result().candidates);
+    }
+
     /// Builds the frame the window draws from the session's current state.
+    ///
+    /// The frame leaves the session for the UI thread, so everything in it is owned and
+    /// this call allocates: the preedit text and its span list, the page's candidates,
+    /// and the mode strip. None of those copies can be dropped without changing
+    /// [`UiFrame`], which is frozen -- a frame built out of borrows would outlive the
+    /// session state it points at. What the build does *not* do is copy anything twice:
+    /// the preedit it snapshots is the buffer [`build_preedit_into`] refills in place
+    /// across keystrokes, and the candidates are one clone of the page the decoder
+    /// produced, taken with an exact-sized allocation.
     fn build_frame(&self, cfg: &SessionConfig, revision: Revision) -> UiFrame {
-        let total = u16::try_from(self.decoded.candidates.len()).unwrap_or(u16::MAX);
-        let start = usize::from(self.paging.page_start()).min(self.decoded.candidates.len());
-        let end = usize::from(self.paging.page_end(total)).min(self.decoded.candidates.len());
+        let candidates = &self.decoded().candidates;
+        let total = u16::try_from(candidates.len()).unwrap_or(u16::MAX);
+        let start = usize::from(self.paging.page_start()).min(candidates.len());
+        let end = usize::from(self.paging.page_end(total)).min(candidates.len());
         UiFrame {
             revision: revision.value(),
             preedit: self.preedit.clone(),
-            candidates: self.decoded.candidates[start..end].to_vec(),
+            candidates: candidates[start..end].to_vec(),
             page: self.paging.page_state(total),
             status: self.ctx.status.clone(),
             anchor: self.ctx.anchor,
@@ -495,11 +596,16 @@ impl Session {
     ///
     /// The show precedes the frame because the window drops a frame that arrives
     /// while it is hidden, so the two cannot be reordered.
+    ///
+    /// The preedit the application's preedit area is told to show is taken from the
+    /// frame rather than read from the session a second time, so the two carriers of
+    /// the composing text are the same value: the window header and the application
+    /// cannot disagree about it, which two independent reads could only guarantee by
+    /// construction.
     pub(super) fn emit_window(&mut self, ctx: &mut Ctx<'_>) {
         let revision = self.revision.next();
-        let preedit = self.preedit.clone();
         let frame = Box::new(self.build_frame(ctx.cfg, revision));
-        ctx.push(Effect::UpdatePreedit(preedit));
+        ctx.push(Effect::UpdatePreedit(frame.preedit.clone()));
         ctx.push(Effect::Show(AnchorHint {
             revision,
             placement: Placement::Auto,
@@ -508,11 +614,12 @@ impl Session {
     }
 
     /// Emits the preedit and the frame after a change to the composing text.
+    ///
+    /// The application's preedit comes from the frame, as in [`Session::emit_window`].
     pub(super) fn emit_update(&mut self, ctx: &mut Ctx<'_>) {
         let revision = self.revision.next();
-        let preedit = self.preedit.clone();
         let frame = Box::new(self.build_frame(ctx.cfg, revision));
-        ctx.push(Effect::UpdatePreedit(preedit));
+        ctx.push(Effect::UpdatePreedit(frame.preedit.clone()));
         ctx.push(Effect::SendFrame(frame));
     }
 
@@ -604,6 +711,39 @@ pub(super) fn empty_result() -> DecodeResult {
         segments: Vec::new(),
         degraded: false,
     }
+}
+
+/// Empties a result in place, keeping the buffers it holds.
+///
+/// The same value [`empty_result`] builds from nothing, for a caller that already has a
+/// result: the lists lose their entries, and the capacity they were sized to stays for
+/// the next decode to write into.
+fn clear_result(result: &mut DecodeResult) {
+    result.candidates.clear();
+    result.segments.clear();
+    result.degraded = false;
+}
+
+/// Writes the syllable grid of `dag` into `buf`, so that a Backspace removes a syllable.
+///
+/// The grid is written back only when the graph has a segmentation at all. A graph
+/// without one reports the whole input as a single pass-through range, and adopting that
+/// would make one Backspace delete everything the user typed; the buffer keeps the grid
+/// it already had instead.
+///
+/// The buffer and the graph are separate arguments rather than two fields of a session, so
+/// that the caller decides which graph the grid is derived from.
+fn write_boundaries(buf: &mut InputBuffer, dag: &SyllableDag) {
+    let mut hint = SmallVec::<[u16; HINT_INLINE_BOUNDARIES]>::new();
+    if !dag.best_segmentation_hint(&mut hint) {
+        return;
+    }
+    let raw = buf.raw();
+    let mut grid = SmallVec::<[u16; HINT_INLINE_BOUNDARIES]>::new();
+    if !map_to_raw(raw, &hint, &mut grid) {
+        return;
+    }
+    buf.set_boundaries(&grid);
 }
 
 /// Returns the preedit of a session that has composed nothing.

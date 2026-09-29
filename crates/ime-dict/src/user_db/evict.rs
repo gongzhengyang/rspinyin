@@ -33,18 +33,28 @@ pub(super) fn start_sweep(inner: &Arc<Inner>) -> Option<Sweep> {
     let weak = Arc::downgrade(inner);
     let thread = std::thread::Builder::new()
         .name("userdb-sweep".to_string())
-        .spawn(move || loop {
-            // One wake per idle window: the thread never spins, and the atomic the record
-            // path touches costs that path nothing.
-            std::thread::sleep(Duration::from_millis(EVICT_IDLE_MS));
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
-            inner.sweep_once();
+        .spawn(move || {
+            loop {
+                // One wake per idle window: the thread never spins, and the atomic the record
+                // path touches costs that path nothing.
+                std::thread::sleep(Duration::from_millis(EVICT_IDLE_MS));
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                inner.sweep_once();
+            }
         })
         .ok()?;
     Some(Sweep { _thread: thread })
 }
+
+/// One batch of stale keys together with the cursor to resume from.
+///
+/// The second element is the last key the scan examined, or `None` when the table was
+/// walked to the end. It is a tuple rather than a struct because it is only ever produced
+/// and immediately destructured in [`Inner::sweep_once`], and the pair has no meaning
+/// apart from that hand-off.
+type StaleBatch = (Vec<Box<str>>, Option<Box<str>>);
 
 impl Inner {
     /// Whether no record has arrived for at least `idle_ms`.
@@ -107,7 +117,10 @@ impl Inner {
             .map_err(|error| store_error(&self.path, &error))?;
         let mut oldest: BinaryHeap<u64> = BinaryHeap::with_capacity(rank as usize);
         let mut seen = 0u64;
-        for entry in table.iter().map_err(|error| store_error(&self.path, &error))? {
+        for entry in table
+            .iter()
+            .map_err(|error| store_error(&self.path, &error))?
+        {
             let (_, value) = entry.map_err(|error| store_error(&self.path, &error))?;
             seen += 1;
             let stamp = value.value().1;
@@ -150,11 +163,7 @@ impl Inner {
 
     /// Examines the next [`EVICT_BATCH`] keys after `after` and returns the stale ones
     /// together with the last key examined, which is the next cursor.
-    fn scan_stale(
-        &self,
-        after: Option<&str>,
-        threshold: u64,
-    ) -> Result<(Vec<Box<str>>, Option<Box<str>>), ImeError> {
+    fn scan_stale(&self, after: Option<&str>, threshold: u64) -> Result<StaleBatch, ImeError> {
         let txn = self
             .db
             .begin_read()
@@ -179,12 +188,12 @@ impl Inner {
         Ok((stale, last))
     }
 
-    /// Removes `keys` from the store and drops them from the cache.
+    /// Removes `keys` from the store, from the in-memory counts and from the cache.
     ///
-    /// The cache holds the totals of the keys just removed, so they have to go: a later
-    /// `freq` of an evicted key must read the store, not a stale total. The cache lock is
-    /// taken once per key rather than once per batch, so that a record arriving while the
-    /// sweep runs never waits behind the whole batch.
+    /// Both memories hold totals for the keys just removed, so they have to go: a later
+    /// `freq` of an evicted key must answer zero, not a count the store no longer holds.
+    /// Each lock is taken once per key rather than once per batch, so that a record
+    /// arriving while the sweep runs never waits behind the whole batch.
     fn delete_batch(&self, keys: &[Box<str>]) -> Result<(), ImeError> {
         let mut txn = self
             .db
@@ -204,6 +213,7 @@ impl Inner {
         txn.commit()
             .map_err(|error| store_error(&self.path, &error))?;
         for key in keys {
+            self.forget_committed(key);
             lock(&self.cache).remove(key);
         }
         Ok(())

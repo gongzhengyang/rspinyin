@@ -62,6 +62,15 @@
 //! which is the only offline proof that the session loaded the sandbox's build rather than
 //! the installed one.
 
+// The harness is exercised by the tests below and by nothing else yet: its driver is the
+// input channel's `--sandbox` option, which `FEAT-TEST-P0.05.01` has not added, so in a
+// non-test build every item here is dead code. The attribute goes away with that flag.
+//
+// `unused_imports` is covered by the same reasoning: the `pub use` lines at the foot of
+// this file are the harness's surface, and a `pub use` in a *binary* crate is reported as
+// unused whenever nothing in the crate names it.
+#![allow(dead_code, unused_imports)]
+
 use std::env;
 use std::fs;
 use std::io::ErrorKind;
@@ -139,7 +148,11 @@ impl RealDirs {
             return None;
         }
         let bases = BaseDirs::from_env().ok()?;
-        Some(Self { home, data_home: bases.data_home, config_home: bases.config_home })
+        Some(Self {
+            home,
+            data_home: bases.data_home,
+            config_home: bases.config_home,
+        })
     }
 }
 
@@ -184,16 +197,24 @@ impl RealDirWitness {
     /// empty witness when the operator's home cannot be resolved.
     pub fn capture() -> Self {
         let Some(real) = RealDirs::from_env() else {
-            return Self { entries: Vec::new() };
+            return Self {
+                entries: Vec::new(),
+            };
         };
-        Self::of(&[real.data_home.join(PROGRAM_DIR), real.config_home.join(PROGRAM_DIR)])
+        Self::of(&[
+            real.data_home.join(PROGRAM_DIR),
+            real.config_home.join(PROGRAM_DIR),
+        ])
     }
 
     /// Records `paths`, whether or not they exist.
     pub fn of(paths: &[PathBuf]) -> Self {
         let entries = paths
             .iter()
-            .map(|path| Witness { path: path.clone(), stamp: stamp_of(path) })
+            .map(|path| Witness {
+                path: path.clone(),
+                stamp: stamp_of(path),
+            })
             .collect();
         Self { entries }
     }
@@ -222,7 +243,9 @@ impl RealDirWitness {
 
 /// The modification time of `path`, or `None` when it does not exist.
 fn stamp_of(path: &Path) -> Option<(i64, i64)> {
-    fs::metadata(path).ok().map(|meta| (meta.mtime(), meta.mtime_nsec()))
+    fs::metadata(path)
+        .ok()
+        .map(|meta| (meta.mtime(), meta.mtime_nsec()))
 }
 
 /// One case's isolated environment.
@@ -286,7 +309,10 @@ impl Sandbox {
     /// exist.
     pub fn create_with_dict(root: &Path, dict_source: &Path) -> Result<Self, SandboxError> {
         let root = prepare_root(root)?;
-        let bases = BaseDirs { config_home: root.join("config"), data_home: root.join("data") };
+        let bases = BaseDirs {
+            config_home: root.join("config"),
+            data_home: root.join("data"),
+        };
         // The plugin's own layout pass, so the sandbox cannot drift from the shape the
         // plugin really builds. It creates each directory with the mode the plugin uses
         // and never creates `config.toml` or `user.redb`, which is exactly what a fresh
@@ -297,7 +323,9 @@ impl Sandbox {
             return Err(SandboxError::LayoutDegraded { root, notices });
         }
         if !dict_source.is_file() {
-            return Err(SandboxError::DictSourceMissing { path: dict_source.to_path_buf() });
+            return Err(SandboxError::DictSourceMissing {
+                path: dict_source.to_path_buf(),
+            });
         }
         let sandbox = Self {
             cache_home: root.join("cache"),
@@ -398,8 +426,14 @@ impl Sandbox {
             // Fcitx5's own addons and the system profile are still found. Appending is
             // what makes this correct whether the variable replaces the search path or
             // adds to it.
-            ("FCITX_DATA_DIRS".to_owned(), search_path(&self.share_home, &self.data_dirs)),
-            ("FCITX_CONFIG_DIRS".to_owned(), search_path(&self.config_home, &self.config_dirs)),
+            (
+                "FCITX_DATA_DIRS".to_owned(),
+                search_path(&self.share_home, &self.data_dirs),
+            ),
+            (
+                "FCITX_CONFIG_DIRS".to_owned(),
+                search_path(&self.config_home, &self.config_dirs),
+            ),
         ];
         vars.sort();
         vars
@@ -485,30 +519,50 @@ impl Drop for Sandbox {
 /// Resolves and creates the sandbox root, refusing one that could hold real user data.
 fn prepare_root(root: &Path) -> Result<PathBuf, SandboxError> {
     if !root.is_absolute() {
-        return Err(SandboxError::RootNotAbsolute { root: root.to_path_buf() });
+        return Err(SandboxError::RootNotAbsolute {
+            root: root.to_path_buf(),
+        });
     }
     if let Some(owned) = RealDirs::from_env().and_then(|real| owned_real_dir(root, &real)) {
-        return Err(SandboxError::RootOwnsRealDirs { root: root.to_path_buf(), owned });
+        return Err(SandboxError::RootOwnsRealDirs {
+            root: root.to_path_buf(),
+            owned,
+        });
     }
     if let Some(parent) = root.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|source| SandboxError::Io { path: parent.to_path_buf(), source })?;
+        fs::create_dir_all(parent).map_err(|source| SandboxError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
     }
     match fs::symlink_metadata(root) {
         Ok(meta) if meta.file_type().is_symlink() => {
-            return Err(SandboxError::Symlink { path: root.to_path_buf() });
+            return Err(SandboxError::Symlink {
+                path: root.to_path_buf(),
+            });
         }
         Ok(meta) if !meta.is_dir() => {
-            return Err(SandboxError::RootNotDirectory { root: root.to_path_buf() });
+            return Err(SandboxError::RootNotDirectory {
+                root: root.to_path_buf(),
+            });
         }
         Ok(_) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => create_private_dir(root)?,
-        Err(source) => return Err(SandboxError::Io { path: root.to_path_buf(), source }),
+        Err(source) => {
+            return Err(SandboxError::Io {
+                path: root.to_path_buf(),
+                source,
+            });
+        }
     }
     // An existing root is narrowed to the mode the plugin's own directories carry: a
     // sandbox a second account can read is not a sandbox.
-    fs::set_permissions(root, fs::Permissions::from_mode(DIR_MODE))
-        .map_err(|source| SandboxError::Io { path: root.to_path_buf(), source })?;
+    fs::set_permissions(root, fs::Permissions::from_mode(DIR_MODE)).map_err(|source| {
+        SandboxError::Io {
+            path: root.to_path_buf(),
+            source,
+        }
+    })?;
     Ok(root.to_path_buf())
 }
 
@@ -524,7 +578,10 @@ fn search_path(dir: &Path, rest: &str) -> String {
 
 /// The inherited value of `name`, or `fallback` when it is unset or empty.
 fn inherited_or(name: &str, fallback: &str) -> String {
-    env::var(name).ok().filter(|value| !value.is_empty()).unwrap_or_else(|| fallback.to_owned())
+    env::var(name)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| fallback.to_owned())
 }
 
 /// Renders a layout pass's notices for an error message.
@@ -532,7 +589,14 @@ fn describe_notices(paths: &Paths) -> String {
     paths
         .notices()
         .iter()
-        .map(|notice| format!("{} {}: {}", notice.code, notice.path.display(), notice.detail))
+        .map(|notice| {
+            format!(
+                "{} {}: {}",
+                notice.code,
+                notice.path.display(),
+                notice.detail
+            )
+        })
         .collect::<Vec<_>>()
         .join("; ")
 }
@@ -543,5 +607,7 @@ fn repo_root() -> Result<PathBuf, SandboxError> {
     manifest
         .parent()
         .map(Path::to_path_buf)
-        .ok_or_else(|| SandboxError::UnusablePath { path: manifest.to_path_buf() })
+        .ok_or_else(|| SandboxError::UnusablePath {
+            path: manifest.to_path_buf(),
+        })
 }

@@ -170,7 +170,7 @@ fn test_bytes_from_raw_allow_empty_distinguishes_empty_from_invalid() {
         invalid, None,
         "a non-zero length with a null pointer is not something the host can mean"
     );
-    let data = [b'a', b'b'];
+    let data = *b"ab";
     // SAFETY: `data` is a live local array and `len` is its exact length, so the slice
     // the reader builds stays inside it for the whole of the borrow.
     let read = unsafe { bytes_from_raw_allow_empty(data.as_ptr(), data.len()) };

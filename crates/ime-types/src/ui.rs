@@ -140,6 +140,11 @@ pub struct Candidate {
 }
 
 /// Where a candidate came from; drives the source label and the diagnostics.
+///
+/// `Phrase` and `Script` were appended by ADR-0005. Appending a variant makes every
+/// `match` on this enum non-exhaustive, which is deliberate: the compiler lists the
+/// places that have to decide what the new source looks like. `Symbol` is the
+/// precedent -- it was defined ahead of its implementation for the same reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CandidateSource {
     Dict,
@@ -147,6 +152,11 @@ pub enum CandidateSource {
     Learned,
     Passthrough,
     Symbol,
+    /// The user's own phrase table.
+    Phrase,
+    /// A script conversion of another candidate, rather than a reading of the
+    /// input.
+    Script,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +164,20 @@ pub struct PageState {
     pub current: u8,
     pub total: u8,
     pub page_size: u8,
+}
+
+/// Which Chinese script the plugin commits in.
+///
+/// Appended to the contract by ADR-0005. `Default` is [`Script::Simplified`], so a
+/// configuration that predates the setting keeps the behaviour it had.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Script {
+    /// Simplified Chinese.
+    #[default]
+    Simplified,
+    /// Traditional Chinese.
+    Traditional,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -169,6 +193,12 @@ pub struct StatusStrip {
     /// Appended to the frozen struct by ADR-0001 because the user-data task
     /// requires the UI to surface that degraded mode.
     pub readonly: bool,
+    /// Which script the strip should show.
+    ///
+    /// Appended by ADR-0005, following the `readonly` precedent above: the field is
+    /// additive, and the struct already derives `Default`, so the new field's
+    /// default is the value every existing construction site gets.
+    pub script: Script,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

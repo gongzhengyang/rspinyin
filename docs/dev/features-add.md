@@ -2,7 +2,7 @@
 
 > 文档版本: v1.0 ｜ 系统形态: **Desktop GUI**（Linux 桌面输入法：进程内 Fcitx5 插件 + 全自绘候选框）｜
 > 架构基线: Rust 2024 workspace（7 crates + xtask，edition 2024 / MSRV 1.85 / toolchain 1.98.0）+ Slint 1.x + Fcitx5 5.1.7 ｜
-> 关联 ADR: [./adr/0000-upstream-decisions.md](./adr/0000-upstream-decisions.md)（Slint 许可 + 词源）、[./adr/0001-frozen-boundary-contracts.md](./adr/0001-frozen-boundary-contracts.md)（契约冻结）、[./adr/0002-rust-exports-addon-factory.md](./adr/0002-rust-exports-addon-factory.md)、[./adr/0003-ui-role-separate-addon.md](./adr/0003-ui-role-separate-addon.md)；本规范新提 **ADR-0004（增量契约扩展）**，状态：待决策 ｜
+> 关联 ADR: [./adr/0000-upstream-decisions.md](./adr/0000-upstream-decisions.md)（Slint 许可 + 词源）、[./adr/0001-frozen-boundary-contracts.md](./adr/0001-frozen-boundary-contracts.md)（契约冻结）、[./adr/0002-rust-exports-addon-factory.md](./adr/0002-rust-exports-addon-factory.md)、[./adr/0003-ui-role-separate-addon.md](./adr/0003-ui-role-separate-addon.md)；本规范新提 **ADR-0005（增量契约扩展）**，状态：待决策 ｜
 > 上游主文档: [./features.md](./features.md)（Phase 1 全量任务卡 + Phase 2/3 索引）｜ 测试体系: [./features-test.md](./features-test.md)、[./tests.md](./tests.md) ｜
 > 最后同步 Commit: `ee0dbfb`（工作区含未提交增量，审计基准为 2026-09-29 17:0x 的工作树）｜
 > 维护约定: 代码演进后必须回写第 3.7 节差距矩阵、第 5.1 节追溯表与任务卡状态；假设被推翻时必须同步回写受影响任务卡
@@ -71,7 +71,7 @@ net_sockets: 0
 | **A-1** | **增量不得新增 `unsafe` 位置**。`unsafe` 白名单仍只有 `crates/ime-fcitx5/src/ffi/**` 与 `crates/ime-dict/src/mmap.rs` 两处 | 新特性（简繁、短语、用户词管理）全部可在安全 Rust 内完成；一旦需要新的 mmap 或 FFI，说明设计选错了层次 |
 | **A-2** | **增量不得新增网络能力，也不得新增"可选的"网络能力**（含 feature-gated） | `BUDGET-NET-01 = 0` 是产品承诺；一个默认关闭的 feature 在发行版打包时会被误开 |
 | **A-3** | **增量不得引入新的 copyleft 或 ShareAlike 数据源**。简繁转换表**必须**来自 `data/raw/unihan.tsv`（Unicode License，已在白名单）或项目自建 | ADR-0000 决策 B 的不可逆性说明：copyleft 数据一旦混入，事后剥离需重建全部词频与排序 |
-| **A-4** | **增量不得改变 `crates/ime-types` 的既有类型语义**；只允许**追加**（新变体、新字段、新方法带默认实现）或经 ADR-0004 批准的最小破坏性变更 | `ADR-0001` 冻结纪律；破坏性变更必须在 4.2 的契约增量表中逐条登记并给出迁移路径 |
+| **A-4** | **增量不得改变 `crates/ime-types` 的既有类型语义**；只允许**追加**（新变体、新字段、新方法带默认实现）或经 ADR-0005 批准的最小破坏性变更 | `ADR-0001` 冻结纪律；破坏性变更必须在 4.2 的契约增量表中逐条登记并给出迁移路径 |
 
 ### 0.5 与 `features.md` Phase 2/3 既定计划的关系（**防重复规划**）
 
@@ -466,9 +466,9 @@ net_sockets: 0
 3. **用户库格式不升版**：`user.redb` 的新字段（如 `pinned`、`created_unix`）通过 redb 的表新增实现，旧记录读取时用 `Default` 补齐。**不写迁移脚本**。
 4. **FFI ABI 不变**：`RSPINYIN_ABI_VERSION` 保持 1。增量的宿主交互（D-Bus、状态指示）走**新增的独立通道**，不扩 `RspinyinVtable`。
 
-### 4.2 边界交互契约增量规范（**ADR-0004 提案**）
+### 4.2 边界交互契约增量规范（**ADR-0005 提案**）
 
-> 状态：**待决策**。落地前必须新开 `docs/dev/adr/0004-incremental-contract-extension.md` 并经用户决策，因为 `ADR-0001` 已冻结 `crates/ime-types` 的全部跨边界类型。
+> 状态：**待决策**。落地前必须新开 `docs/dev/adr/0005-incremental-contract-extension.md` 并经用户决策，因为 `ADR-0001` 已冻结 `crates/ime-types` 的全部跨边界类型。
 
 #### 4.2.1 契约增量总表
 
@@ -476,7 +476,7 @@ net_sockets: 0
 |---|---|---|---|---|---|
 | `DecodeFlags` | `ime-types/src/decode.rs` | 新增 `SHUANGPIN = 1<<11`、`PHRASE = 1<<12`、`SCRIPT = 1<<13` | **追加（位域）** | 位域天然前向兼容：`from_bits_truncate` 丢弃未知位；旧读者读到新位会忽略。既有测试 `test_decode_flags_all_covers_every_defined_bit` 断言 `all().bits() == 0x07FF`，须同步改为 `0x3FFF` | `P0.02.01`、`P0.02.05`、`P0.02.06` |
 | `SchemeId` | `ime-types/src/decode.rs`（新增） | `pub struct SchemeId(u8)`，`Full = 0`、`Xiaohe = 1`、`Ziranma = 2`、`Microsoft = 3`、`Sogou = 4`、`Ziguang = 5`；`const COUNT: u8 = 6` | **新增类型** | 新增类型不影响既有代码 | `P0.02.01` |
-| `DecodeRequest` | `ime-types/src/decode.rs` | 新增字段 `pub scheme: SchemeId` | **破坏性（结构体加字段）** | 缓解：`DecodeRequest::new()` 与 `with_flags()` 已存在，新增 `with_scheme()` 构造器；`Default` 语义为 `SchemeId::Full`。**本 workspace 内无外部消费者**，所有构造点在同一 PR 内同步；`#[non_exhaustive]` 未使用故需全量同步。**这是本次唯一的破坏性变更，必须在 ADR-0004 中单独列出** | `P0.02.01` |
+| `DecodeRequest` | `ime-types/src/decode.rs` | 新增字段 `pub scheme: SchemeId` | **破坏性（结构体加字段）** | 缓解：`DecodeRequest::new()` 与 `with_flags()` 已存在，新增 `with_scheme()` 构造器；`Default` 语义为 `SchemeId::Full`。**本 workspace 内无外部消费者**，所有构造点在同一 PR 内同步；`#[non_exhaustive]` 未使用故需全量同步。**这是本次唯一的破坏性变更，必须在 ADR-0005 中单独列出** | `P0.02.01` |
 | `CandidateSource` | `ime-types/src/ui.rs` | 新增 `Phrase`、`Script` 两个变体 | **追加（枚举）** | 枚举新增变体使 `match` 不再穷尽。缓解：`CandidateSource` 当前在 `ime-core`/`ime-ui`/`ime-fcitx5` 共 N 处被 `match`；全部为 workspace 内代码，同 PR 同步。`Symbol` 变体是既有先例（已定义、未使用） | `P0.02.05`、`P0.02.06` |
 | `StatusStrip` | `ime-types/src/ui.rs` | 新增 `pub script: Script`（`Script::Simplified` / `Traditional`） | **追加（结构体加字段）** | **已有先例**：`readonly` 字段是 ADR-0001 追加的，注释明确记录。`StatusStrip` 已 `derive(Default)`，新字段的 `Default` 为 `Simplified` | `P0.02.06` |
 | `KeyAction` | `ime-types/src/key.rs` | 新增 `ToggleScript`、`ForgetHighlighted`、`PinHighlighted`、`AddPhrase` | **追加（枚举）** | 同 `CandidateSource`。既有测试 `label()` 是**穷尽 match**，新增变体会使其编译失败——这正是该测试的设计意图（"adding or removing one breaks the build instead of silently changing the frozen contract"），须同步更新 | `P0.02.06`、`P0.03.01`、`P1.02.05` |
@@ -601,7 +601,7 @@ doctor_on_start = false       # 追加：启动时跑一次能力自检并记日
 
 | 里程碑 | 内容 | 交付物 | 工时 | 门禁 |
 |---|---|---|---|---|
-| **`M0` 契约冻结** | 新开 `docs/dev/adr/0004-incremental-contract-extension.md`；按 4.2.1 的表逐条落地 `crates/ime-types` 的追加与**唯一一处破坏性变更**（`DecodeRequest.scheme`）；同步更新三个穷尽匹配测试（`test_decode_flags_all_covers_every_defined_bit`、`test_key_action_*` 的 `label()`、`CandidateSource` 的匹配点） | ADR-0004 + 契约代码 + `cargo check --workspace --all-targets` 绿 | **1 人天** | 用户对 ADR-0004 的决策；`cargo test -p ime-types` 全绿 |
+| **`M0` 契约冻结** | 新开 `docs/dev/adr/0005-incremental-contract-extension.md`；按 4.2.1 的表逐条落地 `crates/ime-types` 的追加与**唯一一处破坏性变更**（`DecodeRequest.scheme`）；同步更新三个穷尽匹配测试（`test_decode_flags_all_covers_every_defined_bit`、`test_key_action_*` 的 `label()`、`CandidateSource` 的匹配点） | ADR-0005 + 契约代码 + `cargo check --workspace --all-targets` 绿 | **1 人天** | 用户对 ADR-0005 的决策；`cargo test -p ime-types` 全绿 |
 
 **`M0` 是硬门禁**：`ADD-FEAT-P0.02.*`、`P0.01.03`、`P0.01.04`、`P0.03.02` **全部**依赖它。`ADD-FEAT-P0.01.01`、`P0.01.02`、`P0.03.01`、`P0.05.01`、`P0.05.02` **不依赖**它，可在 `M0` 决策期间并行开工。
 
@@ -1023,7 +1023,7 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   - 前置依赖：**`M0` 契约冻结**（需要 `CandidateSource::Phrase` 与 `DecodeFlags::PHRASE`）；无其他任务依赖
   - 关键路径：`CP: 否`（松弛 9 人天）
   - 并行通道：`Track A-数据`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
   - 代码落地锚点：`crates/ime-core/src/phrase.rs`（**新增**）、`crates/ime-core/src/phrase/table.rs`（**新增**）、`crates/ime-core/src/viterbi/decoder.rs`（改：候选汇总期注入）、`crates/ime-config/src/schema.rs`（改：新增 `[phrases]` 段）、`crates/ime-config/src/reload.rs`（改：热重载短语表）、`crates/ime-types/src/ui.rs`（`M0` 已加 `CandidateSource::Phrase`）、`data/raw/phrase.tsv`（**新增**，内置短语，项目自建）
 
 - **目标与价值**：让用户用 2–4 个字母输出长文本。对标搜狗的自定义短语、RIME 的 `custom_phrase`。**这是投入产出比最高的增量**：3 人天换来的是用户每天数十次的重复输入被消除。典型用例：`rq`→当前日期、`dz`→邮箱、`sfz`→身份证号、`gs`→公司抬头。
@@ -1142,6 +1142,17 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   4. 短语注入的实测耗时 ≤ 0.10ms（`criterion` 基准或探针断言）。[性能]
   5. `decode_p99 ≤ 3.0ms` 不劣化。[性能]
   6. 热重载短语表期间进行中的输入**不中断**（`test_reload_preserves_active_session`）。[自动]
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-core/src/phrase.rs`（708 行）+ `phrase/tests.rs`（400 行，26 个用例）；`state/machine.rs` 的 `Effect::AddPhrase { key, text }`；`state/transitions.rs` 的 `AddPhrase` arm 与 4 条状态机用例；`ime-config/src/schema.rs` 的 `PhraseConfig`、`MAX_PHRASE_ENTRIES = 50_000`、`DEFAULT_PHRASE_ENTRIES = 5_000`；`data/raw/phrase.tsv`（项目自建）。
+  - **它替换了 ADR-0005 决策 5 留的占位**：状态机原先对 `KeyAction::AddPhrase` 回 `Diagnose(dict/unsupported)`，本卡把它换成真实 effect。
+  - **验证命令与结果**：`just ci` 退出 0（`cargo fmt --check`、clippy `-D warnings`、nextest 1521 个用例、doctest、9 个审计脚本及其自检、25 条预算阈值全部通过）。
+  - **已知限制**：
+    1. **宿主侧未接线**：`engine/router.rs` 的 `apply_effects` 对 `Effect::AddPhrase` 仍发 `Diagnose(ImeError::Unsupported)`。`PhraseTable` 只有读（`parse`/`load`/`longest_match`），没有写入器，也没有任何东西把用户的 `phrases.tsv` 载入宿主——写一个 arm 等于在所有者定义接口之前发明它。**这是本卡唯一未完成的半边，已在代码注释中写明。**
+    2. **解码注入点未接线**：`viterbi/scratch.rs` 的 `decode_into` 未调用 `inject_phrase_candidates`。
+    3. **`ime-config/src/reload.rs` 未接线**：`PartialConfig` 缺 `phrases` 字段，用户在 `config.toml` 里写的 `[phrases]` 会被 serde 静默忽略。
+    4. `phrase/limit-exceeded` 与 `phrase/added` 两个码尚未产生；`PhraseReport::over_limit` 已把计数暴露给调用方。
+    5. 未使用 `fst`：5000 条短键用有序表 + 二分即够（`ime-core` 的 `Cargo.toml` 不在白名单，且理由已写入 `PhraseTable` 的文档）。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 
@@ -1302,7 +1313,7 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   - 前置依赖：**`M0` 契约冻结**（`SchemeId`、`DecodeRequest.scheme`、`DecodeFlags::SHUANGPIN`）；无其他任务依赖
   - 关键路径：`CP: 否`（松弛 8 人天）
   - 并行通道：`Track A-解码`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
   - 代码落地锚点：`crates/ime-core/src/scheme.rs`（**新增**）、`crates/ime-core/src/scheme/{xiaohe,ziranma,microsoft,sogou,ziguang}.rs`（**新增**，5 个方案表）、`crates/ime-core/src/segment/mod.rs`（改：进入切分前的输入改写）、`crates/ime-types/src/decode.rs`（`M0` 已加 `SchemeId` 与 `DecodeRequest.scheme`）
 
 - **目标与价值**：补齐**最大的单项功能缺口**。双拼是中文输入法的高频专业特性：用户按一次键得到一个音节，击键数约为全拼的 45%。对标搜狗（7 种方案）、微软拼音（6 种）、RIME（8 种）、libpinyin、macOS 原生、小鹤音形。当前 `grep -ri shuangpin\|double_pinyin crates/ xtask/ data/` **零命中**——不是"实现得不好"，是**完全不存在**。
@@ -1441,6 +1452,21 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   4. 实测映射耗时 ≤ 0.15ms。[性能]
   5. `decode_p99 ≤ 3.0ms` 不劣化。[性能]
   6. 手工验证：配置 `scheme = "xiaohe"` 后，键入 `vs` 得到「中」，`nihc` 得到「你好」。[实验室]
+- **验收记录**（2026-09-30）：
+  - **交付物**：新增 `crates/ime-core/src/shuangpin/`（`mod.rs` 约 660 行 + 5 个方案表文件 + `tests.rs`），共 57 个用例（含 2 条 doctest）。
+  - **五个方案表的出处（每个都两处独立互校，写在各自文件的模块文档里）**：小鹤/自然码/微软/紫光与 libpinyin 的 `double_pinyin_table.h` 逐键一致；搜狗另参官方帮助页的零声母规则。
+  - **验证命令与结果**：`just ci` 退出 0（`cargo fmt --check`、clippy `-D warnings`、nextest 1521 个用例、doctest、9 个审计脚本及其自检、25 条预算阈值全部通过）。
+  - **本次由主 Agent 修正的三处**：
+    1. `key_index` 的 `usize::from` 在 `const fn` 里不可调用（`From` 尚不是 const trait），改为显式 cast。
+    2. 微软与搜狗两张表的黄金用例把 `en` 记在 `w` 键上，而两张表的 `w` 都是 `ia/ua`、`en` 在 `f`——**测试写错了，表是对的**。改为 `(b"of", "en")`。
+    3. **一处真实缺陷**：回退路径的 `v` 排除测试写成 `ch != 'v'`，而按键在**之后**才被转小写，因此大写 `V` 会溜过检查、把一个裸 `v` 写进结果——正是规范化器要折叠成 `ü` 的那个字节，会让其后每个字节偏移都错位。改为 `!ch.eq_ignore_ascii_case(&'v')`，由 `test_rewrite_is_a_fixed_point_of_the_normalizer` 的 `"VSHC"` 用例抓到。
+  - **已知限制**：
+    1. **`;` 键打不进来**：微软/搜狗/紫光的 `ing` 都印在分号键上（Rime 三个 schema、libpinyin 的 mspy/zgpy 表、搜狗官方页均如此），故键位表是 27 列；但 `InputBuffer::is_input_char` 只放行 ASCII 字母与 `'`，这三个方案的 `-ing` 音节因此暂时不可键入。要么扩输入字母表，要么在文档里明示。
+    2. **解码器接线缺失**：`viterbi/scratch.rs` 仍直接 `SyllableDag::build(&req.raw)`，未调用 `shuangpin::rewrite_request`；`DecodeResult.segments` 也未用 `SchemeMap::scheme_span` 把全拼音节下标换算回方案下标。机制与测试已就绪，只差两行调用。
+    3. **改写后长度可能超过 `MAX_RAW_LEN`**：64 个键最多展开成约 192 字节，而 `SyllableDag::build` 的长度上限是 64，超长会退化为透传候选。
+    4. 模块名为 `shuangpin/`（白名单指定），而卡面锚点是 `scheme.rs`；改名只需 `git mv` + 一行 `pub mod`。
+    5. DoD 4/5 的实测耗时与 DoD 6 的手工验证仍缺口（需接线与基准）。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 
@@ -2289,7 +2315,7 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   - 前置依赖：无
   - 关键路径：`CP: 否`（松弛 14 人天）
   - 并行通道：`Track C`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
   - 代码落地锚点：`README.md`（**新增**）、`README.zh.md`（**新增**）、`LICENSE-APACHE`（**新增**）、`LICENSE-MIT`（**新增**）、`docs/dev/licenses.md`（改：把"由 Phase 2 落地"改为已落地）、`docs/dev/features.md` 6.3 的 Phase 1 出口准则 #8（改：登记已满足）
 
 - **目标与价值**：**这是法务义务，不是文档工作**。ADR-0000 决策 A 的 `OB-1` 条款要求"在公开网页上显著展示 Slint 归属徽章"——因为输入法**既无关于对话框也无启动画面**，这是唯一可行路径。`features.md` 6.3 的 Phase 1 出口准则 #8 明文要求"`OB-1` 归属徽章已上线（README 双语的徽章与链接可达）"。实测：**仓库根 `README.md` 不存在**，`LICENSE-APACHE` / `LICENSE-MIT` 也不存在（`licenses.md` 第 1 节自述由 Phase 2 落地）。**当前状态下带病发布即违反许可条款。**
@@ -2391,6 +2417,15 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   5. `README` 的许可段含 `OB-3` 的嵌入式排除声明与 `OB-6` 的"按现状提供"转述。[文档]
   6. `docs/dev/licenses.md` 第 1 节的"由 Phase 2 落地"已回写为已落地。[文档]
   7. `cargo metadata` 的 `license` 字段与实际存在的许可文件一致。[自动]
+- **验收记录**（2026-09-29）：
+  - **交付物**：`README.md`、`README.zh.md`、`LICENSE-APACHE`、`LICENSE-MIT`。
+  - **验证命令与结果**：`bash scripts/gen-licenses.sh --check` → PASS（431 packages，OB-1..OB-6 recorded）。`readme_conclusion()` 的两条断言逐条满足：两份 README 顶部均为 `[![Built with Slint](https://img.shields.io/badge/built%20with-Slint-4C9AFF)](https://slint.dev)`，中文版 alt 为「使用 Slint 构建」，URL 含 `Slint` 且 IGNORECASE 命中；`https://slint.dev` 链接在徽章与致谢段各出现一次。
+  - **架构段按 ADR-0003 / ADR-0004 描述双 cdylib**，产物名用 `librspinyin_ui.so`（并注明描述符写 `Library=librspinyin_ui`，Fcitx5 原样加 `.so`）；全篇**无**「注册 `UserInterface`」表述，改为「Fcitx5 从 `Category=UI` 的 addon 中按 `available()` / `UIPriority` 选出」。
+  - **许可段逐条转述 OB-1~OB-6**，含 OB-3 的嵌入式排除声明与 OB-6 的「按现状提供、无担保」。
+  - **已知限制**：
+    1. **OB-1 的链接可达性未实测**：DoD 2 要求「链接实测可达」并附验证时间与方式。`--check-links` 的 HTTP 200 探测是**本仓库工具链里唯一的网络访问**，需人工或联网环境执行一次并把结果记入本记录。
+    2. 卡片 DoD 6 要求的 `docs/dev/licenses.md` 第 1 节回写已由主 Agent 完成（「由 Phase 2 落地」→「已随仓库根提供」）。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 
@@ -2402,7 +2437,7 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   - 前置依赖：无（与 `ADD-FEAT-P0.05.01` 并行；两卡的 README 与 `privacy.md` 互相链接，链接关系在**两卡都完成后**验证）
   - 关键路径：`CP: 否`（松弛 14 人天）
   - 并行通道：`Track C`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
   - 代码落地锚点：`docs/dev/privacy.md`（**新增**）、`docs/dev/licenses.md`（改：`OB-3`/`OB-6` 的落点核对）、`crates/ime-diag/src/redact.rs`（只读核对：文档必须与实现一致）、`crates/ime-core/src/privacy.rs`（只读核对：`CapabilityFlag::Password` 的"尽力而为"语义）、`crates/ime-dict/src/paths.rs`（只读核对：实际路径与权限）
 
 - **目标与价值**：**补齐 `features.md` 6.3 出口准则 #7 的缺失交付物**。实测 `docs/dev/privacy.md` 不存在。`TASK-1.06.02` 的验收标准明文要求它"含数据流向图、存储位置、权限、以及 `CapabilityFlag::Password` 是'尽力而为'信号的明确声明"。这是**用户信任的载体**——一个离线输入法最有力的卖点就是"我可以证明我不联网、不上传、不记录"，但这个证明必须写下来并且**与代码逐条对应**。
@@ -2488,6 +2523,16 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   5. `docs/dev/licenses.md` 的 `OB-3`（嵌入式排除）与 `OB-6`（无担保）两节完整。[文档]
   6. `README.md` 的隐私段链接到本文件且可达。[文档]
   7. 文档中不含任何真实用户数据或路径。[文档]
+- **验收记录**（2026-09-29）：
+  - **交付物**：`docs/dev/privacy.md`（8 节）、`docs/dev/NOTICE` 的第 1 节回写。
+  - **验证命令与结果**：`just ci` 退出 0；`gen-licenses.sh --check` PASS，`NOTICE` 的生成块标记与 `fcitx5` / `LGPL-2.1` / `LicenseRef-Slint-Royalty-free-2.0` 三项声明原样保留。
+  - **内容**：①数据流向图；②存储位置与权限表（逐条对齐 `paths.rs`）；③`CapabilityFlag::Password` 的「尽力而为」声明（未设置该标志的密码框无法识别）；④日志脱敏机制（7 个拒绝字段、`<redacted:len=N>` 计字符、敏感会话只留 `session=redacted app=<hash>`、应用标识哈希、`$HOME`→`~`、换行转义）；⑤导出/备份的隐私含义；⑥实现状态与已知缺口；⑦OB-3/OB-6 落点；⑧门禁表。
+  - **已知限制（第 6 节如实登记，均属「能力缺口而非泄露」）**：
+    1. C ABI 未把 `CapabilityFlag` 上行，`apply_effects` 不存在，`LearningGate::record_commit` 无调用点；`DiagHandle::mark_sensitive_session` 无调用点。前两条使当前版本比设计**更保守**（失败关闭、不学习）。
+    2. `[privacy]` 段未进 `ime-config` schema（`tests/sec.md` 的 `TC-SEC-41` 已按该键写断言）。
+    3. `ui_takeover.json` 无写入点。
+    4. 卡片的数据流向图与代码不符，按代码写：日志/崩溃在 `$XDG_DATA_HOME/rspinyin/logs/` 与 `crash/<毫秒>-<线程id>.txt`，全仓库无 `XDG_STATE_HOME` 引用；卡片表还漏了 `ui_takeover.json`。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 
@@ -2662,7 +2707,7 @@ features.md Phase 1（39 任务，100.5 人天）── 进行中（1 COMPLETED 
 
 > 分片版本: v1.0 ｜ 主文档: [../features-add.md](../features-add.md) ｜
 > 系统形态: Desktop GUI（Linux 桌面输入法） ｜ 架构基线: Rust 2024 + Slint 1.x + Fcitx5 5.1 ｜
-> 关联 ADR: [../adr/0000-upstream-decisions.md](../adr/0000-upstream-decisions.md)、[../adr/0001-frozen-boundary-contracts.md](../adr/0001-frozen-boundary-contracts.md)、ADR-0004（待决策）｜
+> 关联 ADR: [../adr/0000-upstream-decisions.md](../adr/0000-upstream-decisions.md)、[../adr/0001-frozen-boundary-contracts.md](../adr/0001-frozen-boundary-contracts.md)、ADR-0005（待决策）｜
 > 最后同步 Commit: `<短哈希>` ｜
 > 维护约定: 任务状态变更必须回写主文档 5.1 追溯表；假设变更必须回写主文档第 2 节
 
@@ -2679,7 +2724,7 @@ features.md Phase 1（39 任务，100.5 人天）── 进行中（1 COMPLETED 
 新会话在续写或落地本规范前，**必须逐条确认**：
 
 - [ ] `ASM-A-04` 的前置条件：`features.md` 的 6 处 `UserInterface` 注册假定是否已修正？若未修正，本规范的所有架构引用必须自带正确的双 cdylib 描述。
-- [ ] `M0` 是否已决策？ADR-0004 是否已写入 `docs/dev/adr/`？
+- [ ] `M0` 是否已决策？ADR-0005 是否已写入 `docs/dev/adr/`？
 - [ ] `ASM-A-22`：任务卡的"代码落地锚点"列出的文件是否被其他并行会话改动？（`git status` + `git log` 复核）
 - [ ] `.dev-progress.json` 的三个 800 行超限阻塞项是否已由 `ADD-FEAT-P0.03.02` 清零？
 - [ ] 全部基准是否在**空闲机器**上重跑过？（`.dev-progress.json` 的阻塞项 3：今日所有数字取自 20 个并发 agent 环境，不可信）

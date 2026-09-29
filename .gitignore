@@ -8,9 +8,19 @@ user.redb*
 # root-anchored `/target` above does not cover it.
 /fuzz/target
 
+# The release directory `just package` writes: the archive, the release manifest and
+# SHA256SUMS. Build output, never a source.
+/dist
+
 # Dictionary sources fetched by data/fetch.sh. They are reproducible from the
 # digests pinned in data/sources.toml, so the upstream copies stay out of the
 # repository; only the derived artifacts below are committed.
+#
+# These rules are load-bearing and are not relaxed to make a checkout build the
+# dictionary offline: committing the fetched sources or the compiled dictionary would
+# bypass the allowlist model scripts/check-dict-sources.sh enforces (ADR-0000 decision
+# 2). Offline installs are served by shipping the compiled base.dict in a release
+# archive, so an end user never runs the fetch script at all.
 /data/raw/*.tsv
 !/data/raw/base.tsv
 !/data/raw/polyphone.tsv

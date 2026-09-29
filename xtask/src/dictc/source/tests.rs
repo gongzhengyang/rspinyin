@@ -274,3 +274,52 @@ fn wide_l1() -> BTreeMap<char, Vec<String>> {
     }
     table
 }
+
+#[test]
+fn test_read_source_returns_a_present_file_verbatim() {
+    let dir = scratch("read-source");
+    let path = dir.join("pinyin-data.tsv");
+    fs::write(&path, "中\tzhong\n").expect("writing the fixture");
+    let text = read_source(&path).expect("a present source is returned as it is");
+    assert_eq!(text, "中\tzhong\n");
+    fs::remove_dir_all(&dir).expect("cleaning up");
+}
+
+#[test]
+fn test_read_source_reports_the_missing_source_code_and_its_remedy() {
+    let dir = scratch("source-missing");
+    let failure = read_source(&dir.join("pinyin-data.tsv")).expect_err("the source is absent");
+    let message = failure.to_string();
+    assert!(
+        message.contains(SOURCE_MISSING),
+        "the diagnostic carries the stable code and the remedy: {message}"
+    );
+    assert!(
+        message.contains("bash data/fetch.sh"),
+        "the remedy names the command that fetches the sources: {message}"
+    );
+    assert!(
+        message.contains("pinyin-data.tsv"),
+        "the diagnostic names the file that is missing: {message}"
+    );
+    fs::remove_dir_all(&dir).expect("cleaning up");
+}
+
+#[test]
+fn test_read_source_keeps_a_non_missing_failure_out_of_the_fetch_diagnostic() {
+    // A directory fails for a reason that has nothing to do with the fetch, so it must
+    // not be reported as one: sending the caller to `data/fetch.sh` would hide a
+    // permission or format problem behind a remedy that cannot fix it.
+    let dir = scratch("source-unreadable");
+    let failure = read_source(&dir).expect_err("a directory is not a readable source");
+    let message = failure.to_string();
+    assert!(
+        !message.contains("dict/source/missing"),
+        "an unreadable source is not a source that was never fetched: {message}"
+    );
+    assert!(
+        message.contains("cannot read"),
+        "the underlying failure is still reported with its path: {message}"
+    );
+    fs::remove_dir_all(&dir).expect("cleaning up");
+}

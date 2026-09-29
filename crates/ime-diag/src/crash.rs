@@ -236,7 +236,10 @@ pub(crate) fn publish(record: &CrashRecord) {
     let mut line = String::from("rspinyin: ");
     line.push_str(CRASH_PANIC_CODE);
     line.push_str(": ");
-    line.push_str(&record::escape_line(&record.payload, record::MAX_PAYLOAD_CHARS));
+    line.push_str(&record::escape_line(
+        &record.payload,
+        record::MAX_PAYLOAD_CHARS,
+    ));
     write_stderr_line(&line);
 }
 
@@ -396,7 +399,10 @@ mod tests {
 
     #[test]
     fn test_capture_records_the_current_thread_and_a_backtrace() {
-        let record = capture(String::from("entry: failed"), Some(String::from("src/lib.rs:1:1")));
+        let record = capture(
+            String::from("entry: failed"),
+            Some(String::from("src/lib.rs:1:1")),
+        );
         let expected = thread::current()
             .name()
             .map(str::to_owned)
@@ -430,7 +436,10 @@ mod tests {
             assert!(zero > 0, "deliberate failure");
             true
         });
-        assert!(!outcome, "the entry point's documented fallback is returned");
+        assert!(
+            !outcome,
+            "the entry point's documented fallback is returned"
+        );
     }
 
     #[test]
@@ -441,7 +450,10 @@ mod tests {
             record_ffi_panic_message("on_key_event", "deliberate failure");
             record_ffi_panic_message("on_key_event", "deliberate failure again");
         });
-        assert!(outcome.is_ok(), "nothing may escape the crash path: {outcome:?}");
+        assert!(
+            outcome.is_ok(),
+            "nothing may escape the crash path: {outcome:?}"
+        );
         assert!(enter_crash_path(), "the crash path was released");
         leave_crash_path();
     }

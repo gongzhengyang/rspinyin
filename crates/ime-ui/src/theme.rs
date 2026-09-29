@@ -35,6 +35,19 @@
 //! move a decision. The same [`ThemeSpec`] therefore produces the same tokens byte
 //! for byte.
 //!
+//! # Agreement with `ui/theme.slint`
+//!
+//! The palette below is byte for byte what the Slint global computes, because the
+//! self-check has to measure the colours the renderer will paint. Slint turns 3.2's
+//! fractions into bytes two different ways: the `rgba()` builtin writes
+//! `(255 * a) as u8`, which truncates, and `with-alpha()` writes `(a * 255) as u8`
+//! after rounding. A fraction that is not an exact multiple of 1/255 can therefore
+//! land one step below its rounded value -- `rgba(255,255,255,0.10)` is 25, not 26 --
+//! and the tokens that take that path carry the truncated byte. `ui/theme.slint` keeps
+//! the table's spelling, and `slint_palette.rs` evaluates its expressions with Slint's
+//! own conversions, so the two copies are compared as bytes instead of being trusted to
+//! stay in step.
+//!
 //! # The degradation ladder
 //!
 //! Transparency and blur degrade in the order `features.md` §0.5.2 fixes, and every
@@ -55,6 +68,8 @@ use ime_types::{ColorScheme, PlatformError, RectI, Rgba8, ThemeSpec};
 
 mod color;
 mod scheme;
+#[cfg(test)]
+mod slint_palette;
 #[cfg(test)]
 mod tests;
 
@@ -472,9 +487,11 @@ pub fn apply(sink: &mut dyn ThemeSink, tokens: &ThemeTokens) {
 
 /// One scheme's palette, exactly as `features.md` 3.2 tabulates it.
 ///
-/// The alphas are the table's fractions rounded into 8 bits with
-/// `round(fraction * 255)`, which is the rounding Slint's `with-alpha` applies, so a
-/// token means the same byte here and in `ui/theme.slint`.
+/// The alphas are the table's fractions in the 8 bits the framebuffer takes. A token
+/// `ui/theme.slint` builds with `with-alpha()` carries `round(fraction * 255)`; a token
+/// it builds with the `rgba()` builtin carries `trunc(fraction * 255)`, which is what
+/// that builtin does. Each of the seven tokens the two conventions separate by a step
+/// says so where it is declared.
 #[derive(Clone, Copy)]
 struct Palette {
     dark: bool,
@@ -507,12 +524,12 @@ const DARK_PALETTE: Palette = Palette {
         b: 0x1E,
         a: OPAQUE_ALPHA,
     },
-    // 3.2 `surface.stroke`: rgba(255,255,255,0.10).
+    // 3.2 `surface.stroke`: rgba(255,255,255,0.10), truncated to 25 by Slint's `rgba()`.
     surface_stroke: Rgba8 {
         r: 255,
         g: 255,
         b: 255,
-        a: 26,
+        a: 25,
     },
     // 3.2 `text.primary`: #F2F2F7.
     text_primary: Rgba8 {
@@ -556,19 +573,19 @@ const DARK_PALETTE: Palette = Palette {
         b: 0xF7,
         a: 20,
     },
-    // 3.2 `state.pressed`: rgba(242,242,247,0.14).
+    // 3.2 `state.pressed`: rgba(242,242,247,0.14), truncated to 35 by Slint's `rgba()`.
     state_pressed: Rgba8 {
         r: 0xF2,
         g: 0xF2,
         b: 0xF7,
-        a: 36,
+        a: 35,
     },
-    // 3.2 `separator`: rgba(242,242,247,0.10).
+    // 3.2 `separator`: rgba(242,242,247,0.10), truncated to 25 by Slint's `rgba()`.
     separator: Rgba8 {
         r: 0xF2,
         g: 0xF2,
         b: 0xF7,
-        a: 26,
+        a: 25,
     },
     // 3.2 `shadow.inner`: rgba(0,0,0,0.35).
     shadow_inner: Rgba8 {
@@ -628,12 +645,12 @@ const LIGHT_PALETTE: Palette = Palette {
         b: 0x1E,
         a: 153,
     },
-    // 3.2 `text.annotation`: rgba(28,28,30,0.45).
+    // 3.2 `text.annotation`: rgba(28,28,30,0.45), truncated to 114 by Slint's `rgba()`.
     text_annotation: Rgba8 {
         r: 0x1C,
         g: 0x1C,
         b: 0x1E,
-        a: 115,
+        a: 114,
     },
     // 3.2 `text.separator`: rgba(28,28,30,0.35).
     text_separator: Rgba8 {
@@ -656,12 +673,12 @@ const LIGHT_PALETTE: Palette = Palette {
         b: 0x1E,
         a: 15,
     },
-    // 3.2 `state.pressed`: rgba(28,28,30,0.12).
+    // 3.2 `state.pressed`: rgba(28,28,30,0.12), truncated to 30 by Slint's `rgba()`.
     state_pressed: Rgba8 {
         r: 0x1C,
         g: 0x1C,
         b: 0x1E,
-        a: 31,
+        a: 30,
     },
     // 3.2 `separator`: rgba(28,28,30,0.08).
     separator: Rgba8 {
@@ -677,19 +694,19 @@ const LIGHT_PALETTE: Palette = Palette {
         b: 0,
         a: 20,
     },
-    // 3.2 `shadow.outer`: rgba(0,0,0,0.16).
+    // 3.2 `shadow.outer`: rgba(0,0,0,0.16), truncated to 40 by Slint's `rgba()`.
     shadow_outer: Rgba8 {
         r: 0,
         g: 0,
         b: 0,
-        a: 41,
+        a: 40,
     },
-    // 3.2 `status.dot.idle`: rgba(28,28,30,0.30).
+    // 3.2 `status.dot.idle`: rgba(28,28,30,0.30), truncated to 76 by Slint's `rgba()`.
     status_dot_idle: Rgba8 {
         r: 0x1C,
         g: 0x1C,
         b: 0x1E,
-        a: 77,
+        a: 76,
     },
     // 3.2 `state.selected.bg`: accent @ 0.14.
     selected_bg_alpha: 36,

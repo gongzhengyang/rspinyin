@@ -155,8 +155,9 @@ REVIEWED = {
                 "BSL-1.0 已获 OSI 认可且属宽松许可；两个 crate 均为 Windows 专用"
                 "（Win32 剪贴板后端及其错误辅助库），不在 Linux 构建闭包内"),
     "NCSA": (frozenset({"libfuzzer-sys"}),
-             "NCSA（伊利诺伊大学）是 MIT/BSD 系宽松许可；libfuzzer-sys 只被 workspace 之外的"
-             "fuzz 目标使用，不在 Linux 构建闭包内"),
+             "NCSA（伊利诺伊大学）是 MIT/BSD 系宽松许可；libfuzzer-sys 是 rav1e 的"
+             "`fuzzing` 可选依赖（Cargo.lock 会钉住尚未启用的可选依赖），本 workspace 从不"
+             "启用该 feature，因而不在 Linux 构建闭包内"),
 }
 # A crate whose licence field is missing is a blocker, not a warning: an
 # unattributed dependency cannot be redistributed.
@@ -739,6 +740,14 @@ run_self_test() {
     local real_root="$root" fixture="$scratch/metadata.json" triple
     root="$scratch/root"
     write_fixture_root "$root"
+    # The two paths derived from `root` are recomputed here, and that is the whole point of
+    # this pair of lines. They are normally filled in once, during argument parsing, from
+    # the real repository root -- which happens *before* this function repoints `root` at the
+    # fixture. Without the recomputation every case below would still read the real
+    # `data/sources.toml`, so the injected allowlist entries would be invisible and the
+    # non-permissive case would pass silently while asserting the opposite.
+    sources_file="$root/data/sources.toml"
+    raw_dir="$root/data/raw"
     metadata_file="$fixture"
     triple="$(python3 -c 'import platform; print(platform.machine() + "-unknown-linux-gnu")')"
     (cd -- "$real_root" && cargo metadata --format-version 1 --all-features --locked \
@@ -776,7 +785,7 @@ run_self_test() {
     printf '# rspinyin\n' >"$root/README.md"
     expect_status 1 "README.md" "a README whose badge was removed" check
     cp -- "$root/README.zh.md" "$root/README.md"
-    printf '\n[[source]]\nid = "gamma"\nkind = "upstream"\nlicense = "MIT"\nspdx = "MIT"\n' \
+    printf '\n[[source]]\nid = "gamma"\nkind = "upstream"\nlicense = "MIT"\nspdx = "MIT"\npermissive = true\n' \
         >>"$root/data/sources.toml"
     expect_status 1 "未登记词源" "a source added without regenerating the document" check
     expect_status 0 "PASS" "the tree after regeneration" write

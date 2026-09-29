@@ -5,6 +5,9 @@
 //! in-memory doubles: no dictionary file, no clock, no environment, no display
 //! server.
 
+mod frame;
+mod workspace;
+
 use std::sync::Mutex;
 
 use ime_types::{
@@ -119,6 +122,7 @@ fn kind(effect: &Effect) -> &'static str {
         Effect::Hide(_) => "hide",
         Effect::Commit(_) => "commit",
         Effect::RecordUserFreq { .. } => "record-user-freq",
+        Effect::AddPhrase { .. } => "add-phrase",
         Effect::Diagnose(_) => "diagnose",
         Effect::SetClientPreedit(_) => "set-client-preedit",
     }
@@ -196,7 +200,7 @@ pub(super) fn diagnosed(effects: &[Effect]) -> Option<String> {
 /// Returns the index of `text` in the session's candidate list.
 pub(super) fn index_of(session: &Session, text: &str) -> Option<u16> {
     session
-        .decoded
+        .decoded()
         .candidates
         .iter()
         .position(|candidate| candidate.text == text)
@@ -205,7 +209,9 @@ pub(super) fn index_of(session: &Session, text: &str) -> Option<u16> {
 
 /// Returns the text of the candidate the highlight is on.
 pub(super) fn highlighted(session: &Session) -> Option<&str> {
-    session.highlighted_candidate().map(|held| held.text.as_str())
+    session
+        .highlighted_candidate()
+        .map(|held| held.text.as_str())
 }
 
 /// Builds a session by typing `raw` one character at a time.
@@ -221,7 +227,11 @@ pub(super) fn composing(cfg: &SessionConfig, env: &SessionEnv<'_>, raw: &str) ->
 ///
 /// The composition is two syllables long so that a Backspace in the table has a
 /// syllable to remove and leaves the session composing.
-pub(super) fn session_in(state: SessionState, cfg: &SessionConfig, env: &SessionEnv<'_>) -> Session {
+pub(super) fn session_in(
+    state: SessionState,
+    cfg: &SessionConfig,
+    env: &SessionEnv<'_>,
+) -> Session {
     let mut session = composing(cfg, env, "nihao");
     match state {
         SessionState::Idle => Session::new(),
@@ -255,7 +265,7 @@ pub(super) fn representative(index: usize, revision: u32) -> super::SessionEvent
 }
 
 /// Every key action the frozen contract defines.
-pub(super) fn every_key_action() -> [KeyAction; 15] {
+pub(super) fn every_key_action() -> [KeyAction; 19] {
     [
         KeyAction::InputChar('n'),
         KeyAction::Backspace,
@@ -272,6 +282,14 @@ pub(super) fn every_key_action() -> [KeyAction; 15] {
         KeyAction::EnterTempEnglish,
         KeyAction::Escape,
         KeyAction::Ignore,
+        // Appended by ADR-0005. The array is sized by hand rather than built from
+        // an iterator so that adding a variant to the enum breaks this function's
+        // type, which is what forces the sweep below to keep covering the whole
+        // action space.
+        KeyAction::ToggleScript,
+        KeyAction::ForgetHighlighted,
+        KeyAction::PinHighlighted,
+        KeyAction::AddPhrase,
     ]
 }
 
@@ -324,7 +342,11 @@ fn test_idle_letter_starts_a_composing_session_and_shows_the_window() {
     );
     assert_eq!(session.state, SessionState::Composing);
     assert_eq!(session.buf.raw(), "n");
-    assert_ne!(session.id.value(), 0, "a composition gets a fresh session id");
+    assert_ne!(
+        session.id.value(),
+        0,
+        "a composition gets a fresh session id"
+    );
     assert_eq!(shown(&effects), Some(Placement::Auto));
     assert_eq!(shown_revision(&effects), Some(1));
     assert_eq!(frame_of(&effects).map(|frame| frame.revision), Some(1));
@@ -395,7 +417,11 @@ fn test_idle_keys_with_nothing_to_act_on_are_handed_back() {
             "{action:?} must produce no effect when idle"
         );
         assert_eq!(session.state, SessionState::Idle, "{action:?}");
-        assert_eq!(session.revision.value(), 0, "{action:?} must not emit a frame");
+        assert_eq!(
+            session.revision.value(),
+            0,
+            "{action:?} must not emit a frame"
+        );
     }
 }
 
@@ -412,7 +438,7 @@ fn test_composing_letter_appends_and_redecodes() {
     assert_eq!(session.buf.raw(), "ni");
     assert_eq!(session.state, SessionState::Composing);
     assert!(
-        session.decoded.candidates.len() > usize::from(cfg.max_per_row),
+        session.decoded().candidates.len() > usize::from(cfg.max_per_row),
         "more than one page of readings"
     );
     assert_eq!(frame_of(&effects).map(|frame| frame.revision), Some(2));
@@ -470,7 +496,11 @@ fn test_composing_backspace_that_empties_the_input_returns_to_idle() {
     assert_eq!(hidden(&effects), Some(HideReason::EmptyInput));
     assert_eq!(session.state, SessionState::Idle);
     assert_eq!(session.buf.raw(), "");
-    assert_eq!(committed(&effects), None, "nothing is committed on a backspace");
+    assert_eq!(
+        committed(&effects),
+        None,
+        "nothing is committed on a backspace"
+    );
 }
 
 #[test]
@@ -486,7 +516,7 @@ fn test_composing_escape_cancels_and_hides() {
     assert_eq!(hidden(&effects), Some(HideReason::Cancelled));
     assert_eq!(session.state, SessionState::Cancelling);
     assert_eq!(session.buf.raw(), "", "the input is taken back at once");
-    assert_eq!(session.decoded.candidates.len(), 0);
+    assert_eq!(session.decoded().candidates.len(), 0);
 }
 
 #[test]
@@ -534,7 +564,11 @@ fn test_composing_focus_lost_hides_without_committing() {
 
     assert_eq!(kinds(&effects), ["set-client-preedit", "hide"]);
     assert_eq!(hidden(&effects), Some(HideReason::FocusLost));
-    assert_eq!(committed(&effects), None, "losing the focus commits nothing");
+    assert_eq!(
+        committed(&effects),
+        None,
+        "losing the focus commits nothing"
+    );
     assert_eq!(session.state, SessionState::Idle);
     assert_eq!(session.buf.raw(), "");
 }
@@ -568,7 +602,7 @@ fn test_composing_space_commits_the_highlighted_candidate() {
         &cfg,
         &env,
     );
-    let expected = session.decoded.candidates[2].text.clone();
+    let expected = session.decoded().candidates[2].text.clone();
 
     let effects = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
 
@@ -583,7 +617,7 @@ fn test_composing_digit_commits_the_candidate_it_names() {
     let fixture = Fixture::new();
     let env = fixture.env();
     let mut session = composing(&cfg, &env, "ni");
-    let expected = session.decoded.candidates[2].text.clone();
+    let expected = session.decoded().candidates[2].text.clone();
 
     let effects = session.handle_key(KeyAction::SelectIndex(3), &cfg, &env);
 
@@ -642,7 +676,7 @@ fn test_committing_commit_done_records_the_word_and_clears_the_session() {
     let fixture = Fixture::new();
     let env = fixture.env();
     let mut session = composing(&cfg, &env, "ni");
-    let word = session.decoded.candidates[0].text.clone();
+    let word = session.decoded().candidates[0].text.clone();
     let _ = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
 
     let effects = super::step(&mut session, super::SessionEvent::CommitDone, &cfg, &env);
@@ -651,7 +685,14 @@ fn test_committing_commit_done_records_the_word_and_clears_the_session() {
     assert_eq!(recorded(&effects), Some((word.as_str(), 1)));
     assert_eq!(session.state, SessionState::Idle);
     assert_eq!(session.buf.raw(), "");
-    assert_eq!(fixture.user.take(), vec![(word, 1)]);
+    // The step only *asks* for the record: `Effect::RecordUserFreq` is the request, and
+    // writing it is the caller's job, because the write is batched and deferred rather
+    // than done on the host thread. So the source the fixture injects is still untouched
+    // here; the addon is where the effect is applied.
+    assert!(
+        fixture.user.take().is_empty(),
+        "the step emits the request; applying it belongs to the caller"
+    );
 }
 
 #[test]
@@ -664,7 +705,11 @@ fn test_committing_raw_commit_is_not_recorded_as_a_word() {
 
     let effects = super::step(&mut session, super::SessionEvent::CommitDone, &cfg, &env);
 
-    assert_eq!(recorded(&effects), None, "pinyin is not a word the user chose");
+    assert_eq!(
+        recorded(&effects),
+        None,
+        "pinyin is not a word the user chose"
+    );
     assert!(fixture.user.take().is_empty());
     assert_eq!(session.state, SessionState::Idle);
 }
@@ -708,7 +753,10 @@ fn test_committing_ignores_a_second_commit_key() {
 
     let effects = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
 
-    assert!(effects.is_empty(), "a commit in flight is not started twice");
+    assert!(
+        effects.is_empty(),
+        "a commit in flight is not started twice"
+    );
     assert_eq!(session.state, SessionState::Committing);
 }
 
@@ -718,7 +766,7 @@ fn test_session_is_idle_before_anything_happens() {
 
     assert_eq!(session.state, SessionState::Idle);
     assert_eq!(session.buf.raw(), "");
-    assert_eq!(session.decoded.candidates.len(), 0);
+    assert_eq!(session.decoded().candidates.len(), 0);
     assert_eq!(session.paging, Paging::new());
     assert_eq!(session.revision.value(), 0);
     assert!(!session.temp_english);
@@ -742,7 +790,10 @@ fn test_session_id_is_allocated_from_the_counter_it_was_given() {
 fn test_session_config_clamps_a_length_limit_the_schema_forbids() {
     assert_eq!(SessionConfig::new(0, 5, true, 720).max_raw_len, 1);
     assert_eq!(SessionConfig::new(200, 5, true, 720).max_raw_len, 64);
-    assert_eq!(SessionConfig::default(), SessionConfig::new(64, 5, true, 720));
+    assert_eq!(
+        SessionConfig::default(),
+        SessionConfig::new(64, 5, true, 720)
+    );
     assert_eq!(
         SessionConfig::default().max_per_row,
         super::paging::DEFAULT_PAGE_SIZE
@@ -762,13 +813,13 @@ fn test_candidate_index_helper_finds_a_word() {
     assert!(found.is_some(), "the reading is offered");
     assert_eq!(
         found
-            .and_then(|at| session.decoded.candidates.get(usize::from(at)))
+            .and_then(|at| session.decoded().candidates.get(usize::from(at)))
             .map(|held| held.text.as_str()),
         Some("你")
     );
     assert_eq!(index_of(&session, "nothing like this"), None);
     assert_eq!(
-        session.decoded.candidates[0].source,
+        session.decoded().candidates[0].source,
         CandidateSource::Dict,
         "the readings come from the dictionary"
     );

@@ -159,7 +159,11 @@ pub fn named_keysym(name: &str) -> Option<u32> {
 /// Returns the offending name when it is not one of `shift`, `ctrl`, `alt` and `super`.
 pub fn modifier_mask(names: &str) -> Result<u16, String> {
     let mut mask = 0;
-    for name in names.split(',').map(str::trim).filter(|part| !part.is_empty()) {
+    for name in names
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
         let bit = match name.to_ascii_lowercase().as_str() {
             "shift" => SHIFT_MASK,
             "ctrl" | "control" => CONTROL_MASK,
@@ -401,7 +405,10 @@ mod tests {
         assert_eq!(MOD4_MASK, 0x0040);
         assert_eq!(HOLDABLE_MASKS, 0x004d);
         let union = HOLDABLE_ORDER.iter().fold(0u16, |all, mask| all | mask);
-        assert_eq!(union, HOLDABLE_MASKS, "the press order covers every holdable mask");
+        assert_eq!(
+            union, HOLDABLE_MASKS,
+            "the press order covers every holdable mask"
+        );
     }
 
     #[test]
@@ -464,7 +471,10 @@ mod tests {
         assert_eq!(modifier_mask(""), Ok(0));
         assert_eq!(modifier_mask("shift"), Ok(SHIFT_MASK));
         assert_eq!(modifier_mask("shift,ctrl"), Ok(SHIFT_MASK | CONTROL_MASK));
-        assert_eq!(modifier_mask(" SHIFT , control "), Ok(SHIFT_MASK | CONTROL_MASK));
+        assert_eq!(
+            modifier_mask(" SHIFT , control "),
+            Ok(SHIFT_MASK | CONTROL_MASK)
+        );
         assert_eq!(modifier_mask("alt,super"), Ok(MOD1_MASK | MOD4_MASK));
         let refusal = modifier_mask("shift,hyper").expect_err("hyper is not a holdable modifier");
         assert!(refusal.contains("hyper"), "{refusal}");
@@ -486,7 +496,11 @@ mod tests {
         assert_eq!(stroke_for_char('\''), Some(plain(0x0027)));
         assert_eq!(stroke_for_char('_'), Some(shifted(KS_MINUS)));
         assert_eq!(stroke_for_char('?'), Some(shifted(0x002f)));
-        assert_eq!(stroke_for_char('中'), None, "the harness types pinyin, not Chinese");
+        assert_eq!(
+            stroke_for_char('中'),
+            None,
+            "the harness types pinyin, not Chinese"
+        );
     }
 
     #[test]
@@ -500,14 +514,21 @@ mod tests {
 
         let refusal = strokes("nǐ").expect_err("a tone-marked vowel has no key");
         assert!(refusal.to_string().contains('ǐ'), "{refusal}");
-        assert!(strokes("中国").is_err(), "the harness types pinyin, not Chinese");
+        assert!(
+            strokes("中国").is_err(),
+            "the harness types pinyin, not Chinese"
+        );
     }
 
     #[test]
     fn test_keymap_lookup_finds_the_row_of_a_keysym() {
         let map = keymap();
         assert_eq!(map.keycode(0x61), Some(8), "the lowercase form of row 8");
-        assert_eq!(map.keycode(0x41), Some(8), "the uppercase form of the same row");
+        assert_eq!(
+            map.keycode(0x41),
+            Some(8),
+            "the uppercase form of the same row"
+        );
         assert_eq!(map.keycode(KS_SHIFT_L), Some(9));
         assert_eq!(map.keycode(0x20), Some(10));
         assert_eq!(map.keycode(0x62), None, "a keysym no row carries");
@@ -519,7 +540,10 @@ mod tests {
         let map = keymap();
         assert!(map.is_modifier_keycode(9), "row 9 carries Shift_L");
         assert!(!map.is_modifier_keycode(8), "row 8 carries letters");
-        assert!(!map.is_modifier_keycode(200), "a keycode outside the mapping");
+        assert!(
+            !map.is_modifier_keycode(200),
+            "a keycode outside the mapping"
+        );
         assert!(is_modifier_keysym(0xffe3) && is_modifier_keysym(0xfe03));
         assert!(!is_modifier_keysym(0x61));
     }

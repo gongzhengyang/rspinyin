@@ -24,6 +24,14 @@
 //! graceful shutdown loses nothing, because the owner calls [`UserDb::final_commit`]
 //! before the store is dropped.
 //!
+//! Reads: the counts the store has flushed live in memory. A store holding at most
+//! [`HYDRATE_CAP`] records is loaded whole at open and kept in step with the file by the
+//! flush and the sweep, so a decode never opens a read transaction -- the frozen
+//! `UserFreqSource` contract requires `freq` not to block and not to take a lock a writer
+//! can hold, and a read transaction does both. A store past the ceiling is not loaded: its
+//! reads fall back to the on-demand path, whose cost is bounded by the ceiling rather than
+//! by the word count.
+//!
 //! Threading: `record` runs on the host thread right after a commit and does no IO -- it
 //! takes one short mutex, touches a map and returns. The flush it may start runs on that
 //! same thread on purpose: one session's records have to reach the store in the order
@@ -43,9 +51,13 @@ use redb::{Database, Durability, ReadableTable, ReadableTableMetadata, TableDefi
 #[cfg(test)]
 use std::cell::Cell;
 
+mod cache;
 mod evict;
+mod hydrate;
 
+use self::cache::LruCache;
 use self::evict::{Sweep, start_sweep};
+use self::hydrate::load_committed;
 
 #[cfg(test)]
 mod tests;
@@ -54,8 +66,18 @@ mod tests;
 pub const COMMIT_BATCH: usize = 32;
 /// Milliseconds of typing after which a flush is due.
 pub const COMMIT_INTERVAL_MS: u64 = 2000;
-/// Keys the frequency cache keeps resident.
+/// Keys the on-demand cache keeps resident.
+///
+/// The cache belongs to the fallback path: a store whose counts were loaded answers from
+/// memory, and the cache is what keeps a store past [`HYDRATE_CAP`] to one read transaction
+/// per distinct word per session rather than one per lookup.
 pub const CACHE_CAPACITY: usize = 4096;
+/// Records the store loads into memory at open.
+///
+/// A user's own vocabulary is a few thousand words; the ceiling exists for the pathological
+/// store, and past it the store keeps the on-demand path rather than growing the plugin's
+/// resident set without bound.
+pub const HYDRATE_CAP: u64 = 50_000;
 /// Hard ceiling on the unflushed delta map; the batch trigger normally fires first, and
 /// the ceiling is what keeps the map bounded if a flush stops making progress.
 pub const PENDING_CAPACITY: usize = 4096;
@@ -98,6 +120,11 @@ pub const FILE_MODE: u32 = 0o600;
 pub const DIR_MODE: u32 = 0o700;
 /// Diagnostic code reported when a slow flush relaxed the batching policy.
 pub const SLOW_DISK_CODE: &str = "data/commit/slow-disk";
+/// Diagnostic code reported when the store was too large to load into memory.
+///
+/// The store is still usable in that state -- [`UserDb::is_hydrated`] reports it, and reads
+/// fall back to the on-demand path -- so the code names a degradation rather than a failure.
+pub const LARGE_STORE_CODE: &str = "data/user-db/large";
 /// Schema version stamped into the `meta` table.
 const SCHEMA_VERSION: u64 = 1;
 /// Key the schema version is stored under.
@@ -145,7 +172,9 @@ impl Clock for SystemClock {
     fn now_ms(&self) -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+            .map_or(0, |since| {
+                u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+            })
     }
 
     fn now_nanos(&self) -> u64 {
@@ -181,118 +210,6 @@ struct PendingState {
     /// Monotonic nanoseconds of the last flush, so that the interval trigger measures
     /// typing time rather than wall-clock time.
     last_flush_nanos: u64,
-}
-
-/// A fixed-capacity second-chance cache of user frequencies.
-///
-/// The lookup path may not allocate and the footprint may not grow with the number of
-/// keys ever seen, so a strict LRU -- which needs a list node or a fresh allocation per
-/// hit -- is out. This is the CLOCK approximation: one reference bit per slot plus a hand
-/// that clears it, which keeps the hot keys resident at a constant cost per access and a
-/// footprint bounded by the capacity.
-struct LruCache {
-    slots: Vec<Slot>,
-    index: HashMap<Arc<str>, u32>,
-    hand: usize,
-}
-
-/// One cache slot; `key` is `None` while the slot holds nothing.
-struct Slot {
-    key: Option<Arc<str>>,
-    value: u32,
-    referenced: bool,
-}
-
-impl LruCache {
-    /// Builds a cache of `capacity` slots.
-    ///
-    /// The capacity is clamped to at least one slot: a cache that can hold nothing would
-    /// be a configuration mistake rather than a mode, and the clamp is what lets the
-    /// eviction hand take a remainder without testing for an empty table.
-    fn new(capacity: usize) -> Self {
-        Self {
-            slots: (0..capacity.max(1))
-                .map(|_| Slot {
-                    key: None,
-                    value: 0,
-                    referenced: false,
-                })
-                .collect(),
-            index: HashMap::new(),
-            hand: 0,
-        }
-    }
-
-    /// Returns the cached value of `key`, marking the slot as referenced.
-    fn get(&mut self, key: &str) -> Option<u32> {
-        let index = *self.index.get(key)?;
-        let slot = self.slots.get_mut(index as usize)?;
-        slot.referenced = true;
-        Some(slot.value)
-    }
-
-    /// Stores `value` under `key`, replacing the least recently referenced slot once the
-    /// cache is full.
-    fn insert(&mut self, key: &str, value: u32) {
-        if let Some(index) = self.index.get(key).copied() {
-            if let Some(slot) = self.slots.get_mut(index as usize) {
-                slot.value = value;
-                slot.referenced = true;
-                return;
-            }
-        }
-        let index = self.victim();
-        let shared: Arc<str> = Arc::from(key);
-        if let Some(slot) = self.slots.get_mut(index) {
-            if let Some(previous) = slot.key.replace(Arc::clone(&shared)) {
-                self.index.remove(previous.as_ref());
-            }
-            slot.value = value;
-            slot.referenced = true;
-            self.index.insert(shared, index as u32);
-        }
-    }
-
-    /// Adds one to the cached value of `key` when it is present; reports whether it was.
-    fn bump(&mut self, key: &str) -> bool {
-        let Some(index) = self.index.get(key).copied() else {
-            return false;
-        };
-        let Some(slot) = self.slots.get_mut(index as usize) else {
-            return false;
-        };
-        slot.value = slot.value.saturating_add(1);
-        slot.referenced = true;
-        true
-    }
-
-    /// Drops `key` from the cache.
-    fn remove(&mut self, key: &str) {
-        let Some(index) = self.index.remove(key) else {
-            return;
-        };
-        if let Some(slot) = self.slots.get_mut(index as usize) {
-            slot.key = None;
-            slot.value = 0;
-            slot.referenced = false;
-        }
-    }
-
-    /// Returns the index of the slot the next insert replaces, clearing the reference bit
-    /// of every slot the hand passes.
-    ///
-    /// The search always terminates: after one turn no bit is set, so the slot the hand
-    /// started from is the victim.
-    fn victim(&mut self) -> usize {
-        loop {
-            let index = self.hand % self.slots.len();
-            self.hand = self.hand.wrapping_add(1);
-            match self.slots.get_mut(index) {
-                Some(slot) if slot.referenced => slot.referenced = false,
-                _ => return index,
-            }
-        }
-    }
 }
 
 /// Locks a mutex, recovering from poisoning.
@@ -365,7 +282,9 @@ fn prepare_path(path: &Path) -> Result<(), ImeError> {
 /// Returns [`ImeError::DictUnavailable`] when the store cannot be written, or when it
 /// already carries a schema version this build does not know.
 fn stamp_schema(path: &Path, db: &Database) -> Result<(), ImeError> {
-    let mut txn = db.begin_write().map_err(|error| store_error(path, &error))?;
+    let mut txn = db
+        .begin_write()
+        .map_err(|error| store_error(path, &error))?;
     {
         let mut meta = txn
             .open_table(META)
@@ -398,6 +317,19 @@ fn stamp_schema(path: &Path, db: &Database) -> Result<(), ImeError> {
 struct Inner {
     /// The `redb` handle, and the only holder of the file lock.
     db: Database,
+    /// The committed half of the frequency signal, held in memory.
+    ///
+    /// Authoritative for reads, and kept equal to the file by every path that changes
+    /// either: [`load_committed`] fills it at open, `write_batch` adopts what it wrote,
+    /// `degrade` leaves it alone because the failed transaction was rolled back, and the
+    /// sweep forgets what it removed. Empty when the store was too large to load -- see
+    /// [`Inner::is_hydrated`].
+    committed: Mutex<HashMap<Box<str>, u32>>,
+    /// Whether [`Inner::committed`] holds the whole store.
+    ///
+    /// Decided once, at open, and never changed: it is what lets the hot paths choose
+    /// their read strategy without taking the map's lock.
+    is_hydrated: bool,
     /// Deltas recorded but not yet flushed.
     pending: Mutex<PendingState>,
     /// The frequency cache, consulted before the store itself.
@@ -421,24 +353,6 @@ struct Inner {
 }
 
 impl Inner {
-    /// Reads the flushed frequency of `key`; zero when it is absent or unreadable.
-    ///
-    /// A read failure is deliberately not an error: `freq` returns a count, and a store
-    /// that cannot be read must still let the user type. Zero means "no boost", the same
-    /// answer as a word that was never recorded.
-    fn committed(&self, key: &str) -> u32 {
-        let Ok(txn) = self.db.begin_read() else {
-            return 0;
-        };
-        let Ok(table) = txn.open_table(USER_WORDS) else {
-            return 0;
-        };
-        match table.get(key) {
-            Ok(Some(guard)) => guard.value().0,
-            _ => 0,
-        }
-    }
-
     /// Number of records the store holds on disk.
     ///
     /// # Errors
@@ -489,6 +403,10 @@ impl Inner {
         }
         txn.set_durability(durability);
         txn.commit().map_err(|error| error.to_string())?;
+        // The in-memory map adopts what was just written, so a later read answers from
+        // memory rather than going back to the file. The failure path above returns before
+        // this point, and it must: the transaction rolled back, so the map is still right.
+        self.adopt(drained);
         Ok(())
     }
 
@@ -498,6 +416,11 @@ impl Inner {
     /// plus pending -- is rolled back to the last committed values. Reads keep working: a
     /// store that cannot learn must still answer, or the decoder would lose the history it
     /// already has.
+    ///
+    /// The in-memory counts are deliberately left untouched and stay hydrated: they only
+    /// ever hold what reached the file, the failed transaction wrote nothing, so they are
+    /// still the truth -- and a store that can no longer be written is the one store that
+    /// most needs its reads to stay in memory.
     fn degrade(&self, drained: &[(Box<str>, Pending)]) {
         self.readonly.store(true, Ordering::Release);
         let mut cache = lock(&self.cache);
@@ -518,14 +441,15 @@ impl Inner {
     /// two policies.
     fn report(&self, written: usize, elapsed_us: u64) -> CommitReport {
         let streak = if elapsed_us >= SLOW_COMMIT_MS * 1_000 {
-            self.slow_streak.fetch_add(1, Ordering::Relaxed).saturating_add(1)
+            self.slow_streak
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1)
         } else {
             self.slow_streak.store(0, Ordering::Relaxed);
             0
         };
         let mut relaxed = false;
-        if streak >= SLOW_COMMIT_STREAK
-            && self.batch.load(Ordering::Relaxed) < RELAXED_COMMIT_BATCH
+        if streak >= SLOW_COMMIT_STREAK && self.batch.load(Ordering::Relaxed) < RELAXED_COMMIT_BATCH
         {
             self.batch.store(RELAXED_COMMIT_BATCH, Ordering::Relaxed);
             self.interval_ms
@@ -571,12 +495,33 @@ impl UserDb {
     /// # Errors
     /// As [`UserDb::open`].
     pub fn open_with(path: impl AsRef<Path>, clock: Box<dyn Clock>) -> Result<Self, ImeError> {
+        Self::open_with_hydrate_cap(path, clock, HYDRATE_CAP)
+    }
+
+    /// Opens the store at `path` with an injected clock and hydration ceiling.
+    ///
+    /// The ceiling is a parameter for the same reason the clock is: the behaviour of a
+    /// store too large to load is worth asserting, and no test may build a
+    /// fifty-thousand-record store to reach it. A running plugin opens through
+    /// [`UserDb::open`] and so always uses [`HYDRATE_CAP`]; a ceiling of zero loads no
+    /// store that holds a record, which is how the fallback path is reached deliberately.
+    ///
+    /// # Errors
+    /// As [`UserDb::open`].
+    pub fn open_with_hydrate_cap(
+        path: impl AsRef<Path>,
+        clock: Box<dyn Clock>,
+        hydrate_cap: u64,
+    ) -> Result<Self, ImeError> {
         let path = path.as_ref().to_path_buf();
         prepare_path(&path)?;
         let db = Database::create(&path).map_err(|error| store_error(&path, &error))?;
         stamp_schema(&path, &db)?;
+        let loaded = load_committed(&db, hydrate_cap);
         let mut inner = Arc::new(Inner {
             db,
+            is_hydrated: loaded.is_some(),
+            committed: Mutex::new(loaded.unwrap_or_default()),
             pending: Mutex::new(PendingState::default()),
             cache: Mutex::new(LruCache::new(CACHE_CAPACITY)),
             readonly: AtomicBool::new(false),
@@ -624,6 +569,16 @@ impl UserDb {
     /// and `freq` keeps answering.
     pub fn is_readonly(&self) -> bool {
         self.inner.readonly.load(Ordering::Acquire)
+    }
+
+    /// Whether the store's committed counts were loaded into memory when it opened.
+    ///
+    /// A store past [`HYDRATE_CAP`] records is not loaded: its reads fall back to the
+    /// on-demand path, which is correct but opens a read transaction per distinct word.
+    /// This crate has no logger, so the caller reports [`LARGE_STORE_CODE`] for that state
+    /// -- the same division of labour as [`SLOW_DISK_CODE`] and [`CommitReport::relaxed`].
+    pub fn is_hydrated(&self) -> bool {
+        self.inner.is_hydrated
     }
 
     /// Number of records the store holds on disk.
@@ -684,29 +639,42 @@ impl UserDb {
     fn pending_len(&self) -> usize {
         lock(&self.inner.pending).entries.len()
     }
+
+    /// How many keys the in-memory counts hold, or `None` when the store was not loaded.
+    ///
+    /// Test-only: the count is an implementation detail, and production code reads the
+    /// store's size through [`UserDb::record_count`].
+    #[cfg(test)]
+    fn committed_len(&self) -> Option<usize> {
+        if !self.inner.is_hydrated {
+            return None;
+        }
+        Some(lock(&self.inner.committed).len())
+    }
 }
 
 impl UserFreqSource for UserDb {
     fn freq(&self, key: &str) -> u32 {
-        {
-            let mut cache = lock(&self.inner.cache);
-            if let Some(hit) = cache.get(key) {
-                return hit;
-            }
+        // Both halves of the answer are in memory, so a decode never opens a read
+        // transaction: the frozen `UserFreqSource` contract requires this call not to block
+        // and not to take a lock a writer can hold, and a read transaction does both. The
+        // two locks are taken in the order the module fixes, `committed` before `pending`,
+        // and both are released before the call returns.
+        if self.inner.is_hydrated {
+            let committed = lock(&self.inner.committed);
+            let base = committed.get(key).copied().unwrap_or(0);
+            // The delta is read under its own lock while `committed` is still held, in the
+            // order the module fixes: `committed` first, then `pending`, never the reverse.
+            let delta = {
+                let pending = lock(&self.inner.pending);
+                pending.entries.get(key).map_or(0, |entry| entry.count)
+            };
+            return base.saturating_add(delta);
         }
-        // The cache holds committed plus pending counts, so a miss has to add the delta
-        // the next flush will write; otherwise a word recorded a keystroke ago would score
-        // as if it had never been typed.
-        let committed = self.inner.committed(key);
-        let delta = {
-            let pending = lock(&self.inner.pending);
-            pending.entries.get(key).map_or(0, |entry| entry.count)
-        };
-        let total = committed.saturating_add(delta);
-        if total > 0 {
-            lock(&self.inner.cache).insert(key, total);
-        }
-        total
+        // The store was too large to load, so the answer has to come from the file. The
+        // fallback is bounded by the ceiling rather than by the word count: `on_demand`
+        // opens one transaction per distinct word per session.
+        self.inner.on_demand(key)
     }
 
     fn record(&self, key: &str, _weight_hint: u16) {
@@ -734,9 +702,11 @@ impl UserFreqSource for UserDb {
                 || held >= PENDING_CAPACITY
                 || elapsed >= interval_ms.saturating_mul(1_000_000)
         };
-        {
-            let mut cache = lock(&self.inner.cache);
-            cache.bump(key);
+        // The cache belongs to the fallback path: a store whose counts are in memory
+        // answers from them, so bumping a cache nothing reads would cost the record path a
+        // lock and a lookup per commit for no reader.
+        if !self.inner.is_hydrated {
+            lock(&self.inner.cache).bump(key);
         }
         if due {
             // The flush runs on the caller's thread on purpose: one session's records have
@@ -764,6 +734,25 @@ thread_local! {
     /// needs a read-only filesystem or a full disk -- neither of which a test may assume,
     /// and neither of which a write through an already-open descriptor respects anyway.
     static INJECTED_FAILURE: Cell<bool> = const { Cell::new(false) };
+
+    /// Test-only: counts the store reads this thread has opened.
+    ///
+    /// The hot path's whole claim is that a lookup on a loaded store opens no read
+    /// transaction, and a count of zero cannot be asserted without a counter -- the
+    /// alternative is to time the call, which no test in this workspace may do.
+    static STORE_READS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Counts one store read. Test-only.
+#[cfg(test)]
+fn note_store_read() {
+    STORE_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
+}
+
+/// Store reads this thread has opened so far. Test-only.
+#[cfg(test)]
+fn store_reads() -> u64 {
+    STORE_READS.with(|reads| reads.get())
 }
 
 /// Arms the next flush to fail. Test-only.

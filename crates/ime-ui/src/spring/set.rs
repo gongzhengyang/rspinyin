@@ -127,7 +127,8 @@ impl AnimationSet {
     /// A `Show` that arrives before it finishes calls [`AnimationSet::appear`], which
     /// resumes from the current value rather than from zero.
     pub fn disappear(&mut self) {
-        self.appear.disappear(self.duration(self.config.disappear_s));
+        self.appear
+            .disappear(self.duration(self.config.disappear_s));
     }
 
     /// Starts the page-content slide for a page turn.
@@ -178,8 +179,8 @@ impl AnimationSet {
 
 #[cfg(test)]
 mod tests {
-    use crate::spring::PAGE_SLIDE_DP;
     use super::*;
+    use crate::spring::PAGE_SLIDE_DP;
 
     const FRAME_S: f32 = 1.0 / 144.0;
 

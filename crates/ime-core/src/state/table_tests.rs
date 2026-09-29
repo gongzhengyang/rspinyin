@@ -7,13 +7,14 @@
 
 use ime_types::{KeyAction, UiEvent};
 
+use super::SessionConfig;
 use super::machine::{Session, SessionState, step};
 use super::paging::{MAX_PAGES, Paging};
 use super::tests::{
     Fixture, committed, composing, diagnosed, dismiss_event, every_key_action, frame_of, hidden,
     highlighted, hover_event, index_of, kinds, page_event, preedit_text, select_event,
 };
-use super::SessionConfig;
+use crate::viterbi::lattice::WORDS_PER_KEY;
 
 #[test]
 fn test_composing_page_next_turns_the_page_and_highlights_its_first_candidate() {
@@ -26,7 +27,10 @@ fn test_composing_page_next_turns_the_page_and_highlights_its_first_candidate() 
 
     assert_eq!(kinds(&effects), ["send-frame"]);
     assert_eq!(session.paging.page, 1);
-    assert_eq!(session.paging.highlight, u16::from(session.paging.page_size));
+    assert_eq!(
+        session.paging.highlight,
+        u16::from(session.paging.page_size)
+    );
     assert_eq!(
         frame_of(&effects).map(|frame| frame.page.current),
         Some(2),
@@ -163,7 +167,7 @@ fn test_select_with_a_matching_revision_commits_the_clicked_candidate() {
     let env = fixture.env();
     let mut session = composing(&cfg, &env, "ni");
     let revision = session.revision.value();
-    let expected = session.decoded.candidates[3].text.clone();
+    let expected = session.decoded().candidates[3].text.clone();
 
     let effects = step(
         &mut session,
@@ -248,7 +252,11 @@ fn test_dismiss_cancels_the_composition() {
             &env,
         );
 
-        assert_eq!(kinds(&effects), ["set-client-preedit", "hide"], "{reason:?}");
+        assert_eq!(
+            kinds(&effects),
+            ["set-client-preedit", "hide"],
+            "{reason:?}"
+        );
         assert_eq!(hidden(&effects), Some(ime_types::HideReason::Cancelled));
         assert_eq!(session.state, SessionState::Cancelling, "{reason:?}");
     }
@@ -308,7 +316,7 @@ fn test_config_reload_keeps_the_input_and_the_candidates() {
     let fixture = Fixture::new();
     let env = fixture.env();
     let mut session = composing(&cfg, &env, "ni");
-    let candidates = session.decoded.candidates.clone();
+    let candidates = session.decoded().candidates.clone();
 
     let next = SessionConfig {
         max_per_row: 9,
@@ -323,7 +331,7 @@ fn test_config_reload_keeps_the_input_and_the_candidates() {
 
     assert_eq!(kinds(&effects), ["send-frame"]);
     assert_eq!(session.buf.raw(), "ni", "a reload never resets the input");
-    assert_eq!(session.decoded.candidates, candidates);
+    assert_eq!(session.decoded().candidates, candidates);
     assert_eq!(session.state, SessionState::Composing);
     assert_eq!(session.paging.page_size, 9);
     assert_eq!(
@@ -340,9 +348,17 @@ fn test_config_reload_that_changes_nothing_the_session_reads_is_idempotent() {
     let mut session = composing(&cfg, &env, "ni");
     let before = session.paging;
 
-    let effects = step(&mut session, super::SessionEvent::ConfigReloaded(cfg), &cfg, &env);
+    let effects = step(
+        &mut session,
+        super::SessionEvent::ConfigReloaded(cfg),
+        &cfg,
+        &env,
+    );
 
-    assert!(effects.is_empty(), "an unchanged configuration changes nothing");
+    assert!(
+        effects.is_empty(),
+        "an unchanged configuration changes nothing"
+    );
     assert_eq!(session.paging, before);
 }
 
@@ -470,19 +486,33 @@ fn test_frames_carry_only_the_page_on_show() {
     let fixture = Fixture::new();
     let env = fixture.env();
     let mut session = composing(&cfg, &env, "ni");
-    let total = session.decoded.candidates.len();
+    let total = session.decoded().candidates.len();
 
     let first = session.handle_key(KeyAction::PageNext, &cfg, &env);
     let page = frame_of(&first);
 
-    assert_eq!(page.map(|frame| frame.candidates.len()), Some(5));
+    assert_eq!(
+        page.map(|frame| frame.candidates.len()),
+        Some(WORDS_PER_KEY - 5),
+        "the second page carries only what is left of the list"
+    );
     assert_eq!(page.map(|frame| frame.page.current), Some(2));
+    assert_eq!(page.map(|frame| frame.page.total), Some(2));
     assert_eq!(page.map(|frame| frame.page.page_size), Some(5));
     assert_eq!(
         page.map(|frame| frame.candidates[0].text.clone()),
-        session.decoded.candidates.get(5).map(|held| held.text.clone())
+        session
+            .decoded()
+            .candidates
+            .get(5)
+            .map(|held| held.text.clone()),
+        "the frame starts at the page's first candidate, not the list's"
     );
-    assert!(total > 10, "the list has more than two pages");
+    assert_eq!(
+        total, WORDS_PER_KEY,
+        "the fixture lists twelve readings of `ni`, but the lattice keeps only the head \
+         of a key's list, so the decode answers with eight"
+    );
     assert_eq!(
         page.map(|frame| frame.preedit.text.clone()),
         Some(String::from("ni"))
@@ -495,7 +525,7 @@ fn test_frames_report_the_page_count_capped_at_five() {
     let fixture = Fixture::new();
     let env = fixture.env();
     let mut session = composing(&cfg, &env, "ni");
-    let total = u16::try_from(session.decoded.candidates.len()).unwrap_or(u16::MAX);
+    let total = u16::try_from(session.decoded().candidates.len()).unwrap_or(u16::MAX);
     let size = u16::from(cfg.max_per_row);
     let expected = u8::try_from(total.div_ceil(size))
         .unwrap_or(u8::MAX)
@@ -584,7 +614,7 @@ fn test_paging_helpers_are_used_by_the_machine() {
     assert_eq!(session.paging.highlight, 7);
     assert_eq!(session.paging.page, 1);
     assert!(session.paging.local_index() < u16::from(session.paging.page_size));
-    let expected = session.decoded.candidates[7].text.clone();
+    let expected = session.decoded().candidates[7].text.clone();
     assert_eq!(highlighted(&session), Some(expected.as_str()));
 }
 
@@ -625,7 +655,7 @@ fn test_redecode_leaves_the_highlight_on_a_visible_candidate() {
     let fixture = Fixture::new();
     let env = fixture.env();
     let mut session = composing(&cfg, &env, "ni");
-    let chosen = session.decoded.candidates[7].text.clone();
+    let chosen = session.decoded().candidates[7].text.clone();
     let revision = session.revision.value();
     let _ = step(
         &mut session,
@@ -639,13 +669,19 @@ fn test_redecode_leaves_the_highlight_on_a_visible_candidate() {
 
     let _ = session.handle_key(KeyAction::InputChar('h'), &cfg, &env);
 
-    assert!(highlighted(&session).is_some(), "the highlight never dangles");
-    assert!(usize::from(session.paging.highlight) < session.decoded.candidates.len());
+    assert!(
+        highlighted(&session).is_some(),
+        "the highlight never dangles"
+    );
+    assert!(usize::from(session.paging.highlight) < session.decoded().candidates.len());
     assert!(session.paging.local_index() < u16::from(session.paging.page_size));
     // Either the word the user had chosen is still offered and the highlight followed
     // it, or the list no longer holds it and the highlight went back to the top.
     match index_of(&session, &chosen) {
-        Some(at) => assert_eq!(session.paging.highlight, at, "the highlight followed the word"),
+        Some(at) => assert_eq!(
+            session.paging.highlight, at,
+            "the highlight followed the word"
+        ),
         None => assert_eq!(session.paging.highlight, 0, "the word is gone"),
     }
 }

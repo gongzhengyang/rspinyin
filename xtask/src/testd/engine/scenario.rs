@@ -266,6 +266,12 @@ pub fn action_name(action: KeyAction) -> String {
         KeyAction::EnterTempEnglish => String::from("enter-temp-english"),
         KeyAction::Escape => String::from("escape"),
         KeyAction::Ignore => String::from("ignore"),
+        // Appended by ADR-0005. The names match `KeyAction`'s own `label()` in
+        // `crates/ime-types/src/key.rs`, so a scenario file and a diagnostic agree.
+        KeyAction::ToggleScript => String::from("toggle-script"),
+        KeyAction::ForgetHighlighted => String::from("forget-highlighted"),
+        KeyAction::PinHighlighted => String::from("pin-highlighted"),
+        KeyAction::AddPhrase => String::from("add-phrase"),
     }
 }
 
@@ -286,7 +292,9 @@ fn parse_action(text: &str) -> Result<KeyAction, String> {
     };
     match (name, payload) {
         ("input-char", Some(payload)) => Ok(KeyAction::InputChar(payload_char(payload, text)?)),
-        ("select-index", Some(payload)) => Ok(KeyAction::SelectIndex(payload_number(payload, text)?)),
+        ("select-index", Some(payload)) => {
+            Ok(KeyAction::SelectIndex(payload_number(payload, text)?))
+        }
         ("move-highlight", Some(payload)) => {
             Ok(KeyAction::MoveHighlight(payload_number(payload, text)?))
         }
@@ -302,6 +310,10 @@ fn parse_action(text: &str) -> Result<KeyAction, String> {
         ("enter-temp-english", None) => Ok(KeyAction::EnterTempEnglish),
         ("escape", None) => Ok(KeyAction::Escape),
         ("ignore", None) => Ok(KeyAction::Ignore),
+        ("toggle-script", None) => Ok(KeyAction::ToggleScript),
+        ("forget-highlighted", None) => Ok(KeyAction::ForgetHighlighted),
+        ("pin-highlighted", None) => Ok(KeyAction::PinHighlighted),
+        ("add-phrase", None) => Ok(KeyAction::AddPhrase),
         _ => Err(format!("unknown key action {text:?}")),
     }
 }

@@ -53,11 +53,10 @@ mod tests;
 
 pub use crate::testd::engine::builtin::scenarios;
 pub use crate::testd::engine::cli::{EngineArgs, run};
-pub use crate::testd::engine::doubles::{LookupFailure, MockLexicon, MockUserFreq};
-pub use crate::testd::engine::scenario::{
-    DictionarySpec, Divergence, EngineFixture, Expectation, Scenario, SingleRow, Step,
-    parse_scenario,
-};
+
+// Plain `use`, not `pub use`: these two are what this file's own functions name, and
+// re-exporting the rest of `scenario` was a surface nothing consumed.
+use crate::testd::engine::scenario::{Divergence, Scenario};
 
 use ime_core::input::InputBuffer;
 use ime_core::preedit::build_preedit;
@@ -149,9 +148,11 @@ impl<'a> Session<'a> {
     /// Never panics.
     fn apply(&mut self, action: KeyAction) -> Option<String> {
         match action {
-            KeyAction::InputChar(ch) => {
-                self.buffer.push_char(ch).err().map(|error| ime_code(&error))
-            }
+            KeyAction::InputChar(ch) => self
+                .buffer
+                .push_char(ch)
+                .err()
+                .map(|error| ime_code(&error)),
             KeyAction::Backspace => {
                 let _ = self.buffer.backspace();
                 None

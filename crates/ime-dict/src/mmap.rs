@@ -21,6 +21,15 @@
 //! the mapping opaque -- no clone, no mutable borrow, no remapping -- is what lets
 //! that conversion be justified once, here, instead of at every call site.
 //!
+//! # The string-pool view
+//!
+//! `WordPool` is the second view this module hands out: the `STRPOOL` section read as
+//! text. The conversion it performs is unchecked, and the architecture rule confines
+//! `unsafe` to this file, so the obligation travels in a value rather than in a
+//! documented promise on a safe function -- the pool is built once, by the loader, out
+//! of a container it has already accepted, and every later conversion is sound because
+//! of how that value came to exist.
+//!
 //! # SIGBUS
 //!
 //! A mapping whose file is truncated by another process faults on the pages past
@@ -152,11 +161,11 @@ impl MappedFile {
 ///
 /// # Safety
 ///
-/// `bytes` must be valid UTF-8. The dictionary read path discharges that obligation by
-/// construction rather than by a promise: the compiler builds the string pool out of Rust
-/// `String`s, so its bytes are text, and the loader verifies the section checksum before a
-/// word is read. [`pool_text`] is the wrapper the read path calls; `crate::entry` records
-/// the argument in full.
+/// `bytes` must be valid UTF-8. The read path discharges that obligation by construction
+/// rather than by a promise at the call site: the compiler builds the string pool out of Rust
+/// `String`s, so its bytes are text, the loader verifies the section checksum before a word is
+/// read, and the [`WordPool`] this function is reached through can only have been built out of
+/// the pool of a container the loader accepted. `crate::entry` records the argument in full.
 // `str::from_utf8_unchecked` is the operation this function exists for, and `unsafe` is
 // allowed in this file by the architecture rule.
 #[allow(unsafe_code)]
@@ -175,33 +184,60 @@ pub(crate) unsafe fn str_unchecked(bytes: &[u8]) -> &str {
     unsafe { std::str::from_utf8_unchecked(bytes) }
 }
 
-/// Interprets a word's bytes from a verified string pool as text.
+/// The string pool of a container the loader has accepted.
 ///
-/// This is the read path's entry point. The bytes are not scanned again here: a linear
-/// UTF-8 check per word would sit on every candidate the decoder produces, while the pool
-/// was built from Rust `String`s when the dictionary was compiled and checksummed when it
-/// was loaded.
+/// A value of this type *is* the proof that the bytes it borrows are the `STRPOOL` section of
+/// a container the reader accepted: the pool a compiler wrote from Rust `String`s, in a file
+/// whose checksums matched on the startup path. The proof cannot be manufactured out of
+/// arbitrary bytes: [`WordPool::verified`] is crate-visible, and the lexicon's loader is its
+/// only caller. Carrying the proof in a value is what lets [`WordPool::word`] hand back a
+/// `&str` without scanning the bytes again -- the obligation [`str_unchecked`] states is
+/// discharged once, where the value is built, instead of being restated as a precondition on
+/// a safe function that no caller can be held to.
 ///
-/// # Preconditions
+/// # Concurrency
 ///
-/// `bytes` must be a range of the `STRPOOL` section of a container that passed its
-/// checksum. That is a property of the container the caller already holds rather than a
-/// promise about this call, which is why this wrapper is safe: its only caller is the
-/// entry table, which slices the pool of a loaded dictionary. A debug build checks the
-/// property anyway.
-///
-/// # Panics
-///
-/// In a debug build, when `bytes` are not valid UTF-8.
-// `from_utf8_unchecked` is called below; `unsafe` is allowed in this file by the
-// architecture rule, and the wrapper is what keeps the token out of the callers.
-#[allow(unsafe_code)]
-pub(crate) fn pool_text(bytes: &[u8]) -> &str {
-    // SAFETY: the caller passes bytes sliced out of the string pool of a container whose
-    // checksum the loader verified and whose bytes the compiler wrote from Rust strings,
-    // which is the precondition [`str_unchecked`] states; `crate::entry` records the
-    // threat model that argument rests on.
-    unsafe { str_unchecked(bytes) }
+/// `Send + Sync`: the bytes are immutable and shared, and the type holds nothing else.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WordPool<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> WordPool<'a> {
+    /// Wraps the string pool of a container that has been accepted.
+    ///
+    /// The caller passes the `STRPOOL` section of a container the reader accepted, whose
+    /// bytes the compiler wrote from Rust `String`s. That is why this constructor is
+    /// crate-visible and why `crate::fst_index` is its only caller: a public constructor
+    /// would have to either scan the pool on every call or trust whatever it was handed, and
+    /// neither is something a safe API may do on behalf of a caller it cannot see.
+    pub(crate) fn verified(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+
+    /// Returns the text stored at `start..end`, or `None` when that range leaves the pool.
+    ///
+    /// The range is checked against the pool here rather than by the caller, so no caller can
+    /// name a range that is not part of the pool; what is left for the caller is the
+    /// per-record contract the entry table checks before it asks.
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, when the range is inside the pool but its bytes are not UTF-8: that
+    /// combination means the compiler and the checksum both failed, which is a bug to catch
+    /// while testing rather than a file to tolerate at run time. A release build does not
+    /// check it; `crate::entry` states the trade-off.
+    // The unchecked conversion below is the operation this type exists to make safe, and
+    // `unsafe` is allowed in this file by the architecture rule.
+    #[allow(unsafe_code)]
+    pub(crate) fn word(&self, start: usize, end: usize) -> Option<&'a str> {
+        let bytes = self.bytes.get(start..end)?;
+        // SAFETY: the value's invariant is that `bytes` is the string pool of a container the
+        // loader accepted, written by the compiler from Rust strings, so every range of it is
+        // text; `get` keeps the slice inside the pool, so the returned reference borrows
+        // memory the caller still reaches through `self`.
+        Some(unsafe { str_unchecked(bytes) })
+    }
 }
 
 #[cfg(test)]
@@ -305,5 +341,34 @@ mod tests {
         assert_eq!(moved.view, b"RSPD move me");
         assert_eq!(moved.map.bytes(), moved.view);
         fs::remove_file(&path).expect("cleaning up");
+    }
+
+    #[test]
+    fn test_word_pool_serves_the_text_of_a_range_it_holds() {
+        const POOL: &[u8] = "你好世界".as_bytes();
+        let pool = WordPool::verified(POOL);
+        let first = pool.word(0, 3).expect("the first word is in the pool");
+        assert_eq!(first, "你");
+        assert_eq!(
+            pool.word(9, 12),
+            Some("界"),
+            "the last word ends at the pool end"
+        );
+        // The text is a window into the pool rather than a copy of it, which is the
+        // property the whole read path is built on.
+        assert!(POOL.as_ptr_range().contains(&first.as_ptr()));
+    }
+
+    #[test]
+    fn test_word_pool_reports_a_range_that_leaves_the_pool() {
+        let pool = WordPool::verified("你好".as_bytes());
+        assert_eq!(pool.word(0, 7), None, "the range runs past the pool");
+        assert_eq!(pool.word(6, 9), None, "the range starts past the pool");
+        assert_eq!(pool.word(9, 3), None, "an inverted range is not a range");
+        assert_eq!(
+            pool.word(usize::MAX, usize::MAX),
+            None,
+            "an offset at the top of the width does not wrap"
+        );
     }
 }

@@ -288,7 +288,11 @@ fn open_record_file(crash_dir: &Path) -> Result<File, ImeError> {
 /// Built at arm time: in signal context only the two numbers that are not known until
 /// the fault happens are appended.
 fn signal_prefix(signal: i32) -> Vec<u8> {
-    format!("{RECORD_HEADER}signal={}\ntimestamp_unix_ms=", signal_name(signal)).into_bytes()
+    format!(
+        "{RECORD_HEADER}signal={}\ntimestamp_unix_ms=",
+        signal_name(signal)
+    )
+    .into_bytes()
 }
 
 /// The name of a handled signal, or `unknown` for one that is not.
@@ -477,7 +481,7 @@ mod tests {
         let name = format!("rspinyin-crash-signal-{}-{label}", std::process::id());
         let root = PathBuf::from("/tmp").join(name);
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("creating the scratch root");
         root
     }
 
@@ -515,7 +519,10 @@ mod tests {
         buffer.push_decimal(70);
         buffer.push(b" ");
         buffer.push_decimal(u64::MAX);
-        assert_eq!(String::from_utf8_lossy(buffer.as_bytes()), "0 70 18446744073709551615");
+        assert_eq!(
+            String::from_utf8_lossy(buffer.as_bytes()),
+            "0 70 18446744073709551615"
+        );
     }
 
     #[test]
@@ -589,7 +596,11 @@ mod tests {
             .map(|entries| entries.flatten().map(|e| e.file_name()).collect())
             .unwrap_or_default();
         assert_eq!(records.len(), 1, "one record file is armed");
-        assert!(records[0].to_string_lossy().ends_with(".txt"), "{:?}", records[0]);
+        assert!(
+            records[0].to_string_lossy().ends_with(".txt"),
+            "{:?}",
+            records[0]
+        );
     }
 
     #[test]

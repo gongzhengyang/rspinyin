@@ -296,8 +296,8 @@ fn clamp_coord(dp: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::spring::{DEFAULT_MASS, HIGHLIGHT_OMEGA0, HIGHLIGHT_ZETA};
     use super::*;
+    use crate::spring::{DEFAULT_MASS, HIGHLIGHT_OMEGA0, HIGHLIGHT_ZETA};
 
     const FRAME_S: f32 = 1.0 / 144.0;
 
@@ -345,7 +345,10 @@ mod tests {
 
     #[test]
     fn test_highlight_settles_on_target_from_both_sides() {
-        for (from, to) in [(cell(0.0, 0.0), cell(3.0, 0.0)), (cell(3.0, 0.0), cell(0.0, 0.0))] {
+        for (from, to) in [
+            (cell(0.0, 0.0), cell(3.0, 0.0)),
+            (cell(3.0, 0.0), cell(0.0, 0.0)),
+        ] {
             let mut anim = HighlightAnim::new(highlight_params(), from);
             anim.set_visible(true);
             anim.retarget(to);

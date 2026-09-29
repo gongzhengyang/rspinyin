@@ -1,0 +1,191 @@
+// The candidate grid: one cell per candidate, drawn in the five states of
+// docs/dev/features.md 3.4.
+//
+// Declaration only, like the rest of the view. Which text a cell draws, how it is cut,
+// what number label it carries and which of the five states it is in all arrive already
+// resolved in `CandidateData`, which `src/adapter.rs` builds: a `.slint` source holds no
+// business logic, and the render path stays a pure function of the frame.
+//
+// # Why the geometry is an input
+//
+// `CandidateMetrics` is declared in `candidate.slint`, which imports this file, and a
+// document cannot import what imports it. Every constant below is therefore an input,
+// bound by the window from that global: the numbers still have exactly one declaration,
+// and this component can be instantiated anywhere (3.5's command palette reuses these
+// components).
+//
+// # Focus
+//
+// This window must never take keyboard focus. No `TextInput`, no `forward-focus` and no
+// `focus()` call may appear here or in anything this file includes.
+
+import { Theme } from "theme.slint";
+
+// One candidate, as the grid draws it.
+export struct CandidateData {
+    // Global candidate index: the numbering `UiEvent::Select` and `Paging` use, so a
+    // click names the candidate the cell draws. It is not the number label -- a candidate
+    // past the ninth has an index and no label.
+    index: int,
+    // The number key of 3.5 that selects this candidate, empty past the ninth.
+    label: string,
+    // The full text. Never cut: this is what a selection commits.
+    text: string,
+    // The text as drawn, cut with `…` when it does not fit the cell (3.1.3).
+    display-text: string,
+    // The grey right-hand annotation, empty when there is none to draw.
+    annotation: string,
+    // `CandidateSource` as its variant number. Carried for the source labels that follow;
+    // 3.4 defines no per-source style, so every source is drawn alike today.
+    source: int,
+    // The candidate carries the keyboard highlight, which is also the first candidate's
+    // ring in this phase, and the focus ring of 3.4.
+    is-highlighted: bool,
+    // The pointer is over the cell.
+    is-hovered: bool,
+    // The pointer is pressing the cell.
+    is-pressed: bool,
+    // 3.4's `Disabled` row. Reserved: nothing in this phase disables a candidate.
+    is-disabled: bool,
+}
+
+// The candidate area: equal-width cells, `max-per-row` per row, `rows` rows.
+//
+// Every cell in a row shares `cell-width`, which is what makes the grid read as a grid
+// rather than as a ragged line; the width itself is computed by `src/adapter.rs` from the
+// text the page holds.
+export component CandidateGrid inherits VerticalLayout {
+    // The page's candidates, best first, as `src/adapter.rs` resolved them.
+    in property <[CandidateData]> items: [];
+    // How many candidates the page holds, written by the adapter beside the model it
+    // built.
+    in property <int> item-count: 0;
+    // Rows the page occupies, from `src/layout.rs`.
+    in property <int> rows: 0;
+    // Candidates on a full row, from `layout.max_per_row`.
+    in property <int> max-per-row: 1;
+    // Whether an annotation is drawn beside the candidate text.
+    in property <bool> show-annotation: false;
+    // Shared cell width, computed by the adapter so a row lines up.
+    in property <length> cell-width: 0px;
+
+    // The rest of the geometry and the type scale. Each one is bound by the window from
+    // `CandidateMetrics`, which is where 3.1.1 declares it.
+    in property <length> cell-height: 0px;
+    in property <length> cell-radius: 0px;
+    in property <length> cell-padding-h: 0px;
+    in property <length> cell-padding-v: 0px;
+    in property <length> number-gap: 0px;
+    in property <length> annotation-gap: 0px;
+    in property <length> grid-gap: 0px;
+    in property <length> text-font-size: 0px;
+    in property <length> small-font-size: 0px;
+    // 3.1.1's candidate-area padding, which is the container padding.
+    in property <length> area-padding: 0px;
+
+    padding: root.area-padding;
+    spacing: root.grid-gap;
+
+    // The adapter's count clamped against the model it wrote with it: the two always agree,
+    // and clamping means a mismatched pair draws the cells that exist rather than reaching
+    // past the end of the model.
+    private property <int> count: min(root.item-count, root.items.length);
+
+    for row in root.rows: HorizontalLayout {
+        spacing: root.grid-gap;
+
+        // The last row holds what is left over, which is why the count is clamped rather
+        // than always `max-per-row`. An empty grid draws no row at all, so the candidate
+        // area takes no height and the window shows its header alone.
+        for column in min(root.max-per-row, root.count - row * root.max-per-row): Rectangle {
+            // The candidate this cell draws. Reading it once keeps the four expressions
+            // below from indexing the model again.
+            property <CandidateData> cell: root.items[row * root.max-per-row + column];
+            // How far a disabled cell is faded, as a multiplier each child folds into its
+            // own opacity. See the note on `opacity` below.
+            private property <float> dim: cell.is-disabled ? 0.32 : 1.0;
+
+            width: root.cell-width;
+            height: root.cell-height;
+            border-radius: root.cell-radius;
+
+            // 3.4's five states, spelled in the priority the table gives them. The
+            // ranking itself is resolved in `src/adapter.rs` into the three flags, so at
+            // most one of them is set and this expression only has to name the table's
+            // rows: Active, then Focus Ring, then Hover, then Default.
+            background: cell.is-pressed ? Theme.state-pressed
+                : cell.is-highlighted ? Theme.state-selected-bg
+                : cell.is-hovered ? Theme.state-hover
+                : transparent;
+            // The focus ring of 3.4, one pixel inside the cell so it never changes the
+            // cell's size. A pressed cell draws the Active fill instead.
+            border-width: cell.is-highlighted && !cell.is-pressed ? 1px : 0px;
+            border-color: Theme.state-selected-stroke;
+            // 3.4's `Disabled` row. Nothing sets the flag in this phase; the row is drawn
+            // so that the table is complete and testable.
+            //
+            // 3.4's `Active` row also presses the cell in by 3% over 60ms. That motion
+            // belongs to 3.3.2, which is what drives the frames it would run over; a static
+            // transform here would be a jump, not a press.
+            //
+            // This dims the cell's own fill and border. It deliberately does *not* reach the
+            // text: a child that sets its own `opacity` masks the inherited one rather than
+            // multiplying with it, so a number label at 0.55 would draw at 0.55 whether its
+            // cell was disabled or not. The children apply `dim` themselves, below.
+            opacity: dim;
+
+            HorizontalLayout {
+                padding-left: root.cell-padding-h;
+                padding-right: root.cell-padding-h;
+                padding-top: root.cell-padding-v;
+                padding-bottom: root.cell-padding-v;
+                spacing: root.number-gap;
+
+                // The number key of 3.5, at 3.1.1's 11sp/500 and 0.55. The colour is
+                // `text.primary` rather than `text.annotation` because 3.2 fixes the 0.55
+                // as the final effective alpha and forbids multiplying it by the token's
+                // own alpha -- 0.48 x 0.55 would be unreadable.
+                Text {
+                    text: cell.label;
+                    font-size: root.small-font-size;
+                    font-weight: 500;
+                    color: Theme.text-primary;
+                    opacity: 0.55 * dim;
+                    vertical-alignment: center;
+                }
+
+                // The text and its annotation are one group: the number gap separates the
+                // label from this group, the annotation gap separates the two inside it.
+                HorizontalLayout {
+                    spacing: root.annotation-gap;
+
+                    Text {
+                        text: cell.display-text;
+                        font-size: root.text-font-size;
+                        // 3.1.1: the highlighted candidate is a weight heavier.
+                        font-weight: cell.is-highlighted ? 500 : 400;
+                        color: Theme.text-primary;
+                        opacity: dim;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        wrap: no-wrap;
+                    }
+
+                    // 3.1.1's annotation: 11sp/400 at 0.50, with the same ruling on the
+                    // alpha as the number label above.
+                    Text {
+                        visible: root.show-annotation && cell.annotation != "";
+                        text: cell.annotation;
+                        font-size: root.small-font-size;
+                        font-weight: 400;
+                        color: Theme.text-primary;
+                        opacity: 0.50 * dim;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        wrap: no-wrap;
+                    }
+                }
+            }
+        }
+    }
+}

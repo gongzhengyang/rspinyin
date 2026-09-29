@@ -10,6 +10,12 @@
 
 fn main() {
     println!("cargo::rerun-if-changed=ui/candidate.slint");
+    // Every file `candidate.slint` imports has to be listed, not just the one handed to the
+    // compiler: Slint reads the imports while compiling the root, so editing an imported
+    // file changes the output without changing the file cargo is watching. Missing this
+    // line means an edit to the grid regenerates nothing until something else happens to
+    // touch `candidate.slint` too.
+    println!("cargo::rerun-if-changed=ui/candidate_grid.slint");
     println!("cargo::rerun-if-changed=ui/theme.slint");
     compile();
 }

@@ -150,7 +150,10 @@ fn test_step_matches_the_design_transition_table() {
             &["set-client-preedit"],
         ),
     ];
-    assert!(rows.len() >= 18, "every row of the design's table is covered");
+    assert!(
+        rows.len() >= 18,
+        "every row of the design's table is covered"
+    );
 
     for (before, event, after, expected) in rows {
         let mut session = session_in(before, &cfg, &env);
@@ -215,7 +218,11 @@ fn test_step_covers_every_key_action_in_every_state() {
         }
     }
 
-    assert_eq!(covered, 4 * 15);
+    // Derived rather than a literal. `every_key_action` is sized by hand precisely so that
+    // adding a variant to `KeyAction` breaks its type, and this assertion is what proves
+    // the sweep above walked every action in every state rather than stopping early -- a
+    // second hand-maintained number here would only be one more thing to forget.
+    assert_eq!(covered, 4 * every_key_action().len());
 }
 
 #[test]

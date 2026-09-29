@@ -349,7 +349,7 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - 关键路径：**是**
   - 并行通道：Track A 底座与微观质感
   - 代码落地锚点：`crates/ime-ui/ui/theme.slint`、`crates/ime-ui/ui/candidate.slint`、`scripts/check-ui-spec.sh`、`justfile`、`crates/ime-ui/src/theme.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **现有代码具体病灶**：`theme.slint:48-69` 定义了 18 个 Token，`candidate.slint` 只引用了 7 个（`shadow-outer`/`shadow-inner`/`surface-fill`/`surface-stroke`/`text-primary`/`text-secondary`/`separator`）。剩下 9 个是**死 Token**。同时 `candidate.slint` 的 `CandidateMetrics` 里 13 个常量在绘制侧零引用。这不是「预留」，而是**设计系统与绘制层的接线断了一半**——它让任何后续视觉工作都无法判断「这个 Token 到底有没有生效」。
@@ -475,9 +475,18 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - [ ] **反 AI 模板风审查**：`candidate.slint` 中零引用的 `Theme.*` Token 数 ≤ 3；零引用的 `CandidateMetrics.*` 常量数 ≤ 2（仅允许 `max-width`、`max-per-row-limit`，它们由 Rust 侧布局消费）。
   - [ ] **排布与工学**：`StatusCluster` 宽度是**固定值**，模式切换不改变 Header 文本可用宽度 ⇒ 切换时无横向抖动。
   - [ ] **物理微交互**：本卡不引入动效；`candidate.slint` 内 `grep -c "animate"` 结果为 0。
-
----
-
+- **验收记录**（2026-09-29）：
+  - **交付物**：`scripts/check-ui-spec.sh`（1085 行，bash + 内嵌 python3，含 9 例 `--self-test`）、`crates/ime-ui/ui/candidate.slint`（新增 `StatusCluster` 组件）、`justfile`（新增 `check-ui`，接入 `ci` 与 `check-self-tests`）、`.github/workflows/ci.yml`。`theme.slint` / `theme.rs` 未改动——三向比对本来就已一致（上一张卡的 7 个 α 字节修正生效），本卡把它变成可执行断言。
+  - **验证命令与结果**：
+    - `bash scripts/check-ui-spec.sh` → `PASS (33 sizes from 3.1.1, 34 colours from 3.2 across theme.slint and theme.rs, 29 lengths on the 4dp grid of 3.1.4 with 12 exceptions, 5 type-scale sizes, 18 tokens and 39 constants declared, 2 tokens and 0 constants deferred)`
+    - `bash scripts/check-ui-spec.sh --self-test` → `PASS (9 injected violations, all reported)`
+    - `cargo check -p ime-ui --all-targets` → 绿（确认新增的 `StatusCluster` 能被 `slint-build` 编译）
+  - **门禁的四类断言（全部解析规范表，绝不另抄白名单）**：①3.1.1 尺寸 ↔ `CandidateMetrics`（覆盖该表全部 23 行、33 个常量取值，并把 `layout/metrics.rs` 的 `take*` 调用名反向断言为其子集，改名即红）；②3.2 颜色**三向**比对（规范表 ↔ `theme.slint` 默认表达式按 Slint 规则求值 ↔ `theme.rs` 的两个调色板），颜色按 Slint 自己的换算求值（`rgba()` 截断、`with-alpha()` 四舍五入），与 `src/theme/slint_palette.rs` **逐字节一致**，不存在两套判据；③3.1.4 的 4dp 网格与 12 项例外清单（表内常量必须存在且确实不在网格上，清单不会腐烂）；④引用闭环（死 token 必须登记在带规范归属的延迟清单里，**且延迟名一旦被引用即红**——清单只减不增）。
+  - **已知限制**：
+    1. **DoD「反 AI 模板风审查」在本卡内不可达**，且与卡内步骤 A 自相矛盾：接线后零引用的 `Theme.*` 为 **6** 个（`accent-on`、`text-separator`、`state-hover`、`state-selected-bg`、`state-selected-stroke`、`state-pressed`），零引用且无 Rust 消费者的 `CandidateMetrics` 常量为 **4** 个（`cell-padding-h/v`、`number-gap`、`annotation-gap`）。**`TASK-1.05.05` 落地后已删去 4 个 token 与全部 4 个常量**，只剩 `accent-on` 与 `text-separator`（前者是 3.2 明示预留，后者属 Header 的 span 级切分符）。卡里把 `text-separator`/`state-*` 明确推迟给 `P1.05.01`/`P2.03.01`，而五态与序号/注音的宿主（候选网格、frame→组件属性通路）本卡不存在，硬接线只能是假接线。已把这 10 个名字连同归属规范（3.4 五态、3.1.1 单元内边距、3.2 预留）登记为门禁的延迟清单；**任何新增死名立刻红**，后续卡片接线后该清单必须同步删除条目（门禁强制）。
+    2. **`StatusCluster` 未实例化进 `Header`**：`UiFrame.status` 的模式位到组件的通路在 `adapter.rs`（不在本卡白名单）。现在实例化会用默认值画出错误的输入法状态。
+    3. 与卡内样例的一处偏离：Slint 1.13 的 `HorizontalLayout` 只有 `spacing`/`alignment`（已核对 `i-slint-compiler-1.13.1/builtins.slint:400-403`），**没有** `vertical-alignment`；改为让布局高度与标记高度同为 `header-icon-size`，跨轴尺寸精确且不依赖布局的拉伸语义。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 #### 任务 ID：`UI-OPT-P0.01.02` CJK 字体栈、字阶基线与 4dp 网格规范冲突处置
 
 - **基本属性**：
@@ -718,7 +727,7 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - 关键路径：**是（头号阻塞）**
   - 并行通道：Track B 结构与操作流线
   - 代码落地锚点：`crates/ime-ui/src/adapter.rs`（新建）、`crates/ime-ui/src/adapter/frame.rs`（新建）、`crates/ime-ui/src/surface.rs`（新建）、`crates/ime-ui/src/lib.rs`（模块声明由主 agent 添加）
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **现有代码具体病灶**：`grep -rn "CandidateWindow" crates/` 在 `build.rs` 注释之外**零命中**。`candidate.slint` 的六个 `in` 属性（`preedit-text`、`mode-label`、`container-width`、`container-height`、`item-count`、`max-per-row`、`grid-rows`、`cell-width`）**没有任何写入方**。生产代码没有任何 `impl UiSurface`（`ui_thread/event_loop.rs:42` 的 `surface: Box<dyn UiSurface>` 只被测试替身填过）。
@@ -832,6 +841,21 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - [ ] **物理微交互**：`apply(UiCommand::Hide)` 后 `set_visible(false)` 被调用；窗口不获取键盘焦点（`X11Backend::input_focus()` 前后一致）。
   - [ ] **性能**：稳态适配（同候选数、同文本长度）的堆分配次数为 **0**（`dhat` 或 `criterion` 的 `allocations` 断言）。
   - [ ] `just check-slint` 通过；`crates/ime-ui/src/lib.rs` 的 `pub mod` 声明由主 agent 添加。
+- **验收记录**（2026-09-29）：
+  - **交付物**：新增 `crates/ime-ui/src/adapter.rs`、`adapter/frame.rs`、`adapter/tests.rs`、`surface.rs`（745 行）；`CandidateSurface` 实现 `UiSurface`。
+  - **验证命令与结果**：`just ci` 退出 0（含 `check-slint-leak`：1516 行公共 API，无 Slint 符号）；`cargo nextest run -p ime-ui` 323/323 通过，其中 adapter/surface 共 29 个新用例。
+  - **OB-4 的保持方式**：`slint::` 只出现在 `adapter.rs` 的实现体内——`Adapter` 的 `window` 是**私有字段**，`WindowTheme<'a>` 是**私有类型**；公开面只有 `Adapter` / `DrawState` / `DrawDelta` / `RevisionGate` / `CandidateSurface` 等，签名里只出现 `ime_types` 与 `crate::` 自有类型。
+  - **本次由主 Agent 解掉的两个阻塞项**：
+    1. **`UiSurface: Send` 已移除**：`RspinyinPlatform` 内含 `Rc`，持有平台与组件的生产 surface **无法** `Send`。该 Box 由工厂在 UI 线程创建、由同线程的循环消费，从不跨线程，`Send` 不换来任何东西却让生产实现无法书写。真正的约束（连接必须在将要 poll 它的线程上创建）由创建点规则承担。
+    2. **`ui/candidate.slint` 增加 `export { Theme } from "theme.slint";`**：`slint_build::compile` 只为**传给它的文件里声明的**根生成 Rust——`Window` 组件与该文件内的 global。仅仅 import 的 global 对 import 图保持私有、拿不到 Rust 访问器，因此 `include_modules!` 生成的模块有 `CandidateWindow` 与 `CandidateMetrics` 而**完全没有 `Theme`**，`adapter.rs` 根本写不进调色板。
+  - **已知限制**：
+    1. **DoD 的 dhat / criterion 分配断言未加**：`cargo test` 回退路径下测试共享进程，全局分配器计数不稳定。
+    2. **`event_fd()` 返回 `None`**：`RspinyinPlatform` 与冻结的 `SurfaceBackend` 都不暴露连接 fd，故合成器事件只能等下一次唤醒（指针交互实际上会被拖慢，需要平台侧加 `event_fd()` 访问器）。
+    3. **`place()` 的 `Desktop` 为空列表**（无输出枚举），因此**不翻转、不夹取**，窗口在屏幕底部不会自动上翻。
+    4. acrylic 一律按 `Refused` 解析（`BlurSurface` 能力到不了 surface），基色因此不透明并报 `ui/theme/blur-unavailable`。
+    5. cell 宽用「字符数 × 字号 + chrome」估算（本层无字体度量），组件 elide 仍是兜底。
+    6. **DoD「窗口不取键盘焦点」仍缺口**：该断言是 `platform/mod.rs` 里已有的 `#[ignore]` 测试，需真实 X server。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 

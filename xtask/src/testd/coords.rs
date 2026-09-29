@@ -139,7 +139,11 @@ mod tests {
         // A coordinate may be zero, unlike a dimension.
         assert_eq!(dp_to_px(0, 2.0), 0);
         assert_eq!(dp_to_px(i32::from(DEFAULT_SHADOW_DP), 2.0), 64);
-        assert_eq!(dp_to_px(10, f32::NAN), 0, "an unusable ratio cannot move a point");
+        assert_eq!(
+            dp_to_px(10, f32::NAN),
+            0,
+            "an unusable ratio cannot move a point"
+        );
         assert_eq!(dp_to_px(10, f32::INFINITY), 0);
     }
 
@@ -193,5 +197,40 @@ mod tests {
         // A point that no longer fits the 16-bit field a pointer event carries.
         assert!(on_screen(i64::from(i16::MAX) + 1, 0, (u16::MAX, u16::MAX)).is_err());
         assert_eq!(on_screen(0, 0, screen), Ok((0, 0)));
+    }
+
+    #[test]
+    fn test_container_to_screen_never_answers_with_a_point_off_the_screen() {
+        let screen = (1920, 1080);
+        let mut accepted = 0;
+        for scale in [1.0_f32, 2.0] {
+            let reserve = dp_to_px(i32::from(DEFAULT_SHADOW_DP), scale);
+            for origin in [(0, 0), (640, 360), (1880, 1040)] {
+                let placement = WindowPlacement {
+                    origin,
+                    size: (424, 152),
+                    container_offset: (reserve, reserve),
+                    scale,
+                };
+                for hit in [(0, 0), (200, 100)] {
+                    if let Ok((x, y)) = container_to_screen(&placement, hit, screen) {
+                        accepted += 1;
+                        assert!(
+                            x >= 0 && y >= 0,
+                            "a point it accepts is never negative: {x},{y} at scale {scale}"
+                        );
+                        assert!(
+                            i32::from(x) < i32::from(screen.0)
+                                && i32::from(y) < i32::from(screen.1),
+                            "a point it accepts is on the screen: {x},{y} at scale {scale}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            accepted > 0,
+            "the sweep must accept the points that are on the screen"
+        );
     }
 }

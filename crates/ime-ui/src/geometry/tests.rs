@@ -106,7 +106,13 @@ fn place(anchor: &Anchor, screen: &Screen, panel: Panel, frame: &UiFrame) -> Geo
         screens,
         primary: screen.id,
     };
-    compute(&PlacementRequest::new(anchor, desktop, panel, frame, constants()))
+    compute(&PlacementRequest::new(
+        anchor,
+        desktop,
+        panel,
+        frame,
+        constants(),
+    ))
 }
 
 /// Whether a geometry's window lies entirely inside an output.

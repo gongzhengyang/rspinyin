@@ -80,3 +80,14 @@ spdx = "MIT OR Apache-2.0"
 retrieved = ""
 sha256 = ""
 permissive = true
+
+[[source]]
+id = "phrase"
+kind = "derived"
+layer = "L5"
+url = "https://github.com/rspinyin/rspinyin"
+license = "Project-owned (MIT OR Apache-2.0)"
+spdx = "MIT OR Apache-2.0"
+retrieved = ""
+sha256 = ""
+permissive = true

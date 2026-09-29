@@ -152,6 +152,28 @@ pub struct Lattice<'dict> {
 }
 
 impl<'dict> Lattice<'dict> {
+    /// Creates an empty lattice with room for the edges of a graph of `nodes` nodes.
+    ///
+    /// The edge vector is what one decode allocates, so it is sized once rather than grown:
+    /// that is the difference between a single allocation and the eight a doubling growth
+    /// takes for a twelve-syllable input. The estimate is the average the walk produces --
+    /// every node contributes at most [`WORDS_PER_KEY`] edges for its one-syllable spans,
+    /// plus the single-character fallbacks when they are on -- so a dictionary that is richer
+    /// than that grows the vector once more rather than being refused.
+    ///
+    /// # Panics
+    ///
+    /// Never: a node count past [`MAX_LATTICE_NODES`] is cut to it.
+    pub fn with_capacity(nodes: usize, fallback_single: bool) -> Self {
+        let per_node = WORDS_PER_KEY + if fallback_single { FALLBACK_SINGLES } else { 0 };
+        let nodes = nodes.min(MAX_LATTICE_NODES);
+        Self {
+            edges: Vec::with_capacity(nodes.saturating_mul(per_node)),
+            starts: SmallVec::new(),
+            lookup_failed: false,
+        }
+    }
+
     /// Returns the edges leaving `node`, in the order the walk built them.
     ///
     /// Answers with an empty slice for a node index outside the graph rather than
@@ -234,11 +256,37 @@ pub fn build_lattice<'dict>(
     user: &'dict (dyn UserFreqSource + 'dict),
     fallback_single: bool,
 ) -> Lattice<'dict> {
+    let mut lattice = Lattice::with_capacity(usize::from(dag.len()) + 1, fallback_single);
+    build_lattice_into(&mut lattice, dag, lexicon, user, fallback_single);
+    lattice
+}
+
+/// Builds the lattice of `dag` into `lattice`, reusing the buffers it already holds.
+///
+/// Same walk as [`build_lattice`], which is this function wrapped around a lattice of its
+/// own. A caller that builds one lattice per decode hands in the one it holds, so the edge
+/// vector and the per-node table keep their allocation; the previous contents are cleared
+/// first, and a failure leaves nothing of them behind either.
+///
+/// # Panics
+///
+/// Never: the walk is bounded, and every index into the graph and the lattice is
+/// taken with a checked lookup.
+pub fn build_lattice_into<'dict>(
+    lattice: &mut Lattice<'dict>,
+    dag: &SyllableDag,
+    lexicon: &'dict dyn Lexicon,
+    user: &'dict (dyn UserFreqSource + 'dict),
+    fallback_single: bool,
+) {
+    lattice.edges.clear();
+    lattice.starts.clear();
+    lattice.lookup_failed = false;
     let mut builder = Builder {
         lexicon,
         user,
         fallback_single,
-        lattice: Lattice::default(),
+        lattice,
         key: String::with_capacity(MAX_KEY_BYTES),
         singles: SmallVec::new(),
         stack: SmallVec::new(),
@@ -249,7 +297,6 @@ pub fn build_lattice<'dict>(
         builder.lattice.starts.push(first);
         builder.node(dag, node);
     }
-    builder.lattice
 }
 
 /// One key the walk has spelled out, and where it ends.
@@ -280,12 +327,13 @@ struct Single {
 ///
 /// The key and the two stacks are held across the whole build rather than
 /// allocated per span, and the key is sized for the longest word, so the walk
-/// never grows a buffer.
-struct Builder<'a> {
+/// never grows a buffer. The lattice is borrowed rather than owned, which is what
+/// lets a caller build into a lattice it keeps.
+struct Builder<'a, 'lattice> {
     lexicon: &'a dyn Lexicon,
     user: &'a dyn UserFreqSource,
     fallback_single: bool,
-    lattice: Lattice<'a>,
+    lattice: &'lattice mut Lattice<'a>,
     /// Key under construction, reused by every span the walk spells.
     key: String,
     /// The one-syllable spans of the node being walked.
@@ -294,7 +342,7 @@ struct Builder<'a> {
     stack: SmallVec<[Frame; SINGLES_INLINE]>,
 }
 
-impl Builder<'_> {
+impl Builder<'_, '_> {
     /// Enumerates every word edge that leaves `node`.
     ///
     /// The walk is explicit -- a stack of spans, never recursion -- so a long
@@ -427,197 +475,12 @@ impl Builder<'_> {
 
 /// Test doubles shared by the lattice and the decoder tests.
 ///
-/// They live next to the lattice rather than in the decoder's own test module
+/// They live in `lattice/testing.rs` rather than in the decoder's own test module
 /// because both suites rank against the same dictionary: one in-memory
 /// implementation of the frozen traits keeps the two honest about what a lookup
 /// answers.
 #[cfg(test)]
-pub(crate) mod testing {
-    use std::collections::{BTreeMap, BTreeSet};
-
-    use ime_types::{ImeError, Lexicon, SyllableId, UserFreqSource, WordFlags, WordIter, WordRef};
-
-    use crate::segment::syllable_at;
-
-    /// A dictionary with fixed contents: keys to word texts, spelled syllables to
-    /// their single-character fallbacks, the keys whose lookup fails, and the words
-    /// the user is credited with.
-    ///
-    /// Words come back in the order they were listed, which is the order the frozen
-    /// contract describes for a real lookup: strongest first.
-    pub(crate) struct MockLexicon {
-        words: BTreeMap<&'static str, Vec<&'static str>>,
-        singles: BTreeMap<&'static str, Vec<&'static str>>,
-        failing: BTreeSet<&'static str>,
-        coined: BTreeSet<&'static str>,
-    }
-
-    impl MockLexicon {
-        /// Builds a dictionary from `(key, word)` rows, one row per word.
-        pub(crate) fn with(rows: &[(&'static str, &'static str)]) -> Self {
-            let mut words: BTreeMap<&'static str, Vec<&'static str>> = BTreeMap::new();
-            for (key, word) in rows {
-                words.entry(key).or_default().push(word);
-            }
-            Self {
-                words,
-                singles: BTreeMap::new(),
-                failing: BTreeSet::new(),
-                coined: BTreeSet::new(),
-            }
-        }
-
-        /// The dictionary the decoder tests rank against: the words the four
-        /// determinism inputs need, plus both readings of the ambiguous `xian`.
-        pub(crate) fn phrase() -> Self {
-            Self::with(&[
-                ("ni", "你"),
-                ("hao", "好"),
-                ("ni'hao", "你好"),
-                ("wo", "我"),
-                ("ai", "爱"),
-                ("wo'ai", "我爱"),
-                ("wo'ai'ni", "我爱你"),
-                ("zhong", "中"),
-                ("guo", "国"),
-                ("zhong'guo", "中国"),
-                ("bei", "北"),
-                ("jing", "京"),
-                ("bei'jing", "北京"),
-                ("da", "大"),
-                ("xue", "学"),
-                ("da'xue", "大学"),
-                ("bei'jing'da'xue", "北京大学"),
-                ("xi", "西"),
-                ("an", "安"),
-                ("xian", "先"),
-            ])
-            .single("ni", &["伱"])
-            .single("hao", &["号", "浩", "郝"])
-            .single("wo", &["窝"])
-            .single("ai", &["矮", "唉"])
-            .single("zhong", &["种"])
-            .single("guo", &["果"])
-            .single("bei", &["背"])
-            .single("jing", &["惊"])
-            .single("da", &["打"])
-            .single("xue", &["雪", "穴"])
-            .single("xi", &["希"])
-            .single("an", &["按"])
-        }
-
-        /// Adds the single-character fallbacks of one syllable.
-        pub(crate) fn single(mut self, syllable: &'static str, texts: &[&'static str]) -> Self {
-            self.singles.insert(syllable, texts.to_vec());
-            self
-        }
-
-        /// Makes one key fail its lookup.
-        pub(crate) fn failing(mut self, key: &'static str) -> Self {
-            self.failing.insert(key);
-            self
-        }
-
-        /// Credits the user with one word.
-        pub(crate) fn coined(mut self, word: &'static str) -> Self {
-            self.coined.insert(word);
-            self
-        }
-    }
-
-    impl Lexicon for MockLexicon {
-        fn lookup(&self, key: &str) -> Result<WordIter<'_>, ImeError> {
-            if self.failing.contains(key) {
-                return Err(ImeError::Unsupported);
-            }
-            let syllables = u8::try_from(key.split('\'').count()).unwrap_or(1);
-            let words: Vec<WordRef<'_>> = self
-                .words
-                .get(key)
-                .map(|texts| {
-                    texts
-                        .iter()
-                        .map(|text| WordRef {
-                            text,
-                            weight: 1,
-                            syl_count: syllables,
-                            flags: if self.coined.contains(text) {
-                                WordFlags::USER
-                            } else {
-                                WordFlags::empty()
-                            },
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            Ok(WordIter::from_vec(words))
-        }
-
-        fn prefix(&self, _prefix: &str, _limit: usize) -> Result<WordIter<'_>, ImeError> {
-            Err(ImeError::Unsupported)
-        }
-
-        fn fallback_single(
-            &self,
-            syl: SyllableId,
-            limit: usize,
-        ) -> Result<WordIter<'_>, ImeError> {
-            let words: Vec<WordRef<'_>> = syllable_at(syl)
-                .and_then(|spelling| self.singles.get(spelling))
-                .map(|texts| {
-                    texts
-                        .iter()
-                        .take(limit)
-                        .map(|text| WordRef {
-                            text,
-                            weight: 1,
-                            syl_count: 1,
-                            flags: WordFlags::empty(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            Ok(WordIter::from_vec(words))
-        }
-    }
-
-    /// A user-frequency source that has recorded nothing.
-    pub(crate) struct NoUser;
-
-    impl UserFreqSource for NoUser {
-        fn freq(&self, _key: &str) -> u32 {
-            0
-        }
-        fn record(&self, _key: &str, _weight_hint: u16) {}
-        fn is_user_word(&self, _key: &str) -> bool {
-            false
-        }
-    }
-
-    /// A user-frequency source with a fixed count per key.
-    pub(crate) struct MockUserFreq {
-        counts: BTreeMap<&'static str, u32>,
-    }
-
-    impl MockUserFreq {
-        /// Builds a source from `(key, count)` rows.
-        pub(crate) fn with(rows: &[(&'static str, u32)]) -> Self {
-            Self {
-                counts: rows.iter().copied().collect(),
-            }
-        }
-    }
-
-    impl UserFreqSource for MockUserFreq {
-        fn freq(&self, key: &str) -> u32 {
-            self.counts.get(key).copied().unwrap_or(0)
-        }
-        fn record(&self, _key: &str, _weight_hint: u16) {}
-        fn is_user_word(&self, key: &str) -> bool {
-            self.counts.contains_key(key)
-        }
-    }
-}
+pub(crate) mod testing;
 
 #[cfg(test)]
 mod tests {
@@ -675,7 +538,12 @@ mod tests {
     #[test]
     fn test_build_lattice_keeps_only_the_strongest_words_of_a_key() {
         let rows: Vec<(&'static str, &'static str)> = (0..WORDS_PER_KEY + 2)
-            .map(|index| ("shi", ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"][index]))
+            .map(|index| {
+                (
+                    "shi",
+                    ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"][index],
+                )
+            })
             .collect();
         let lexicon = MockLexicon::with(&rows);
         let lattice = lattice_of("shi", &lexicon);
@@ -683,6 +551,22 @@ mod tests {
         assert_eq!(kept.len(), WORDS_PER_KEY);
         assert_eq!(kept[0].word.text, "一");
         assert_eq!(kept[WORDS_PER_KEY - 1].word.text, "八");
+    }
+
+    #[test]
+    fn test_build_lattice_stops_spelling_spans_at_the_word_length_limit() {
+        // Seven `a`s segment one way only -- a chain of seven syllables -- so the walk
+        // can spell a span of any length up to the limit and no longer. The dictionary
+        // holds a word for the six-syllable span and one for the seven-syllable span.
+        let rows = [("a'a'a'a'a'a", "六"), ("a'a'a'a'a'a'a", "七")];
+        let lexicon = MockLexicon::with(&rows);
+        let lattice = lattice_of("aaaaaaa", &lexicon);
+        // Two edges only: the six-syllable key is spelled from node 0 and from node 1,
+        // and the seven-syllable key is never looked up, so no edge carries 七.
+        assert_eq!(lattice.len(), 2);
+        assert_eq!(texts(&lattice, 0), vec!["六"]);
+        assert_eq!(texts(&lattice, 1), vec!["六"]);
+        assert_eq!(lattice.edges_from(0)[0].syllables, MAX_WORD_SYLLABLES);
     }
 
     #[test]
@@ -773,5 +657,66 @@ mod tests {
         assert_eq!(edges[1].word.text, "中国");
         assert_eq!(edges[1].syllables, 2);
         assert_eq!(edges[1].characters, 2);
+    }
+
+    #[test]
+    fn test_lattice_with_capacity_sizes_the_edge_vector_for_the_graph() {
+        let lattice: Lattice<'_> = Lattice::with_capacity(4, true);
+        assert!(lattice.is_empty());
+        assert_eq!(lattice.node_count(), 0);
+        assert_eq!(
+            lattice.edges.capacity(),
+            4 * (WORDS_PER_KEY + FALLBACK_SINGLES),
+            "the fallbacks are part of the estimate when they are on"
+        );
+        // A node count past the ceiling is cut to it, so a hand-built configuration cannot
+        // make the lattice allocate without bound.
+        let bounded: Lattice<'_> = Lattice::with_capacity(usize::MAX, false);
+        assert_eq!(bounded.edges.capacity(), MAX_LATTICE_NODES * WORDS_PER_KEY);
+    }
+
+    #[test]
+    fn test_build_lattice_into_replaces_the_contents_and_keeps_the_buffer() {
+        let lexicon = MockLexicon::with(&[
+            ("ni", "你"),
+            ("hao", "好"),
+            ("ni'hao", "你好"),
+            ("zhong", "中"),
+        ]);
+        let mut dag = SyllableDag::new();
+        assert!(dag.build("nihao").is_ok());
+        let mut lattice = Lattice::with_capacity(usize::from(dag.len()) + 1, true);
+        build_lattice_into(&mut lattice, &dag, &lexicon, &NoUser, true);
+        assert_eq!(texts(&lattice, 0), vec!["你", "你好"]);
+        let grown = lattice.edges.capacity();
+        // A second build into the same lattice describes the second input and leaves the
+        // buffer the first one grew in place.
+        assert!(dag.build("zhongguo").is_ok());
+        build_lattice_into(&mut lattice, &dag, &lexicon, &NoUser, true);
+        assert_eq!(texts(&lattice, 0), vec!["中"]);
+        assert_eq!(lattice.node_count(), usize::from(dag.len()) + 1);
+        assert!(
+            lattice.edges.capacity() >= grown,
+            "the edge vector keeps its allocation"
+        );
+        assert!(!lattice.lookup_failed());
+    }
+
+    #[test]
+    fn test_build_lattice_into_clears_a_refusal_of_the_previous_build() {
+        let lexicon = MockLexicon::with(&[("ni", "你")]).failing("hao");
+        let mut dag = SyllableDag::new();
+        assert!(dag.build("nihao").is_ok());
+        let mut lattice = Lattice::default();
+        build_lattice_into(&mut lattice, &dag, &lexicon, &NoUser, true);
+        assert!(lattice.lookup_failed(), "the second syllable is refused");
+        let mut whole = SyllableDag::new();
+        assert!(whole.build("ni").is_ok());
+        build_lattice_into(&mut lattice, &whole, &lexicon, &NoUser, true);
+        assert!(
+            !lattice.lookup_failed(),
+            "a build that reads everything clears the previous refusal"
+        );
+        assert_eq!(texts(&lattice, 0), vec!["你"]);
     }
 }

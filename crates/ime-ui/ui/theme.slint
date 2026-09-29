@@ -12,12 +12,13 @@
 // `scripts/check-ui-spec.sh` compares the two line by line; each token carries the
 // table row it comes from. `src/theme.rs` repeats the same palette, because the
 // contrast self-check has to evaluate it without a renderer; the two copies are
-// pinned to each other by the tests there and by that script, and no third copy may
-// exist.
+// pinned to each other byte for byte by `src/theme/slint_palette.rs` and by that
+// script, and no third copy may exist.
 //
-// Alphas are written as the 0..1 fractions the table uses. Slint rounds them into
-// the 8-bit channel with `round(alpha * 255)`, which is the same rounding
-// `src/theme.rs` applies, so the two sides agree byte for byte.
+// Alphas are written as the 0..1 fractions the table uses, and Slint turns them into
+// the 8-bit channel two different ways: `with-alpha()` rounds the fraction, while the
+// `rgba()` builtin truncates it. `src/theme.rs` therefore carries the byte each token
+// actually paints with, which leaves seven of them one step below the rounded value.
 
 export global Theme {
     // True while the dark palette is in use. Written by `src/theme.rs`; `true` is the

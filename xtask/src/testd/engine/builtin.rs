@@ -208,7 +208,11 @@ fn ranking_follows_the_user_frequency() -> Scenario {
 fn ranking_follows_the_language_model() -> Scenario {
     let spec = with_bigram(
         with_unigrams(
-            dictionary(&[("xian", &["先"][..]), ("xi", &["西"][..]), ("an", &["安"][..])]),
+            dictionary(&[
+                ("xian", &["先"][..]),
+                ("xi", &["西"][..]),
+                ("an", &["安"][..]),
+            ]),
             &[("先", -2048), ("西", -128), ("安", -128)],
         ),
         "西",
@@ -235,7 +239,9 @@ fn ranking_follows_the_language_model() -> Scenario {
 /// page of seven.
 fn fills_a_page_and_the_next() -> Scenario {
     let single = ["的", "得", "德", "地", "底", "低", "滴", "敌"];
-    let whole = ["得到", "得知", "得意", "得罪", "得体", "得手", "得救", "得逞"];
+    let whole = [
+        "得到", "得知", "得意", "得罪", "得体", "得手", "得救", "得逞",
+    ];
     Scenario::new(
         "engine-fills-a-page-and-the-next",
         dictionary(&[("de", &single[..]), ("de'de", &whole[..])]),

@@ -13,30 +13,49 @@
 //! A key is only taken away from the application when something can act on it, and that
 //! takes two conditions: the routing table has to name the key, and a session has to be
 //! able to execute the resulting action. [`translate_key`] answers the first condition
-//! and [`claims_key`] makes it explicit; the caller adds the second. The host-side effect
-//! of the pair is `filterAndAccept` in the engine's `keyEvent`, and a key that fails
-//! either condition must reach neither.
+//! and [`claims_key`] makes it explicit; [`router::KeyRouter`] adds the second by
+//! stepping a session with the action and reporting whether anything came of it. The
+//! host-side effect of that pair is `filterAndAccept` in the engine's `keyEvent`, and a
+//! key that fails either condition must reach neither.
 //!
-//! # What is not here yet
+//! # Layout
 //!
-//! The session state machine (`ime-core`) and the host-side effect application
-//! (`apply_effects`) do not exist, so nothing can execute an action and no key may be
-//! claimed: the callback in `ffi::abi` answers "not handled" for every key and the engine
-//! therefore consumes none of them. The routing table below is what the session will be
-//! driven with once it lands, and its rows are pinned by the tests at the bottom of this
-//! file.
+//! * The routing table itself — [`translate_key`], [`claims_key`], [`KeyBindings`] and
+//!   the keysym and modifier constants they read — is this file.
+//! * [`context`] is the layered bus the table is read through: which layer of the plugin
+//!   owns a key, and whether the plugin may keep it.
+//! * [`modifier`] is the check that the host's modifier bits are the ones this build was
+//!   compiled against.
+//! * [`router`] holds one session per input context and executes the effects a step
+//!   returns.
+//! * [`host`] is the boundary those effects are executed against: the trait the engine
+//!   calls to commit text, to fill the application's preedit area, to post a command to
+//!   the candidate window and to report a diagnostic.
 //!
 //! # Configuration
 //!
 //! [`KeyBindings`] is this layer's projection of the `[keys]` section: the three settings
 //! the routing table reads, with the defaults the shipped `config/default.toml` declares.
-//! It is a host-layer type rather than a contract type — `ime-config` owns the file
-//! format, the key-name whitelist and the validation — so a change to the configuration
-//! schema lands there and is converted here.
+//! [`router::RoutingConfig`] is the rest of what the routing layer acts on. Both are
+//! host-layer types rather than contract types — `ime-config` owns the file format, the
+//! key-name whitelist and the validation — so a change to the configuration schema lands
+//! there and is converted here.
 
 use ime_types::KeyAction;
 
 use crate::ffi::FcitxKeyEvent;
+
+pub mod context;
+pub mod host;
+pub mod modifier;
+pub mod router;
+
+pub use context::{Consumed, Dispatcher, KeyContext, KeyEvent, Overlay, SessionView};
+pub use modifier::{MODIFIER_MASK_MISMATCH_CODE, check_modifier_mask};
+pub use router::{KeyRouter, RoutingConfig};
+
+#[cfg(test)]
+mod tests;
 
 // ── Modifier bits ────────────────────────────────────────────────────────────────
 //
@@ -345,361 +364,49 @@ pub fn claims_key(action: KeyAction) -> bool {
     !matches!(action, KeyAction::Ignore)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A key press of `sym` with `state` held.
-    fn press(sym: u32, state: u32) -> FcitxKeyEvent {
-        FcitxKeyEvent {
-            sym,
-            state,
-            is_release: false,
-            time_ms: 7,
-        }
-    }
-
-    /// A key release of `sym` with `state` held.
-    fn release(sym: u32, state: u32) -> FcitxKeyEvent {
-        FcitxKeyEvent {
-            sym,
-            state,
-            is_release: true,
-            time_ms: 7,
-        }
-    }
-
-    /// Asserts a table of cases, naming the key that did not match.
-    fn assert_rows(cases: &[(FcitxKeyEvent, KeyAction)], keys: &KeyBindings) {
-        for (key, expected) in cases {
-            assert_eq!(
-                translate_key(key, keys),
-                *expected,
-                "sym {:#06x} state {:#x} release {}",
-                key.sym,
-                key.state,
-                key.is_release
-            );
-        }
-    }
-
-    /// The keysyms the routing table has a row for under some modifiers.
-    ///
-    /// The "never swallow" test asserts that nothing outside this set is ever claimed, so
-    /// a table edit that starts claiming an unrelated key fails here instead of silently
-    /// removing that key from the application's input.
-    fn is_routed(sym: u32) -> bool {
-        const NAMED: [u32; 15] = [
-            KEY_SPACE,
-            KEY_PERIOD,
-            KEY_MINUS,
-            KEY_EQUAL,
-            KEY_BACKSPACE,
-            KEY_TAB,
-            KEY_RETURN,
-            KEY_ESCAPE,
-            KEY_LEFT,
-            KEY_UP,
-            KEY_RIGHT,
-            KEY_DOWN,
-            KEY_SHIFT_L,
-            KEY_SHIFT_R,
-            KEY_E_UPPER,
-        ];
-        (KEY_A..=KEY_Z).contains(&sym) || (KEY_0..=KEY_9).contains(&sym) || NAMED.contains(&sym)
-    }
-
-    /// A deterministic keysym stream from a 32-bit LCG: reproducible, and needs no
-    /// dependency (`rand` is not one of this workspace's crates).
-    fn keysym_stream(count: usize) -> impl Iterator<Item = u32> {
-        let mut seed: u32 = 0x1234_5678;
-        (0..count).map(move |_| {
-            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            seed
-        })
-    }
-
-    /// The default bindings with only the two punctuation keys paging the list.
-    fn punctuation_flip_bindings() -> KeyBindings {
-        KeyBindings {
-            flip_keys: FlipKeys {
-                minus: true,
-                equal: true,
-                up: false,
-                down: false,
-            },
-            ..KeyBindings::default()
-        }
-    }
-
-    #[test]
-    fn test_modifier_mask_matches_the_installed_key_state_header() {
-        // 5.1.7 `fcitx-utils/keysym.h`: `SimpleMask = Ctrl_Alt_Shift | Super | Super2 |
-        // Hyper | Meta`. A mismatch means the host moved the bits, not that this table is
-        // free to be renumbered.
-        assert_eq!(MODIFIER_MASK, 0x1400_006d);
-        assert_eq!(NON_SHIFT_MODIFIERS, 0x1400_006c);
-        assert_eq!(NON_SHIFT_MODIFIERS | SHIFT, MODIFIER_MASK);
-    }
-
-    #[test]
-    fn test_key_bindings_default_matches_the_shipped_configuration() {
-        let keys = KeyBindings::default();
-        assert_eq!(keys.digit_zero, DigitZero::Passthrough);
-        assert!(!keys.enter_commit_raw);
-        assert_eq!(keys.flip_keys, FlipKeys::all());
-    }
-
-    #[test]
-    fn test_translate_key_ignores_every_key_release() {
-        let keys = KeyBindings::default();
-        for (sym, state) in [
-            (KEY_A, 0),
-            (KEY_SPACE, 0),
-            (KEY_RETURN, 0),
-            (KEY_ESCAPE, 0),
-            (KEY_BACKSPACE, 0),
-            (KEY_TAB, SHIFT),
-            (KEY_SHIFT_L, SHIFT),
-        ] {
-            let action = translate_key(&release(sym, state), &keys);
-            assert_eq!(action, KeyAction::Ignore, "{sym:#06x} must reach the app");
-        }
-    }
-
-    #[test]
-    fn test_translate_key_maps_unmodified_letters_to_input_char() {
-        let keys = KeyBindings::default();
-        assert_rows(
-            &[
-                (press(KEY_A, 0), KeyAction::InputChar('a')),
-                (press(KEY_E, 0), KeyAction::InputChar('e')),
-                (press(KEY_Z, 0), KeyAction::InputChar('z')),
-                // Shift is how an uppercase letter is typed, and the row tolerates it.
-                (press(KEY_A, SHIFT), KeyAction::InputChar('a')),
-                // Every other modifier makes the key somebody else's chord.
-                (press(KEY_A, CTRL), KeyAction::Ignore),
-                (press(KEY_A, ALT), KeyAction::Ignore),
-                (press(KEY_A, SUPER), KeyAction::Ignore),
-                (press(KEY_A, CTRL | SHIFT), KeyAction::Ignore),
-                // The syms one step outside the range are not letters.
-                (press(KEY_A - 1, 0), KeyAction::Ignore),
-                (press(KEY_Z + 1, 0), KeyAction::Ignore),
-            ],
-            &keys,
-        );
-    }
-
-    #[test]
-    fn test_translate_key_maps_space_to_commit_highlighted() {
-        let keys = KeyBindings::default();
-        assert_rows(
-            &[
-                (press(KEY_SPACE, 0), KeyAction::CommitHighlighted),
-                (press(KEY_SPACE, ALT), KeyAction::Ignore),
-                (press(KEY_SPACE, CTRL | SHIFT), KeyAction::Ignore),
-            ],
-            &keys,
-        );
-    }
-
-    #[test]
-    fn test_translate_key_selects_candidates_with_the_digits() {
-        let keys = KeyBindings::default();
-        assert_rows(
-            &[
-                (press(KEY_0 + 1, 0), KeyAction::SelectIndex(1)),
-                (press(KEY_0 + 5, 0), KeyAction::SelectIndex(5)),
-                (press(KEY_0 + 9, 0), KeyAction::SelectIndex(9)),
-                (press(KEY_0 + 5, CTRL), KeyAction::Ignore),
-            ],
-            &keys,
-        );
-    }
-
-    #[test]
-    fn test_translate_key_routes_digit_zero_by_configuration() {
-        let passthrough = KeyBindings::default();
-        let flipping = KeyBindings {
-            digit_zero: DigitZero::Flip,
-            ..KeyBindings::default()
-        };
-        assert_rows(
-            &[
-                (press(KEY_0, 0), KeyAction::Ignore),
-                (press(KEY_0, CTRL), KeyAction::Ignore),
-            ],
-            &passthrough,
-        );
-        assert_rows(
-            &[
-                (press(KEY_0, 0), KeyAction::PageNext),
-                // The branch is about the digit, not about the modifier.
-                (press(KEY_0, CTRL), KeyAction::Ignore),
-            ],
-            &flipping,
-        );
-    }
-
-    #[test]
-    fn test_translate_key_pages_with_the_configured_flip_keys() {
-        let keys = KeyBindings::default();
-        assert_rows(
-            &[
-                (press(KEY_MINUS, 0), KeyAction::PagePrev),
-                (press(KEY_EQUAL, 0), KeyAction::PageNext),
-                (press(KEY_UP, 0), KeyAction::PagePrev),
-                (press(KEY_DOWN, 0), KeyAction::PageNext),
-                // The flip rows are bare presses, so Shift keeps them with the host.
-                (press(KEY_MINUS, SHIFT), KeyAction::Ignore),
-            ],
-            &keys,
-        );
-        // A configuration that drops the arrows hands those two back to the application.
-        let punctuation_only = punctuation_flip_bindings();
-        assert_rows(
-            &[
-                (press(KEY_MINUS, 0), KeyAction::PagePrev),
-                (press(KEY_EQUAL, 0), KeyAction::PageNext),
-                (press(KEY_UP, 0), KeyAction::Ignore),
-                (press(KEY_DOWN, 0), KeyAction::Ignore),
-            ],
-            &punctuation_only,
-        );
-    }
-
-    #[test]
-    fn test_translate_key_moves_the_highlight_and_the_caret() {
-        let keys = KeyBindings::default();
-        assert_rows(
-            &[
-                (press(KEY_TAB, 0), KeyAction::MoveHighlight(1)),
-                (press(KEY_TAB, SHIFT), KeyAction::MoveHighlight(-1)),
-                (press(KEY_TAB, CTRL), KeyAction::Ignore),
-                (press(KEY_TAB, CTRL | SHIFT), KeyAction::Ignore),
-                (press(KEY_LEFT, 0), KeyAction::MoveCaret(-1)),
-                (press(KEY_RIGHT, 0), KeyAction::MoveCaret(1)),
-                (press(KEY_LEFT, SHIFT), KeyAction::Ignore),
-                (press(KEY_RIGHT, ALT), KeyAction::Ignore),
-            ],
-            &keys,
-        );
-    }
-
-    #[test]
-    fn test_translate_key_routes_enter_by_configuration() {
-        let keys = KeyBindings::default();
-        let raw = KeyBindings {
-            enter_commit_raw: true,
-            ..KeyBindings::default()
-        };
-        assert_eq!(
-            translate_key(&press(KEY_RETURN, 0), &keys),
-            KeyAction::CommitHighlighted
-        );
-        assert_eq!(
-            translate_key(&press(KEY_RETURN, 0), &raw),
-            KeyAction::CommitRaw
-        );
-        // The keypad's Enter is not this row: it stays with the application.
-        assert_eq!(translate_key(&press(0xff8d, 0), &raw), KeyAction::Ignore);
-    }
-
-    #[test]
-    fn test_translate_key_maps_escape_and_backspace() {
-        let keys = KeyBindings::default();
-        assert_rows(
-            &[
-                (press(KEY_ESCAPE, 0), KeyAction::Escape),
-                (press(KEY_BACKSPACE, 0), KeyAction::Backspace),
-            ],
-            &keys,
-        );
-    }
-
-    #[test]
-    fn test_translate_key_maps_the_global_mode_chords() {
-        let keys = KeyBindings::default();
-        assert_rows(
-            &[
-                (press(KEY_SHIFT_L, SHIFT), KeyAction::ToggleLang),
-                (press(KEY_SHIFT_R, SHIFT), KeyAction::ToggleLang),
-                (press(KEY_SPACE, CTRL), KeyAction::ToggleLang),
-                (press(KEY_SPACE, SHIFT), KeyAction::ToggleFullWidth),
-                (press(KEY_PERIOD, CTRL), KeyAction::TogglePunct),
-                // A chord is its whole modifier set: one extra modifier is another key.
-                (press(KEY_SPACE, CTRL | ALT), KeyAction::Ignore),
-                (press(KEY_SPACE, CTRL | SHIFT), KeyAction::Ignore),
-                (press(KEY_SPACE, SHIFT | SUPER), KeyAction::Ignore),
-                (press(KEY_PERIOD, CTRL | SHIFT), KeyAction::Ignore),
-                (press(KEY_PERIOD, 0), KeyAction::Ignore),
-            ],
-            &keys,
-        );
-    }
-
-    #[test]
-    fn test_translate_key_enters_temporary_english_on_ctrl_shift_e() {
-        let keys = KeyBindings::default();
-        assert_rows(
-            &[
-                (press(KEY_E, CTRL | SHIFT), KeyAction::EnterTempEnglish),
-                // A chord containing Shift may arrive with the uppercase symbol, because
-                // the host folds the case into the symbol; the row matches both shapes.
-                (
-                    press(KEY_E_UPPER, CTRL | SHIFT),
-                    KeyAction::EnterTempEnglish,
-                ),
-                // Either modifier alone is not the chord.
-                (press(KEY_E, CTRL), KeyAction::Ignore),
-                (press(KEY_E, SHIFT), KeyAction::InputChar('e')),
-                (press(KEY_E_UPPER, SHIFT), KeyAction::Ignore),
-            ],
-            &keys,
-        );
-    }
-
-    #[test]
-    fn test_translate_key_ignores_keys_the_table_does_not_name() {
-        let keys = KeyBindings::default();
-        assert_rows(
-            &[
-                (press(0xffbe, 0), KeyAction::Ignore),
-                (press(0xff63, 0), KeyAction::Ignore),
-                (press(0xff8d, 0), KeyAction::Ignore),
-                (press(0x002c, 0), KeyAction::Ignore),
-                (press(0xffe3, SHIFT), KeyAction::Ignore),
-            ],
-            &keys,
-        );
-    }
-
-    #[test]
-    fn test_translate_key_never_claims_a_key_the_table_does_not_name() {
-        // The shortcut table forbids consuming a key nothing acts on. Until the session
-        // exists the only half that can be asserted is this one: an action may be claimed
-        // for a key the table names, and for no other.
-        let keys = KeyBindings::default();
-        let states = [0, SHIFT, CTRL, CTRL | SHIFT | ALT];
-        let mut checked = 0;
-        for sym in keysym_stream(200) {
-            for state in states {
-                let action = translate_key(&press(sym, state), &keys);
-                assert!(
-                    !claims_key(action) || is_routed(sym),
-                    "sym {sym:#010x} state {state:#x} claimed as {action:?} without a row"
-                );
-                checked += 1;
-            }
-        }
-        assert_eq!(checked, 800, "the sweep must have run");
-    }
-
-    #[test]
-    fn test_claims_key_follows_ignore() {
-        assert!(!claims_key(KeyAction::Ignore));
-        assert!(claims_key(KeyAction::InputChar('a')));
-        assert!(claims_key(KeyAction::Escape));
-        assert!(claims_key(KeyAction::MoveHighlight(-1)));
-    }
+/// Whether the event is a press of a Shift key itself.
+///
+/// The routing table names a Shift press [`KeyAction::ToggleLang`], because the design's
+/// shortcut table lists the held Shift key as the temporary Chinese / English switch. The
+/// switch is not the plugin's to make: Fcitx5 delivers the modifier to the application and
+/// implements the temporary behaviour of its own, and an input method that consumed the
+/// press would take the first half of every capital letter away from the application. The
+/// routing layer therefore asks this and hands the press straight back, which leaves the
+/// table's meaning of the key intact for the chords that are the plugin's own — `Shift` in
+/// combination with a letter or with Space never reaches here, because those events carry
+/// the letter's or the space bar's symbol and not the modifier's.
+///
+/// # Arguments
+///
+/// * `event` — the key as the host delivered it.
+///
+/// # Returns
+///
+/// `true` for a press or a release of `Shift_L` or `Shift_R`. A release is not claimed by
+/// [`translate_key`] in the first place; the answer is about the key, not about the edge.
+///
+/// # Panics
+///
+/// Never.
+///
+/// # Examples
+///
+/// ```
+/// use ime_types::KeyAction;
+/// use rspinyin::engine::{KeyBindings, is_shift_press, translate_key};
+/// use rspinyin::ffi::FcitxKeyEvent;
+///
+/// let shift = FcitxKeyEvent {
+///     sym: 0xffe1,
+///     state: 0x01,
+///     is_release: false,
+///     time_ms: 0,
+/// };
+/// // The table names the key ...
+/// assert_eq!(translate_key(&shift, &KeyBindings::default()), KeyAction::ToggleLang);
+/// // ... and the routing layer still hands it back.
+/// assert!(is_shift_press(&shift));
+/// ```
+pub fn is_shift_press(event: &FcitxKeyEvent) -> bool {
+    event.sym == KEY_SHIFT_L || event.sym == KEY_SHIFT_R
 }

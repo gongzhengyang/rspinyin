@@ -48,6 +48,20 @@ pub enum KeyAction {
     Escape,
     /// Let the host handle the key; the plugin consumes nothing.
     Ignore,
+    /// Switch the committed text between simplified and traditional Chinese.
+    ///
+    /// Appended by ADR-0005. The session is deliberately *not* reset: the
+    /// transition table keeps a composing session composing and only recomputes
+    /// the displayed text, because losing what the user has typed to a display
+    /// toggle is the behaviour 0.4 rule 10 forbids.
+    ToggleScript,
+    /// Drop the highlighted word from the user's learned frequencies.
+    ForgetHighlighted,
+    /// Keep the highlighted word: exempt it from the frequency decay and eviction
+    /// sweep that would otherwise eventually drop it.
+    PinHighlighted,
+    /// Save the highlighted candidate as a phrase the user typed on purpose.
+    AddPhrase,
 }
 
 #[cfg(test)]
@@ -73,6 +87,10 @@ mod tests {
             KeyAction::EnterTempEnglish => "enter-temp-english",
             KeyAction::Escape => "escape",
             KeyAction::Ignore => "ignore",
+            KeyAction::ToggleScript => "toggle-script",
+            KeyAction::ForgetHighlighted => "forget-highlighted",
+            KeyAction::PinHighlighted => "pin-highlighted",
+            KeyAction::AddPhrase => "add-phrase",
         }
     }
 

@@ -13,9 +13,7 @@ use anyhow::{Context, ensure};
 use ime_core::lm::InMemoryLm;
 use ime_core::segment::lookup as syllable_lookup;
 
-use crate::testd::engine::doubles::{
-    LookupFailure, MockLexicon, MockUserFreq, OwnedWord, Sources,
-};
+use crate::testd::engine::doubles::{LookupFailure, MockLexicon, MockUserFreq, OwnedWord, Sources};
 use crate::testd::engine::scenario::{DictionarySpec, Scenario};
 
 /// One scenario together with the doubles its dictionary describes.
@@ -130,11 +128,7 @@ fn build_lexicon(spec: &DictionarySpec) -> anyhow::Result<MockLexicon> {
 ///
 /// Never panics.
 fn build_user_freq(spec: &DictionarySpec) -> MockUserFreq {
-    let coined: BTreeSet<String> = spec
-        .user_words
-        .iter()
-        .map(|row| row.text.clone())
-        .collect();
+    let coined: BTreeSet<String> = spec.user_words.iter().map(|row| row.text.clone()).collect();
     MockUserFreq::new(spec.user_freq.clone(), coined)
 }
 
@@ -153,4 +147,3 @@ fn build_lm(spec: &DictionarySpec) -> InMemoryLm {
     }
     lm
 }
-

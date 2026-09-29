@@ -267,7 +267,7 @@ KEY-P2.03.02 <── KEY-P2.02.02 <── KEY-P2.02.01 <── KEY-P2.01.02 <─
   - 关键路径：`CP: 是`
   - 并行通道：`Track A 按键总线与焦点引擎`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine.rs`（改造 `translate_key` 的调用方）、`crates/ime-fcitx5/src/engine/context.rs`（新建）、`crates/ime-fcitx5/src/engine/modifier.rs`（新建）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   建立严格的事件优先级拦截树。**匹配顺序即优先级，一旦命中并消费即刻阻断传播**：
@@ -401,6 +401,19 @@ KEY-P2.03.02 <── KEY-P2.02.02 <── KEY-P2.02.01 <── KEY-P2.01.02 <─
   - [ ] `Consumed::Ignored` 的传播路径有测试证明"每一层都试过之后才交还宿主"；
   - [ ] `ModalOverlay` 关闭时 `dispatch` 的行为与未引入该层时逐键一致（用 `KEY-P0.01.01` 前后的 `translate_key` 全表对拍）；
   - [ ] `check_modifier_mask` 在宿主掩码不匹配时返回 `Err` 并记 `platform/modifier-mask-mismatch`，匹配时不记任何日志。
+- **验收记录**（2026-09-29）：
+  - **交付物**：新增 `crates/ime-fcitx5/src/engine/context.rs`（563 行：`KeyContext`/`Consumed`/`KeyEvent`/`Overlay`/`SessionView`/`Dispatcher` 与四层派发树）、`engine/context/tests.rs`（682 行，26 个表驱动用例）、`engine/modifier.rs`（126 行：`check_modifier_mask` + `platform/modifier-mask-mismatch`）；`engine.rs` 增加两条 `pub mod` 与两条 `pub use`。
+  - **验证命令与结果**：`cargo check -p ime-fcitx5 --all-targets` 绿。
+  - **四层树的进入条件即卡片的转移条件表**：L0 = 有浮层打开；L1 = `state == Composing && !temp_english`；L2 = 存在会话；L3 = 恒不消费（`Host` 层恒 `Ignored`，作为树的显式行而非隐式 fall-through）。
+  - **本次关掉了 `KEY-DEF-01`**：L2 只消费「无组字时确实有东西可做」的键——模式和弦（`Ctrl+Space`/`Shift+Space`/`Ctrl+.`）、`Ctrl+Shift+E`、以及 `Idle` 下的 `InputChar`（否则**第一个字母会被交还宿主，组字永远起不来**）。`Idle` 下的 `Space`/`1`~`9`/`Return`/`BackSpace`/`Escape`/`Tab`/方向键/`-`/`=` 全部 `Ignored`。
+  - **`claims_key` 的对拍口径**（重要）：DoD 要求「`ModalOverlay` 关闭时与引入前逐键一致」，该对拍落在 **L1**——整条总线与无上下文纯函数逐键相等在 L2/L3 上**不可能**成立，那正是 `KEY-DEF-01` 要修的行为。
+  - **已知限制**：
+    1. **`Dispatcher` 目前没有生产调用方**：把 `router.rs` 的 `key_event` 改为 `dispatch` + `action_for` 属 `KEY-P1.02.05`；C++ 侧一次性上报宿主掩码属 `ffi/cpp/engine_glue.cpp`。两处都不在本卡白名单。
+    2. **`check_modifier_mask` 的运行期调用点（宿主掩码上报）仍缺口**：函数与诊断已落地并有测试，但没人调用它。
+    3. **`engine/modifier.rs` 与 `KEY-P0.01.03` 的文件锚点重叠**：本卡只放了掩码校验，`ModifierHold` 由 01.03 追加；若 01.03 整文件覆写，需合并两半。
+    4. **`Err` 折叠到 `ImeError::Fcitx5VersionMismatch`**：`ime-types` 无对应的冻结变体且不可改，`error.rs` 与 `features.md` 的模块文档明确允许这种「折叠 + 就地诊断」。
+    5. 临时英文下全键 `Ignored`（含结束该模式的 `Return`/`Escape`），与 `transitions.rs::on_key_temp_english` 的既有文档一致；调用方需在此时仍把 `action_for` 的动作步进会话，否则模式永远退不出——该契约在模块文档单列一节写明。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 
@@ -892,5 +905,5 @@ P1 与 P2 的详细任务卡按「主干索引 + 领域分片（Hub & Spoke）�
 
 | ADR | 触发卡 | 内容 |
 |---|---|---|
-| `ADR-0004` | `KEY-P2.02.01` | `UiFrame` 增加速查面板的承载方式（新增 `overlay: Option<OverlayFrame>` 字段，或新增一个 `UiCommand::Overlay` 通道）。**倾向后者**：`UiFrame` 是候选框的完整快照，把浮层塞进去会让每一帧都背着它 |
+| `ADR-0006` | `KEY-P2.02.01` | `UiFrame` 增加速查面板的承载方式（新增 `overlay: Option<OverlayFrame>` 字段，或新增一个 `UiCommand::Overlay` 通道）。**倾向后者**：`UiFrame` 是候选框的完整快照，把浮层塞进去会让每一帧都背着它 |
 | `ADR-0005` | 仅在 `ASM-08` 降级路径被否决时 | `KeyAction` 新增 `HoldModifier(ModifierKey, bool)` 变体。**本方案默认不采用**——`KEY-P0.01.03` 已给出不触碰契约的实现 |

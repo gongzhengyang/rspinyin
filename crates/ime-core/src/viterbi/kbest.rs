@@ -293,4 +293,20 @@ mod tests {
         assert_eq!(empty.len(), 0);
         assert!(empty.is_empty());
     }
+
+    #[test]
+    fn test_topk_new_lowers_the_capacity_to_the_storage_it_was_lent() {
+        // The decoder lends each node a window of one flat buffer, so a capacity
+        // wider than the window is lowered to what the window holds rather than
+        // writing past the end of the slice.
+        let mut slots = [0i32; 2];
+        let mut len = 0usize;
+        let mut top = TopK::new(&mut slots, 5, &mut len);
+        for value in [1, 2, 3, 4, 5] {
+            top.push(value);
+        }
+        assert_eq!(top.len(), 2, "the capacity is what the storage holds");
+        top.sort_desc();
+        assert_eq!(&slots[..len], &[5, 4]);
+    }
 }

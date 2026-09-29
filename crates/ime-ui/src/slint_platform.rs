@@ -155,7 +155,9 @@ impl RspinyinPlatform {
             return Ok(());
         };
         for event in &out[first..] {
-            adapter.apply_geometry_event(*event).map_err(backend_error)?;
+            adapter
+                .apply_geometry_event(*event)
+                .map_err(backend_error)?;
         }
         Ok(())
     }
@@ -193,7 +195,8 @@ impl RspinyinPlatform {
     /// The caller records [`BUFFER_STARVATION_CODE`] once this reaches
     /// [`BUFFER_STARVATION_FRAMES`].
     pub fn starvation_streak(&self) -> u32 {
-        self.window().map_or(0, |adapter| adapter.starvation_streak())
+        self.window()
+            .map_or(0, |adapter| adapter.starvation_streak())
     }
 
     /// The backend's identifier, for diagnostics.
@@ -312,9 +315,13 @@ mod tests {
             let slint_platform = SlintPlatform {
                 inner: Rc::clone(&platform.inner),
             };
-            let first = slint_platform.create_window_adapter().is_ok();
-            let second = slint_platform.create_window_adapter().is_err();
-            (first, second)
+            // `first` has to stay alive across the second call. The platform keeps only a
+            // `Weak` to the adapter it handed out, so collapsing the first call to a
+            // `bool` -- as this test used to -- drops the last strong reference and the
+            // guard then sees no window at all and serves a second one.
+            let first = slint_platform.create_window_adapter();
+            let second = slint_platform.create_window_adapter();
+            (first.is_ok(), second.is_err())
         });
         assert!(first, "the first window is served");
         assert!(
@@ -413,11 +420,19 @@ mod tests {
             platform
                 .set_input_region(&[rect])
                 .expect("the mock accepts a region");
-            let region = state.lock().expect("the mock is not poisoned").region.clone();
+            let region = state
+                .lock()
+                .expect("the mock is not poisoned")
+                .region
+                .clone();
             platform
                 .set_input_region(&[])
                 .expect("the mock accepts an empty region");
-            let empty = state.lock().expect("the mock is not poisoned").region.clone();
+            let empty = state
+                .lock()
+                .expect("the mock is not poisoned")
+                .region
+                .clone();
             assert!(empty.is_empty(), "an empty region stays empty");
             region
         });

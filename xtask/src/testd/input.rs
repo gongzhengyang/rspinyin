@@ -27,7 +27,7 @@ use std::time::Duration;
 use super::TestError;
 use super::coords::{DEFAULT_SHADOW_DP, WindowPlacement, container_to_screen, on_screen};
 use super::keys::{HOLDABLE_MASKS, HOLDABLE_ORDER, modifier_keysym, strokes};
-use super::x11::{X11Session, XtestVersion, Window};
+use super::x11::{Window, X11Session, XtestVersion};
 
 /// The wheel button one notch backwards is.
 const WHEEL_UP: u8 = 4;
@@ -151,12 +151,7 @@ impl X11Injector {
     pub fn focus(&self, window: Window) -> Result<FocusGuard, TestError> {
         self.session.set_input_focus(window)?;
         let actual = self.session.input_focus()?;
-        if actual != window {
-            return Err(TestError::FocusRefused {
-                expected: window,
-                actual,
-            });
-        }
+        focused(window, actual)?;
         Ok(FocusGuard { window })
     }
 
@@ -294,7 +289,11 @@ impl X11Injector {
     ///
     /// Never.
     pub fn on_screen(&self, point: (i32, i32)) -> Result<(i16, i16), TestError> {
-        on_screen(i64::from(point.0), i64::from(point.1), self.session.screen())
+        on_screen(
+            i64::from(point.0),
+            i64::from(point.1),
+            self.session.screen(),
+        )
     }
 
     /// Screen-absolute pixels of a point in the candidate container.
@@ -377,6 +376,22 @@ impl X11Injector {
     }
 }
 
+impl Drop for X11Injector {
+    /// Releases whatever the run left held, so a failure cannot leave the server modified.
+    ///
+    /// [`X11Injector::stroke`] already releases its own modifiers whatever the key did, so
+    /// this is the second line: it catches the case where the run ended between a
+    /// modifier's press and the release that was supposed to follow it -- an aborted
+    /// assertion, a panicking test, a returned error the caller stopped at. A modifier left
+    /// down would make every later key of the session arrive as a chord.
+    ///
+    /// The result is deliberately discarded: a drop has nowhere to report a failure to, and
+    /// the only failure left at this point is a connection that is already gone.
+    fn drop(&mut self) {
+        let _ = self.clear_modifiers();
+    }
+}
+
 /// A recorded focus expectation: the window that must still hold the keyboard.
 ///
 /// Every injection takes one, which is what makes the focus rule impossible to skip by
@@ -408,15 +423,50 @@ impl FocusGuard {
     /// Never.
     pub fn verify(&self, injector: &X11Injector) -> Result<(), TestError> {
         let actual = injector.session.input_focus()?;
-        if actual == self.window {
-            return Ok(());
-        }
-        Err(TestError::FocusStolen {
-            expected: self.window,
-            actual,
-            by_candidate_window: injector.is_candidate_window(actual),
-        })
+        focus_held(self.window, actual, injector.is_candidate_window(actual))
     }
+}
+
+/// The verdict on the focus the server reported after a focus request.
+///
+/// The comparison is the contract and the request around it is not, so the decision is a
+/// function of its own: the refusal path is covered without a display server, and the
+/// caller that only has a server to offer still gets exactly one place where "the focus is
+/// not where the test put it" is turned into a failure.
+///
+/// # Errors
+///
+/// Returns [`TestError::FocusRefused`] when the server kept a different window focused.
+fn focused(expected: Window, actual: Window) -> Result<(), TestError> {
+    if actual == expected {
+        return Ok(());
+    }
+    Err(TestError::FocusRefused { expected, actual })
+}
+
+/// The verdict on the focus the server reported while events were being injected.
+///
+/// `by_candidate_window` says whether the window that took the focus carries the candidate
+/// window's class. It is the one detail that separates the project's highest-severity
+/// defect from a harness aimed at the wrong window, so it is carried into the refusal
+/// rather than looked up by whoever reads the failure.
+///
+/// # Errors
+///
+/// Returns [`TestError::FocusStolen`] when another window holds the focus.
+fn focus_held(
+    expected: Window,
+    actual: Window,
+    by_candidate_window: bool,
+) -> Result<(), TestError> {
+    if actual == expected {
+        return Ok(());
+    }
+    Err(TestError::FocusStolen {
+        expected,
+        actual,
+        by_candidate_window,
+    })
 }
 
 /// The wheel button one notch stands for.
@@ -438,97 +488,4 @@ fn notches(delta: i32) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::thread;
-    use std::time::Duration;
-
-    use x11rb::connection::Connection;
-    use x11rb::protocol::Event;
-    use x11rb::protocol::xproto::{
-        ConnectionExt as XprotoExt, CreateWindowAux, EventMask, WindowClass,
-    };
-
-    use super::*;
-    use crate::testd::keys::KS_TAB;
-
-    /// Waits for a key press of `keycode`, up to a second, and reports whether it arrived.
-    fn wait_for_key(conn: &x11rb::rust_connection::RustConnection, keycode: u8) -> bool {
-        for _ in 0..200 {
-            match conn.poll_for_event() {
-                Ok(Some(Event::KeyPress(press))) if press.detail == keycode => return true,
-                Ok(Some(_)) => {}
-                Ok(None) => thread::sleep(Duration::from_millis(5)),
-                Err(_) => return false,
-            }
-        }
-        false
-    }
-
-    #[test]
-    fn test_wheel_button_follows_the_axis_sign_convention() {
-        assert_eq!(wheel_button(-1), WHEEL_UP, "backwards is button 4");
-        assert_eq!(wheel_button(1), WHEEL_DOWN, "forwards is button 5");
-        assert_eq!(wheel_button(-3), WHEEL_UP);
-        assert_eq!(wheel_button(i32::MIN), WHEEL_UP);
-    }
-
-    #[test]
-    fn test_notches_counts_the_pairs_and_clamps_the_cap() {
-        assert_eq!(notches(0), 0, "a zero delta sends nothing");
-        assert_eq!(notches(-1), 1);
-        assert_eq!(notches(3), 3);
-        assert_eq!(notches(MAX_NOTCHES as i32 + 1), MAX_NOTCHES);
-        assert_eq!(notches(i32::MIN), MAX_NOTCHES, "a mistyped delta cannot spin");
-    }
-
-    #[test]
-    fn test_strokes_plans_the_keys_a_string_will_send() {
-        assert_eq!(strokes("nihao").expect("a pinyin string has keys").len(), 5);
-        assert!(strokes("").expect("an empty string plans no keys").is_empty());
-        assert!(strokes("中").is_err());
-    }
-
-    #[test]
-    #[ignore = "needs a live X server with XTEST; the lab job runs it with DISPLAY set"]
-    fn test_injector_focuses_a_window_and_the_key_arrives_without_losing_the_focus() {
-        let injector = X11Injector::connect(None, 1.0).expect("a live X server with XTEST");
-        let session = injector.session();
-        let conn = session.connection();
-        let (root, depth, visual) = {
-            let setup = conn.setup();
-            let screen = setup.roots.first().expect("the server lists a screen");
-            (screen.root, screen.root_depth, screen.root_visual)
-        };
-        let window = conn.generate_id().expect("a free window id");
-        conn.create_window(
-            depth,
-            window,
-            root,
-            0,
-            0,
-            200,
-            100,
-            0,
-            WindowClass::INPUT_OUTPUT,
-            visual,
-            &CreateWindowAux {
-                event_mask: Some(EventMask::KEY_PRESS | EventMask::KEY_RELEASE),
-                ..Default::default()
-            },
-        )
-        .expect("the window is created");
-        conn.map_window(window).expect("the window is mapped");
-        conn.flush().expect("the requests go out");
-
-        let guard = injector.focus(window).expect("the window takes the focus");
-        let keycode = session.keycode(KS_TAB).expect("the layout has a tab key");
-        injector.key(&guard, KS_TAB, 0).expect("the key is injected");
-        let arrived = wait_for_key(conn, keycode);
-        let focus_held = guard.verify(&injector);
-
-        conn.destroy_window(window).expect("the window is destroyed");
-        conn.flush().expect("the request goes out");
-        assert!(arrived, "the injected key reached the focused window");
-        assert!(focus_held.is_ok(), "the focus stayed on the window: {focus_held:?}");
-    }
-}
+mod tests;

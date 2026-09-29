@@ -173,7 +173,11 @@ mod tests {
         let root = temp_root("create");
         let file = root.join("rspinyin.log");
         let _handle = create_private(&file).expect("creating the log file");
-        assert_eq!(mode_of(&file), FILE_MODE, "created private, not narrowed later");
+        assert_eq!(
+            mode_of(&file),
+            FILE_MODE,
+            "created private, not narrowed later"
+        );
     }
 
     #[test]
@@ -197,7 +201,11 @@ mod tests {
         set_mode(&file, 0o664);
 
         let previous = tighten(&file, FILE_MODE).expect("narrowing the log file");
-        assert_eq!(previous, Some(0o664), "the caller needs the mode to report it");
+        assert_eq!(
+            previous,
+            Some(0o664),
+            "the caller needs the mode to report it"
+        );
         assert_eq!(mode_of(&file), FILE_MODE);
     }
 
@@ -237,7 +245,11 @@ mod tests {
         set_mode(&dir, 0o755);
 
         let previous = ensure_private_dir(&root, &dir).expect("preparing the log directory");
-        assert_eq!(previous, Some(0o755), "the caller reports the mode it replaced");
+        assert_eq!(
+            previous,
+            Some(0o755),
+            "the caller reports the mode it replaced"
+        );
         assert_eq!(mode_of(&dir), DIR_MODE);
     }
 

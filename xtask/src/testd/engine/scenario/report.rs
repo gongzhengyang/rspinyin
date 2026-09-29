@@ -208,10 +208,17 @@ impl Observation {
             ));
         };
         if head.text != first {
-            return Err(format!("the best candidate is {:?}, not {first:?}", head.text));
+            return Err(format!(
+                "the best candidate is {:?}, not {first:?}",
+                head.text
+            ));
         }
         for text in contains {
-            if !self.candidates.iter().any(|candidate| candidate.text == *text) {
+            if !self
+                .candidates
+                .iter()
+                .any(|candidate| candidate.text == *text)
+            {
                 return Err(format!("{text:?} is not among the candidates"));
             }
         }
@@ -261,7 +268,10 @@ impl Observation {
     /// Never panics.
     fn check_degraded(&self, code: &str) -> Result<(), String> {
         if !self.codes.iter().any(|seen| seen.as_str() == code) {
-            return Err(format!("the engine surfaced {:?}, not {code:?}", self.codes));
+            return Err(format!(
+                "the engine surfaced {:?}, not {code:?}",
+                self.codes
+            ));
         }
         if !self.degraded && !self.refused {
             return Err(format!(
@@ -378,7 +388,9 @@ impl Divergence {
         Self {
             step,
             expected: String::from("a key action the direct-drive harness can apply"),
-            actual: format!("{name} is the session state machine's, which ime-core does not export"),
+            actual: format!(
+                "{name} is the session state machine's, which ime-core does not export"
+            ),
             reason: String::from(
                 "the harness drives typing, Backspace, the caret, Escape and a bare decode",
             ),

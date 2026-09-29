@@ -15,8 +15,8 @@ use clap::Args;
 use crate::testd::engine::REPEAT_RUNS;
 use crate::testd::engine::assert_repeatable;
 use crate::testd::engine::run_scenario;
-use crate::testd::engine::scenarios;
 use crate::testd::engine::scenario::{EngineFixture, parse_scenario};
+use crate::testd::engine::scenarios;
 
 /// Command-line surface of `xtask testd engine`.
 #[derive(Debug, Args)]
@@ -158,7 +158,10 @@ fn load_directory(directory: &Path) -> Result<Vec<EngineFixture>> {
         .collect::<std::io::Result<Vec<PathBuf>>>()
         .with_context(|| format!("reading {shown}"))?
         .into_iter()
-        .filter(|path| path.extension().is_some_and(|extension| extension == "toml"))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "toml")
+        })
         .collect();
     // Sorted so that a directory runs in the same order on every machine, whatever the
     // filesystem hands back.

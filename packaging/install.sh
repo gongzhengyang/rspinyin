@@ -8,7 +8,14 @@
 #
 #   bash packaging/install.sh
 #   bash packaging/install.sh --dry-run
+#   bash packaging/install.sh --dict /path/to/base.dict --skip-build
 #   DESTDIR=debian/rspinyin PREFIX=/usr bash packaging/install.sh --no-sudo
+#
+# `--dict` installs a dictionary that was compiled elsewhere instead of compiling one
+# here. Compiling needs the raw sources under `data/raw/`, which are fetched rather than
+# committed, so without this option an install on a machine that has never run
+# `data/fetch.sh` either downloads them or fails. A release archive ships the compiled
+# `base.dict`, and this is the option that installs it.
 #
 # Where the files go is resolved from the target system's own Fcitx5 installation by
 # `xtask install`, not hardcoded here: Fcitx5's addon directory is
@@ -21,6 +28,7 @@ set -euo pipefail
 dry_run=0
 skip_build=0
 no_sudo=0
+dict_source=""
 prefix="${PREFIX:-}"
 destdir="${DESTDIR:-}"
 
@@ -30,6 +38,7 @@ usage: install.sh [options]
 
   --dry-run        print the plan and change nothing
   --skip-build     install what is already in target/, without building it
+  --dict PATH      install a prebuilt base.dict instead of compiling one
   --prefix PATH    installation prefix (default: the one pkg-config reports)
   --destdir PATH   staging directory prepended to every destination
   --no-sudo        never elevate; every destination must be writable as it is
@@ -45,6 +54,11 @@ while [ $# -gt 0 ]; do
         --dry-run) dry_run=1 ;;
         --skip-build) skip_build=1 ;;
         --no-sudo) no_sudo=1 ;;
+        --dict)
+            [ $# -ge 2 ] || { echo "install.sh: --dict needs a path" >&2; exit 2; }
+            dict_source="$2"
+            shift
+            ;;
         --prefix)
             [ $# -ge 2 ] || { echo "install.sh: --prefix needs a path" >&2; exit 2; }
             prefix="$2"
@@ -90,11 +104,50 @@ if [ "$no_sudo" -eq 0 ] && [ "$(id -u)" -ne 0 ] && [ -z "$destdir" ]; then
     echo "install: not running as root; the file copies will go through sudo" >&2
 fi
 
+# Unconditional, and before anything is built. Even with `--dict` and `--skip-build` the
+# file copies run through `xtask install`, so a machine without cargo fails a few lines
+# later regardless; naming the missing prerequisite here is what turns that into a
+# diagnosis instead of `command not found`.
+if ! command -v cargo >/dev/null 2>&1; then
+    cat >&2 <<'MISSING'
+platform/toolchain/missing: `cargo` is not on PATH.
+This script installs from a build tree. `--dict` removes the need to compile the
+dictionary, but the file copies still run through `xtask install`, and building that
+needs the toolchain pinned by rust-toolchain.toml (https://rustup.rs).
+Installing from a release archive without a Rust toolchain is not supported here yet.
+MISSING
+    exit 1
+fi
+
 if [ "$skip_build" -eq 0 ]; then
     echo "install: building the addon"
     cargo build --release -p ime-fcitx5 --features fcitx5-host
+fi
+
+# The dictionary is either compiled here or staged from `--dict`. `--skip-build` skips
+# only the compilation: staging a prebuilt dictionary is a file copy, and refusing it
+# would make the option useless in the environment it exists for.
+if [ "$skip_build" -eq 0 ] && [ -z "$dict_source" ]; then
     echo "install: building the dictionary"
     cargo run --quiet -p xtask -- dictc
+elif [ -n "$dict_source" ]; then
+    # A directory satisfies a bare `-s` on Linux, and `cp` would then fail with a message
+    # about omitting it rather than about the option naming the wrong thing.
+    if [ ! -f "$dict_source" ] || [ ! -s "$dict_source" ]; then
+        echo "install.sh: --dict ${dict_source}: not a non-empty regular file" >&2
+        exit 2
+    fi
+    if [ "$dry_run" -eq 1 ]; then
+        echo "install: would stage the prebuilt dictionary from ${dict_source}"
+    # `xtask install` reads `data/compiled/base.dict`, so a caller who names that very
+    # file is asking for a copy onto itself; it is already where it belongs.
+    elif [ "$dict_source" -ef data/compiled/base.dict ]; then
+        echo "install: the prebuilt dictionary is already at data/compiled/base.dict"
+    else
+        echo "install: using the prebuilt dictionary at ${dict_source}"
+        mkdir -p data/compiled
+        cp -- "$dict_source" data/compiled/base.dict
+    fi
 fi
 
 install_args=()

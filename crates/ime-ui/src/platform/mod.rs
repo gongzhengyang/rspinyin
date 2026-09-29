@@ -171,12 +171,12 @@ pub(crate) fn pack_rgb24(src: &[u8], dst: &mut [u8], width_px: u32, height_px: u
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::platform::x11::{
         Decoded, OPAQUE_ALPHA, X11Backend, classify_event, effective_alpha, scroll_axis,
         select_argb_visual,
     };
     use ime_types::{FrameToken, PixelBufferMut, PlatformError, SurfaceBackend, SurfaceEvent};
-    use super::*;
     use x11rb::protocol::ErrorKind;
     use x11rb::protocol::Event;
     use x11rb::protocol::xproto::{
@@ -279,13 +279,7 @@ mod tests {
     }
 
     /// A visual with the given channel masks.
-    fn visual(
-        visual_id: u32,
-        class: VisualClass,
-        red: u32,
-        green: u32,
-        blue: u32,
-    ) -> Visualtype {
+    fn visual(visual_id: u32, class: VisualClass, red: u32, green: u32, blue: u32) -> Visualtype {
         Visualtype {
             visual_id,
             class,
@@ -374,7 +368,13 @@ mod tests {
         let depths = vec![
             Depth {
                 depth: 24,
-                visuals: vec![visual(0x21, VisualClass::TRUE_COLOR, 0xff_0000, 0xff00, 0xff)],
+                visuals: vec![visual(
+                    0x21,
+                    VisualClass::TRUE_COLOR,
+                    0xff_0000,
+                    0xff00,
+                    0xff,
+                )],
             },
             Depth {
                 depth: 32,
@@ -388,7 +388,13 @@ mod tests {
     fn test_select_argb_visual_without_usable_32_bit_visual_returns_none() {
         let swapped = vec![Depth {
             depth: 32,
-            visuals: vec![visual(0x41, VisualClass::TRUE_COLOR, 0xff, 0xff00, 0xff_0000)],
+            visuals: vec![visual(
+                0x41,
+                VisualClass::TRUE_COLOR,
+                0xff,
+                0xff00,
+                0xff_0000,
+            )],
         }];
         assert_eq!(select_argb_visual(&screen(swapped)), None);
         let gray = vec![Depth {
@@ -686,7 +692,10 @@ mod tests {
         let mut backend = X11Backend::connect(TEST_WIDTH_DP, TEST_HEIGHT_DP, 1.0, None)
             .expect("a live X server reachable through DISPLAY");
         assert_eq!(backend.backend_id(), "x11");
-        assert!(backend.request_frame().is_none(), "X11 has no frame callbacks");
+        assert!(
+            backend.request_frame().is_none(),
+            "X11 has no frame callbacks"
+        );
         exercise(&mut backend).expect("the X11 backend accepts the sequence");
     }
 
@@ -710,9 +719,13 @@ mod tests {
             }])
             .expect("the frame is committed");
         let mut events = Vec::new();
-        backend.poll_events(&mut events).expect("polling does not fail");
+        backend
+            .poll_events(&mut events)
+            .expect("polling does not fail");
         let after = backend.input_focus().expect("the focus can be queried");
-        backend.set_visible(false).expect("the window can be hidden");
+        backend
+            .set_visible(false)
+            .expect("the window can be hidden");
         assert_eq!(
             before, after,
             "showing the candidate window must not move the input focus"

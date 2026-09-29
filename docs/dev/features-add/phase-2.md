@@ -2,7 +2,7 @@
 
 > 分片版本: v1.0 ｜ 主文档: [../features-add.md](../features-add.md) ｜
 > 系统形态: Desktop GUI（Linux 桌面输入法） ｜ 架构基线: Rust 2024 + Slint 1.x + Fcitx5 5.1 ｜
-> 关联 ADR: [../adr/0000-upstream-decisions.md](../adr/0000-upstream-decisions.md)、[../adr/0001-frozen-boundary-contracts.md](../adr/0001-frozen-boundary-contracts.md)、ADR-0004（待决策）｜
+> 关联 ADR: [../adr/0000-upstream-decisions.md](../adr/0000-upstream-decisions.md)、[../adr/0001-frozen-boundary-contracts.md](../adr/0001-frozen-boundary-contracts.md)、ADR-0005（待决策）｜
 > 最后同步 Commit: `ee0dbfb` ｜
 > 维护约定: 任务状态变更必须回写主文档 5.1 追溯表；假设变更必须回写主文档第 2 节
 
@@ -350,7 +350,7 @@
 #### 任务 ID：ADD-FEAT-P1.02.01 命令面板（`Ctrl+Shift+/`）
 
 - **基本属性**：绑定差距条目：`GAP-17` ｜ `P1 效率进阶 | 高 | 6 人天` ｜ 前置 `ADD-FEAT-P0.02.02` ｜ `CP: 否` ｜ `Track B` ｜ `[ ] 待开始`
-- **代码落地锚点**：`crates/ime-ui/ui/command_panel.slint`（新增）、`crates/ime-ui/src/ui_thread/panel.rs`（新增）、`crates/ime-ui/src/command/mod.rs`（新增）、`crates/ime-types/src/ui.rs`（**需 ADR-0004 追加**：`UiCommand::Panel` / `UiEvent::PanelAction`）、`crates/ime-fcitx5/src/engine.rs`（改：`Ctrl+Shift+/` 路由）
+- **代码落地锚点**：`crates/ime-ui/ui/command_panel.slint`（新增）、`crates/ime-ui/src/ui_thread/panel.rs`（新增）、`crates/ime-ui/src/command/mod.rs`（新增）、`crates/ime-types/src/ui.rs`（**需 ADR-0008 追加**：`UiCommand::Panel` / `UiEvent::PanelAction`）、`crates/ime-fcitx5/src/engine.rs`（改：`Ctrl+Shift+/` 路由）
 - **目标与价值**：对标 Raycast 的命令面板、Linear 的 `⌘K`、VS Code 的 `Ctrl+Shift+P`。**这是"输入法也能有现代交互"的标志性特性**，同时是 `features.md` 的 `TASK-2.03.03` 的落地，并承载 ADR-0000 的 `OB-1` **补充路径**（面板内提供"关于"入口并渲染 `AboutSlint`）。
 - **技术设计**：
   - **面板是候选框的同族 surface**（`C-1`），复用 `SurfaceBackend` / `ThemeTokens` / `SpringIntegrator`。
@@ -390,9 +390,9 @@
     ];
     ```
   - **`about` 命令渲染 `AboutSlint`**（ADR-0000 的 `OB-1` 补充路径）。**注意**：渲染 Slint 组件不违反 `OB-4`——`OB-4` 禁止的是**导出 Slint 类型到公共 API**，`AboutSlint` 是内部使用。
-  - **契约增量**（**必须走 ADR-0004**）：`UiCommand::Panel { open: bool }` 与 `UiEvent::PanelAction { command_id: u16, arg: u32 }`。`command_id` 是 `COMMANDS` 的下标（`u16`），避免字符串跨边界。
+  - **契约增量**（**必须走 ADR-0008**）：`UiCommand::Panel { open: bool }` 与 `UiEvent::PanelAction { command_id: u16, arg: u32 }`。`command_id` 是 `COMMANDS` 的下标（`u16`），避免字符串跨边界。
 - **NFR**：面板打开动效沿用 Spring（`C-4`）；面板**绝不夺焦**（0.4 规则 5）；面板尺寸变化**不触发**候选框重新定位（`C-5`）；命令注册表 ≤ 32 条；面板的模糊过滤 ≤ 16ms（用户每敲一个字母都要重算）。
-- **实施步骤**：① **先落 ADR-0004 的 `UiCommand::Panel` / `UiEvent::PanelAction`**；② 实现 `CommandSpec` / `COMMANDS`；③ `command_panel.slint` 骨架（分类列表 + 模糊过滤 + 快捷键提示）；④ `panel.rs` 的面板 surface 与生命周期；⑤ `Ctrl+Shift+/` 路由；⑥ 每条命令的执行体（前四条改配置，后五条打开对应子面板）。
+- **实施步骤**：① **先落 ADR-0008 的 `UiCommand::Panel` / `UiEvent::PanelAction`**；② 实现 `CommandSpec` / `COMMANDS`；③ `command_panel.slint` 骨架（分类列表 + 模糊过滤 + 快捷键提示）；④ `panel.rs` 的面板 surface 与生命周期；⑤ `Ctrl+Shift+/` 路由；⑥ 每条命令的执行体（前四条改配置，后五条打开对应子面板）。
 - **DoD**：① 面板可打开、可模糊过滤、可执行 9 条命令。[实验室] ② 焦点断言：面板打开时不夺焦。[实验室] ③ `about` 命令渲染 `AboutSlint` 且 `cargo public-api -p ime-ui` **不含** `slint::`（`OB-4` 不被违反）。[自动] ④ 模糊过滤 ≤ 16ms。[性能] ⑤ `cargo nextest run --workspace --all-features` 全绿。[自动]
 
 ---
@@ -731,10 +731,10 @@
 #### 任务 ID：ADD-FEAT-P1.03.04 候选框位置策略（固定 / 记忆 / 跟随）
 
 - **基本属性**：绑定差距条目：`GAP-21` ｜ `P1 效率进阶 | 中 | 3 人天` ｜ 前置 `ADD-FEAT-P1.03.01` ｜ `CP: 否` ｜ `Track B` ｜ `[ ] 待开始`
-- **代码落地锚点**：`crates/ime-ui/src/geometry/placement.rs`（改：位置策略）、`crates/ime-fcitx5/src/cursor/mod.rs`（改：位置记忆的持久化）、`crates/ime-config/src/schema.rs`（改：`[ui] placement`）、`crates/ime-types/src/ui.rs`（**需 ADR-0004 扩展**：`Placement` 追加 `Fixed` / `Remember`）
+- **代码落地锚点**：`crates/ime-ui/src/geometry/placement.rs`（改：位置策略）、`crates/ime-fcitx5/src/cursor/mod.rs`（改：位置记忆的持久化）、`crates/ime-config/src/schema.rs`（改：`[ui] placement`）、`crates/ime-types/src/ui.rs`（**需 ADR-0009 扩展**：`Placement` 追加 `Fixed` / `Remember`）
 - **目标与价值**：对标搜狗的"跟随光标 / 固定位置 / 记忆位置"、微软拼音的跟随/固定。当前 `Placement` 只有 `Below` / `Above` / `Auto` **三个值**。三个真实场景：(1) 某些应用的光标坐标不可靠（`features.md` 的 `R-03`），固定位置是兜底；(2) 用户习惯候选框总在同一个地方；(3) 终端里跟随光标会遮挡。
 - **技术设计**：
-  - **`Placement` 追加两个变体**（**必须走 ADR-0004**，`Placement` 是 `ADR-0001` 冻结的类型）：
+  - **`Placement` 追加两个变体**（**必须走 ADR-0009**，`Placement` 是 `ADR-0001` 冻结的类型）：
 
     ```rust
     pub enum Placement {
@@ -763,7 +763,7 @@
   - **`Fixed` 的位置来源**：`[ui] fixed_x` / `[ui] fixed_y`（dp，相对屏幕左上角）；未配置时用"屏幕下 1/3 居中"（`features.md` 的 `R-03` 兜底位置）。
   - **记忆的写入时机**：用户拖动候选框时（若 `P1.02.06` 的状态指示器有拖动能力，候选框本身也可拖动）→ 记一次；**不在**每次显示时写（避免频繁 IO）。
 - **NFR**：位置计算在 UI 线程，**不在**宿主线程（`features.md` 2.1）；`ui_positions.json` 的写入在空闲期；位置计算 ≤ 0.1ms；**绝不夺焦**；**不得**把候选框推出屏幕（既有避让逻辑在 `Fixed`/`Remember` 下仍须生效——记忆的位置若已超出当前屏幕分辨率，回退到 `Auto`）。
-- **实施步骤**：① **先落 ADR-0004 的 `Placement` 扩展**；② `placement.rs` 的五种策略实现；③ `ui_positions.json` 的读写（`0600` + 原子写）；④ `[ui] placement` / `fixed_x` / `fixed_y` 配置；⑤ 边界：屏幕分辨率变化、记忆位置超界、多屏切换。
+- **实施步骤**：① **先落 ADR-0009 的 `Placement` 扩展**；② `placement.rs` 的五种策略实现；③ `ui_positions.json` 的读写（`0600` + 原子写）；④ `[ui] placement` / `fixed_x` / `fixed_y` 配置；⑤ 边界：屏幕分辨率变化、记忆位置超界、多屏切换。
 - **DoD**：① 五种策略全部生效。[实验室] ② 记忆位置按应用分离且**不含明文应用名**。[自动] ③ 记忆位置超界时回退到 `Auto`。[自动] ④ 多屏切换后候选框仍在屏幕内。[实验室] ⑤ `cargo nextest run -p ime-ui` 全绿，新增 ≥ 8 条。[自动]
 
 ---

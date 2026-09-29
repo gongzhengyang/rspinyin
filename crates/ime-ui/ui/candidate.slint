@@ -19,7 +19,19 @@
 // no measurement lives here. Everything the window draws arrives already resolved, which
 // is what keeps the render path a pure function of the frame.
 
+import { CandidateData, CandidateGrid } from "candidate_grid.slint";
 import { Theme } from "theme.slint";
+
+// Re-exported, and that is not cosmetic. `slint_build::compile` generates Rust only for
+// the roots reachable from the file it was handed: the `Window` component and the globals
+// *declared in this file*. A global that this file merely imports stays private to the
+// import graph and gets no Rust accessor, so `slint::include_modules!()` produced a module
+// with `CandidateWindow` and `CandidateMetrics` and no `Theme` at all -- which is why
+// `src/adapter.rs` could not write the palette into the component. Re-exporting makes the
+// global a root of this file, and the accessor appears. `CandidateData` is re-exported for
+// the same reason: the adapter builds the model the grid draws from.
+export { Theme } from "theme.slint";
+export { CandidateData } from "candidate_grid.slint";
 
 // Geometry, material and type-scale constants (3.1.1 - 3.1.4).
 export global CandidateMetrics {
@@ -141,9 +153,71 @@ export component CandidateShadow inherits Rectangle {
     }
 }
 
+// The header's status cluster (3.1.1: four 16dp markers, 8dp apart). It is a fixed-size
+// block -- `4 * icon + 3 * gap`, declared once -- so the preedit text beside it keeps the
+// same budget when a mode toggles and the header cannot jump sideways. A marker that is
+// off is drawn at the idle token rather than hidden, which is what makes that width
+// constant; the mode label carries the words, this carries the glance.
+//
+// The cluster is declared here and placed in the strip by the header task, which is where
+// the frame's mode flags reach the component.
+export component StatusCluster inherits HorizontalLayout {
+    in property <bool> chinese: true;
+    in property <bool> full-width: false;
+    in property <bool> punctuation-full: false;
+    in property <bool> readonly: false;
+
+    spacing: CandidateMetrics.header-icon-gap;
+    width: 4 * CandidateMetrics.header-icon-size + 3 * CandidateMetrics.header-icon-gap;
+    // The layout and its markers share one height, so the cross axis is exact whether the
+    // layout stretches a child or leaves it at its own size.
+    height: CandidateMetrics.header-icon-size;
+
+    // Mode dot: solid accent in Chinese mode, the idle token in English mode.
+    Rectangle {
+        width: CandidateMetrics.header-icon-size;
+        height: CandidateMetrics.header-icon-size;
+        border-radius: self.width / 2;
+        background: root.chinese ? Theme.status-dot-active : Theme.status-dot-idle;
+    }
+
+    // Full-width marker: the same disc, ringed only while full-width punctuation is on.
+    Rectangle {
+        width: CandidateMetrics.header-icon-size;
+        height: CandidateMetrics.header-icon-size;
+        border-radius: self.width / 2;
+        border-width: 2px;
+        border-color: root.full-width ? Theme.status-dot-active : Theme.status-dot-idle;
+        background: transparent;
+    }
+
+    // Chinese-punctuation marker.
+    Rectangle {
+        width: CandidateMetrics.header-icon-size;
+        height: CandidateMetrics.header-icon-size;
+        border-radius: self.width / 2;
+        border-width: 2px;
+        border-color: root.punctuation-full ? Theme.status-dot-active : Theme.status-dot-idle;
+        background: transparent;
+    }
+
+    // Read-only lock, drawn only in the degraded mode of 3.6. It takes the annotation token
+    // because a read-only store is information rather than an alert.
+    Rectangle {
+        width: CandidateMetrics.header-icon-size;
+        height: CandidateMetrics.header-icon-size;
+        border-radius: 3px;
+        border-width: 1px;
+        border-color: Theme.text-annotation;
+        background: transparent;
+        opacity: root.readonly ? 1.0 : 0.0;
+    }
+}
+
 // The header strip: the preedit on the left, the mode label on the right. The sizes are
-// 3.1.1's, the colours are the theme's (3.2). The status cluster and the span-level
-// preedit styling (the 0.40-opacity syllable separators) belong to the theme task.
+// 3.1.1's, the colours are the theme's (3.2). `StatusCluster` joins the strip when the
+// frame's mode flags reach the component, and the span-level preedit styling (the
+// 0.40-opacity syllable separators) is still to come.
 export component Header inherits Rectangle {
     in property <string> preedit-text: "";
     in property <string> mode-label: "";
@@ -184,31 +258,9 @@ export component Header inherits Rectangle {
     }
 }
 
-// The candidate area. What is here is the placeholder that reserves exactly the space the
-// layout computed -- the cells, the number labels and the five states land with the grid
-// task, which keeps this property interface.
-export component CandidateGrid inherits VerticalLayout {
-    in property <int> item-count: 0;
-    in property <int> max-per-row: CandidateMetrics.max-per-row;
-    in property <int> rows: 0;
-    in property <length> cell-width: CandidateMetrics.cell-min-width;
-    in property <length> cell-height: CandidateMetrics.cell-height;
-
-    padding: CandidateMetrics.container-padding;
-    spacing: CandidateMetrics.grid-gap;
-
-    for row in root.rows: HorizontalLayout {
-        spacing: CandidateMetrics.grid-gap;
-        // The last row holds what is left over, which is why the count is clamped rather
-        // than always `max-per-row`.
-        for column in min(root.max-per-row, root.item-count - row * root.max-per-row): Rectangle {
-            width: root.cell-width;
-            height: root.cell-height;
-            border-radius: CandidateMetrics.cell-radius;
-            background: transparent;
-        }
-    }
-}
+// The candidate area is `CandidateGrid`, declared in `candidate_grid.slint` and placed by
+// the window below. It is not declared here because it would then have to import this
+// file for `CandidateMetrics`, which imports it.
 
 // The candidate window. Sizes arrive from `src/layout.rs`, which owns every geometric
 // decision; this component only places what it is given.
@@ -216,6 +268,13 @@ export component CandidateWindow inherits Window {
     // Frame data, resolved by the adapter.
     in property <string> preedit-text: "";
     in property <string> mode-label: "";
+    // The page's candidates, in the model the grid draws from.
+    in property <[CandidateData]> items: [];
+    // Whether a candidate's annotation is drawn beside it. The adapter writes it from every
+    // frame, and the default is the one `DrawState` starts from: the change detection
+    // compares a frame against the state the component is already drawing, so the two have
+    // to start out equal for a frame that turns the annotation off to take effect.
+    in property <bool> show-annotation: false;
 
     // Geometry, written by `src/layout.rs`. The geometry task reads `window-width` and
     // `window-height` to place and flip the window, and needs the shadow reserve included
@@ -275,12 +334,25 @@ export component CandidateWindow inherits Window {
                 background: Theme.separator;
             }
 
+            // Every geometry constant the grid draws with is bound here, from the global
+            // that declares it: the grid itself cannot import this file.
             CandidateGrid {
+                items: root.items;
                 item-count: root.item-count;
                 max-per-row: root.max-per-row;
                 rows: root.grid-rows;
+                show-annotation: root.show-annotation;
                 cell-width: root.cell-width;
                 cell-height: CandidateMetrics.cell-height;
+                cell-radius: CandidateMetrics.cell-radius;
+                cell-padding-h: CandidateMetrics.cell-padding-h;
+                cell-padding-v: CandidateMetrics.cell-padding-v;
+                number-gap: CandidateMetrics.number-gap;
+                annotation-gap: CandidateMetrics.annotation-gap;
+                grid-gap: CandidateMetrics.grid-gap;
+                text-font-size: CandidateMetrics.font-size-cell;
+                small-font-size: CandidateMetrics.font-size-small;
+                area-padding: CandidateMetrics.container-padding;
             }
         }
     }

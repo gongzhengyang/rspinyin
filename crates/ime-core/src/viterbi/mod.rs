@@ -1,14 +1,18 @@
-//! K-best Viterbi decoding: the word lattice, the bounded merge and the decoder.
+//! K-best Viterbi decoding: the word lattice, the bounded merge, the decoder and its
+//! workspace.
 //!
 //! Responsibility: turn one decode request into the ordered candidate list the window
-//! draws. Three pieces, in the order the data flows through them:
+//! draws. The pieces, in the order the data flows through them:
 //!
 //! - [`lattice`] reads the dictionary and builds the graph of every word covering every
 //!   span of the input's segmentation graph.
 //! - [`kbest`] holds [`TopK`], the bounded merge each node's best paths are kept with.
-//! - [`decoder`] walks the lattice in byte order, scores every edge with the
-//!   fixed-point [`Scorer`](crate::lm::Scorer), and reads the paths that reach the last
-//!   node back into candidates.
+//! - the sweep walks the lattice in byte order, scores every edge with the fixed-point
+//!   [`Scorer`](crate::lm::Scorer), and reads the paths that reach the last node back into
+//!   candidates.
+//! - [`decoder`] holds the configuration and the entry points, and [`DecodeScratch`] holds
+//!   the buffers one decode fills, so that a caller decoding once per keystroke keeps its
+//!   working storage instead of building it again.
 //!
 //! Boundaries: this module is pure. It reaches the dictionary, the user's frequencies and
 //! the language model through the trait objects of the frozen contract crate and touches
@@ -75,6 +79,8 @@
 pub mod decoder;
 pub mod kbest;
 pub mod lattice;
+mod scratch;
+mod sweep;
 
 pub use crate::viterbi::decoder::{
     DEFAULT_BEAM_K, DEFAULT_MAX_CANDIDATES, DecodeConfig, Decoder, MAX_BEAM_K, MAX_CANDIDATES,
@@ -82,8 +88,9 @@ pub use crate::viterbi::decoder::{
 pub use crate::viterbi::kbest::TopK;
 pub use crate::viterbi::lattice::{
     FALLBACK_SINGLES, Lattice, LatticeEdge, MAX_LATTICE_NODES, MAX_WORD_SYLLABLES, WORDS_PER_KEY,
-    build_lattice,
+    build_lattice, build_lattice_into,
 };
+pub use crate::viterbi::scratch::DecodeScratch;
 
 /// Tests for the decode pipeline, driven through the one entry point this tree exposes.
 ///
@@ -101,6 +108,7 @@ mod tests {
     use super::{DEFAULT_MAX_CANDIDATES, DecodeConfig, Decoder, MAX_BEAM_K, MAX_CANDIDATES};
     use crate::lm::{InMemoryLm, ScoreWeights};
     use crate::segment::MAX_RAW_LEN;
+    use crate::state::paging::MAX_REACHABLE_CANDIDATES;
     use crate::viterbi::lattice::testing::{MockLexicon, MockUserFreq, NoUser};
 
     /// Decodes `raw` with the shipped configuration and no user history.
@@ -207,7 +215,10 @@ mod tests {
         let lm = InMemoryLm::new();
         for raw in ["nihao", "woaini", "zhongguo", "beijingdaxue"] {
             let expected = fingerprint(&decode(raw, &lexicon, &lm));
-            assert!(expected.len() > 1, "{raw} must rank more than one candidate");
+            assert!(
+                expected.len() > 1,
+                "{raw} must rank more than one candidate"
+            );
             for run in 0..100 {
                 let seen = fingerprint(&decode(raw, &lexicon, &lm));
                 assert_eq!(seen, expected, "{raw}, run {run}");
@@ -225,16 +236,22 @@ mod tests {
         let phrase = MockLexicon::phrase();
         let long = "nihao".repeat(12) + "niha";
         assert_eq!(long.len(), MAX_RAW_LEN);
-        let cases: [(&str, &MockLexicon); 5] = [
+        let over = format!("{long}a");
+        assert_eq!(over.len(), MAX_RAW_LEN + 1);
+        let cases: [(&str, &MockLexicon); 6] = [
             ("", &singles),
             ("zzz", &phrase),
             ("ni", &phrase),
             (long.as_str(), &phrase),
+            (over.as_str(), &phrase),
             ("nihao", &empty),
         ];
         for (raw, lexicon) in cases {
             let result = decode(raw, lexicon, &lm);
-            assert!(!result.candidates.is_empty(), "{raw:?} must produce a candidate");
+            assert!(
+                !result.candidates.is_empty(),
+                "{raw:?} must produce a candidate"
+            );
             assert!(
                 result.candidates.len() <= usize::from(DEFAULT_MAX_CANDIDATES),
                 "{raw:?} must stay inside the candidate limit"
@@ -287,8 +304,9 @@ mod tests {
         assert!(result.candidates.len() > 1);
         assert!(result.candidates.len() <= usize::from(DEFAULT_MAX_CANDIDATES));
         // Nine candidates per page and five pages is the whole list the window can page
-        // through, which is where the shipped limit comes from.
-        assert_eq!(DEFAULT_MAX_CANDIDATES, 45);
+        // through (`ASM-07`), and the shipped limit is exactly that reach: a decode never
+        // produces a candidate the window could not show.
+        assert_eq!(DEFAULT_MAX_CANDIDATES, MAX_REACHABLE_CANDIDATES);
         let narrowed = decode_configured(
             "beijingdaxue",
             &lexicon,
@@ -314,6 +332,44 @@ mod tests {
             .filter(|candidate| candidate.text == "西安")
             .count();
         assert_eq!(spelled, 1);
+    }
+
+    #[test]
+    fn test_decode_merges_a_dictionary_reading_with_the_users_own_word() {
+        // `xian` reads as the dictionary's own 西安 and as the user's 西 followed by 安,
+        // and the two readings spell the same text. The list holds it once, with the two
+        // labels merged into `UserDict`: a text the base dictionary and the user's own
+        // dictionary both hold is the strongest evidence there is that the user means it.
+        let rows = [("xian", "西安"), ("xi", "西"), ("an", "安")];
+        let lexicon = MockLexicon::with(&rows).coined("西");
+        let merged = decode("xian", &lexicon, &InMemoryLm::new());
+        assert_eq!(merged.candidates.len(), 1, "one text, one candidate");
+        assert_eq!(merged.candidates[0].text, "西安");
+        assert_eq!(merged.candidates[0].source, CandidateSource::UserDict);
+
+        // The same input against each reading on its own, for the two scores the merge
+        // added up. Every score is a sum of log probabilities, so both are negative and
+        // a candidate carrying the sum has to rank below either of them.
+        let split_rows = [("xi", "西"), ("an", "安")];
+        let whole_rows = [("xian", "西安")];
+        let split_lexicon = MockLexicon::with(&split_rows).coined("西");
+        let whole_lexicon = MockLexicon::with(&whole_rows);
+        let split = decode("xian", &split_lexicon, &InMemoryLm::new());
+        let whole = decode("xian", &whole_lexicon, &InMemoryLm::new());
+        assert_eq!(whole.candidates[0].text, "西安");
+        assert_eq!(whole.candidates[0].source, CandidateSource::Dict);
+        assert_eq!(split.candidates[0].text, "西安");
+        assert_eq!(split.candidates[0].source, CandidateSource::UserDict);
+        let whole_score = whole.candidates[0].score;
+        let split_score = split.candidates[0].score;
+        assert!(
+            whole_score < 0.0 && split_score < 0.0,
+            "scores are log probabilities"
+        );
+        assert!(
+            merged.candidates[0].score < whole_score && merged.candidates[0].score < split_score,
+            "the two scores were added, not compared"
+        );
     }
 
     #[test]
@@ -359,7 +415,10 @@ mod tests {
     fn test_decode_marks_a_refused_lookup_as_degraded() {
         let lexicon = MockLexicon::phrase().failing("hao");
         let result = decode("nihao", &lexicon, &InMemoryLm::new());
-        assert!(result.degraded, "an incomplete lattice is a degraded answer");
+        assert!(
+            result.degraded,
+            "an incomplete lattice is a degraded answer"
+        );
         assert!(!result.candidates.is_empty());
     }
 
@@ -447,6 +506,36 @@ mod tests {
             ..DecodeConfig::default()
         };
         assert!(Decoder::new(negative).is_err());
+    }
+
+    #[test]
+    fn test_decode_config_validate_names_the_field_it_refuses() {
+        let wide = DecodeConfig {
+            beam_k: MAX_BEAM_K + 1,
+            ..DecodeConfig::default()
+        };
+        let error = wide.validate().expect_err("the beam ceiling is hard");
+        assert!(matches!(error, ImeError::ConfigInvalid { .. }), "{error}");
+        assert!(error.to_string().contains("decode.beam_k"), "{error}");
+
+        let long = DecodeConfig {
+            max_candidates: MAX_CANDIDATES + 1,
+            ..DecodeConfig::default()
+        };
+        let error = long.validate().expect_err("the candidate ceiling is hard");
+        assert!(matches!(error, ImeError::ConfigInvalid { .. }), "{error}");
+        assert!(
+            error.to_string().contains("decode.max_candidates"),
+            "{error}"
+        );
+
+        // The ceilings themselves are legal, so the check refuses only what is past them.
+        let widest = DecodeConfig {
+            beam_k: MAX_BEAM_K,
+            max_candidates: MAX_CANDIDATES,
+            ..DecodeConfig::default()
+        };
+        assert!(widest.validate().is_ok());
     }
 
     #[test]

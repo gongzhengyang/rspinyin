@@ -1,0 +1,557 @@
+//! One frame's worth of component state, and the mapping that produces it.
+//!
+//! This is the whole of `UiFrame -> .slint`: it turns the engine's snapshot into the values
+//! the component draws from. The mapping is a pure function of the frame, the panel budget
+//! and the component's constants -- it reads no clock, no display server and no global state
+//! -- which is what lets every case below be covered by a test that never opens a window.
+//!
+//! # Steady state allocates nothing
+//!
+//! A frame arrives on every keystroke, so the state keeps its `String` buffers and reports
+//! *which* of them changed rather than building a new value: a frame that draws the same
+//! state as the one before it produces an empty [`DrawDelta`] and no property write at all,
+//! and a frame whose text changed reuses the buffer already held. That holds for the
+//! candidate cells as well: the vector is grown and truncated rather than rebuilt, so a
+//! page that did not change keeps every string it draws.
+//!
+//! # Geometry
+//!
+//! The panel is sized by [`crate::layout`], from the same constants the component draws with,
+//! so the rectangle the window occupies and the cells the pointer hits cannot drift apart.
+//! The mapping decides no placement and owns no font metrics: the width a cell asks for is
+//! estimated from its character count, which is a deterministic upper bound for the CJK text
+//! a candidate holds. The estimate is cached across frames by [`Measure`], which the adapter
+//! owns and hands in.
+//!
+//! # The candidate cells
+//!
+//! [`DrawState::cells`] is the grid's whole input: the label, the text that fits, the
+//! annotation and the state of 3.4, one entry per candidate of the page. The state is
+//! resolved from [`DrawState::pointer`], which `UiFrame` does not carry -- the engine's
+//! paging state holds the highlight, not the frame -- so it is an adapter input rather than
+//! a field of the snapshot.
+
+use ime_types::{Candidate, UiFrame};
+
+use super::cell::{CellGeometry, CellState, Measure, PointerState, replace, write_text};
+use crate::layout::{self, GridLayout, Metrics};
+
+/// The longest preedit the adapter hands to the component, in characters.
+///
+/// A bound rather than a measurement. The preedit is one line of the header and the widest
+/// panel holds roughly fifty glyphs at the header font size, so sixty-four characters is more
+/// than any container can draw, and the string the component is handed stays bounded however
+/// long the composing session runs. The cut is on the left, which is 3.1.3's rule: the newest
+/// input stays visible while the head scrolls away. The component elides as well, as the
+/// last-resort guard.
+pub const PREEDIT_MAX_CHARS: usize = 64;
+
+/// The window's drawable state, as the component's properties hold it.
+///
+/// A plain value, so the mapping can be tested without a Slint platform: a test builds one
+/// from a frame and asserts on it, and only the final write into the component needs a live
+/// instance.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DrawState {
+    /// The preedit line, already cut on the left so the newest input stays visible.
+    pub preedit_text: String,
+    /// The mode strip's label, in the language the scheme uses.
+    pub mode_label: String,
+    /// Candidates on the page being drawn.
+    pub item_count: i32,
+    /// Candidates on a full row, clamped into the range the component draws.
+    pub max_per_row: i32,
+    /// Rows the page occupies.
+    pub grid_rows: i32,
+    /// Width of one candidate cell, in logical pixels; every cell in a row shares it.
+    pub cell_width: f32,
+    /// Panel width in logical pixels, shadow reserve excluded.
+    pub container_width: f32,
+    /// Panel height in logical pixels, shadow reserve excluded.
+    pub container_height: f32,
+    /// Height of the header strip in logical pixels.
+    ///
+    /// Written because the panel's height is: a window with no candidate draws the compressed
+    /// header, and leaving the component on its own default would draw a strip taller than
+    /// the panel the layout sized.
+    pub header_height: f32,
+    /// Whether a candidate's annotation is drawn beside it, from `layout.show_annotation`.
+    pub show_annotation: bool,
+    /// The cells of the page, in the order the frame holds them.
+    ///
+    /// Empty for a frame with no candidate, which is what makes the grid take no height and
+    /// leaves the window drawing its header alone.
+    pub cells: Vec<CellState>,
+    /// The pointer and highlight state the cells' five-state is resolved from.
+    ///
+    /// Part of the drawn state rather than of the frame: the engine's paging state holds the
+    /// highlight, and `UiFrame` carries no hover or press at all.
+    pub pointer: PointerState,
+}
+
+/// Which of the component's properties a frame changed.
+///
+/// The adapter writes only the properties this marks, which is what keeps a frame that draws
+/// what is already on screen -- a replay, a redelivery, a keystroke that changed nothing
+/// visible -- from spending a `SharedString` per candidate text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DrawDelta {
+    /// The preedit line changed.
+    pub preedit_text: bool,
+    /// The mode strip's label changed.
+    pub mode_label: bool,
+    /// The number of candidates on the page changed.
+    pub item_count: bool,
+    /// The number of candidates per row changed.
+    pub max_per_row: bool,
+    /// The number of rows changed.
+    pub grid_rows: bool,
+    /// The shared cell width changed.
+    pub cell_width: bool,
+    /// The panel width changed.
+    pub container_width: bool,
+    /// The panel height changed.
+    pub container_height: bool,
+    /// The header height changed.
+    pub header_height: bool,
+    /// Whether an annotation is drawn changed.
+    pub show_annotation: bool,
+    /// What a cell draws changed: a candidate, its text or its state.
+    pub cells: bool,
+}
+
+impl DrawDelta {
+    /// Whether the frame changed nothing the component draws.
+    ///
+    /// # Returns
+    ///
+    /// `true` when every field is `false`.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn is_empty(self) -> bool {
+        !(self.preedit_text
+            || self.mode_label
+            || self.item_count
+            || self.max_per_row
+            || self.grid_rows
+            || self.cell_width
+            || self.container_width
+            || self.container_height
+            || self.header_height
+            || self.show_annotation
+            || self.cells)
+    }
+}
+
+impl DrawState {
+    /// Recomputes this state from `frame`, reusing the buffers it already holds.
+    ///
+    /// The convenience form of [`DrawState::update_cached`] for a caller that has no width
+    /// cache to hand in: it measures every distinct text once per call, which is what a test
+    /// and a one-off mapping want. The adapter keeps a [`Measure`] across frames and calls
+    /// the cached form.
+    ///
+    /// # Parameters
+    ///
+    /// * `frame` -- the engine's snapshot of the window.
+    /// * `max_container_width` -- widest panel the screen allows, in logical pixels.
+    /// * `metrics` -- the component's constants, from [`crate::layout::metrics`]; passed in
+    ///   rather than read here so that the mapping stays a pure function of its arguments.
+    ///
+    /// # Returns
+    ///
+    /// Which of the component's properties the frame changed. Every field is `false` when the
+    /// frame draws exactly what the state already holds.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn update(
+        &mut self,
+        frame: &UiFrame,
+        max_container_width: f32,
+        metrics: &Metrics,
+    ) -> DrawDelta {
+        self.update_cached(frame, max_container_width, metrics, &mut Measure::default())
+    }
+
+    /// Recomputes this state from `frame`, measuring through `measure`.
+    ///
+    /// # Parameters
+    ///
+    /// * `frame` -- the engine's snapshot of the window.
+    /// * `max_container_width` -- widest panel the screen allows, in logical pixels.
+    /// * `metrics` -- the component's constants, from [`crate::layout::metrics`].
+    /// * `measure` -- the width estimator, kept across frames so a candidate text is
+    ///   measured once rather than once per keystroke.
+    ///
+    /// # Returns
+    ///
+    /// Which of the component's properties the frame changed. Every field is `false` when the
+    /// frame draws exactly what the state already holds.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn update_cached(
+        &mut self,
+        frame: &UiFrame,
+        max_container_width: f32,
+        metrics: &Metrics,
+        measure: &mut Measure,
+    ) -> DrawDelta {
+        let columns = per_row(frame.layout.max_per_row, metrics);
+        let grid = layout::grid(
+            frame.candidates.len(),
+            usize::from(frame.page.total),
+            columns,
+            metrics,
+        );
+        let show_annotation = frame.layout.show_annotation;
+        let cell = layout::cell_width(
+            &[widest_cell(frame, show_annotation, metrics, measure)],
+            columns,
+            max_container_width,
+            metrics,
+        );
+        let container = layout::container_size(&grid, cell.width, max_container_width, metrics);
+        let geometry = CellGeometry {
+            position: 0,
+            width: cell.width,
+            annotation_width: 0.0,
+            show_annotation,
+            metrics: *metrics,
+        };
+        let cells = self.write_cells(frame, geometry, measure);
+        DrawDelta {
+            preedit_text: write_preedit(&mut self.preedit_text, &frame.preedit.text),
+            mode_label: write_text(&mut self.mode_label, &frame.status.mode_label),
+            item_count: replace(&mut self.item_count, count(frame.candidates.len())),
+            max_per_row: replace(&mut self.max_per_row, i32::from(columns)),
+            grid_rows: replace(&mut self.grid_rows, i32::from(grid.rows)),
+            cell_width: replace(&mut self.cell_width, cell.width),
+            container_width: replace(&mut self.container_width, container.width),
+            container_height: replace(&mut self.container_height, container.height),
+            header_height: replace(&mut self.header_height, header_height(&grid, metrics)),
+            show_annotation: replace(&mut self.show_annotation, show_annotation),
+            cells,
+        }
+    }
+
+    /// Re-resolves the five-state of every cell from [`DrawState::pointer`].
+    ///
+    /// A pointer that moves, a press and a release change what the grid draws without any
+    /// frame arriving, so this is callable on its own rather than only from
+    /// [`DrawState::update_cached`].
+    ///
+    /// # Returns
+    ///
+    /// Whether any cell's state changed.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn resolve_states(&mut self) -> bool {
+        let pointer = self.pointer;
+        let mut changed = false;
+        for (position, cell) in self.cells.iter_mut().enumerate() {
+            let Ok(position) = u16::try_from(position) else {
+                break;
+            };
+            changed |= cell.resolve(position, pointer);
+        }
+        changed
+    }
+
+    /// Rebuilds the cells of the page from `frame`, reusing the buffers already held.
+    ///
+    /// The vector is grown and truncated rather than rebuilt, so a frame that redraws the
+    /// same page writes into the strings it already has and reports no change.
+    ///
+    /// # Returns
+    ///
+    /// Whether anything a cell draws changed.
+    fn write_cells(&mut self, frame: &UiFrame, base: CellGeometry, measure: &mut Measure) -> bool {
+        let count = frame.candidates.len();
+        let mut changed = false;
+        if self.cells.len() < count {
+            self.cells.resize_with(count, CellState::default);
+            changed = true;
+        } else if self.cells.len() > count {
+            self.cells.truncate(count);
+            changed = true;
+        }
+        for (position, candidate) in frame.candidates.iter().enumerate() {
+            let Ok(position) = u16::try_from(position) else {
+                break;
+            };
+            let Some(cell) = self.cells.get_mut(usize::from(position)) else {
+                continue;
+            };
+            let mut geometry = base;
+            geometry.position = position;
+            geometry.annotation_width =
+                annotation_width(candidate, base.show_annotation, &base.metrics, measure);
+            changed |= cell.write(candidate, geometry, measure);
+            changed |= cell.resolve(position, self.pointer);
+        }
+        changed
+    }
+}
+
+/// Turns one frame into the state the component draws.
+///
+/// The convenience form of [`DrawState::update`] for a caller that has no state to reuse;
+/// the adapter itself keeps one and updates it in place.
+///
+/// # Parameters
+///
+/// * `frame` -- the engine's snapshot of the window.
+/// * `max_container_width` -- widest panel the screen allows, in logical pixels.
+/// * `metrics` -- the component's constants, from [`crate::layout::metrics`].
+///
+/// # Returns
+///
+/// The state the component should be drawn with.
+///
+/// # Errors
+///
+/// This function is infallible: it returns no `Result`.
+///
+/// # Panics
+///
+/// Never panics.
+pub fn draw_state(frame: &UiFrame, max_container_width: f32, metrics: &Metrics) -> DrawState {
+    let mut state = DrawState::default();
+    state.update(frame, max_container_width, metrics);
+    state
+}
+
+/// The widest panel a frame allows, in logical pixels.
+///
+/// The true cap belongs to the screen: a panel wider than the output it appears on cannot be
+/// drawn, and only the placement pass knows the outputs. What is left on this side is the
+/// ceiling the configuration sets; a value that cannot describe a panel falls back to the
+/// component's own maximum rather than collapsing the window to a pixel.
+///
+/// # Parameters
+///
+/// * `frame` -- the frame whose layout constraints carry the configured ceiling.
+/// * `metrics` -- the component's constants, from [`crate::layout::metrics`].
+///
+/// # Returns
+///
+/// The widest panel in logical pixels, never zero.
+///
+/// # Errors
+///
+/// This function is infallible: it returns no `Result`.
+///
+/// # Panics
+///
+/// Never panics.
+pub fn container_cap(frame: &UiFrame, metrics: &Metrics) -> f32 {
+    let configured = f32::from(frame.layout.max_width_dp);
+    if configured > 0.0 {
+        configured
+    } else {
+        metrics.max_width
+    }
+}
+
+/// The newest frame revision the window has drawn.
+///
+/// A frame is a full snapshot and the engine numbers them monotonically, so a frame older than
+/// the one already drawn is a replay or an out-of-order delivery: drawing it would put the
+/// window back on a state the user has left, and the selection that followed from the newer
+/// frame would be rejected by the engine as stale.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RevisionGate {
+    current: Option<u32>,
+}
+
+impl RevisionGate {
+    /// Whether `revision` is at least as new as the one already drawn, recording it if so.
+    ///
+    /// The first frame is always accepted. A revision equal to the current one is accepted as
+    /// well: it carries the same state, and the writes it would produce are skipped by the
+    /// change detection anyway.
+    ///
+    /// # Parameters
+    ///
+    /// * `revision` -- the frame's revision, from [`UiFrame::revision`].
+    ///
+    /// # Returns
+    ///
+    /// `true` when the frame may be drawn.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn accept(&mut self, revision: u32) -> bool {
+        match self.current {
+            Some(current) if revision < current => false,
+            _ => {
+                self.current = Some(revision);
+                true
+            }
+        }
+    }
+
+    /// The revision the window is drawing.
+    ///
+    /// # Returns
+    ///
+    /// The newest accepted revision, or `None` before the first frame.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn current(&self) -> Option<u32> {
+        self.current
+    }
+}
+
+/// Candidates per row, clamped into the range the component draws and never zero.
+///
+/// The same rule [`crate::layout::grid`] applies internally, restated because the component
+/// needs the value itself: it derives its last row from it. The two are pinned together by the
+/// test below, which asserts the clamp agrees with the column count the layout reports for a
+/// page that fills a row.
+fn per_row(max_per_row: u8, metrics: &Metrics) -> u8 {
+    max_per_row
+        .max(metrics.min_per_row)
+        .min(metrics.max_per_row_limit)
+        .max(1)
+}
+
+/// The header height a page needs, in logical pixels.
+///
+/// A page with no candidate draws the compressed strip, which is the height
+/// [`crate::layout::container_size`] already used for the panel.
+fn header_height(grid: &GridLayout, metrics: &Metrics) -> f32 {
+    if grid.rows == 0 {
+        metrics.header_height_compact
+    } else {
+        metrics.header_height
+    }
+}
+
+/// The widest cell the page needs, in logical pixels.
+///
+/// [`crate::layout::cell_width`] takes the maximum of the widths it is given, so the page's
+/// widest candidate is the whole of what it reads: passing the maximum alone is the same
+/// answer without a buffer per candidate.
+fn widest_cell(
+    frame: &UiFrame,
+    show_annotation: bool,
+    metrics: &Metrics,
+    measure: &mut Measure,
+) -> f32 {
+    frame
+        .candidates
+        .iter()
+        .map(|candidate| natural_cell_width(candidate, show_annotation, metrics, measure))
+        .fold(0.0, f32::max)
+}
+
+/// The width one cell's content needs, chrome included, in logical pixels.
+///
+/// An estimate rather than a font measurement, which this layer owns no metrics for: the
+/// window draws CJK candidates, where one glyph fills its em box, and Latin text at roughly
+/// half of one. Rounding a Latin character up to a full em leaves a cell wider than it needs
+/// rather than cutting it off, and the component's elide stays the last-resort guard it is
+/// meant to be.
+fn natural_cell_width(
+    candidate: &Candidate,
+    show_annotation: bool,
+    metrics: &Metrics,
+    measure: &mut Measure,
+) -> f32 {
+    let text = measure.width(&candidate.text, metrics.font_size_cell);
+    let annotation = annotation_width(candidate, show_annotation, metrics, measure);
+    text + annotation + metrics.cell_chrome_width
+}
+
+/// What a candidate's annotation costs beside its text, in logical pixels.
+///
+/// Zero when there is nothing to draw or the layout turned the annotation off, which is what
+/// keeps a cell without one from reserving room for it. The gap before the annotation is part
+/// of the cost, so the caller can subtract the whole value from the text's budget.
+fn annotation_width(
+    candidate: &Candidate,
+    show_annotation: bool,
+    metrics: &Metrics,
+    measure: &mut Measure,
+) -> f32 {
+    if !show_annotation {
+        return 0.0;
+    }
+    match candidate.annotation.as_deref() {
+        Some(annotation) if !annotation.is_empty() => {
+            metrics.annotation_gap + measure.width(annotation, metrics.font_size_small)
+        }
+        _ => 0.0,
+    }
+}
+
+/// Writes the preedit, cut on the left, into a buffer the state already holds.
+///
+/// Returns whether the buffer changed.
+fn write_preedit(target: &mut String, text: &str) -> bool {
+    let start = truncation_start(text, PREEDIT_MAX_CHARS);
+    write_text(target, &text[start..])
+}
+
+/// The byte offset at which the tail of `text` that fits `max_chars` characters begins.
+///
+/// Always a character boundary, so the slice it indexes is a valid `str` however the input
+/// mixes scripts. A text that already fits keeps all of it.
+fn truncation_start(text: &str, max_chars: usize) -> usize {
+    if max_chars == 0 {
+        return text.len();
+    }
+    let characters = text.chars().count();
+    if characters <= max_chars {
+        return 0;
+    }
+    // `char_indices` is the only source of a byte offset guaranteed to sit on a character
+    // boundary, which is what makes the slice this indexes a valid `str`.
+    text.char_indices()
+        .nth(characters - max_chars)
+        .map_or(0, |(index, _)| index)
+}
+
+/// A candidate count as the component's integer property type.
+fn count(candidates: usize) -> i32 {
+    candidates.min(i32::MAX as usize) as i32
+}
+
+#[cfg(test)]
+mod tests;

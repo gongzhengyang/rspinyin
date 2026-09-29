@@ -190,10 +190,16 @@ mod tests {
         // features.md 3.2 computes these two by hand; a change in the rounding would
         // make the acrylic base drift away from the document.
         let dark_base = rgba(0x1C, 0x1C, 0x1E, 217);
-        assert_eq!(composite_over(dark_base, WHITE), rgba(0x3E, 0x3E, 0x40, 255));
+        assert_eq!(
+            composite_over(dark_base, WHITE),
+            rgba(0x3E, 0x3E, 0x40, 255)
+        );
 
         let light_base = rgba(0xFF, 0xFF, 0xFF, 217);
-        assert_eq!(composite_over(light_base, BLACK), rgba(0xD9, 0xD9, 0xD9, 255));
+        assert_eq!(
+            composite_over(light_base, BLACK),
+            rgba(0xD9, 0xD9, 0xD9, 255)
+        );
     }
 
     #[test]
@@ -251,7 +257,10 @@ mod tests {
         let surface = rgba(0x1C, 0x1C, 0x1E, 255);
         let opaque = contrast_ratio(rgba(0xF2, 0xF2, 0xF7, 255), surface);
         let faded = contrast_ratio(rgba(0xF2, 0xF2, 0xF7, 122), surface);
-        assert!(faded < opaque, "faded {faded} was not below opaque {opaque}");
+        assert!(
+            faded < opaque,
+            "faded {faded} was not below opaque {opaque}"
+        );
         assert!(faded > 1.0);
     }
 }

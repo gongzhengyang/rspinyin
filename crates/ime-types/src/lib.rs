@@ -27,11 +27,13 @@ pub mod surface;
 pub mod ui;
 pub mod version;
 
-pub use crate::decode::{DecodeFlags, DecodeRequest, DecodeResult, Segment, SyllableId};
+pub use crate::decode::{DecodeFlags, DecodeRequest, DecodeResult, SchemeId, Segment, SyllableId};
 pub use crate::error::{ConfigError, DecodeError, DictError, ImeError, PlatformError, UiError};
 pub use crate::ids::{Revision, ScreenId, SessionId, WordId};
 pub use crate::key::KeyAction;
-pub use crate::lexicon::{LanguageModel, Lexicon, UserFreqSource, WordFlags, WordIter, WordRef};
+pub use crate::lexicon::{
+    LanguageModel, Lexicon, UserFreqSource, WORD_ITER_INLINE, WordFlags, WordIter, WordRef,
+};
 pub use crate::surface::{FrameToken, PixelBufferMut, SurfaceBackend, SurfaceEvent};
 pub use crate::ui::{
     Anchor, Candidate, CandidateSource, ColorScheme, DismissReason, HideReason, LayoutHint,

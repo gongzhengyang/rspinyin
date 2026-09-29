@@ -37,6 +37,12 @@
 //! conversion with bytes that are not text therefore requires a pool the compiler could
 //! not have produced *and* a checksum that matches.
 //!
+//! The conversion itself is `crate::mmap::WordPool::word`, which is safe because the pool it
+//! slices can only have been built by the loader out of a container it accepted. That is what
+//! keeps this module inside safe Rust without leaving a precondition for a caller to honour:
+//! the obligation is discharged where the pool comes into existence, not restated at every
+//! conversion.
+//!
 //! # Threat model
 //!
 //! The defence is aimed at accidental damage: a bad sector, a truncated file, a compiler
@@ -50,7 +56,7 @@ use std::sync::{Mutex, MutexGuard};
 use ime_types::{DictError, WordFlags, WordRef};
 
 use crate::format::{DictEntry, MAX_SYL_COUNT, MAX_WORD_LEN};
-use crate::mmap::pool_text;
+use crate::mmap::WordPool;
 
 /// How many malformed entries the once-only record keeps.
 ///
@@ -72,8 +78,13 @@ pub struct MalformedEntry {
     pub word_len: u16,
 }
 
-/// The read side of the entry table: the mapped `STRPOOL` bytes its records point into,
-/// plus the once-only record of the entries that failed their bounds check.
+/// The read side of the entry table: the string pool its records point into, plus the
+/// once-only record of the entries that failed their bounds check.
+///
+/// The pool is held as a [`WordPool`], the value that carries the proof it came out of a
+/// container the loader accepted; that is what lets a conversion hand back a `&str` without
+/// scanning it, and what keeps the unchecked part of the read path in the one module the
+/// architecture rule allows it in.
 ///
 /// # Concurrency
 ///
@@ -81,17 +92,17 @@ pub struct MalformedEntry {
 /// record fails its check, so a successful conversion takes no lock and the decode hot
 /// path stays free of contention.
 #[derive(Debug)]
-pub struct EntryTable<'pool> {
-    pool: &'pool [u8],
+pub(crate) struct EntryTable<'pool> {
+    pool: WordPool<'pool>,
     reported: Mutex<Vec<MalformedEntry>>,
 }
 
 impl<'pool> EntryTable<'pool> {
-    /// Builds a table over the string pool of a container that has already been verified.
+    /// Builds a table over the string pool of a container that has already been accepted.
     ///
     /// The pool is borrowed for as long as the table lives, so the text every conversion
     /// returns stays valid for as long as the mapping behind it does.
-    pub fn new(pool: &'pool [u8]) -> Self {
+    pub(crate) fn new(pool: WordPool<'pool>) -> Self {
         Self {
             pool,
             reported: Mutex::new(Vec::new()),
@@ -114,33 +125,12 @@ impl<'pool> EntryTable<'pool> {
     /// that combination means the compiler and the checksum both failed, which is a bug
     /// to catch while testing rather than a file to tolerate at run time. A release build
     /// does not check it; the module documentation states the trade-off.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ime_dict::entry::EntryTable;
-    /// use ime_dict::format::DictEntry;
-    ///
-    /// // Two three-byte words back to back, as the compiler writes them.
-    /// let pool: &[u8] = b"\xe4\xbd\xa0\xe5\xa5\xbd";
-    /// let table = EntryTable::new(pool);
-    ///
-    /// let entry = DictEntry::new(0, 3, 1, 0, 900);
-    /// let word = table.entry_to_ref(&entry).expect("the record is inside the pool");
-    /// assert_eq!(word.text, "\u{4f60}");
-    /// assert_eq!(word.text.len(), 3);
-    /// assert_eq!(word.weight, 900);
-    ///
-    /// // A record that points past the pool is reported, never read.
-    /// let past = DictEntry::new(6, 3, 1, 0, 900);
-    /// assert!(table.entry_to_ref(&past).is_err());
-    /// assert_eq!(table.malformed_entries().len(), 1);
-    /// ```
+    // The budget for this conversion is tens of nanoseconds, and it is called from another
+    // module of the crate, so the body has to stay inlinable across codegen units.
     #[inline]
-    pub fn entry_to_ref(&self, entry: &DictEntry) -> Result<WordRef<'_>, DictError> {
-        let bytes = self.word_bytes(entry)?;
+    pub(crate) fn entry_to_ref(&self, entry: &DictEntry) -> Result<WordRef<'_>, DictError> {
         Ok(WordRef {
-            text: pool_text(bytes),
+            text: self.word_text(entry)?,
             weight: entry.weight,
             syl_count: entry.syl_count,
             flags: WordFlags::from_bits_truncate(entry.flags),
@@ -151,17 +141,17 @@ impl<'pool> EntryTable<'pool> {
     ///
     /// The snapshot is for the diagnostics layer, which is where these become log records:
     /// this crate emits none of its own, and the read path must not wait on a formatter.
-    pub fn malformed_entries(&self) -> Vec<MalformedEntry> {
+    pub(crate) fn malformed_entries(&self) -> Vec<MalformedEntry> {
         let reported = self.lock();
         reported.clone()
     }
 
-    /// Checks `entry` and returns the bytes it names inside the pool.
+    /// Checks `entry` and returns the text it names inside the pool.
     ///
     /// The checks run cheapest first, and the range is formed in the offset's own width
     /// before it is widened, so an offset near the top of the field is caught as an
     /// overflow instead of wrapping into a range that happens to sit inside the pool.
-    fn word_bytes(&self, entry: &DictEntry) -> Result<&'pool [u8], DictError> {
+    fn word_text(&self, entry: &DictEntry) -> Result<&'pool str, DictError> {
         if entry.word_len == 0 || entry.word_len > MAX_WORD_LEN {
             return Err(self.report(entry, "word_len", u64::from(entry.word_len)));
         }
@@ -172,16 +162,13 @@ impl<'pool> EntryTable<'pool> {
         let Some(end) = entry.word_off.checked_add(u32::from(entry.word_len)) else {
             return Err(self.report(entry, "word_off", offset));
         };
-        let Ok(start) = usize::try_from(entry.word_off) else {
+        let (Ok(start), Ok(end)) = (usize::try_from(entry.word_off), usize::try_from(end)) else {
             return Err(self.report(entry, "word_off", offset));
         };
-        let Ok(end) = usize::try_from(end) else {
+        let Some(text) = self.pool.word(start, end) else {
             return Err(self.report(entry, "word_off", offset));
         };
-        let Some(bytes) = self.pool.get(start..end) else {
-            return Err(self.report(entry, "word_off", offset));
-        };
-        Ok(bytes)
+        Ok(text)
     }
 
     /// Records `entry` as malformed unless it is already recorded, and returns the error
@@ -218,7 +205,8 @@ mod tests {
     use super::*;
     use crate::format::FLAG_SURNAME;
 
-    /// A pool of two words, three bytes each, so that every offset is a UTF-8 boundary.
+    /// A pool of four three-byte words, so that every offset the tests name is a UTF-8
+    /// boundary.
     const POOL: &[u8] = "你好世界".as_bytes();
 
     /// A record that names the first word of [`POOL`], with every field in contract.
@@ -236,8 +224,10 @@ mod tests {
 
     #[test]
     fn test_entry_to_ref_borrows_the_word_from_the_pool() {
-        let table = EntryTable::new(POOL);
-        let word = table.entry_to_ref(&first_word()).expect("the record is valid");
+        let table = EntryTable::new(WordPool::verified(POOL));
+        let word = table
+            .entry_to_ref(&first_word())
+            .expect("the record is valid");
         assert_eq!(word.text, "你");
         assert_eq!(word.weight, 900);
         assert_eq!(word.syl_count, 1);
@@ -251,16 +241,18 @@ mod tests {
 
     #[test]
     fn test_entry_to_ref_reads_the_last_word_of_the_pool() {
-        let table = EntryTable::new(POOL);
+        let table = EntryTable::new(WordPool::verified(POOL));
         let last = DictEntry::new(9, 3, 1, 0, 700);
-        let word = table.entry_to_ref(&last).expect("the range ends at the pool end");
+        let word = table
+            .entry_to_ref(&last)
+            .expect("the range ends at the pool end");
         assert_eq!(word.text, "界");
         assert_eq!(word.text.len(), 3, "the length is in bytes, not characters");
     }
 
     #[test]
     fn test_entry_to_ref_reports_a_record_that_leaves_the_pool() {
-        let table = EntryTable::new(POOL);
+        let table = EntryTable::new(WordPool::verified(POOL));
         let cases = [
             // The offset starts exactly at the end of the pool, so no byte is available.
             DictEntry::new(12, 3, 1, 0, 1),
@@ -287,7 +279,7 @@ mod tests {
 
     #[test]
     fn test_entry_to_ref_reports_a_record_of_an_empty_pool() {
-        let table = EntryTable::new(b"");
+        let table = EntryTable::new(WordPool::verified(b""));
         let served = table.entry_to_ref(&first_word());
         let Err(err) = served else {
             panic!("an empty pool holds no word");
@@ -297,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_entry_to_ref_reports_a_word_length_outside_the_contract() {
-        let table = EntryTable::new(POOL);
+        let table = EntryTable::new(WordPool::verified(POOL));
         let cases = [
             // A zero length names no word at all.
             DictEntry::new(0, 0, 1, 0, 1),
@@ -316,7 +308,7 @@ mod tests {
 
     #[test]
     fn test_entry_to_ref_reports_a_syllable_count_outside_the_contract() {
-        let table = EntryTable::new(POOL);
+        let table = EntryTable::new(WordPool::verified(POOL));
         let cases = [
             DictEntry::new(0, 3, 0, 0, 1),
             DictEntry::new(0, 3, MAX_SYL_COUNT + 1, 0, 1),
@@ -332,21 +324,23 @@ mod tests {
 
     #[test]
     fn test_entry_to_ref_ignores_flag_bits_it_does_not_know() {
-        let table = EntryTable::new(POOL);
+        let table = EntryTable::new(WordPool::verified(POOL));
         let known = DictEntry::new(0, 3, 1, FLAG_SURNAME, 900);
         let word = table.entry_to_ref(&known).expect("a surname is a word");
         assert!(word.flags.contains(WordFlags::SURNAME));
 
         // A bit a later format version may define must not make the word unreadable.
         let future = DictEntry::new(0, 3, 1, 0b1111_0000, 900);
-        let word = table.entry_to_ref(&future).expect("unknown bits are ignored");
+        let word = table
+            .entry_to_ref(&future)
+            .expect("unknown bits are ignored");
         assert!(word.flags.is_empty());
         assert_eq!(word.text, "你");
     }
 
     #[test]
     fn test_entry_to_ref_records_a_malformed_entry_once() {
-        let table = EntryTable::new(POOL);
+        let table = EntryTable::new(WordPool::verified(POOL));
         let broken = DictEntry::new(12, 3, 1, 0, 900);
         for _ in 0..100 {
             assert!(
@@ -367,7 +361,7 @@ mod tests {
 
     #[test]
     fn test_entry_to_ref_records_distinct_malformed_entries_separately() {
-        let table = EntryTable::new(POOL);
+        let table = EntryTable::new(WordPool::verified(POOL));
         let past_the_end = DictEntry::new(12, 3, 1, 0, 1);
         let empty_word = DictEntry::new(0, 0, 1, 0, 1);
         assert!(table.entry_to_ref(&past_the_end).is_err());
@@ -396,7 +390,7 @@ mod tests {
     fn test_entry_to_ref_stops_recording_at_the_cap() {
         // The record is fed by untrusted input, so a file whose entries are broken
         // wholesale must not be able to grow it without bound.
-        let table = EntryTable::new(POOL);
+        let table = EntryTable::new(WordPool::verified(POOL));
         let base = u32::try_from(POOL.len()).expect("the fixture is small");
         let beyond = u32::try_from(MAX_REPORTED_ENTRIES).expect("the cap is small");
         for index in 0..beyond + 8 {
@@ -411,7 +405,7 @@ mod tests {
         // The lexicon is shared across threads, so the table has to be `Send + Sync`; the
         // shared handle below is what checks that, and the record is what the lock in the
         // table protects.
-        let table = Arc::new(EntryTable::new(POOL));
+        let table = Arc::new(EntryTable::new(WordPool::verified(POOL)));
         let broken = DictEntry::new(12, 3, 1, 0, 900);
         let workers: Vec<_> = (0..2)
             .map(|_| {
@@ -439,10 +433,12 @@ mod tests {
     #[test]
     fn test_entry_to_ref_walks_every_record_of_a_large_pool() {
         let (pool, entries, words) = synthetic_table(5_000);
-        let table = EntryTable::new(&pool);
+        let table = EntryTable::new(WordPool::verified(&pool));
         assert_eq!(entries.len(), words.len());
         for (index, entry) in entries.iter().enumerate() {
-            let word = table.entry_to_ref(entry).expect("the fixture is in contract");
+            let word = table
+                .entry_to_ref(entry)
+                .expect("the fixture is in contract");
             assert_eq!(word.text, words[index].as_str(), "record {index}");
             assert_eq!(word.syl_count, entry.syl_count, "record {index}");
             assert_eq!(word.weight, entry.weight, "record {index}");

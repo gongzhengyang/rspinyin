@@ -52,7 +52,7 @@ pub use crate::state::machine::{
     SessionState, step,
 };
 pub use crate::state::paging::{
-    DEFAULT_PAGE_SIZE, MAX_PAGES, MAX_PAGE_SIZE, MAX_REACHABLE_CANDIDATES, MIN_PAGE_SIZE, Paging,
+    DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MAX_PAGES, MAX_REACHABLE_CANDIDATES, MIN_PAGE_SIZE, Paging,
 };
 
 /// The configuration values the session state machine acts on.

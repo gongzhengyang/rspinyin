@@ -101,7 +101,10 @@ fn claim_free_name(target: &Path, stamp: u64) -> std::io::Result<PathBuf> {
 /// atomic.
 fn quarantine_base(target: &Path, stamp: u64) -> std::io::Result<PathBuf> {
     let name = target.file_name().ok_or_else(|| {
-        std::io::Error::new(ErrorKind::InvalidInput, "the path names no file to quarantine")
+        std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "the path names no file to quarantine",
+        )
     })?;
     let mut quarantined = name.to_os_string();
     quarantined.push(QUARANTINE_MARK);

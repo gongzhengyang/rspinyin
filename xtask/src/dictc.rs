@@ -40,7 +40,7 @@ use sha2::{Digest, Sha256};
 
 use crate::dictc::build::{Band, Stats, compile};
 use crate::dictc::source::{
-    Skips, apply_polyphone, load_l1, load_polyphone, load_words, synth_words,
+    Skips, apply_polyphone, load_l1, load_polyphone, load_words, read_source, synth_words,
 };
 
 /// Default word list, relative to the repository root.
@@ -341,7 +341,10 @@ fn load_allowlist(path: &Path) -> Result<Allowlist> {
 ///
 /// # Errors
 /// Returns an error when the file's id is not registered, when the source is not
-/// permissive, or when an upstream source's SHA256 does not match the file.
+/// permissive, when an upstream source's file cannot be read, or when its SHA256 does
+/// not match the pin. A file that is simply absent is reported as the stable
+/// `dict/source/missing` diagnostic, because the raw sources are fetched rather than
+/// committed and "not fetched yet" is the state a fresh checkout is in.
 fn check_source(allowlist: &Allowlist, path: &Path) -> Result<()> {
     let id = path
         .file_stem()
@@ -366,8 +369,8 @@ fn check_source(allowlist: &Allowlist, path: &Path) -> Result<()> {
     if source.kind != "upstream" {
         return Ok(());
     }
-    let bytes = fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-    let digest = Sha256::digest(&bytes);
+    let text = read_source(path)?;
+    let digest = Sha256::digest(text.as_bytes());
     let actual = hex(&digest);
     ensure!(
         actual.eq_ignore_ascii_case(&source.sha256),
@@ -452,9 +455,11 @@ mod tests {
             refusal.to_string().contains("sogou"),
             "the refusal names the source: {refusal}"
         );
+        let missing = check_source(&allowlist, &dir.join("pinyin-data.tsv"))
+            .expect_err("a missing pinned file must fail");
         assert!(
-            check_source(&allowlist, &dir.join("pinyin-data.tsv")).is_err(),
-            "a missing pinned file must fail"
+            missing.to_string().contains("dict/source/missing"),
+            "a source that was never fetched reports the fetch diagnostic: {missing}"
         );
         fs::remove_dir_all(&dir).expect("cleaning up");
     }

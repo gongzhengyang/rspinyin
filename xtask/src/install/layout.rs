@@ -335,11 +335,15 @@ mod tests {
     /// system's Fcitx5 installation.
     fn layout(destdir: &str) -> Layout {
         let destdir = PathBuf::from(destdir);
-        // The closure owns its own copy so that the original can still be moved into the
-        // struct below; a borrowed capture would keep it alive past the move.
+        // Delegates to the production `under_destdir` instead of repeating its
+        // `strip_prefix` by hand. An earlier version of this fixture did repeat it and
+        // dropped the empty-`DESTDIR` case, so it produced relative paths and the
+        // assertions below were checking a layout the installer never builds. The closure
+        // owns its own copy so the original can still be moved into the struct below; a
+        // borrowed capture would keep it alive past the move.
         let place = {
             let root = destdir.clone();
-            move |path: &str| root.join(path.strip_prefix('/').unwrap_or(path))
+            move |path: &str| under_destdir(&root, Path::new(path))
         };
         Layout {
             destdir,

@@ -7,8 +7,9 @@ Slint Royalty-free 2.0 六项义务（`OB-1`~`OB-6`）的复核结论见 `docs/d
 
 ## 1. 本项目
 
-rspinyin 以 **MIT OR Apache-2.0** 双许可发布，版权归 rspinyin 贡献者所有；
-`LICENSE-APACHE` 与 `LICENSE-MIT` 由 `TASK-2.06.03` 落地。
+rspinyin 以 **MIT OR Apache-2.0** 双许可发布，版权归 rspinyin 贡献者所有；两份许可的
+完整文本随仓库提供，见 `LICENSE-APACHE` 与 `LICENSE-MIT`。用户数据的存放位置、权限与
+脱敏规则见 `docs/dev/privacy.md`。
 
 ## 2. Slint（`LicenseRef-Slint-Royalty-free-2.0`）
 
@@ -68,12 +69,11 @@ You may not remove or alter any license notices (including copyright notices, di
 
 ## 4. Warranty and Liability
 
-SixtyFPS is only liable for conflicting rights of third parties if SixtyFPS was aware of these rights without informing you. Unless required by applicable law or agreed to in writing, SixtyFPS provides the Software on an "as is" basis, without warranties of any kind, either express or implied, including, without limitation, any warranties or conditions of merchantability, or fitness for a particular purpose.
+SixtyFPS is only liable for conflicting rights of third parties if SixtyFPS was aware of these rights without informing you. Unless required by applicable law or agreed to in writing, SixtyFPS provides the Software on an "as is" basis, without warranties or conditions of any kind, either express or implied, including, without limitation, any warranties or conditions of merchantability, or fitness for a particular purpose.
 
 Unless required by law, SixtyFPS won't be liable for any direct, indirect, incidental, or consequential damages arising in any way out of the use of the Software.
 
 词库数据来源：
-
 | 来源 | 许可证 | 用途 |
 |---|---|---|
 | `pinyin-data`（https://github.com/mozillazg/pinyin-data） | MIT | L1 单字读音（主源） |
@@ -81,6 +81,7 @@ Unless required by law, SixtyFPS won't be liable for any direct, indirect, incid
 | `jieba-dict`（https://github.com/fxsjy/jieba） | MIT | L2 词条与 L4 词频 |
 | `base`（https://github.com/rspinyin/rspinyin） | Project-owned (MIT OR Apache-2.0) | 本项目生成的衍生词库 |
 | `polyphone`（https://github.com/rspinyin/rspinyin） | Project-owned (MIT OR Apache-2.0) | 本项目生成的多音字权重校正表 |
+| `phrase`（https://github.com/rspinyin/rspinyin） | Project-owned (MIT OR Apache-2.0) | L5 |
 
 <!-- END GENERATED: slint licence and data sources -->
 

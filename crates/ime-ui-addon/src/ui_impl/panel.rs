@@ -96,7 +96,9 @@ impl PanelMirror {
 ///
 /// A snapshot whose candidate count disagrees with its buffer, or whose highlighted
 /// index is outside the list, is a broken host rather than a panel: it is diagnosed as
-/// `ffi/invalid-panel-snapshot` and dropped, leaving the previous mirror in place.
+/// `ffi/invalid-panel-snapshot` and dropped, leaving the previous mirror in place. The
+/// host sends a panel update per keystroke, so that diagnostic goes through the throttle
+/// in `crate::ffi`, which writes it once per second and counts the rest.
 pub fn on_input_panel_update(panel: PanelUpdate<'_>) -> bool {
     if !is_consistent(&panel) {
         emit_diagnostic("ffi/invalid-panel-snapshot");

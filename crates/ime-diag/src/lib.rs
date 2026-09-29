@@ -17,4 +17,6 @@ pub mod crash;
 pub mod log;
 pub mod panic;
 pub mod perms;
+pub mod probe;
 pub mod redact;
+pub mod report;

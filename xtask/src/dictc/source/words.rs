@@ -9,10 +9,9 @@
 //! [`Word`]s it produces are the compiler's input.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ime_dict::format::{self, ENTRY_FLAG_MASK, MAX_WORD_LEN};
 
 use super::reading::parse_reading;
@@ -97,8 +96,7 @@ pub(crate) fn load_words(
     l1: &BTreeMap<char, Vec<String>>,
     band_threshold: u32,
 ) -> Result<(Vec<Word>, Skips)> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let text = super::read_source(path)?;
     let mut skips = Skips::default();
     let mut by_word: BTreeMap<String, Word> = BTreeMap::new();
     for (index, line) in text.lines().enumerate() {

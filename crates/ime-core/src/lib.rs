@@ -14,5 +14,6 @@ pub mod passthrough;
 pub mod preedit;
 pub mod privacy;
 pub mod segment;
+pub mod shuangpin;
 pub mod state;
 pub mod viterbi;

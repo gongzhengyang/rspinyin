@@ -8,7 +8,7 @@
 //!
 //! # Relationship to the engine addon
 //!
-//! `librspinyin.so` and `librspinyin-ui.so` are `dlopen`'d independently and share no
+//! `librspinyin.so` and `librspinyin_ui.so` are `dlopen`'d independently and share no
 //! static state and no IPC. Everything they have in common travels through Fcitx5's own
 //! interfaces: the engine writes preedit and candidates into the `InputContext`, and
 //! this side reads them back from `InputContext::inputPanel()` in the

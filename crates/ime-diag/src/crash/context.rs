@@ -168,12 +168,16 @@ impl CrashContext {
 ///
 /// The shape check is what makes a value safe to write next to a key: an identifier
 /// cannot carry a newline, a control character, or a sentence from the input buffer.
+///
+/// `/` is admitted on the same footing as the other punctuation here. A window backend is
+/// named by its tier (`wayland/layer-shell`), and a slash cannot break the record format
+/// the way a newline or an `=` can.
 fn is_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.chars().count() <= MAX_CONTEXT_VALUE_CHARS
         && value
             .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':'))
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/'))
 }
 
 #[cfg(test)]
@@ -193,7 +197,10 @@ mod tests {
             "a value must not be able to forge a record line"
         );
         assert!(context.insert_identifier(CrashContextKey::BackendId, "wayland/layer-shell"));
-        assert_eq!(context.get(CrashContextKey::BackendId), Some("wayland/layer-shell"));
+        assert_eq!(
+            context.get(CrashContextKey::BackendId),
+            Some("wayland/layer-shell")
+        );
     }
 
     #[test]

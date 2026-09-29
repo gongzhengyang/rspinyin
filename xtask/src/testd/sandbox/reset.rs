@@ -82,7 +82,11 @@ impl Sandbox {
     /// reason in reverse -- the plugin never creates one, so a file that is there is a file
     /// a case put there, and the default configuration is the absent file.
     fn mutable_paths(&self) -> [PathBuf; 3] {
-        [self.paths.user_db.clone(), self.paths.config_file.clone(), self.paths.takeover.clone()]
+        [
+            self.paths.user_db.clone(),
+            self.paths.config_file.clone(),
+            self.paths.takeover.clone(),
+        ]
     }
 
     /// Moves every mirror entry aside, leaving the mirror directory itself in place.
@@ -117,7 +121,12 @@ impl Sandbox {
         let target = self.resolve(target)?;
         let is_dir = match fs::symlink_metadata(&target) {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(source) => return Err(SandboxError::Io { path: target, source }),
+            Err(source) => {
+                return Err(SandboxError::Io {
+                    path: target,
+                    source,
+                });
+            }
             Ok(meta) if meta.file_type().is_symlink() => {
                 return Err(SandboxError::Symlink { path: target });
             }
@@ -125,7 +134,9 @@ impl Sandbox {
         };
         let name = target
             .file_name()
-            .ok_or_else(|| SandboxError::UnusablePath { path: target.clone() })?;
+            .ok_or_else(|| SandboxError::UnusablePath {
+                path: target.clone(),
+            })?;
         for suffix in 0..=MAX_RESET_SUFFIX {
             let mut aside = name.to_os_string();
             aside.push(RESET_MARK);
@@ -133,15 +144,24 @@ impl Sandbox {
             let candidate = target.with_file_name(aside);
             match claim(&candidate, is_dir) {
                 Ok(()) => {
-                    fs::rename(&target, &candidate)
-                        .map_err(|source| SandboxError::Io { path: target, source })?;
+                    fs::rename(&target, &candidate).map_err(|source| SandboxError::Io {
+                        path: target,
+                        source,
+                    })?;
                     return Ok(Some(candidate));
                 }
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-                Err(source) => return Err(SandboxError::Io { path: candidate, source }),
+                Err(source) => {
+                    return Err(SandboxError::Io {
+                        path: candidate,
+                        source,
+                    });
+                }
             }
         }
-        Err(SandboxError::ResetNameExhausted { path: target.clone() })
+        Err(SandboxError::ResetNameExhausted {
+            path: target.clone(),
+        })
     }
 
     /// Rebuilds the dictionary copy when it no longer matches the pristine source.
@@ -164,7 +184,10 @@ impl Sandbox {
         self.move_aside(&copy)?;
         copy_file(source, &copy)?;
         if !self.dict_matches_source()? {
-            return Err(SandboxError::DictMismatch { copy, source: source.clone() });
+            return Err(SandboxError::DictMismatch {
+                copy,
+                pristine: source.clone(),
+            });
         }
         Ok(true)
     }
@@ -215,15 +238,19 @@ impl Sandbox {
                     addons.push(stem);
                 }
                 Some(DescriptorKind::InputMethod) => {
-                    let target =
-                        self.share_home.join("fcitx5/inputmethod").join(format!("{stem}.conf"));
+                    let target = self
+                        .share_home
+                        .join("fcitx5/inputmethod")
+                        .join(format!("{stem}.conf"));
                     copy_file(&descriptor, &target)?;
                 }
                 None => return Err(SandboxError::UnknownDescriptor { path: descriptor }),
             }
         }
         if addons.is_empty() {
-            return Err(SandboxError::NoAddonStaged { dir: packaging_dir.to_path_buf() });
+            return Err(SandboxError::NoAddonStaged {
+                dir: packaging_dir.to_path_buf(),
+            });
         }
         self.required = addons.clone();
         Ok(addons)
@@ -248,7 +275,10 @@ impl Sandbox {
         let target = self.addon_dir.join(format!("{library}.so"));
         self.resolve(&target)?;
         copy_file(&built, &target)?;
-        let conf = self.share_home.join("fcitx5/addon").join(format!("{stem}.conf"));
+        let conf = self
+            .share_home
+            .join("fcitx5/addon")
+            .join(format!("{stem}.conf"));
         copy_file(descriptor, &conf)
     }
 }
@@ -262,7 +292,10 @@ pub(super) fn restore_root_dict(sandbox: &Sandbox, source: &Path) -> Result<(), 
     if sandbox.dict_matches_source()? {
         return Ok(());
     }
-    Err(SandboxError::DictMismatch { copy: sandbox.dict_path(), source: source.to_path_buf() })
+    Err(SandboxError::DictMismatch {
+        copy: sandbox.dict_path(),
+        pristine: source.to_path_buf(),
+    })
 }
 
 /// What a Fcitx5 descriptor's first section declares it to be.
@@ -280,7 +313,10 @@ enum DescriptorKind {
 /// `[Addon/Dependencies]`, `[Dependencies]` -- that say nothing about which directory the
 /// file belongs in.
 fn section_kind(text: &str) -> Option<DescriptorKind> {
-    let header = text.lines().map(str::trim).find(|line| line.starts_with('['))?;
+    let header = text
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with('['))?;
     match header {
         "[Addon]" => Some(DescriptorKind::Addon),
         "[InputMethod]" => Some(DescriptorKind::InputMethod),
@@ -290,8 +326,17 @@ fn section_kind(text: &str) -> Option<DescriptorKind> {
 
 /// Reads the library a descriptor names, without the `export:` prefix Fcitx5 allows.
 fn library_name(text: &str) -> Option<String> {
-    let value = text.lines().map(str::trim).find_map(|line| line.strip_prefix("Library="))?;
-    Some(value.strip_prefix("export:").unwrap_or(value).trim().to_owned())
+    let value = text
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("Library="))?;
+    Some(
+        value
+            .strip_prefix("export:")
+            .unwrap_or(value)
+            .trim()
+            .to_owned(),
+    )
 }
 
 /// Creates `path` and its parents with the mode the plugin uses for its own directories.
@@ -300,7 +345,10 @@ pub(super) fn create_private_dir(path: &Path) -> Result<(), SandboxError> {
         .recursive(true)
         .mode(DIR_MODE)
         .create(path)
-        .map_err(|source| SandboxError::Io { path: path.to_path_buf(), source })
+        .map_err(|source| SandboxError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 /// Reserves `path` by creating it, so that a second writer cannot take the same name.
@@ -327,8 +375,10 @@ pub(super) fn copy_file(source: &Path, target: &Path) -> Result<(), SandboxError
     if let Some(parent) = target.parent() {
         create_private_dir(parent)?;
     }
-    fs::copy(source, target)
-        .map_err(|source| SandboxError::Io { path: target.to_path_buf(), source })?;
+    fs::copy(source, target).map_err(|source| SandboxError::Io {
+        path: target.to_path_buf(),
+        source,
+    })?;
     Ok(())
 }
 
@@ -337,8 +387,10 @@ pub(super) fn copy_file(source: &Path, target: &Path) -> Result<(), SandboxError
 /// # Errors
 /// Returns [`SandboxError::Io`] when the file cannot be read.
 pub fn sha256_file(path: &Path) -> Result<String, SandboxError> {
-    let bytes =
-        fs::read(path).map_err(|source| SandboxError::Io { path: path.to_path_buf(), source })?;
+    let bytes = fs::read(path).map_err(|source| SandboxError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
     Ok(hex(&Sha256::digest(&bytes)))
 }
 
@@ -360,10 +412,16 @@ pub(super) fn files_with_extension(
 /// Every entry directly inside `dir`, ordered by full path.
 fn entries_of(dir: &Path) -> Result<Vec<PathBuf>, SandboxError> {
     let mut paths: Vec<PathBuf> = fs::read_dir(dir)
-        .map_err(|source| SandboxError::Io { path: dir.to_path_buf(), source })?
+        .map_err(|source| SandboxError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|source| SandboxError::Io { path: dir.to_path_buf(), source })?;
+        .map_err(|source| SandboxError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
     paths.sort();
     Ok(paths)
 }
@@ -373,10 +431,15 @@ fn file_stem(path: &Path) -> Result<String, SandboxError> {
     path.file_stem()
         .and_then(OsStr::to_str)
         .map(str::to_owned)
-        .ok_or_else(|| SandboxError::UnusablePath { path: path.to_path_buf() })
+        .ok_or_else(|| SandboxError::UnusablePath {
+            path: path.to_path_buf(),
+        })
 }
 
 /// Reads `path` as UTF-8 text.
 fn read_text(path: &Path) -> Result<String, SandboxError> {
-    fs::read_to_string(path).map_err(|source| SandboxError::Io { path: path.to_path_buf(), source })
+    fs::read_to_string(path).map_err(|source| SandboxError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
 }

@@ -121,9 +121,16 @@ fn test_user_db_final_commit_survives_a_reopen() {
     drop(db);
 
     let reopened = open_in(&dir, TestClock::default());
-    assert_eq!(reopened.record_count().expect("counting"), KEYS.len() as u64);
+    assert_eq!(
+        reopened.record_count().expect("counting"),
+        KEYS.len() as u64
+    );
     for key in KEYS {
-        assert_eq!(reopened.freq(key), 2, "{key} kept its count across the restart");
+        assert_eq!(
+            reopened.freq(key),
+            2,
+            "{key} kept its count across the restart"
+        );
     }
 }
 
@@ -174,7 +181,9 @@ fn test_user_db_flush_failure_degrades_to_readonly() {
     let mut db = open_in(&dir, TestClock::default());
     db.record("ni'hao", 0);
     inject_failure();
-    let error = db.final_commit().expect_err("the injected failure surfaces");
+    let error = db
+        .final_commit()
+        .expect_err("the injected failure surfaces");
     assert!(
         error.to_string().starts_with("data/readonly-mode"),
         "the diagnostic code names the degradation: {error}"
@@ -255,7 +264,11 @@ fn test_user_db_cache_is_bounded_by_its_capacity() {
     cache.insert("a", 1);
     cache.insert("b", 2);
     cache.insert("c", 3);
-    assert_eq!(cache.get("a"), None, "the third insert displaces one of two");
+    assert_eq!(
+        cache.get("a"),
+        None,
+        "the third insert displaces one of two"
+    );
     assert_eq!(cache.get("b"), Some(2));
     assert_eq!(cache.get("c"), Some(3));
 }
@@ -300,16 +313,17 @@ fn test_user_db_is_user_word_is_false_in_this_phase() {
     let mut db = open_in(&dir, TestClock::default());
     db.record("ni'hao", 0);
     db.final_commit().expect("flushing");
-    assert!(!db.is_user_word("ni'hao"), "a typed word is not a coined word");
+    assert!(
+        !db.is_user_word("ni'hao"),
+        "a typed word is not a coined word"
+    );
     assert!(!db.is_user_word("never-typed"));
 }
 
 #[test]
 fn test_user_db_child_role_writes_records_until_killed() {
-    let (Ok(path), Ok(ready)) = (
-        std::env::var(CHILD_DB_ENV),
-        std::env::var(CHILD_READY_ENV),
-    ) else {
+    let (Ok(path), Ok(ready)) = (std::env::var(CHILD_DB_ENV), std::env::var(CHILD_READY_ENV))
+    else {
         // The parent role, or an ordinary run: this test has nothing to do.
         return;
     };
@@ -388,7 +402,10 @@ fn test_user_db_rss_does_not_drift_over_a_simulated_run() {
     // the wall clock, and no test here may wait on a clock.
     let keys: Vec<String> = (0..600).map(|index| format!("soak{index}")).collect();
     let before = resident_bytes();
-    assert!(before > 0, "the resident set cannot be read on this platform");
+    assert!(
+        before > 0,
+        "the resident set cannot be read on this platform"
+    );
     for index in 0..3000u64 {
         db.record(&keys[(index % 600) as usize], 0);
     }
@@ -398,5 +415,220 @@ fn test_user_db_rss_does_not_drift_over_a_simulated_run() {
     assert!(
         drift <= 2 * 1024 * 1024,
         "the resident set drifted by {drift} bytes over the run"
+    );
+}
+
+/// Ceiling on the resident set the loaded counts may add for [`HYDRATE_CAP`] records.
+///
+/// The number is the project's resident-set drift budget, which is also the figure the
+/// loading design is stated against: a store at the ceiling has to stay inside it.
+const HYDRATE_RSS_CEILING: u64 = 2 * 1024 * 1024;
+
+#[test]
+fn test_user_db_loads_the_store_into_memory_at_open() {
+    let dir = temp_dir("loaded");
+    let mut db = open_in(&dir, TestClock::default());
+    for key in KEYS {
+        db.record(key, 0);
+    }
+    db.final_commit().expect("flushing");
+    drop(db);
+
+    let db = open_in(&dir, TestClock::default());
+    assert!(db.is_hydrated(), "a four-record store fits the ceiling");
+    assert_eq!(
+        db.committed_len(),
+        Some(KEYS.len()),
+        "the whole store is loaded"
+    );
+    for key in KEYS {
+        assert_eq!(db.freq(key), 1, "{key} was loaded");
+    }
+    assert_eq!(db.freq("never-typed"), 0, "and nothing else was");
+}
+
+#[test]
+fn test_user_db_loaded_lookup_opens_no_store_read() {
+    let dir = temp_dir("loaded-reads");
+    let mut db = open_in(&dir, TestClock::default());
+    for key in KEYS {
+        db.record(key, 0);
+    }
+    db.final_commit().expect("flushing");
+    drop(db);
+
+    let db = open_in(&dir, TestClock::default());
+    assert!(db.is_hydrated(), "the fixture store has to be loaded");
+    let before = store_reads();
+    for index in 0..1000 {
+        assert_eq!(db.freq(KEYS[index % KEYS.len()]), 1);
+    }
+    assert_eq!(
+        store_reads() - before,
+        0,
+        "a thousand lookups on a loaded store open no read transaction"
+    );
+    assert_eq!(db.freq("never-typed"), 0, "a word the store never saw");
+    assert_eq!(
+        store_reads() - before,
+        0,
+        "a miss is answered from memory as well"
+    );
+}
+
+#[test]
+fn test_user_db_loaded_lookup_adds_the_pending_delta() {
+    let dir = temp_dir("loaded-delta");
+    let mut db = open_in(&dir, TestClock::default());
+    db.record("ni'hao", 0);
+    db.final_commit().expect("flushing");
+    drop(db);
+
+    let mut db = open_in(&dir, TestClock::default());
+    assert_eq!(db.freq("ni'hao"), 1, "the loaded count is the answer");
+    db.record("ni'hao", 0);
+    assert_eq!(db.freq("ni'hao"), 2, "a pending record is visible");
+    db.final_commit().expect("flushing");
+    assert_eq!(
+        db.freq("ni'hao"),
+        2,
+        "the flush adopts the delta instead of counting it twice"
+    );
+    assert_eq!(
+        db.committed_len(),
+        Some(1),
+        "the delta moved into the loaded counts"
+    );
+}
+
+#[test]
+fn test_user_db_degrade_keeps_the_loaded_counts_readable() {
+    let dir = temp_dir("degrade-loaded");
+    let mut db = open_in(&dir, TestClock::default());
+    db.record("ni'hao", 0);
+    db.final_commit().expect("flushing");
+
+    db.record("shi'jie", 0);
+    inject_failure();
+    let _ = db.final_commit().expect_err("the injected flush fails");
+    assert!(db.is_readonly(), "the store degraded");
+
+    let before = store_reads();
+    assert_eq!(
+        db.freq("ni'hao"),
+        1,
+        "a committed count survives the degradation"
+    );
+    assert_eq!(db.freq("shi'jie"), 0, "the dropped delta is gone");
+    assert_eq!(
+        store_reads() - before,
+        0,
+        "a store that cannot be written still answers from memory"
+    );
+    assert_eq!(
+        db.committed_len(),
+        Some(1),
+        "the loaded counts still match the file, which holds one record"
+    );
+}
+
+#[test]
+fn test_user_db_eviction_forgets_the_evicted_counts() {
+    let dir = temp_dir("evict-loaded");
+    let clock = TestClock::default();
+    let mut db = open_in(&dir, clock.clone());
+    for key in ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"] {
+        clock.advance_ms(1_000);
+        db.record(key, 0);
+    }
+    db.final_commit().expect("flushing");
+    assert_eq!(db.committed_len(), Some(10), "the store is loaded");
+
+    let removed = db.evict_oldest(EVICT_FRACTION).expect("evicting");
+    assert_eq!(removed, 1, "a tenth of ten records is one record");
+    assert_eq!(db.freq("a"), 0, "the evicted key left memory");
+    assert_eq!(
+        db.freq("j"),
+        1,
+        "the records that stayed are still readable"
+    );
+    assert_eq!(
+        db.committed_len(),
+        Some(9),
+        "the loaded counts track the store's record count"
+    );
+    assert_eq!(db.record_count().expect("counting"), 9);
+}
+
+#[test]
+fn test_user_db_store_past_the_ceiling_reads_on_demand() {
+    let dir = temp_dir("large");
+    let mut db = open_in(&dir, TestClock::default());
+    for key in KEYS {
+        db.record(key, 0);
+        db.record(key, 0);
+    }
+    db.final_commit().expect("flushing");
+    drop(db);
+
+    // A ceiling below the store's record count is how the fallback is reached without
+    // building a fifty-thousand-record store.
+    let clock = TestClock::default();
+    let opened = UserDb::open_with_hydrate_cap(db_path(&dir), Box::new(clock), 1);
+    let db = opened.expect("opening the user store");
+    assert!(
+        !db.is_hydrated(),
+        "four records do not fit a ceiling of one"
+    );
+    assert_eq!(db.committed_len(), None, "nothing was loaded");
+
+    let before = store_reads();
+    assert_eq!(db.freq("ni'hao"), 2, "the answer comes from the store");
+    assert_eq!(
+        store_reads() - before,
+        1,
+        "one read transaction, not one per lattice edge"
+    );
+    assert_eq!(db.freq("ni'hao"), 2, "and the total is remembered");
+    assert_eq!(store_reads() - before, 1, "no second transaction");
+
+    assert_eq!(db.freq("never-typed"), 0, "a word the store never saw");
+    assert_eq!(db.freq("never-typed"), 0);
+    assert_eq!(
+        store_reads() - before,
+        2,
+        "a miss is remembered too: one transaction per distinct word per session"
+    );
+}
+
+#[test]
+#[ignore = "soak measurement: only meaningful on an idle machine"]
+fn test_user_db_loading_stays_within_its_memory_ceiling() {
+    let dir = temp_dir("load-rss");
+    let mut db = open_in(&dir, TestClock::default());
+    let mut keys: Vec<String> = Vec::with_capacity(HYDRATE_CAP as usize);
+    for index in 0..HYDRATE_CAP {
+        keys.push(format!("soak{index}"));
+    }
+    for key in &keys {
+        db.record(key, 0);
+    }
+    db.final_commit().expect("flushing the soak run");
+    drop(db);
+
+    let before = resident_bytes();
+    assert!(
+        before > 0,
+        "the resident set cannot be read on this platform"
+    );
+    let db = open_in(&dir, TestClock::default());
+    let drift = resident_bytes().saturating_sub(before);
+    assert!(db.is_hydrated(), "a store at the ceiling is loaded");
+    assert_eq!(db.committed_len(), Some(HYDRATE_CAP as usize));
+    assert_eq!(db.freq("soak0"), 1, "the loaded counts answer");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        drift <= HYDRATE_RSS_CEILING,
+        "loading {HYDRATE_CAP} records added {drift} bytes"
     );
 }

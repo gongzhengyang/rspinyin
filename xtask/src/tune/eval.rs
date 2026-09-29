@@ -35,14 +35,18 @@ struct Edge<'a> {
 fn build_edges<'a>(syllables: &[&str], lexicon: &'a TsvLexicon) -> Result<Vec<Vec<Edge<'a>>>> {
     let mut edges: Vec<Vec<Edge<'a>>> = vec![Vec::new(); syllables.len() + 1];
     let mut key = String::new();
-    for from in 0..syllables.len() {
+    // `take(syllables.len())` drops the final slot: `edges` is one longer than
+    // `syllables` so that the `to == syllables.len()` end position has somewhere to
+    // land, and that slot is written by the spans that end there, not by a span
+    // starting at it.
+    for (from, slot) in edges.iter_mut().enumerate().take(syllables.len()) {
         for to in (from + 1)..=syllables.len() {
             if to > from + 1 {
                 key.push('\'');
             }
             key.push_str(syllables[to - 1]);
             for word in lexicon.lookup(&key)? {
-                edges[from].push(Edge { to, word });
+                slot.push(Edge { to, word });
             }
         }
         key.clear();

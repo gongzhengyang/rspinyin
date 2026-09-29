@@ -11,13 +11,16 @@
 //! licence, not merely a style preference, and it is enforced in CI by the
 //! Slint-leak audit script.
 
+pub mod adapter;
 pub mod channel;
 pub mod geometry;
+pub mod interaction;
 pub mod layout;
 pub mod platform;
 pub mod renderer;
 pub mod slint_platform;
 pub mod spring;
+pub mod surface;
 pub mod theme;
 pub mod ui_thread;
 
@@ -31,7 +34,20 @@ pub mod ui_thread;
 /// `ui/candidate.slint` and the expansion is not written to satisfy hand-written style
 /// rules. It carries its own `@generated` marker, which is also what exempts it from the
 /// line limit.
-#[allow(unsafe_code, clippy::all)]
+///
+/// `clippy::all` is not enough on its own. This workspace raises three `restriction`-group
+/// lints to errors (`unwrap_used`, `expect_used`, `panic`, see the root `Cargo.toml`), and
+/// `restriction` is disjoint from `all`, so the generated `unwrap()` calls on Slint's
+/// `Option`-returning property accessors would fail the gate. They are named explicitly
+/// rather than covered by a blanket `clippy::restriction`, which would also silence the
+/// lints that still make sense here.
+#[allow(
+    unsafe_code,
+    clippy::all,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 mod ui_generated {
     slint::include_modules!();
 }

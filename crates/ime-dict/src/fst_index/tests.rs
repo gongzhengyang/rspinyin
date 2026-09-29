@@ -51,14 +51,17 @@ const FIXTURE_KEYS: [(&str, &[&str]); 7] = [
 ];
 
 /// What a test deliberately writes out of contract while building the image.
+///
+/// The variants are named after the field that is wrong rather than after the word the
+/// fixture uses, because the same corruption is asserted through several keys.
 #[derive(Clone, Copy, Debug)]
 enum Broken {
     /// `ni`'s packed value points past the end of the word list.
-    WordListRange,
+    ListRange,
     /// `ni`'s word-list entry names a word id that does not exist.
     WordId,
     /// The record reached by `zhong` points past the end of the string pool.
-    WordText,
+    Text,
 }
 
 /// Builds the fixture's container image.
@@ -98,7 +101,7 @@ fn word_sections(words: &[FixtureWord], broken: Option<Broken>) -> [Vec<u8>; 3] 
         let len = u16::try_from(text.len()).expect("small fixture");
         strpool.extend_from_slice(text.as_bytes());
         let entry = match (broken, *text) {
-            (Some(Broken::WordText), "中") => DictEntry::new(9_999, 3, 1, 0, *weight),
+            (Some(Broken::Text), "中") => DictEntry::new(9_999, 3, 1, 0, *weight),
             _ => DictEntry::new(offset, len, *syllables, *flags, *weight),
         };
         entries.extend_from_slice(&entry.encode());
@@ -141,7 +144,7 @@ fn index_sections(words: &[FixtureWord], broken: Option<Broken>) -> [Vec<u8>; 2]
         let start = u64::try_from(written).expect("small fixture");
         let count = u32::try_from(word_ids.len()).expect("small fixture");
         let packed = match broken {
-            Some(Broken::WordListRange) if key == "ni" => {
+            Some(Broken::ListRange) if key == "ni" => {
                 let beyond = total_ids + 3;
                 let beyond = u64::try_from(beyond).expect("small fixture");
                 pack_fst_value(beyond, count).expect("packing")
@@ -366,9 +369,9 @@ fn test_prefix_reports_the_capability_as_not_yet_available() {
 #[test]
 fn test_lookup_reports_a_value_that_leaves_its_section() {
     let cases = [
-        (Broken::WordListRange, "ni", "wordlist_start"),
+        (Broken::ListRange, "ni", "wordlist_start"),
         (Broken::WordId, "ni", "entry_index"),
-        (Broken::WordText, "zhong", "word_off"),
+        (Broken::Text, "zhong", "word_off"),
     ];
     for (broken, key, field) in cases {
         let scratch = ScratchDict::new(&fixture_image(Some(broken)), "broken");
@@ -384,6 +387,25 @@ fn test_lookup_reports_a_value_that_leaves_its_section() {
             other => panic!("{broken:?}: expected a dictionary failure, got {other:?}"),
         }
     }
+}
+
+#[test]
+fn test_lookup_records_a_malformed_record_once() {
+    // The record reached by `zhong` points past the end of the string pool. Every lookup
+    // fails, and the diagnostics the lexicon holds stay at one entry for it: a damaged
+    // dictionary must not turn into one log record per keystroke.
+    let scratch = ScratchDict::new(&fixture_image(Some(Broken::Text)), "malformed");
+    let lexicon = FstLexicon::load(scratch.path()).expect("the crafted container loads");
+    for _ in 0..100 {
+        assert!(
+            lexicon.lookup("zhong").is_err(),
+            "the record stays broken on every access"
+        );
+    }
+    let recorded = lexicon.malformed_entries();
+    assert_eq!(recorded.len(), 1, "one broken range, one diagnostic");
+    assert_eq!(recorded[0].word_off, 9_999);
+    assert_eq!(recorded[0].word_len, 3);
 }
 
 #[test]

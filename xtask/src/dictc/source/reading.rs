@@ -9,10 +9,9 @@
 //! caller that needs one takes it from here rather than testing syllables itself.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ime_core::segment::{SYLLABLE_COUNT, lookup, normalize};
 
 /// Loads the L1 single-character reading table.
@@ -22,8 +21,7 @@ use ime_core::segment::{SYLLABLE_COUNT, lookup, normalize};
 /// toneless syllable are deduplicated: two spellings of one syllable would
 /// otherwise produce two identical keys.
 pub(crate) fn load_l1(path: &Path) -> Result<BTreeMap<char, Vec<String>>> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let text = super::read_source(path)?;
     let mut table: BTreeMap<char, Vec<String>> = BTreeMap::new();
     let mut illegal = 0u64;
     for line in text.lines() {

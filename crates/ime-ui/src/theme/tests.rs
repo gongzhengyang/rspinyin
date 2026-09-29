@@ -2,6 +2,10 @@
 //! contrast gate at every degradation tier, and the three property writes a theme
 //! switch performs.
 //!
+//! The fixtures below are `pub(super)` because the `ui/theme.slint` parity harness in
+//! the sibling `slint_palette` module resolves its requests through the same helpers,
+//! so that both files compare one palette rather than two.
+//!
 //! Nothing here needs a display server or a Slint runtime: the palette is plain data,
 //! the sink is a mock that records what it was asked to write, and the compositor is
 //! a stub that answers "yes" or "no" on demand. That is what makes the degradation
@@ -10,12 +14,12 @@
 
 use super::*;
 
-const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Rgba8 {
+pub(super) const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Rgba8 {
     Rgba8 { r, g, b, a }
 }
 
 /// A theme request with acrylic on, the shipped base alpha and the scheme's accent.
-fn spec(scheme: ColorScheme) -> ThemeSpec {
+pub(super) fn spec(scheme: ColorScheme) -> ThemeSpec {
     ThemeSpec {
         scheme,
         accent: default_accent(scheme),
@@ -27,7 +31,12 @@ fn spec(scheme: ColorScheme) -> ThemeSpec {
 }
 
 /// A theme request with every field under the caller's control.
-fn spec_with(scheme: ColorScheme, accent: Rgba8, acrylic: bool, base_alpha: u8) -> ThemeSpec {
+pub(super) fn spec_with(
+    scheme: ColorScheme,
+    accent: Rgba8,
+    acrylic: bool,
+    base_alpha: u8,
+) -> ThemeSpec {
     ThemeSpec {
         scheme,
         accent,
@@ -39,7 +48,7 @@ fn spec_with(scheme: ColorScheme, accent: Rgba8, acrylic: bool, base_alpha: u8) 
 }
 
 /// Resolves a request as if the compositor had answered `blur`.
-fn tokens_for(spec: &ThemeSpec, blur: BlurNegotiation) -> ThemeTokens {
+pub(super) fn tokens_for(spec: &ThemeSpec, blur: BlurNegotiation) -> ThemeTokens {
     ThemeResolution::resolve(spec, blur).tokens
 }
 
@@ -97,13 +106,16 @@ impl BlurSurface for StubSurface {
 
 #[test]
 fn test_dark_palette_matches_the_specification_table() {
+    // The alphas that `rgba()` builds are the truncated byte, not the rounded one:
+    // `surface-stroke`, `state-pressed` and `separator` are a step below what rounding
+    // 0.10, 0.14 and 0.10 would give, because that is the byte Slint paints with.
     let tokens = tokens_for(&spec(ColorScheme::Dark), BlurNegotiation::Applied);
 
     assert!(tokens.dark);
     assert_eq!(tokens.base_alpha, 217);
     assert_eq!(tokens.surface_base, rgba(0x1C, 0x1C, 0x1E, 255));
     assert_eq!(tokens.surface_fill, rgba(0x1C, 0x1C, 0x1E, 217));
-    assert_eq!(tokens.surface_stroke, rgba(255, 255, 255, 26));
+    assert_eq!(tokens.surface_stroke, rgba(255, 255, 255, 25));
     assert_eq!(tokens.text_primary, rgba(0xF2, 0xF2, 0xF7, 255));
     assert_eq!(tokens.text_secondary, rgba(0xF2, 0xF2, 0xF7, 158));
     assert_eq!(tokens.text_annotation, rgba(0xF2, 0xF2, 0xF7, 122));
@@ -113,8 +125,8 @@ fn test_dark_palette_matches_the_specification_table() {
     assert_eq!(tokens.state_hover, rgba(0xF2, 0xF2, 0xF7, 20));
     assert_eq!(tokens.state_selected_bg, rgba(0x4C, 0x9A, 0xFF, 46));
     assert_eq!(tokens.state_selected_stroke, rgba(0x4C, 0x9A, 0xFF, 140));
-    assert_eq!(tokens.state_pressed, rgba(0xF2, 0xF2, 0xF7, 36));
-    assert_eq!(tokens.separator, rgba(0xF2, 0xF2, 0xF7, 26));
+    assert_eq!(tokens.state_pressed, rgba(0xF2, 0xF2, 0xF7, 35));
+    assert_eq!(tokens.separator, rgba(0xF2, 0xF2, 0xF7, 25));
     assert_eq!(tokens.shadow_inner, rgba(0, 0, 0, 89));
     assert_eq!(tokens.shadow_outer, rgba(0, 0, 0, 107));
     assert_eq!(tokens.status_dot_active, DEFAULT_ACCENT_DARK);
@@ -123,6 +135,8 @@ fn test_dark_palette_matches_the_specification_table() {
 
 #[test]
 fn test_light_palette_matches_the_specification_table() {
+    // As in the dark palette, the `rgba()` tokens carry the truncated byte:
+    // `text-annotation`, `state-pressed`, `shadow-outer` and `status-dot-idle`.
     let tokens = tokens_for(&spec(ColorScheme::Light), BlurNegotiation::Applied);
 
     assert!(!tokens.dark);
@@ -132,19 +146,19 @@ fn test_light_palette_matches_the_specification_table() {
     assert_eq!(tokens.surface_stroke, rgba(0, 0, 0, 15));
     assert_eq!(tokens.text_primary, rgba(0x1C, 0x1C, 0x1E, 255));
     assert_eq!(tokens.text_secondary, rgba(0x1C, 0x1C, 0x1E, 153));
-    assert_eq!(tokens.text_annotation, rgba(0x1C, 0x1C, 0x1E, 115));
+    assert_eq!(tokens.text_annotation, rgba(0x1C, 0x1C, 0x1E, 114));
     assert_eq!(tokens.text_separator, rgba(0x1C, 0x1C, 0x1E, 89));
     assert_eq!(tokens.accent, DEFAULT_ACCENT_LIGHT);
     assert_eq!(tokens.accent_on, rgba(255, 255, 255, 255));
     assert_eq!(tokens.state_hover, rgba(0x1C, 0x1C, 0x1E, 15));
     assert_eq!(tokens.state_selected_bg, rgba(0x0A, 0x6C, 0xFF, 36));
     assert_eq!(tokens.state_selected_stroke, rgba(0x0A, 0x6C, 0xFF, 128));
-    assert_eq!(tokens.state_pressed, rgba(0x1C, 0x1C, 0x1E, 31));
+    assert_eq!(tokens.state_pressed, rgba(0x1C, 0x1C, 0x1E, 30));
     assert_eq!(tokens.separator, rgba(0x1C, 0x1C, 0x1E, 20));
     assert_eq!(tokens.shadow_inner, rgba(0, 0, 0, 20));
-    assert_eq!(tokens.shadow_outer, rgba(0, 0, 0, 41));
+    assert_eq!(tokens.shadow_outer, rgba(0, 0, 0, 40));
     assert_eq!(tokens.status_dot_active, DEFAULT_ACCENT_LIGHT);
-    assert_eq!(tokens.status_dot_idle, rgba(0x1C, 0x1C, 0x1E, 77));
+    assert_eq!(tokens.status_dot_idle, rgba(0x1C, 0x1C, 0x1E, 76));
 }
 
 #[test]
@@ -524,4 +538,55 @@ fn test_a_refused_request_still_produces_a_readable_theme() {
         [Some(BLUR_UNAVAILABLE), None]
     );
     assert!(resolution.tokens.contrast().passes());
+}
+
+#[test]
+fn test_contrast_worst_case_matches_the_worked_example_in_the_specification() {
+    // 3.2 names the two worst-case composites and the floor they have to clear. Its
+    // "8.9:1" and "14:1" are approximations -- the WCAG formula applied to the
+    // composites it names gives 9.6:1 and 12.1:1 -- so what is pinned here is the
+    // composite, which the document works out exactly, and the margin it leaves.
+    let dark_backdrop = composite_over(rgba(0x1C, 0x1C, 0x1E, 217), WHITE);
+    let light_backdrop = composite_over(rgba(0xFF, 0xFF, 0xFF, 217), BLACK);
+
+    assert_eq!(dark_backdrop, rgba(0x3E, 0x3E, 0x40, 255));
+    assert_eq!(light_backdrop, rgba(0xD9, 0xD9, 0xD9, 255));
+
+    let dark_ratio = contrast_ratio(rgba(0xF2, 0xF2, 0xF7, 255), dark_backdrop);
+    let light_ratio = contrast_ratio(rgba(0x1C, 0x1C, 0x1E, 255), light_backdrop);
+    assert!(
+        dark_ratio >= CONTRAST_BODY,
+        "the dark worst case measured {dark_ratio}"
+    );
+    assert!(
+        light_ratio >= CONTRAST_BODY,
+        "the light worst case measured {light_ratio}"
+    );
+    assert!(
+        dark_ratio >= 2.0 * CONTRAST_MINIMUM,
+        "the dark worst case has less than twice the floor: {dark_ratio}"
+    );
+    assert!(
+        light_ratio >= 2.0 * CONTRAST_MINIMUM,
+        "the light worst case has less than twice the floor: {light_ratio}"
+    );
+}
+
+#[test]
+fn test_resolve_never_returns_a_palette_under_the_contrast_floor() {
+    // The self-check is what makes a translucent base safe: whatever alpha the
+    // configuration asks for, what comes back is readable. Sweeping every alpha value
+    // covers the whole range the configuration can express.
+    for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+        for alpha in 0..=OPAQUE_ALPHA {
+            let custom = spec_with(scheme, default_accent(scheme), true, alpha);
+            let resolution = ThemeResolution::resolve(&custom, BlurNegotiation::Applied);
+            let report = resolution.tokens.contrast();
+
+            assert!(
+                report.passes(),
+                "{scheme:?} at alpha {alpha} came back at {report:?}"
+            );
+        }
+    }
 }

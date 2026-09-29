@@ -4,7 +4,10 @@
   "notes": [
     "Machine-readable mirror of the authoritative budget table in docs/dev/features.md section 0.5.3.",
     "Every value here is cross-checked against that table by `xtask budget --validate`; a mismatch fails the gate.",
-    "Units: latency_ms = milliseconds, memory_mb = mebibytes of RSS, cpu_pct = percent of one core, size_mb = mebibytes, *_count = occurrences, net_sockets = process-external sockets."
+    "Units: latency_ms = milliseconds, memory_mb = mebibytes of RSS, cpu_pct = percent of one core, size_mb = mebibytes, *_count = occurrences, net_sockets = process-external sockets.",
+    "`bench` holds the per-case thresholds the criterion benchmarks are asserted against. They are not cross-cutting budgets, so they are not rows of the 0.5.3 table: each one is stated by the acceptance criterion of the card that owns the case, and `xtask budget --validate` cross-checks every value against that criterion the same way it cross-checks the table.",
+    "Units in `bench` are carried by the field name: `*_ns` nanoseconds, `*_us` microseconds, `*_s` seconds.",
+    "`xtask budget --measure` asserts the two `size_mb` thresholds against the release artifacts `just package` writes into `dist/`. The thresholds live here and nowhere else: the packager reads them from this file to measure and to record them in `rspinyin-release.json`, so a ceiling and the artifact it governs cannot drift apart."
   ],
   "latency_ms": {
     "key_to_present_p50": 4.0,
@@ -35,6 +38,12 @@
     "soak_hours": 8.0,
     "rss_drift_mb": 2.0,
     "pass_rate_pct": 100.0
+  },
+  "bench": {
+    "passthrough_classify_ns": 500.0,
+    "input_buffer_ops_us": 1.0,
+    "decode_holdout_s": 3.0,
+    "ui_wakeup_latency_us": 50.0
   },
   "net_sockets": 0
 }

@@ -61,6 +61,7 @@ impl Budgets {
         let cpu = section(root, "cpu_pct")?;
         let size = section(root, "size_mb")?;
         let robust = section(root, "robustness")?;
+        let bench = section(root, "bench")?;
 
         let budgets = Self {
             version,
@@ -102,6 +103,12 @@ impl Budgets {
                 rss_drift_mb: positive(robust, "robustness", "rss_drift_mb")?,
                 pass_rate_pct: positive(robust, "robustness", "pass_rate_pct")?,
             },
+            bench: Bench {
+                passthrough_classify_ns: positive(bench, "bench", "passthrough_classify_ns")?,
+                buffer_ops_us: positive(bench, "bench", "input_buffer_ops_us")?,
+                decode_holdout_s: positive(bench, "bench", "decode_holdout_s")?,
+                ui_wakeup_latency_us: positive(bench, "bench", "ui_wakeup_latency_us")?,
+            },
             net_sockets: count(root, "top level", "net_sockets")?,
         };
         budgets.reject_unknown_paths(&parsed)?;
@@ -113,12 +120,13 @@ impl Budgets {
     /// The keys are the dotted paths used by `BINDINGS`, which is what lets the
     /// spec comparison run without a second copy of the numbers anywhere.
     pub fn thresholds(&self) -> Vec<Threshold> {
-        let (l, m, c, s, r) = (
+        let (l, m, c, s, r, b) = (
             &self.latency_ms,
             &self.memory_mb,
             &self.cpu_pct,
             &self.size_mb,
             &self.robustness,
+            &self.bench,
         );
         [
             Threshold("latency_ms.key_to_present_p50", l.key_to_present_p50),
@@ -150,6 +158,10 @@ impl Budgets {
             Threshold("robustness.soak_hours", r.soak_hours),
             Threshold("robustness.rss_drift_mb", r.rss_drift_mb),
             Threshold("robustness.pass_rate_pct", r.pass_rate_pct),
+            Threshold("bench.passthrough_classify_ns", b.passthrough_classify_ns),
+            Threshold("bench.input_buffer_ops_us", b.buffer_ops_us),
+            Threshold("bench.decode_holdout_s", b.decode_holdout_s),
+            Threshold("bench.ui_wakeup_latency_us", b.ui_wakeup_latency_us),
             Threshold("net_sockets", self.net_sockets as f64),
         ]
         .to_vec()

@@ -54,6 +54,15 @@ struct Recorder {
     render_delay: Duration,
     /// Whether rendering panics, used to check the thread's failure isolation.
     panics: bool,
+    /// Held shut until the test opens it, or `None` for a recorder that never waits.
+    ///
+    /// The first render blocks here when it is set. It exists so the burst test does not
+    /// have to guess how long the producer needs: a fixed render delay only keeps the loop
+    /// away for as long as the machine happens to cooperate, and under `cargo nextest`'s
+    /// parallel load 64 posts outlasted the 200ms window, so the collapse the test asserts
+    /// had not happened yet. That is the signature of a wall-clock guess rather than a
+    /// fact, and a gate makes the ordering a fact.
+    gate: Option<Arc<(Mutex<bool>, Condvar)>>,
 }
 
 impl Recorder {
@@ -67,6 +76,24 @@ impl Recorder {
             panics,
             ..Self::default()
         })
+    }
+
+    /// A recorder whose loop stalls in its first render until [`Recorder::open_gate`].
+    fn gated() -> Arc<Self> {
+        Arc::new(Self {
+            gate: Some(Arc::new((Mutex::new(false), Condvar::new()))),
+            ..Self::default()
+        })
+    }
+
+    /// Releases the loop held by [`Recorder::gated`].
+    fn open_gate(&self) {
+        if let Some((open, ready)) = self.gate.as_deref() {
+            *open
+                .lock()
+                .expect("the gate lock is never poisoned by a test") = true;
+            ready.notify_all();
+        }
     }
 
     fn record(&self, item: Observed) {
@@ -145,6 +172,19 @@ impl UiSurface for RecordingSurface {
         self.recorder.renders.fetch_add(1, Ordering::Relaxed);
         if self.recorder.panics {
             panic!("the recording surface was asked to panic");
+        }
+        if let Some((open, ready)) = self.recorder.gate.as_deref() {
+            let mut open = open
+                .lock()
+                .expect("the gate lock is never poisoned by a test");
+            while !*open {
+                // Bounded by `PATIENCE` so a test that forgets to open the gate reports a
+                // failure instead of hanging the suite.
+                let (next, _) = ready
+                    .wait_timeout(open, PATIENCE)
+                    .expect("the gate lock is never poisoned by a test");
+                open = next;
+            }
         }
         if !self.recorder.render_delay.is_zero() {
             thread::sleep(self.recorder.render_delay);
@@ -302,9 +342,11 @@ fn test_ui_thread_collapses_a_frame_burst() {
 
 #[test]
 fn test_ui_thread_collapses_a_show_hide_burst_to_the_newest() {
-    // A long first render keeps the loop away while the queue fills, which is
-    // the only way to reach the collapse path deterministically.
-    let recorder = Recorder::with(Duration::from_millis(200), false);
+    // The loop is held in its first render until the whole burst is posted, so the queue is
+    // certain to have filled and collapsed before anything drains. The previous version of
+    // this test relied on a 200ms render keeping the loop away instead, which is a guess
+    // about the machine rather than a fact about the code.
+    let recorder = Recorder::gated();
     let thread = spawn(&recorder);
     for revision in 0..64u32 {
         let command = if revision % 2 == 0 {
@@ -324,6 +366,7 @@ fn test_ui_thread_collapses_a_show_hide_burst_to_the_newest() {
         thread.stats().controls_collapsed >= 50,
         "the ordered queue is eight deep, so most of the burst had to collapse"
     );
+    recorder.open_gate();
     // Eight commands fit in the queue and the newest one is staged behind them,
     // so the burst arrives as nine applications and the last one is the newest.
     let observed = recorder.wait_for(9);
@@ -379,7 +422,10 @@ fn test_ui_thread_shutdown_is_idempotent_and_stops_the_thread() {
     let recorder = Recorder::new();
     let thread = spawn(&recorder);
     thread.shutdown(PATIENCE).expect("the thread stops");
-    assert!(!thread.is_alive(), "the thread is gone once shutdown returns");
+    assert!(
+        !thread.is_alive(),
+        "the thread is gone once shutdown returns"
+    );
     thread
         .shutdown(PATIENCE)
         .expect("a second shutdown is a no-op");
@@ -417,7 +463,10 @@ fn test_ui_thread_after_a_panic_discards_commands() {
     );
     let stats = thread.stats();
     assert!(stats.thread_dead);
-    assert!(stats.thread_panicked, "the panic was recorded, not swallowed");
+    assert!(
+        stats.thread_panicked,
+        "the panic was recorded, not swallowed"
+    );
 }
 
 #[test]

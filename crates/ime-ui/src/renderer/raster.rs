@@ -202,31 +202,40 @@ pub(super) fn clip_rect(rect: RectI, width_px: u32, height_px: u32) -> Option<Re
     })
 }
 
-/// The bounding box of a rectangle list, empty for an empty list.
-pub(super) fn union_rect(rects: &[RectI]) -> RectI {
-    let empty = RectI {
-        x: 0,
-        y: 0,
-        w: 0,
-        h: 0,
-    };
-    let Some(first) = rects.first() else {
-        return empty;
-    };
-    let (mut x0, mut y0) = (i64::from(first.x), i64::from(first.y));
-    let (mut x1, mut y1) = (x0 + i64::from(first.w), y0 + i64::from(first.h));
-    for rect in &rects[1..] {
-        x0 = x0.min(i64::from(rect.x));
-        y0 = y0.min(i64::from(rect.y));
-        x1 = x1.max(i64::from(rect.x) + i64::from(rect.w));
-        y1 = y1.max(i64::from(rect.y) + i64::from(rect.h));
-    }
+/// The bounding box of two rectangles.
+///
+/// The two-rectangle form of [`union_rect`], kept separate because the frame path folds over
+/// two lists it must not concatenate: a temporary vector of damage rectangles is exactly the
+/// allocation the per-frame path may not make. Like `union_rect` it returns a superset rather
+/// than a difference, which is what keeps the result a single rectangle -- and a superset is
+/// always safe for a copy.
+pub(super) fn union_pair(left: RectI, right: RectI) -> RectI {
+    // Widened to `i64` for the reason [`clip_rect`] gives: a rectangle may carry `i32::MIN`
+    // and would overflow when its extent is added to its origin.
+    let x0 = i64::from(left.x).min(i64::from(right.x));
+    let y0 = i64::from(left.y).min(i64::from(right.y));
+    let x1 = (i64::from(left.x) + i64::from(left.w)).max(i64::from(right.x) + i64::from(right.w));
+    let y1 = (i64::from(left.y) + i64::from(left.h)).max(i64::from(right.y) + i64::from(right.h));
     RectI {
         x: x0 as i32,
         y: y0 as i32,
         w: (x1 - x0) as u32,
         h: (y1 - y0) as u32,
     }
+}
+
+/// The bounding box of a rectangle list, empty for an empty list.
+pub(super) fn union_rect(rects: &[RectI]) -> RectI {
+    let Some((first, rest)) = rects.split_first() else {
+        return RectI {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        };
+    };
+    rest.iter()
+        .fold(*first, |bounds, rect| union_pair(bounds, *rect))
 }
 
 #[cfg(test)]
@@ -250,7 +259,10 @@ mod tests {
         // half-transparent red are B=0, G=0, R=128, A=128 on a little-endian host.
         let half_red = Argb8888Pixel::pack(128, 0, 0, 128);
         assert_eq!(half_red.to_bytes(), [0, 0, 128, 128]);
-        assert_eq!(Argb8888Pixel::from_rgb(255, 0, 0).to_bytes(), [0, 0, 255, 255]);
+        assert_eq!(
+            Argb8888Pixel::from_rgb(255, 0, 0).to_bytes(),
+            [0, 0, 255, 255]
+        );
         assert_eq!(Argb8888Pixel::TRANSPARENT.to_bytes(), [0, 0, 0, 0]);
         assert_eq!(Argb8888Pixel::TRANSPARENT.alpha(), 0);
         // The channels survive a round trip through the word.
@@ -281,7 +293,12 @@ mod tests {
             reference.blend(source);
             assert_eq!(
                 ours.channels(),
-                (reference.red, reference.green, reference.blue, reference.alpha),
+                (
+                    reference.red,
+                    reference.green,
+                    reference.blue,
+                    reference.alpha
+                ),
                 "blending {source:?} over ({red}, {green}, {blue}, {alpha})"
             );
         }
@@ -314,11 +331,17 @@ mod tests {
         assert_eq!(scratch.stride, 4 + STRIDE_SLACK);
         assert!(scratch.pixels.len() >= scratch.stride * (2 + ROW_SLACK));
         assert!(!scratch.ensure(4, 2), "the same size needs no reallocation");
-        assert!(!scratch.ensure(2, 1), "a smaller surface fits the allocation");
+        assert!(
+            !scratch.ensure(2, 1),
+            "a smaller surface fits the allocation"
+        );
         assert!(scratch.ensure(64, 32), "a larger surface reallocates");
         assert_eq!(scratch.stride, 64 + STRIDE_SLACK);
         assert!(
-            scratch.pixels.iter().all(|p| *p == Argb8888Pixel::TRANSPARENT),
+            scratch
+                .pixels
+                .iter()
+                .all(|p| *p == Argb8888Pixel::TRANSPARENT),
             "grown pixels start transparent"
         );
     }
@@ -344,7 +367,10 @@ mod tests {
             )
             .expect("the destination covers the rectangle");
         assert_eq!(&destination[20..24], &[6, 5, 4, 255]);
-        assert_eq!(destination[0], 0xee, "the pixel outside the rectangle is untouched");
+        assert_eq!(
+            destination[0], 0xee,
+            "the pixel outside the rectangle is untouched"
+        );
         assert_eq!(destination[16], 0xee);
         assert_eq!(destination[24], 0xee);
     }
@@ -464,14 +490,97 @@ mod tests {
                 h: 20,
             },
         ];
+        // The bounding box of the three: leftmost edge 1, topmost edge 0, and the far
+        // edges come from the third rectangle (right 11, bottom 20).
         assert_eq!(
             union_rect(&rects),
             RectI {
                 x: 1,
                 y: 0,
                 w: 10,
-                h: 20
+                h: 20,
             }
         );
+    }
+
+    #[test]
+    fn test_union_pair_covers_both_rectangles() {
+        let left = RectI {
+            x: 4,
+            y: 8,
+            w: 2,
+            h: 2,
+        };
+        let right = RectI {
+            x: 1,
+            y: 2,
+            w: 3,
+            h: 3,
+        };
+        assert_eq!(
+            union_pair(left, right),
+            RectI {
+                x: 1,
+                y: 2,
+                w: 5,
+                h: 8
+            }
+        );
+        // Commutative, and a rectangle is its own bounding box.
+        assert_eq!(union_pair(right, left), union_pair(left, right));
+        assert_eq!(union_pair(left, left), left);
+        // A rectangle far to the negative side must not overflow the extent arithmetic.
+        assert_eq!(
+            union_pair(
+                RectI {
+                    x: i32::MIN,
+                    y: i32::MIN,
+                    w: 0,
+                    h: 0
+                },
+                RectI {
+                    x: 0,
+                    y: 0,
+                    w: 1,
+                    h: 1
+                }
+            ),
+            RectI {
+                x: i32::MIN,
+                y: i32::MIN,
+                w: 2_147_483_649,
+                h: 2_147_483_649
+            }
+        );
+    }
+
+    #[test]
+    fn test_union_rect_folds_with_union_pair() {
+        // The fold and the list form must agree, which is what keeps the two definitions of
+        // "bounding box" from drifting apart.
+        let rects = [
+            RectI {
+                x: 7,
+                y: 3,
+                w: 4,
+                h: 4,
+            },
+            RectI {
+                x: 0,
+                y: 9,
+                w: 2,
+                h: 2,
+            },
+            RectI {
+                x: 12,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
+        ];
+        let folded = rects
+            .iter()
+            .fold(rects[0], |bounds, rect| union_pair(bounds, *rect));
+        assert_eq!(union_rect(&rects), folded);
     }
 }

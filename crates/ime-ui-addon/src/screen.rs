@@ -194,7 +194,7 @@ impl ScreenLayout {
     ///
     /// ```
     /// use ime_types::ScreenId;
-    /// use rspinyin::screen::{ScreenInfo, ScreenLayout};
+    /// use rspinyin_ui::screen::{ScreenInfo, ScreenLayout};
     ///
     /// let layout = ScreenLayout::new(
     ///     vec![ScreenInfo::new(ScreenId::new(0), (0, 0), (1920, 1080), 1.0, "eDP-1")],

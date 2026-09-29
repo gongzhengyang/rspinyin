@@ -470,7 +470,10 @@ mod tests {
         assert_eq!(repaired.mass, DEFAULT_MASS);
         assert_eq!(repaired.zeta, 0.7);
         // A configuration-derived pair keeps the mass at its default.
-        assert_eq!(SpringParams::from_config(32.0, 0.90), SpringParams::PAGE_SLIDE);
+        assert_eq!(
+            SpringParams::from_config(32.0, 0.90),
+            SpringParams::PAGE_SLIDE
+        );
         // Degenerate parameters never produce a non-finite derived metric.
         let broken = SpringParams::new(0.0, 0.0, 0.0);
         assert!(broken.settling_time_s().is_finite());
@@ -671,7 +674,10 @@ mod tests {
 
     #[test]
     fn test_page_slide_starts_displaced_and_returns_to_zero() {
-        for (dir, expected) in [(PageDir::Next, PAGE_SLIDE_DP), (PageDir::Prev, -PAGE_SLIDE_DP)] {
+        for (dir, expected) in [
+            (PageDir::Next, PAGE_SLIDE_DP),
+            (PageDir::Prev, -PAGE_SLIDE_DP),
+        ] {
             let mut spring = Spring1D::for_page_slide(SpringParams::PAGE_SLIDE, dir);
             assert_eq!(spring.x, expected, "the content starts off to one side");
             assert_eq!(spring.v, 0.0, "a page turn is not a redirect");

@@ -10,10 +10,9 @@
 //! produces belong to the container builder.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 use super::reading::parse_reading;
 
@@ -25,8 +24,7 @@ use super::Word;
 /// adjusts weights, but a row that cannot be read as syllables would silently stop
 /// matching its word, so it is an error rather than a warning.
 pub(crate) fn load_polyphone(path: &Path) -> Result<Vec<(String, String)>> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let text = super::read_source(path)?;
     let mut rows = Vec::new();
     for (index, line) in text.lines().enumerate() {
         let line_number = index + 1;

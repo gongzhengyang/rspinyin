@@ -10,11 +10,16 @@ description = "rspinyin user-interface addon: the Fcitx5 UserInterface glue and 
 build = "build.rs"
 
 [lib]
-# Artifact name is `rspinyin_ui`, so the cdylib is `librspinyin-ui.so` — the second
+# Artifact name is `rspinyin_ui`, so the cdylib is `librspinyin_ui.so` — the second
 # addon ADR-0003 requires. Fcitx5 picks the active user interface from the addons it
 # discovered with `Category=UI`, and an addon belongs to exactly one category, so the
 # engine addon cannot also be the UI. The package keeps its `ime-ui-addon` identity for
 # the workspace dependency graph.
+#
+# The underscore is not cosmetic: Cargo rejects a `[lib] name` containing a hyphen
+# (`error: library target names cannot contain hyphens`), and Fcitx5 resolves the
+# descriptor's `Library=` verbatim plus `.so`. ADR-0004 decision 4 records the
+# correction from ADR-0003's `librspinyin-ui.so` spelling.
 name = "rspinyin_ui"
 # cdylib: dlopen'd by fcitx5 as its own addon, independently of librspinyin.so.
 # rlib: lets integration tests link the Rust side.
@@ -22,8 +27,13 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-# 启用真实 fcitx5 C ABI 链接（需要 libfcitx5core-dev）。关闭时只编译 Rust 侧
-# 逻辑，使 CI 的纯 Rust job 无需 Fcitx5 开发包。
+# Links against the real fcitx5 C ABI, which needs `libfcitx5core-dev`. With it off
+# only the Rust side is compiled, so the pure-Rust CI job needs no Fcitx5 development
+# package and stays dependency-free.
+#
+# This is the one deliberate exception to `--all-features` (AGENTS.md section 3.1):
+# the pure-Rust gates exclude this crate instead of enabling the feature, and the
+# host-ABI path is exercised separately by `just check-host`.
 fcitx5-host = []
 
 [dependencies]

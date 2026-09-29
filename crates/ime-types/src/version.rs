@@ -100,7 +100,14 @@ mod tests {
 
     #[test]
     fn test_version_constants_match_frozen_values() {
-        assert_eq!(RSPINYIN_ABI_VERSION, 1);
+        // These are the numbers a build is allowed to assume. Changing one is a contract
+        // change: it needs an ADR and this assertion updated in the same commit, which is
+        // the whole point of pinning them here rather than letting them drift.
+        //
+        // `RSPINYIN_ABI_VERSION` moved 1 -> 2 in ADR-0004, when the plugin split into two
+        // cdylibs and the two UI-only slots left the engine's vtable. The other two are
+        // still at their first version.
+        assert_eq!(RSPINYIN_ABI_VERSION, 2);
         assert_eq!(DICT_FORMAT_VERSION, 1);
         assert_eq!(CONFIG_SCHEMA_VERSION, 1);
     }

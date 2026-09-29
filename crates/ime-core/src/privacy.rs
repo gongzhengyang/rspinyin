@@ -419,7 +419,10 @@ mod tests {
         let policy = DefaultPolicy::default();
         for kind in every_kind() {
             let shown = policy.should_show_ui(&kind);
-            assert!(shown, "the shipped policy always shows the window: {kind:?}");
+            assert!(
+                shown,
+                "the shipped policy always shows the window: {kind:?}"
+            );
         }
     }
 
@@ -465,10 +468,17 @@ mod tests {
     fn test_app_id_hash_renders_the_hash_and_round_trips() {
         assert_eq!(AppIdHash::UNKNOWN.raw(), 0);
         assert_eq!(AppIdHash::from_raw(0x8f3a_2c1d).raw(), 0x8f3a_2c1d);
-        assert_eq!(AppIdHash::from_raw(0x8f3a_2c1d).to_string(), "0x000000008f3a2c1d");
+        assert_eq!(
+            AppIdHash::from_raw(0x8f3a_2c1d).to_string(),
+            "0x000000008f3a2c1d"
+        );
         assert_eq!(AppIdHash::UNKNOWN.to_string(), "0x0000000000000000");
         // The rendering carries the hash and nothing else, so a diagnostic built from
         // it cannot be read for an application name.
-        assert!(!AppIdHash::from_raw(0xdead_beef).to_string().contains("firefox"));
+        assert!(
+            !AppIdHash::from_raw(0xdead_beef)
+                .to_string()
+                .contains("firefox")
+        );
     }
 }

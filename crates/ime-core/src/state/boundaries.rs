@@ -100,7 +100,12 @@ pub(super) fn map_to_raw(
 ///
 /// `scratch` and `dropped` are reused across the calls of one mapping, so building
 /// the map allocates nothing after the first prefix.
-fn normalize_prefix(raw: &str, at: usize, scratch: &mut String, dropped: &mut DroppedChars) -> usize {
+fn normalize_prefix(
+    raw: &str,
+    at: usize,
+    scratch: &mut String,
+    dropped: &mut DroppedChars,
+) -> usize {
     let prefix = raw.get(..at).unwrap_or(raw);
     crate::segment::syllable::normalize_into(prefix, scratch, dropped);
     scratch.len()

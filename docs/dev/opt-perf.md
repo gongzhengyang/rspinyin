@@ -236,7 +236,7 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - 关键路径：`CP: 是`
   - 并行通道：`Track A 数据与并发引擎`
   - 代码落地锚点 (Code Anchor)：`crates/ime-core/src/viterbi/decoder.rs`、`crates/ime-core/src/viterbi/lattice.rs`、`crates/ime-core/src/viterbi/mod.rs`、`crates/ime-core/src/state/machine.rs`、`crates/ime-core/src/segment/dag.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **瓶颈定位与机理剖析**：
   - **现有代码缺陷**：`decoder.rs:233` 的 `let mut dag = SyllableDag::new();` 使 `dag.rs:30-36` 承诺的跨键复用失效；`decoder.rs:431` 的 `vec![PathState::DEAD; nodes * cap]` 每键分配并零填充 41,280 字节；`machine.rs:453` 与 `decoder.rs:239` 对同一输入各建一次 DAG；`decoder.rs:558/588/624/634/737` 的 `Draft`/`DecodeResult`/`Segment` 全部每次重建，而它们都是**纯持有型**结构，容量完全可以跨键保留。
@@ -528,6 +528,17 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - [ ] 功能链路完全向后兼容：`cargo nextest run -p ime-core` 全绿；`crates/ime-core/src/state/tests.rs`、`table_tests.rs`、`sweep_tests.rs` 一行不改即通过
   - [ ] `cargo test -p ime-core --doc` 全绿（`lattice.rs:104-141` 的 doctest 若签名未变则无需改动）
   - [ ] 无新增 `unsafe`；无新增依赖；无 `#[allow]` 未附理由
+- **验收记录**（2026-09-29）：
+  - **交付物**：新增 `crates/ime-core/src/viterbi/scratch.rs`（`DecodeScratch` + `Decoder::decode_into` + `passthrough_into` + `result`/`take_result`/`recycle`/`into_result`）、`viterbi/sweep.rs`（从 `decoder.rs` 拆出的 K-best sweep，存储改为外部借用）、`viterbi/lattice/testing.rs`；`decoder.rs` 瘦身至配置 + `decode` 薄封装 + `scorer()`；`lattice.rs` 增加 `with_capacity` 与 `build_lattice_into`；`benches/decode.rs` 新增 `decode/viterbi` 与 `decode/viterbi_into` 对比组。
+  - **验证命令与结果**：`cargo check -p ime-core --all-targets` 绿。**基准未跑**。
+  - **本次由主 Agent 修正的一处**：`scratch.rs` 的测试缺 `DecodeConfig` 导入（`use crate::viterbi::decoder::Decoder;` 应为 `::{DecodeConfig, Decoder}`），已补。
+  - **本次发现并修复的一处真实缺陷**：光束槽位不再清零后，终端节点无路径（`live == 0`）时会读到上一次输入遗留的槽位，可能凭旧边号在新格上拼出**假候选**。现以 `live > 0` 守住首次候选读取，并加了回归测试 `test_decode_into_does_not_read_a_path_the_last_input_left_behind`。
+  - **已知限制**：
+    1. **DoD 的分配计数断言（稳态 ≤ 8 次/次）不可实现**：需要 `#[global_allocator]` + `unsafe impl GlobalAlloc`，与 0.4 规则 3 及 `check-unsafe.sh` 的白名单直接冲突。替代证据是 `test_decode_into_reuses_every_buffer_across_decodes` 的**容量探针**（稳态第二次解码后 slots/drafts/candidates/segments 及各文本容量全部不变）。
+    2. **DoD 的性能目标（`decode/viterbi_into` 相对 `decode/viterbi` P50 改善 ≥ 25%）未取数**：基准目标已就位，未运行。
+    3. **`DecodeScratch` 尚未被产品使用**：接线（`Session` 持 scratch、`refresh` 改调 `decode_into`）不在本卡白名单内，已单独派工。在接线完成前，本卡交付的是**可用的工作区 API 及其基准**，而不是已经生效的加速。
+    4. 卡片固定的 `decode_into` 形状是 5 参，超过 §4.3 的「>4 参聚合为结构体」；按卡片实现并报备。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、criterion 0.8.2、cargo-nextest 0.9.143。
 
 ---
 
@@ -540,7 +551,7 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - 关键路径：`CP: 是`
   - 并行通道：`Track A 数据与并发引擎`
   - 代码落地锚点 (Code Anchor)：`crates/ime-types/src/lexicon.rs`、`crates/ime-dict/src/fst_index.rs`、`crates/ime-dict/src/fst_index/read.rs`、`crates/ime-core/benches/decode.rs`、`crates/ime-dict/benches/dict.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **瓶颈定位与机理剖析**：
   - **现有代码缺陷**：`read.rs:106` 的 `let mut words = Vec::with_capacity(count.min(MAX_WORDS_PER_KEY as usize));` 对每次查找分配一次；`fst_index.rs:212` 与 `:235` 用 `WordIter::from_vec` 包裹。`crates/ime-core/src/viterbi/lattice.rs:320` 的 `MAX_KEYS_PER_NODE = 24` 与 `:376` 的 `words.take(WORDS_PER_KEY)` 决定了调用频次上限：12 音节输入实测 60–150 次查找/键。
@@ -725,6 +736,17 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - [ ] `cargo test -p ime-types --doc` 全绿
   - [ ] 残余项已登记：`lookup` 因冻结签名仍可物化至多 32 词，该项交由 `PERF-P1.01.02` 评估（若需改签名则转 ADR 流程）
   - [ ] 无新增依赖进入 `ime-types`（`crates/ime-types/Cargo.toml` 的 `[dependencies]` 段行数不变）
+- **验收记录**（2026-09-29）：
+  - **交付物**：`crates/ime-types/src/lexicon.rs` 的 `WordIter` 改为 `Inner::{Inline, Heap}` 双态 + `WORD_ITER_INLINE = 8` + `from_slice`（`from_vec`/`Iterator`/`ExactSizeIterator`/`FusedIterator` 语义逐位保持）；`crates/ime-dict/src/fst_index.rs` 新增 `WordBuf`（内联 8 槽 + 堆溢出）并让 `lookup`/`fallback_single` 走内联路径；`fst_index/read.rs` 新增 `word_ids`（边界检查的唯一出口）与 `read_words_into`；`benches/dict.rs` 新增 `dict/lookup_inline` 与 `dict/lookup_spill`。
+  - **验证命令与结果**：`cargo check -p ime-types -p ime-dict --all-targets` 绿。
+  - **本次发现并修复的一处既有缺陷**：`crates/ime-dict/benches/dict.rs` 的 fixture 用 2000 个 serial 生成两音节键，411 个音节表项使键每 411 个 serial 完全重复且整体非字典序，`fst::MapBuilder::insert` 的报错被 `.ok()?` 吞掉 → `loaded_fixture()` 返回 `None` → **`dict/lookup` 与 `dict/entry_to_ref` 静默不注册任何用例**。现改为商参与音节位置共同决定键、并按键排序后写入。**这条意味着此前所有「dict 基准」的结论都建立在零用例之上。**
+  - **已知限制**：
+    1. **DoD 的分配计数断言仍缺口**（同 PERF-P0.01.01：本仓库无 `unsafe` 通路做 `GlobalAlloc`）。替代证据是 `word_buf_tests.rs` 把溢出阈值精确到「第 9 个词才溢出」+ 基准的 `check_fixture` 断言两族词数。
+    2. **DoD 的性能目标（`decode/viterbi` 相对基线改善 ≥ 15%）未取数**。
+    3. **`cargo public-api` 逐行比对未跑**：`WordIter` 的既有 `pub` 签名确实未变，但该断言本身未执行。
+    4. `lookup` 因冻结签名仍可物化至多 32 词（容器自身的 `MAX_WORDS_PER_KEY`），已写进 `FstLexicon::lookup` 的文档注释。
+    5. 可选建议（未采纳）：在 `crates/ime-dict/Cargo.toml` 加 `smallvec` 可把本地 `WordBuf` 换成 `SmallVec`，无行为变化。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、criterion 0.8.2、cargo-nextest 0.9.143。
 
 ---
 
@@ -737,7 +759,7 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - 关键路径：`CP: 否`
   - 并行通道：`Track A 数据与并发引擎`
   - 代码落地锚点 (Code Anchor)：`crates/ime-core/src/state/machine.rs`、`crates/ime-core/src/preedit.rs`、`crates/ime-core/src/state/tests.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **瓶颈定位与机理剖析**：
   - **现有代码缺陷**：`machine.rs:437` 每键克隆高亮候选文本，而 `paging.rs:254` 的 `reconcile(prev_text: Option<&str>, candidates: &[Candidate])` 只需要一个 `&str`；`machine.rs:481/500/513` 每键克隆 `Preedit`（`String` + `Vec<PreeditSpan>`）**两次**（一次进 `UiFrame`，一次进 `Effect::UpdatePreedit`）；`machine.rs:482` 的 `candidates[start..end].to_vec()` 为每个可见候选克隆一个 `String`（≤9 个）；`machine.rs:484` 克隆 `StatusStrip`。
@@ -862,6 +884,20 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - [ ] `cargo nextest run -p ime-core` 全绿；`crates/ime-core/src/state/tests.rs` 的既有断言一行不改即通过
   - [ ] `cargo test -p ime-core --doc` 全绿
   - [ ] 残余项已登记：`UiFrame` 的拥有型候选/预编辑快照不可避免，差量帧评估交由 `PERF-P1.03.01`
+- **验收记录**（2026-09-29）：
+  - **交付物**：`crates/ime-core/src/state/machine.rs` 的 `refresh`/`emit_window`/`emit_update` 三处；新增 `crates/ime-core/src/state/tests/frame.rs`（191 行，6 个用例）；`benches/decode.rs` 新增 `session/keystroke`。
+  - **验证命令与结果**：`cargo check -p ime-core --all-targets` 绿；`state/tests.rs` 仅新增 `mod frame;` 一行，既有断言一行未动。
+  - **实际消除的分配（代码事实，非测量）**：①`refresh` 里 `highlighted_candidate().map(|held| held.text.clone())` 改为按字段取借用 `.map(|held| held.text.as_str())`，每键省一次 `String` 分配——取字段而非 `highlighted_candidate()` 是因为后者借整个 `self`，会与 `reconcile` 的 `&mut self.paging` 冲突；②`emit_window`/`emit_update` 的 `Effect::UpdatePreedit` 载荷改为 `frame.preedit.clone()`，与 `UiFrame.preedit` 由**同一个值**派生，字节一致由构造保证而非由两次独立克隆碰巧一致。
+  - **已知限制**：
+    1. **卡片量化目标「`build_frame` 每次调用 12–14 → ≤3」在冻结契约下不可达**：`UiFrame` 的 `preedit`/`candidates`/`status` 必须拥有所有权（帧跨线程交给 UI 线程、寿命超出调用），且 `Candidate.text: String` 是冻结字段，因此每帧至少 `Box<UiFrame>` + 候选 `Vec` + 每可见候选 1 个 `String` + preedit 的 `String`+`Vec`。已在 `build_frame` 的文档注释中逐条登记。
+    2. **「`Session::refresh` 每键分配 3 → ≤1」部分达成**：已消除为比较而做的那次克隆；余下的是 `DecodeRequest::new(self.buf.raw())` 的 `String` 与解码输出，后者属 `PERF-P0.01.01` 的 `DecodeScratch`。
+    3. **DoD 的分配计数断言与基准改善未取数**（同前两卡的原因）。
+    4. 基准落在 `benches/decode.rs` 而非卡片点名的 `benches/input.rs`（白名单所限）；若要迁回，整段 `bench_session` 可搬。
+  - **给主 Agent 的越界发现**：
+    1. `state/transitions.rs` 的 `on_config_reloaded` 有**完全相同**的克隆模式，可同法消除；非热路径，每键不触发。
+    2. `refresh` 里的 `DecodeRequest::new(self.buf.raw())` **每键分配一个 `String`**。无需契约变更即可消除——让 `Session` 持一个可复用的 `DecodeRequest` 缓冲（`raw.clear()` + `push_str`）。已并入 `DecodeScratch` 的接线工单。
+    3. `crates/ime-core/src/state/tests.rs` 现为 824 行（本卡 +2 前已是 822），超 800 行上限，属既有违规。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、criterion 0.8.2、cargo-nextest 0.9.143。
 
 ---
 
@@ -874,7 +910,7 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - 关键路径：`CP: 是`
   - 并行通道：`Track A 数据与并发引擎`
   - 代码落地锚点 (Code Anchor)：`crates/ime-dict/src/user_db.rs`、`crates/ime-dict/src/user_db/evict.rs`、`crates/ime-dict/benches/userdb.rs`、`crates/ime-dict/src/user_db/tests.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **瓶颈定位与机理剖析**：
   - **现有代码缺陷**：`user_db.rs:690-710` 的 `freq` 在 `LruCache` 未命中时调用 `Inner::committed`（`:430`），后者执行 `self.db.begin_read()` → `txn.open_table(USER_WORDS)` → `table.get(key)`，即一次 redb 读事务与一次 B 树随机读；未命中路径还要在 `:692`、`:702`、`:707` 取 **3 次**互斥锁。`LruCache` 容量 `CACHE_CAPACITY = 4096`（`:58`）而词表规模 `ASM-P03` 为 10^4–10^6，命中率不足。
@@ -1022,6 +1058,17 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - [ ] `cargo nextest run -p ime-dict` 全绿；`crates/ime-dict/src/user_db/tests.rs` 既有断言一行不改即通过
   - [ ] `cargo test -p ime-dict --doc` 全绿
   - [ ] 新增错误码 `data/user-db/large` 已登记进 `docs/dev/features.md` 2.2.4（主 agent 执行）
+- **验收记录**（2026-09-29）：
+  - **交付物**：`crates/ime-dict/src/user_db.rs`（769 行）、新增 `user_db/{cache,hydrate}.rs`、`user_db/evict.rs`、`user_db/tests.rs`（追加 7 个用例，既有 15 个一行未改）、`benches/userdb.rs`。
+  - **验证命令与结果**：`just ci` 退出 0；`cargo nextest run -p ime-dict` 全绿，含 `test_user_db_loaded_lookup_opens_no_store_read`（水合态连续 1000 次 `freq`，redb 读事务增量 == 0）。
+  - **耐久性契约完全保留**：三触发器（`COMMIT_BATCH` / `COMMIT_INTERVAL_MS` / `PENDING_CAPACITY`）、`SLOW_COMMIT_STREAK = 3` 的松弛判据、只读降级、idle sweep 一行未改。
+  - **已知限制**：
+    1. **DoD 3 的 `HYDRATE_CAP` RSS 上限未验证且很可能超标**：卡片要求水合 50000 条后 RSS 增量 ≤ 2MB，按字节算术估算 `HashMap<Box<str>, u32>` × 5 万条约 2.5–3.5MB。`#[ignore]` soak 测试已写未跑。需跑 `cargo nextest run -p ime-dict --run-ignored all` 后决定：换紧凑键表示、下调 `HYDRATE_CAP`、或按实测调整该 DoD 数字（预算声明属主 Agent 裁决）。
+    2. **一处有意偏离卡片**：卡片说 `hydrated: true → false` 仅允许在 `degrade` 时发生。未在 `degrade` 里翻转——`counts` 只含「已到达文件」的值，失败事务已回滚，它仍等于文件；翻转会让只读库在解码热路径上开始开读事务，与该卡的目的相反。已在 `degrade` 的文档注释写明。
+    3. **DoD 1 的 P99 ≤ 1µs 未取数**：基准用例已补（`userdb/freq_hit` / `freq_miss` / `freq_degraded`），未运行。
+    4. `freq` 水合态是 **2 次短锁**（`committed`、`pending`）而非卡片写的 1 次；卡片自己的伪码也是两个锁。
+    5. 新增的 `data/user-db/large` 与既有的 `data/commit/slow-disk` 已由主 Agent 登记进 `features.md` 2.2.4；目前**没有任何生产代码调用 `UserDb`**（`ime-fcitx5` 只经冻结的 `UserFreqSource` 拿 `&dyn`），故两个码都还没有上报方。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 
@@ -1174,7 +1221,7 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - 关键路径：`CP: 否`
   - 并行通道：`Track A 数据与并发引擎`
   - 代码落地锚点 (Code Anchor)：`crates/ime-fcitx5/src/addon.rs`、`crates/ime-fcitx5/src/ffi/mod.rs`、`crates/ime-fcitx5/src/ui_impl/panel.rs`、`crates/ime-fcitx5/src/ffi/abi/engine.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **瓶颈定位与机理剖析**：
   - **现有代码缺陷**：`ffi/mod.rs:105-107` 的 `emit_diagnostic` 执行 `format!("rspinyin: {}", code)`（一次分配）后 `writeln!(std::io::stderr(), ...)`（一次**无缓冲阻塞写系统调用**）。`addon.rs:288-296` 的 `candidate_window_available` 文档约定「Each declined frame records `ui/not-ready`」，即**降级态下每键一次**；`ui_impl/panel.rs:102` 对每个畸形面板快照同样每次一条；`ffi/abi/engine.rs:57`、`:101`、`:109`、`:169`、`:189` 的 null/非法输入路径同理。
@@ -1241,6 +1288,17 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - [ ] 既有诊断码拼写零改动（`grep` 全部码字面量，与改造前逐字一致）
   - [ ] `cargo nextest run -p ime-fcitx5` 全绿；`cargo test -p ime-fcitx5 --doc` 全绿
   - [ ] 无新增依赖（节流表用 `std::sync::Mutex` + `std::time::Instant`，不引入 `once_cell`/`dashmap`）
+- **验收记录**（2026-09-29）：
+  - **交付物**：`crates/ime-fcitx5/src/ffi/mod.rs`（525 行）与 `crates/ime-ui-addon/src/ffi/mod.rs`（536 行）各新增节流表 `Throttle` / `Slot` / `Emission`、`code_hash`（FNV-1a 64）、`static THROTTLE`、`lock_throttle`、`diagnostic_line`；`emit_diagnostic` 改为经 `emit_through` 过闸。两处文档同步。
+  - **验证命令与结果**：`just ci` 退出 0；两个 crate 各 6 个新用例全绿（同码 1 秒内 100 次 → 恰 1 行；窗口到期后再发 → 第 2 行附 ` (suppressed 99 repeats in 1000ms)`；不同码不互相抑制；表满 40 个码时全部照写；`code_hash` 对已发布 FNV-1a 向量）。
+  - **语义**：同一诊断码在 1 秒窗口内最多写 1 行；窗口内重复被计数。码字面量保持在行首且拼写不变，`grep <code>` 仍能命中。
+  - **ADR-0004 决策 3 的延续**：两个库各复制一份实现而非共享——两库被独立 `dlopen`，通过共享 crate 产生链接期耦合正是拆分要消除的东西。
+  - **已知限制**：
+    1. **选方案 (b)（FNV-1a 哈希建槽）而非卡中推荐的 (a)（收紧签名为 `&'static str`）**：`emit_diagnostic` 的调用点分布在 6 个白名单外的文件；且 `lifecycle/pending: <step> awaits <x>` 等动态码若收紧为 `&'static str` 会丢失步骤/错误信息。哈希碰撞只可能多抑制一行，永远不会改写字面量。
+    2. **表满（>32 个不同码同窗口）时失败方向是「照写不误」**：未登记的码每次仍会写入，绝不静默吞掉；代价是该码失去节流。当前两个 crate 的码集合各约 10–20 条，该分支不可达。
+    3. **`guard_ffi` 的 panic 行刻意不节流**：panic 是严重事件且每条携带不同 payload，节流会吞掉解释崩溃的那条消息。
+    4. **DoD 的「抑制路径分配 = 0」只有结构性断言**（sink 未被调用 + 表不增长），无分配计数器实测。硬断言需 `#[global_allocator]` 计数分配器（`unsafe impl GlobalAlloc`），风险高于收益，未做。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 

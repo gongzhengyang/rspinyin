@@ -8,14 +8,17 @@
 //! Boundaries: this module reads and does not decide. The container load, the trait
 //! implementation and the error translation stay in the parent, so what is left here is
 //! the walk over the views; nothing here verifies the container (the loader has already
-//! done so), ranks a word, or allocates more than the vector one key's candidates are
-//! collected into.
+//! done so), ranks a word, or allocates a word list of its own -- a lookup writes into the
+//! buffer its caller already holds, which is what keeps the decode path off the allocator.
+//! Turning a record into its text is the entry table's job rather than this module's: the
+//! conversion is the one step every candidate passes through, and keeping it in a place of
+//! its own is what lets it be tested on its own.
 
-use ime_types::{DictError, WordFlags, WordRef};
+use ime_types::DictError;
 
-use crate::format::{DictEntry, ENTRY_SIZE, MAX_WORDS_PER_KEY, read_u32, unpack_fst_value};
+use crate::format::{DictEntry, ENTRY_SIZE, read_u32, unpack_fst_value};
 
-use super::{FstLexicon, WORD_ID_SIZE, out_of_range};
+use super::{FstLexicon, WORD_ID_SIZE, WordBuf, out_of_range};
 
 impl FstLexicon {
     /// Decodes the word record at `index`.
@@ -43,38 +46,18 @@ impl FstLexicon {
         DictEntry::decode(bytes)
     }
 
-    /// Returns the text of `entry`, borrowed from the mapped string pool.
+    /// Resolves `key` to the word ids it owns, and how many of them there are.
+    ///
+    /// Answers `None` for a key the index does not hold, which is not a failure: a miss is
+    /// an empty word list. Every bounds check the read path makes about the packed value
+    /// lives here, so the readers of a key share one copy of them.
     ///
     /// # Errors
     ///
-    /// Returns [`DictError::LengthOutOfRange`] when the recorded range leaves the
-    /// string pool or when the bytes are not valid UTF-8.
-    fn word<'a>(&'a self, entry: &DictEntry) -> Result<&'a str, DictError> {
-        let Ok(start) = usize::try_from(entry.word_off) else {
-            return Err(out_of_range("word_off", u64::from(entry.word_off)));
-        };
-        let Some(end) = start.checked_add(usize::from(entry.word_len)) else {
-            return Err(out_of_range("word_off", u64::from(entry.word_off)));
-        };
-        let Some(bytes) = self.strpool.get(start..end) else {
-            return Err(out_of_range("word_off", u64::from(entry.word_off)));
-        };
-        let Ok(text) = std::str::from_utf8(bytes) else {
-            return Err(out_of_range("word_utf8", u64::from(entry.word_len)));
-        };
-        Ok(text)
-    }
-
-    /// Reads the word list of `key` out of the mapped sections.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DictError::LengthOutOfRange`] when the packed range leaves the word list,
-    /// when a word id leaves the entry table, or when a record's text leaves the string
-    /// pool. An unknown key is not an error: it yields no words.
-    pub(super) fn read_words(&self, key: &str) -> Result<Vec<WordRef<'_>>, DictError> {
+    /// Returns [`DictError::LengthOutOfRange`] when the packed range leaves the word list.
+    fn word_ids(&self, key: &str) -> Result<Option<(&[u8], usize)>, DictError> {
         let Some(packed) = self.fst.get(key.as_bytes()) else {
-            return Ok(Vec::new());
+            return Ok(None);
         };
         let (start, count) = unpack_fst_value(packed);
         let Ok(start) = usize::try_from(start) else {
@@ -98,22 +81,40 @@ impl FstLexicon {
         let Some(ids) = self.wordlist.get(from..to) else {
             return Err(out_of_range("wordlist_start", start as u64));
         };
+        Ok(Some((ids, count)))
+    }
 
-        // `count * WORD_ID_SIZE` bytes were checked above, so this reservation is bounded
-        // by the section that exists and the loop cannot leave the slice. The capacity is
-        // only a hint: the container's per-key ceiling is a ranking decision, not a format
-        // limit, so a longer list still reads.
-        let mut words = Vec::with_capacity(count.min(MAX_WORDS_PER_KEY as usize));
-        for index in 0..count {
+    /// Reads at most `limit` words of `key` into `out`, which the caller owns.
+    ///
+    /// The decode path asks for a bounded head of the list, so materializing the whole
+    /// thing into a fresh vector per lookup was pure waste: this variant writes into a
+    /// buffer the caller already holds and stops at `limit`, which is what removes the
+    /// allocation from the lookup path. The buffer keeps the words inline while they fit
+    /// and spills to the heap only for a list longer than that, so a long list is served
+    /// whole rather than cut short.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DictError::LengthOutOfRange`] when the packed range leaves the word list,
+    /// when a word id leaves the entry table, or when a record's text leaves the string
+    /// pool. An unknown key is not an error: it writes no words.
+    pub(super) fn read_words_into<'a>(
+        &'a self,
+        key: &str,
+        limit: usize,
+        out: &mut WordBuf<'a>,
+    ) -> Result<(), DictError> {
+        let Some((ids, count)) = self.word_ids(key)? else {
+            return Ok(());
+        };
+        for index in 0..count.min(limit) {
             let id = read_u32(ids, index * WORD_ID_SIZE, "wordlist_entry")?;
             let entry = self.entry(id)?;
-            words.push(WordRef {
-                text: self.word(&entry)?,
-                weight: entry.weight,
-                syl_count: entry.syl_count,
-                flags: WordFlags::from_bits_truncate(entry.flags),
-            });
+            // The record becomes a word through the entry table, which checks it against the
+            // string pool on every access; this loop never slices the pool itself, so there is
+            // exactly one place where a damaged record can turn into a word.
+            out.push(self.entry_to_ref(&entry)?);
         }
-        Ok(words)
+        Ok(())
     }
 }

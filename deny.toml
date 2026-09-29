@@ -1,0 +1,253 @@
+# deny.toml - the machine-readable dependency policy of the rspinyin workspace.
+#
+# This file is the executable half of AGENTS.md section 3.9 ("run `cargo audit`
+# and `cargo deny` before committing; findings must be fixed or exempted in
+# writing") and of features.md 0.4 rule 6, together with ADR-0000's two frozen
+# decisions. It is not a second opinion on the compliance documents -- it is the
+# same decisions expressed in the form `cargo deny check` reads, so one command
+# reproduces the verdict that `docs/dev/licenses.md` and `.cargo/audit.toml`
+# already record by hand.
+#
+# Where each section's decision was taken:
+#
+#   [advisories]  AGENTS.md 3.9, plus the RustSec findings on the Slint tree.
+#                 The `time` entry is a pointer to the written exemption in
+#                 `.cargo/audit.toml` rather than a second, differently-worded
+#                 decision, so the two tools cannot drift apart.
+#   [licenses]    ADR-0000 decision 1 (Slint is used under
+#                 `LicenseRef-Slint-Royalty-free-2.0`; neither the GPL-3.0 nor
+#                 the commercial branch is elected) and decision 2 (the project
+#                 ships as `MIT OR Apache-2.0`, so no copyleft may enter the
+#                 closure). The allow list is the one written into the
+#                 licence-audit section of `docs/dev/features.md`; the
+#                 human-readable record of the same audit is
+#                 `docs/dev/licenses.md`, which also states how an SPDX
+#                 expression is evaluated and which branch this project elects.
+#   [bans]        features.md 0.4 rule 6 / `BUDGET-NET-01` (zero network).
+#   [sources]     the same "no unvetted input" stance as AGENTS.md 3.9.
+#
+# Scope. `all-features = true` matches the `--all-features` that
+# `scripts/check-no-network.sh` and `scripts/gen-licenses.sh` already pass, so
+# the three gates read one feature set. No `targets` filter is set: the graph is
+# the whole committed lockfile, every platform included. A crate that only ever
+# reaches a Windows or wasm build still has to be licensed acceptably before it
+# may sit in the lockfile, and `docs/dev/licenses.md` section 3 already records
+# which of those packages the shipped `librspinyin.so` actually links.
+#
+# Dictionary sources are deliberately NOT modelled here: `data/sources.toml` is
+# a data allowlist rather than a crate graph, and ADR-0000 decision 2 audits it
+# through `scripts/check-dict-sources.sh` and `scripts/gen-licenses.sh`.
+
+[graph]
+# Same feature set as the two shell gates; see the scope note above.
+all-features = true
+
+[advisories]
+# Unmaintained crates are errors, not warnings (cargo-deny's default), and this
+# line states it rather than inheriting it: an advisory that a dependency has
+# been abandoned should be a decision somebody took, which is why the four
+# entries below are named one by one instead of switching the whole class off.
+unmaintained = "all"
+# A yanked release is a warning: it still has to be pulled out of the lockfile,
+# but it does not mean the code is wrong, and a warning does not fail the gate.
+yanked = "warn"
+ignore = [
+    # ---------------------------------------------------------------------
+    # RUSTSEC-2026-0009 (`time`) -- mirror of the exemption in .cargo/audit.toml
+    # ---------------------------------------------------------------------
+    # The full argument is written down in `.cargo/audit.toml`, and this entry
+    # exists so the two tools cannot disagree. In short: the advisory names only
+    # the RFC 2822 *parse* entry points; `time` reaches this workspace solely
+    # through `ime-diag -> tracing-appender -> time`, which uses the crate to
+    # format a rolling log file's timestamp and never parses one; and the patched
+    # releases declare `rust-version = "1.88.0"` against this workspace's 1.85
+    # MSRV, which is asserted in `Cargo.toml`, AGENTS.md section 3.1 and a test.
+    { id = "RUSTSEC-2026-0009", reason = "Unreachable code path (the crate only formats timestamps here, nothing parses an RFC 2822 string) and the fix needs a Rust 1.88 MSRV; the full written exemption lives in .cargo/audit.toml." },
+
+    # ---------------------------------------------------------------------
+    # The four unmaintained crates in the Slint tree
+    # ---------------------------------------------------------------------
+    # All four advisories are `informational = "unmaintained"` with
+    # `patched = []`: they report that upstream stopped maintaining the crate,
+    # not that the crate is exploitable, and there is no fixed release to move
+    # to. All four arrive with Slint (ADR-0000 decision 1), so removing them
+    # means replacing Slint's font stack and its `.slint` compiler, which is a
+    # decision for the UI spike rather than something a dependency bump can do.
+    # Each one is exempted by advisory id rather than by crate name, so a
+    # *vulnerability* published against any of them still fails this gate.
+    #
+    # Revisit when Slint drops them, and in any case whenever a RUSTSEC advisory
+    # with `informational = "vulnerability"` names one of these crates.
+    { id = "RUSTSEC-2024-0436", reason = "paste is archived upstream (2024-10-07) and no fixed release exists. It is a compile-time token-pasting macro reached through `image`'s codecs (`pulp`, `rav1e`), i.e. through Slint's image stack; it performs no runtime parsing and handles no input of ours." },
+    { id = "RUSTSEC-2025-0141", reason = "bincode ceased development (2025-12-16) after a harassment incident; upstream considers v1.3.3 complete and there is no fixed release. It is reached only through Slint's build-time `.slint` compiler (`i-slint-compiler -> typed-index-collections -> bincode`), so it is not in the shipped closure." },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz is no longer maintained (2026-07-11) and no fixed release exists. It is the shaper `i-slint-core` (and `usvg`) use to lay out glyph runs; it is Slint's dependency choice and cannot be swapped from this workspace. It does parse font files, so a *vulnerability* advisory against it must be treated as reachable and will fail this gate." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is no longer maintained (2026-06-28) and no fixed release exists. It is the font parser behind `fontdb`, `rustybuzz` and `i-slint-common`, all pulled in by Slint. Same reachability caveat as rustybuzz: font parsing reads files, so a real vulnerability advisory must not be exempted by this entry." },
+]
+
+[licenses]
+# The allow list is a policy, not an inventory: `MPL-2.0` is admitted by the
+# task card's audit rules even though no package in the current graph is offered
+# under it, and a licence that is merely unused is not a finding. The reverse
+# case matters too -- `CC0-1.0` and `0BSD` are in the list because they appear as
+# OR branches (`CC0-1.0 OR Apache-2.0`, `0BSD OR MIT OR Apache-2.0`), and the
+# list has to admit a licence the project may elect, not only one it already has.
+unused-allowed-license = "allow"
+# Kept at the default so the number is visible: this only matters for a crate
+# that ships no `license` field, which makes cargo-deny guess the licence from
+# the text of its LICENSE files.
+confidence-threshold = 0.8
+# Dev-dependencies are checked too. cargo-deny leaves them out by default, but
+# `docs/dev/licenses.md` section 3 registers every package `cargo metadata`
+# reports, dev-dependencies included, so leaving them out here would make the two
+# audits disagree about what "100% of the closure" means. A dev-dependency is
+# still distributed in the source tarball even when it is absent from the
+# shipped `.so`.
+include-dev = true
+allow = [
+    # The allow list written into the licence-audit section of the task card.
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    # File-level copyleft: modifying an MPL file means that file stays MPL-2.0.
+    # No MPL dependency is modified here, and `docs/dev/licenses.md` section 2
+    # records the same caveat.
+    "MPL-2.0",
+    "CC0-1.0",
+    "0BSD",
+    # `Apache-2.0 WITH LLVM-exception` is Apache-2.0 with an added permission,
+    # not a different licence; it is spelled out because `rustix`,
+    # `linux-raw-sys` and `io-lifetimes` carry it as a separate OR branch.
+    "Apache-2.0 WITH LLVM-exception",
+    # `Unlicense` is present in the graph only as the *other* branch of
+    # `Unlicense OR MIT` / `Unlicense/MIT` (`aho-corasick`, `byteorder-lite`,
+    # `fst`, `memchr`, `same-file`, `termcolor`, `walkdir`, `winapi-util`).
+    # Under OR semantics the MIT branch alone already satisfies every one of
+    # them and `scripts/gen-licenses.sh` elects it. It is listed so the verdict
+    # does not depend on whether the tool expands the legacy `A/B` spelling into
+    # `A OR B`: it admits a public-domain dedication, never a copyleft term.
+    "Unlicense",
+    # ADR-0000 decision 1: the royalty-free branch of Slint's tri-licence, and
+    # only that branch. `GPL-3.0-only` is deliberately absent (electing it would
+    # put the whole cdylib under GPL-3.0) and so is
+    # `LicenseRef-Slint-Software-3.0` (the paid commercial licence). Both remain
+    # unsatisfied OR branches in Slint's expression, which is exactly what they
+    # are: offers this project has decided not to take.
+    "LicenseRef-Slint-Royalty-free-2.0",
+    # `NCSA` (University of Illinois/NCSA Open Source License) arrives with
+    # `libfuzzer-sys`, whose expression is `(MIT OR Apache-2.0) AND NCSA`. The
+    # `AND` is why the MIT branch does not save it: every conjunct has to be
+    # satisfied, so the licence has to be admitted outright.
+    #
+    # It is admitted on the merits, not as a convenience: NCSA is OSI-approved,
+    # FSF-libre and permissive (it is a BSD-3-Clause/MIT hybrid, and its
+    # redistribution terms are the same shape as the licences already above).
+    # `scripts/gen-licenses.sh` carries the same verdict in its `REVIEWED` table,
+    # so the two audits agree.
+    #
+    # Reachability, stated honestly: `libfuzzer-sys` is an *optional* dependency
+    # of `rav1e` behind its `fuzzing` feature, and this workspace never enables
+    # it -- but an optional dependency is still pinned in `Cargo.lock`, and
+    # cargo-deny walks the lockfile rather than the feature-resolved graph, so
+    # the crate is visible here even though it is absent from every build. An
+    # earlier draft of this file omitted the licence on the belief that the crate
+    # was out of the graph; that belief was wrong and `cargo deny check licenses`
+    # is what caught it.
+    "NCSA",
+]
+
+# Licences outside the allow list that have been reviewed and accepted for a
+# named crate. Each entry is the machine-readable form of a written exemption
+# already recorded in `scripts/gen-licenses.sh`'s REVIEWED table and summarised
+# in `docs/dev/NOTICE` section 4. cargo-deny's exception table takes only a crate
+# spec and `allow`, so the reasons live in these comments rather than in the
+# entries -- they are still written down, and still next to what they excuse.
+#
+# BSL-1.0 is OSI-approved and permissive. Both crates it is granted to are the
+# Win32 clipboard backend that `copypasta` (a `winit` dependency) uses on
+# Windows only: neither is in the Linux build closure and neither ships in
+# `librspinyin.so`. Because the exemption names one crate at a time it cannot
+# cover anything else, which is the property that makes it safe -- the same
+# argument `scripts/gen-licenses.sh` makes when it refuses to let an exemption
+# reach a crate inside the shipped closure.
+[[licenses.exceptions]]
+allow = ["BSL-1.0"]
+name = "clipboard-win"
+
+[[licenses.exceptions]]
+allow = ["BSL-1.0"]
+name = "error-code"
+
+# NCSA is the third reviewed licence in `scripts/gen-licenses.sh`'s table, for
+# `libfuzzer-sys`. It is deliberately NOT granted here. `libfuzzer-sys` is an
+# optional dependency of `rav1e` behind its `fuzzing` feature, which nothing in
+# this workspace enables, so the crate is pinned in `Cargo.lock` but absent from
+# the resolved graph -- an exception for it would be an unused entry that reads
+# as if the crate were present. If a future change does enable that feature, the
+# gate fails with the crate named, which is the correct outcome: NCSA is
+# permissive and the exemption would then be granted in writing, the same way
+# the two above were.
+
+[bans]
+# Duplicate versions are reported, not denied: the duplicates in this graph are
+# Slint's and criterion's transitive pins (`hashbrown`, `syn`, `png`,
+# `linux-raw-sys`, ...), which this workspace cannot converge. Convergence of
+# *our own* dependency declarations is a different rule and is enforced where it
+# belongs, by `[workspace.dependencies]` plus `scripts/check-deps.sh`.
+multiple-versions = "warn"
+
+# features.md 0.4 rule 6 bans network capability outright, and `BUDGET-NET-01`
+# makes it a product promise rather than a preference. `scripts/check-no-network.sh`
+# is the authoritative gate -- it works on dash/underscore-separated name
+# segments and on feature flags, which a fixed name list cannot do -- and this
+# list is the same decision restated for `cargo deny check` on its own.
+#
+# Deliberately absent: `tokio` and `getrandom`. Both are legitimate in this
+# graph -- `tokio` is pinned by `wasm-bindgen-futures` and carries no network
+# feature, and `getrandom` is the entropy source behind `rand_core`, `tempfile`
+# and `jobserver` -- so they may only be banned by *feature* (tokio's `net`,
+# getrandom's wasm entropy), which a name-based deny list cannot express.
+# `scripts/check-no-network.sh` owns that half: it refuses `tokio` and
+# `async-std` the moment their network features are enabled, which is the case
+# a crate-name list would both miss and over-report.
+deny = [
+    { name = "reqwest", reason = "network client; banned by features.md 0.4 rule 6" },
+    { name = "hyper", reason = "network client/server stack; banned by features.md 0.4 rule 6" },
+    { name = "hyper-util", reason = "network client/server stack; banned by features.md 0.4 rule 6" },
+    { name = "h2", reason = "HTTP/2 implementation; banned by features.md 0.4 rule 6" },
+    { name = "ureq", reason = "network client; banned by features.md 0.4 rule 6" },
+    { name = "curl", reason = "network client; banned by features.md 0.4 rule 6" },
+    { name = "curl-sys", reason = "libcurl bindings; banned by features.md 0.4 rule 6" },
+    { name = "isahc", reason = "network client; banned by features.md 0.4 rule 6" },
+    { name = "surf", reason = "network client; banned by features.md 0.4 rule 6" },
+    { name = "awc", reason = "network client; banned by features.md 0.4 rule 6" },
+    { name = "tungstenite", reason = "WebSocket stack; banned by features.md 0.4 rule 6" },
+    { name = "tokio-tungstenite", reason = "WebSocket stack; banned by features.md 0.4 rule 6" },
+    { name = "quinn", reason = "QUIC stack; banned by features.md 0.4 rule 6" },
+    { name = "zmq", reason = "message-broker transport; banned by features.md 0.4 rule 6" },
+    { name = "nanomsg", reason = "message-broker transport; banned by features.md 0.4 rule 6" },
+    { name = "openssl", reason = "crypto/TLS stack; an offline input method has no use for it (features.md 0.4 rule 6)" },
+    { name = "openssl-sys", reason = "crypto/TLS stack; an offline input method has no use for it (features.md 0.4 rule 6)" },
+    { name = "rustls", reason = "TLS implementation; banned by features.md 0.4 rule 6" },
+    { name = "ring", reason = "crypto backend the TLS stacks pull in; banned by features.md 0.4 rule 6" },
+    { name = "native-tls", reason = "TLS implementation; banned by features.md 0.4 rule 6" },
+    { name = "async-std", reason = "async executor; AGENTS.md section 3.3 excludes every async runtime from this workspace" },
+]
+
+[sources]
+# Every non-path package in the committed lockfile resolves to the crates.io
+# registry index; the local USTC mirror is a `replace-with` source substitution,
+# which preserves the canonical source id in the lockfile. A git checkout is
+# therefore never legitimate here and is refused outright -- AGENTS.md section
+# 3.1 forbids submodules precisely so that `cargo vendor` and offline builds
+# stay possible. An unknown *registry* is reported rather than denied, because
+# the workspace members themselves are path dependencies and a stricter setting
+# would need them to be re-examined on every cargo-deny release; a second
+# registry would show up as a warning and be reviewed by hand.
+unknown-registry = "warn"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

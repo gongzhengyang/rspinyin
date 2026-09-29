@@ -35,17 +35,98 @@
 use std::path::{Path, PathBuf};
 
 use ime_core::segment::syllable_at;
-use ime_types::{DictError, ImeError, Lexicon, SyllableId, WordIter, WordRef};
+use ime_types::lexicon::WORD_ITER_INLINE;
+use ime_types::{DictError, ImeError, Lexicon, SyllableId, WordFlags, WordIter, WordRef};
 
+use crate::entry::{EntryTable, MalformedEntry};
 use crate::format::{
-    SectionEntry, SectionKind, UNIGRAM_ENTRY_SIZE, read_u16, read_u32, reader::{Reader, Verify},
+    DictEntry, MAX_WORDS_PER_KEY, SectionEntry, SectionKind, UNIGRAM_ENTRY_SIZE, read_u16,
+    read_u32,
+    reader::{Reader, Verify},
 };
-use crate::mmap::MappedFile;
+use crate::mmap::{MappedFile, WordPool};
 
 mod read;
 
 /// Width of one `WORDLIST` element: a `word_id` is a little-endian `u32`.
 const WORD_ID_SIZE: usize = 4;
+
+/// The word a slot holds before anything is written into it.
+///
+/// [`WordRef`] has no `Default` -- an empty word is not a dictionary entry -- but the
+/// inline slots of a [`WordBuf`] need a value to start from. Only the slots below the
+/// live length are read, so the placeholder is never handed out.
+const EMPTY_WORD: WordRef<'static> = WordRef {
+    text: "",
+    weight: 0,
+    syl_count: 0,
+    flags: WordFlags::empty(),
+};
+
+/// A word list a lookup writes into, held inline up to [`WORD_ITER_INLINE`] words.
+///
+/// The decode path reads the head of a key's list, and the head is short: eight words
+/// cover the keys the lattice reads in the common case, so materializing a fresh vector
+/// per lookup paid an allocation for nothing. A list longer than the inline capacity
+/// spills to the heap rather than being cut short, so everything the caller asked for is
+/// still there.
+///
+/// The spill is a plain `Vec` rather than a `SmallVec` because this crate does not depend
+/// on `smallvec`: the contract crate's dependency list is fixed at three crates, and this
+/// crate's manifest is not the read path's to change. Replacing the two storage fields
+/// with `SmallVec<[WordRef<'a>; WORD_ITER_INLINE]>` would be a manifest change with no
+/// behaviour change.
+struct WordBuf<'a> {
+    /// The words while they fit.
+    inline: [WordRef<'a>; WORD_ITER_INLINE],
+    /// Live length of `inline`; unused once `spill` holds the list.
+    len: usize,
+    /// The list once it is longer than the inline capacity holds.
+    spill: Vec<WordRef<'a>>,
+}
+
+impl<'a> WordBuf<'a> {
+    /// Creates an empty buffer.
+    ///
+    /// Nothing is allocated: the inline slots are a plain array, and an empty `Vec` has no
+    /// backing store until something is pushed into it.
+    fn new() -> Self {
+        Self {
+            inline: [EMPTY_WORD; WORD_ITER_INLINE],
+            len: 0,
+            spill: Vec::new(),
+        }
+    }
+
+    /// Appends one word, moving the list to the heap once the inline slots are full.
+    fn push(&mut self, word: WordRef<'a>) {
+        if self.spill.is_empty() {
+            if let Some(slot) = self.inline.get_mut(self.len) {
+                *slot = word;
+                self.len += 1;
+                return;
+            }
+            // The slots are full, so the list is longer than a decode ever reads: it moves
+            // to the heap rather than being cut short. The slots are copied over first,
+            // which keeps the words in the order the key stores them -- strongest first.
+            self.spill = Vec::with_capacity(WORD_ITER_INLINE.saturating_mul(2));
+            self.spill.extend_from_slice(&self.inline[..self.len]);
+        }
+        self.spill.push(word);
+    }
+
+    /// Turns the buffer into the iterator the contract hands out.
+    ///
+    /// A list that fit the inline slots is copied into the iterator's own array, so this
+    /// lookup needed no allocation and the buffer is free for the next one.
+    fn into_word_iter(self) -> WordIter<'a> {
+        if self.spill.is_empty() {
+            WordIter::from_slice(&self.inline[..self.len])
+        } else {
+            WordIter::from_vec(self.spill)
+        }
+    }
+}
 
 /// Builds the bounds failure every check in this module reports.
 ///
@@ -64,7 +145,10 @@ fn out_of_range(field: &'static str, value: u64) -> DictError {
 ///
 /// The views are byte slices rather than typed ones: reinterpreting a borrowed buffer as
 /// `&[DictEntry]` or `&[u32]` would be the unchecked read the format layer refuses to
-/// perform, so records are decoded field by field instead.
+/// perform, so records are decoded field by field instead. The string pool is the exception,
+/// and it is not a slice either: it is held as the value that carries the proof it came out
+/// of a container the loader accepted, which is what lets the read path hand out `&str`
+/// without scanning it.
 ///
 /// Declaration order is drop order: the views are dropped before the mapping that backs
 /// them, so no destructor can run against an unmapped range even if a view ever gains
@@ -73,7 +157,11 @@ fn out_of_range(field: &'static str, value: u64) -> DictError {
 pub struct FstLexicon {
     fst: fst::Map<&'static [u8]>,
     entries: &'static [u8],
-    strpool: &'static [u8],
+    /// The string pool plus the once-only list of the records that failed their check.
+    ///
+    /// Every word this lexicon hands out is a `&str` into the pool this table holds, which is
+    /// why the table -- and not the raw `STRPOOL` bytes -- is what the read path keeps.
+    table: EntryTable<'static>,
     wordlist: &'static [u8],
     unigram: &'static [u8],
     entry_count: u32,
@@ -137,10 +225,14 @@ impl FstLexicon {
             Ok(fst) => fst,
             Err(err) => return Err(DictError::Fst(err.to_string())),
         };
+        // The pool is wrapped only here, and only after `Reader::parse` has accepted the
+        // container: this call is what turns "these bytes came out of a dictionary that
+        // passed its checks" into the value every later word conversion rests on.
+        let strpool = section(image, sections, SectionKind::StrPool)?;
         Ok(Self {
             fst,
             entries: section(image, sections, SectionKind::Entries)?,
-            strpool: section(image, sections, SectionKind::StrPool)?,
+            table: EntryTable::new(WordPool::verified(strpool)),
             wordlist: section(image, sections, SectionKind::WordList)?,
             unigram: section(image, sections, SectionKind::Unigram)?,
             entry_count: reader.entry_count(),
@@ -182,15 +274,79 @@ impl FstLexicon {
         ))
     }
 
-    /// Runs one container query and reports its failure across the trait boundary.
+    /// Returns the word record `entry` names, borrowed from the mapped string pool.
+    ///
+    /// This is the conversion every candidate goes through: the record is checked against the
+    /// pool on every call, so a record whose offset or length was damaged is reported instead
+    /// of dereferenced, and the text that comes back is a `&str` into the mapping rather than a
+    /// copy of it.
     ///
     /// # Errors
     ///
-    /// Returns [`ImeError::DictUnavailable`] when the container cannot serve the
-    /// query.
-    fn words_for(&self, key: &str) -> Result<Vec<WordRef<'_>>, ImeError> {
-        let words = self.read_words(key);
-        words.map_err(|cause| self.unavailable(cause))
+    /// Returns [`DictError::LengthOutOfRange`] naming the offending field when `word_len` is
+    /// zero or above [`crate::format::MAX_WORD_LEN`], when `syl_count` is zero or above
+    /// [`crate::format::MAX_SYL_COUNT`], or when `word_off + word_len` overflows or leaves the
+    /// string pool. The first failure of a given record is recorded once and can be read
+    /// through [`FstLexicon::malformed_entries`].
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, when the range is inside the pool but its bytes are not UTF-8: that
+    /// combination means the compiler and the container's checksum both failed, which is a bug
+    /// to catch while testing rather than a file to tolerate at run time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ime_dict::format::{DictEntry, SectionKind, pack_fst_value, writer};
+    /// use ime_dict::fst_index::FstLexicon;
+    ///
+    /// // A container with one key, one record and one word: the smallest dictionary the
+    /// // read path accepts.
+    /// let mut index = fst::MapBuilder::memory();
+    /// let packed = pack_fst_value(0, 1).expect("packing the word-list range");
+    /// index.insert("ni".as_bytes(), packed).expect("inserting the key");
+    /// let mut container = writer::DictWriter::new();
+    /// for (kind, payload) in [
+    ///     (SectionKind::Fst, index.into_inner().expect("finishing the index")),
+    ///     (SectionKind::Entries, DictEntry::new(0, 3, 1, 0, 900).encode().to_vec()),
+    ///     (SectionKind::StrPool, "\u{4f60}".as_bytes().to_vec()),
+    ///     (SectionKind::Unigram, vec![0u8; 8]),
+    ///     (SectionKind::WordList, 0u32.to_le_bytes().to_vec()),
+    /// ] {
+    ///     container.add_section(kind, payload).expect("adding a section");
+    /// }
+    /// let image = container.encode().expect("encoding the container");
+    ///
+    /// let dir = std::env::temp_dir().join(format!("rspinyin-lexicon-doc-{}", std::process::id()));
+    /// std::fs::create_dir_all(&dir).expect("creating the scratch directory");
+    /// let path = dir.join("base.dict");
+    /// std::fs::write(&path, image).expect("writing the container");
+    /// let lexicon = FstLexicon::load(&path).expect("loading the container");
+    ///
+    /// // A record inside the pool becomes the word it names.
+    /// let record = DictEntry::new(0, 3, 1, 0, 900);
+    /// let word = lexicon.entry_to_ref(&record).expect("the record is in contract");
+    /// assert_eq!(word.text, "\u{4f60}");
+    /// assert_eq!(word.weight, 900);
+    ///
+    /// // A record that points past the pool is reported, never read.
+    /// let past = DictEntry::new(6, 3, 1, 0, 900);
+    /// assert!(lexicon.entry_to_ref(&past).is_err());
+    /// assert_eq!(lexicon.malformed_entries().len(), 1);
+    ///
+    /// std::fs::remove_dir_all(&dir).expect("removing the scratch directory");
+    /// ```
+    pub fn entry_to_ref(&self, entry: &DictEntry) -> Result<WordRef<'_>, DictError> {
+        self.table.entry_to_ref(entry)
+    }
+
+    /// Returns the word records the read path has refused so far, oldest first.
+    ///
+    /// The snapshot is for the diagnostics layer, which turns one broken range into one log
+    /// record instead of one per lookup; this crate emits no log records of its own.
+    pub fn malformed_entries(&self) -> Vec<MalformedEntry> {
+        self.table.malformed_entries()
     }
 
     /// Wraps a container failure as the cross-boundary error the trait reports.
@@ -207,9 +363,18 @@ impl FstLexicon {
 }
 
 impl Lexicon for FstLexicon {
+    /// Reads the words of `key`, holding the head of the list inline.
+    ///
+    /// The read stops at [`MAX_WORDS_PER_KEY`], the container's own ceiling on one key's
+    /// list, which the compiler enforces when it writes the file. The frozen signature has
+    /// no `limit`, so a lookup cannot ask for less than that -- the lattice reads eight of
+    /// what it gets -- and the ceiling is therefore the most this method can be narrowed
+    /// to without a contract change.
     fn lookup(&self, key: &str) -> Result<WordIter<'_>, ImeError> {
-        let words = self.words_for(key)?;
-        Ok(WordIter::from_vec(words))
+        let mut buf = WordBuf::new();
+        self.read_words_into(key, MAX_WORDS_PER_KEY as usize, &mut buf)
+            .map_err(|cause| self.unavailable(cause))?;
+        Ok(buf.into_word_iter())
     }
 
     /// Prefix enumeration is a later phase: the signature is frozen now so that
@@ -223,16 +388,19 @@ impl Lexicon for FstLexicon {
     ///
     /// The compiler emits one key per word and a one-character word's key is its own
     /// reading, so the bare syllable is an ordinary key and the fallback needs no index
-    /// of its own. An identifier outside the syllable table has no key to read; it is
-    /// reported as [`ImeError::Unsupported`], the contract's code for a query this
-    /// lexicon cannot serve.
+    /// of its own. The caller's `limit` is pushed all the way down, so a fallback
+    /// materializes exactly what it returns and allocates nothing; the implementation this
+    /// replaced read the whole list and then truncated it. An identifier outside the
+    /// syllable table has no key to read; it is reported as [`ImeError::Unsupported`], the
+    /// contract's code for a query this lexicon cannot serve.
     fn fallback_single(&self, syl: SyllableId, limit: usize) -> Result<WordIter<'_>, ImeError> {
         let Some(key) = syllable_at(syl) else {
             return Err(ImeError::Unsupported);
         };
-        let mut words = self.words_for(key)?;
-        words.truncate(limit);
-        Ok(WordIter::from_vec(words))
+        let mut buf = WordBuf::new();
+        self.read_words_into(key, limit, &mut buf)
+            .map_err(|cause| self.unavailable(cause))?;
+        Ok(buf.into_word_iter())
     }
 }
 
@@ -273,3 +441,6 @@ fn section(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod word_buf_tests;

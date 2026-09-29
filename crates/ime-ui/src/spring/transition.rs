@@ -260,7 +260,8 @@ impl AppearAnim {
     /// Starts the disappear motion, continuing from the current opacity and scale.
     pub fn disappear(&mut self, duration_s: f32) {
         self.opacity.start(0.0, duration_s, CubicBezier::DISAPPEAR);
-        self.scale.start(DISAPPEAR_SCALE_TO, duration_s, CubicBezier::DISAPPEAR);
+        self.scale
+            .start(DISAPPEAR_SCALE_TO, duration_s, CubicBezier::DISAPPEAR);
     }
 
     /// Advances both properties by `dt` and reports whether both have finished.
