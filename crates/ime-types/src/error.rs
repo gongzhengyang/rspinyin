@@ -91,6 +91,14 @@ pub enum ImeError {
     /// error path's noise.
     #[error("config/migrated: from={from} to={to} backup={backup}")]
     ConfigMigrated { from: u16, to: u16, backup: String },
+    /// A configuration document could not be carried forward to this build's schema.
+    ///
+    /// Appended by ADR-0005 to carry `config/migration-failed`, which `features.md`
+    /// 2.2.4 reserved and left without a variant. The plugin never refuses to
+    /// start over this: the defaults are used and the file is left exactly as it
+    /// was, so the user keeps every setting a later build will understand.
+    #[error("config/migration-failed: from={from} to={to} ({reason})")]
+    ConfigMigrationFailed { from: u16, to: u16, reason: String },
     /// Nothing was recorded under the key the caller asked to drop.
     ///
     /// Appended by ADR-0005. The code sits in the existing `dict/*` segment, but the
@@ -202,6 +210,15 @@ pub enum ConfigError {
     /// hand back a second value.
     #[error("config/migrated: from={from} to={to} backup={backup}")]
     Migrated { from: u16, to: u16, backup: String },
+    /// A migration could not be completed; the plugin starts from the defaults.
+    ///
+    /// Appended by ADR-0005 to carry `config/migration-failed`, which
+    /// `features.md` 2.2.4 reserved for this card and left without a variant. The
+    /// failure is never fatal: the original document is kept and the defaults are
+    /// used, so a user whose file this build cannot read still gets a working
+    /// input method and a diagnostic naming what went wrong.
+    #[error("config/migration-failed: from={from} to={to} ({reason})")]
+    MigrationFailed { from: u16, to: u16, reason: String },
 }
 
 /// Platform-backend failures (`platform/backend/*` codes).
@@ -250,6 +267,13 @@ impl From<ConfigError> for ImeError {
             // folded onto `ConfigInvalid`: see `ImeError::ConfigMigrated`.
             ConfigError::Migrated { from, to, backup } => {
                 ImeError::ConfigMigrated { from, to, backup }
+            }
+            // A migration that did not complete also keeps its own code. The plugin
+            // still starts, on the defaults, so folding this onto `ConfigInvalid`
+            // would report a document the user can fix when what happened is a file
+            // this build could not carry forward.
+            ConfigError::MigrationFailed { from, to, reason } => {
+                ImeError::ConfigMigrationFailed { from, to, reason }
             }
         }
     }

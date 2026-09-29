@@ -368,7 +368,13 @@ struct Preparation {
 impl Preparation {
     /// Records a step that failed, which is what turns the plugin read-only (`ASM-15`): the
     /// layout is still handed out and input keeps working, but nothing is written.
+    ///
+    /// The process-wide flag is set here, where the condition is detected, for the reason
+    /// [`readonly_error`] gives: [`is_readonly_mode`] is what the status strip renders its
+    /// lock from, so a degradation that left it clear would show the user a writable state
+    /// for a layout nothing can write to.
     fn degrade(&mut self, code: &'static str, path: &Path, detail: impl Into<String>) {
+        READONLY_MODE.store(true, Ordering::Release);
         self.notices.push(Notice {
             code,
             path: path.to_path_buf(),

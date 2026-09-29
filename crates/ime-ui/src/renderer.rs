@@ -54,16 +54,20 @@ use slint::platform::software_renderer::{PhysicalRegion, RepaintBufferType, Soft
 use slint::platform::{Renderer, WindowAdapter, WindowEvent};
 use slint::{PhysicalSize, PlatformError as SlintError, Window};
 
-use self::raster::{PixelScratch, clip_rect, union_pair, union_rect};
+use self::raster::{BYTES_PER_PIXEL, PixelScratch, clip_rect, union_pair, union_rect};
 
-pub use self::probe::{FontStatus, probe_fonts};
+pub use self::probe::{CJK_FAMILIES, FontChoice, FontStatus, probe_font_choice, probe_fonts};
 
 /// How many rectangles the pending list may hold before it is collapsed.
 ///
 /// A starvation streak accumulates one region per skipped frame, and copying hundreds of
 /// small rectangles costs more than copying their bounding box once. The box is a
 /// superset, which is always safe for a copy.
-const PENDING_COLLAPSE_LIMIT: usize = 8;
+///
+/// This is also the point the damage bookkeeping saturates at: past it a frame's pending
+/// list is one rectangle however long the streak runs, which is what bounds the fold the
+/// copy performs. The saturation benchmark runs one case on either side of it.
+pub const PENDING_COLLAPSE_LIMIT: usize = 8;
 
 /// What one call to `render_if_dirty` did.
 ///
@@ -93,6 +97,15 @@ pub enum RenderOutcome {
         /// asserted on: a steady-state keystroke pays one copy rather than the two the
         /// two-list form charged for the same overlapping damage.
         copies: u32,
+        /// How many bytes of the surface buffer this frame's copy wrote.
+        ///
+        /// Zero for a frame that had nothing to carry over, and otherwise the area of the
+        /// region the copy covered in pixels times the four bytes of an `Argb8888` pixel.
+        /// Where the `copies` field counts the passes and `rectangles` counts the
+        /// rectangles the damage was reported as, this is the memory traffic a frame costs,
+        /// which is the quantity the merge is about: folding the two lists into one region
+        /// is what keeps a steady-state keystroke from paying for their overlap twice.
+        copy_bytes: u64,
     },
     /// The backend had no free buffer. The frame stays dirty and is retried on the next
     /// wake-up; the surface is unchanged.
@@ -166,6 +179,16 @@ impl FrameState {
                 }
             }
         }
+        self.collapse_pending();
+    }
+
+    /// Folds the pending list into its bounding box once it has grown past
+    /// [`PENDING_COLLAPSE_LIMIT`].
+    ///
+    /// Kept apart from [`Self::record_damage`] so that the saturation point can be asserted
+    /// without a Slint region to feed it: the collapse is what bounds the fold the copy
+    /// performs, however many rectangles a starvation streak has accumulated.
+    fn collapse_pending(&mut self) {
         if self.pending.len() > PENDING_COLLAPSE_LIMIT {
             let bounding = union_rect(&self.pending);
             self.pending.clear();
@@ -228,6 +251,18 @@ fn copy_bounds(pending: &[RectI], shown: &[RectI], width_px: u32, height_px: u32
         });
     }
     bounds
+}
+
+/// How many bytes one copy region costs: its area in pixels times the four bytes of an
+/// `Argb8888` pixel.
+///
+/// This is the per-frame figure the frame-copy budget is measured on. It is derived from the
+/// region the copy was handed rather than accumulated inside the copy loop, which would be a
+/// per-pixel addition on the hot path; the two agree because [`PixelScratch::blit_into`]
+/// writes exactly the region it is given and refuses one it cannot cover in full rather than
+/// writing part of it.
+fn region_bytes(rect: RectI) -> u64 {
+    u64::from(rect.w) * u64::from(rect.h) * BYTES_PER_PIXEL as u64
 }
 
 /// The `WindowAdapter` Slint draws the candidate window through.
@@ -373,6 +408,7 @@ impl SlintWindowAdapter {
             bounding: union_rect(&state.shown),
             rectangles: state.shown.len().min(u32::MAX as usize) as u32,
             copies: u32::from(copied.is_some()),
+            copy_bytes: copied.map_or(0, region_bytes),
         })
     }
 
@@ -510,4 +546,74 @@ impl WindowAdapter for SlintWindowAdapter {
 /// records the Slint error still carries the code the tests and probes match on.
 fn slint_error(error: PlatformError) -> SlintError {
     SlintError::Other(error.to_string())
+}
+
+#[cfg(test)]
+// Inline rather than in `renderer/tests.rs`, and the split is by what a test needs: this one
+// covers the damage bookkeeping on its own -- no component, no platform, no fixture -- so it
+// needs nothing the scene tests bring with them.
+mod collapse_tests {
+    use ime_types::RectI;
+
+    use super::{FrameState, PENDING_COLLAPSE_LIMIT, union_rect};
+
+    /// The `step`-th rectangle of a starvation streak: two pixels wide, four apart, so a
+    /// bounding box of them is a shape the assertions can state by hand.
+    fn streak_rect(step: usize) -> RectI {
+        RectI {
+            x: step as i32 * 4,
+            y: 0,
+            w: 2,
+            h: 2,
+        }
+    }
+
+    #[test]
+    fn test_collapse_pending_past_the_limit_folds_the_list_to_its_bounding_box() {
+        let mut state = FrameState::new();
+        for step in 0..PENDING_COLLAPSE_LIMIT {
+            state.pending.push(streak_rect(step));
+        }
+        state.collapse_pending();
+        assert_eq!(
+            state.pending.len(),
+            PENDING_COLLAPSE_LIMIT,
+            "a list at the limit is left as the streak left it"
+        );
+        state.pending.push(streak_rect(PENDING_COLLAPSE_LIMIT));
+        let bounding = union_rect(&state.pending);
+        state.collapse_pending();
+        assert_eq!(
+            state.pending,
+            vec![bounding],
+            "one rectangle past the limit folds the list into its bounding box"
+        );
+        assert_eq!(
+            bounding,
+            RectI {
+                // The streak runs to the ninth rectangle, whose right edge is at 8 * 4 + 2.
+                x: 0,
+                y: 0,
+                w: 34,
+                h: 2
+            },
+            "and the box covers every rectangle the streak accumulated"
+        );
+    }
+
+    #[test]
+    fn test_collapse_pending_inside_the_limit_leaves_the_list_alone() {
+        // The boundary the fold must not trip over: a frame that damaged nothing has no box
+        // to fold into, and inventing one would report damage the frame never produced.
+        let mut state = FrameState::new();
+        state.collapse_pending();
+        assert!(state.pending.is_empty(), "an empty list stays empty");
+        state.pending.push(streak_rect(0));
+        state.collapse_pending();
+        assert_eq!(
+            state.pending,
+            vec![streak_rect(0)],
+            "a single rectangle is its own bounding box"
+        );
+    }
 }

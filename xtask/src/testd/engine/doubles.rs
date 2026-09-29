@@ -241,6 +241,11 @@ impl Lexicon for MockLexicon {
 ///
 /// Both `freq` and `is_user_word` are asked about a *word's text*, not about a syllable
 /// key: the decoder calls them with the text it is about to rank.
+///
+/// The three methods the script-change ADR appended to the trait -- `forget`, `list` and
+/// `export_tsv` -- are left at the defaults the contract gives them, which is the
+/// truthful answer here rather than an omission: a scenario's double has no removable
+/// record, nothing to enumerate and nothing to export, and the defaults say exactly that.
 #[derive(Debug, Default)]
 pub struct MockUserFreq {
     /// Word text to the count the user has committed it.

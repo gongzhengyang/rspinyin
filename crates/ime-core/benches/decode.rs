@@ -31,7 +31,9 @@
 //! Nothing here touches the network, the clock, `$HOME` or a compiled dictionary:
 //! the corpus is generated from the constants in [`fixtures`] and the held-out set
 //! is embedded in the binary, so a run is reproducible and needs no write access
-//! outside `target/`.
+//! outside `target/`. The case table is checked against its own inputs before the
+//! first measurement, so a case cannot report a number for a shape other than the
+//! one its name claims.
 
 mod fixtures;
 
@@ -82,10 +84,15 @@ const SESSION_KEYS: &str = "womenmingt";
 ///
 /// The dictionary and the model are built once, before any measurement, and the
 /// held-out set is embedded in the binary, so a run needs no file and no `$HOME`.
+/// Building them also checks the case table: every input is cut and compared with the
+/// size its case declares, so a run whose cases are not the shapes they name stops
+/// before the first measurement instead of reporting a number for a shape the budget
+/// was not stated for.
 ///
 /// # Errors
 /// Returns a description of the first benchmark input that cannot be cut into
-/// syllables, and whatever criterion reports about the command line.
+/// syllables or that does not spell the size its case declares, and whatever
+/// criterion reports about the command line.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dictionary = fixtures::build()?;
     let model = model(&dictionary);
@@ -315,8 +322,10 @@ fn bench_edge_score(criterion: &mut Criterion, dictionary: &SyntheticDict, model
 /// re-decodes, rebuilds the preedit and builds the `UiFrame` the window draws from --
 /// the preedit snapshot, the page of candidates and the mode strip -- and that frame
 /// is what the session hands over per key. One iteration types [`SESSION_KEYS`] into
-/// the session the setup half left composing, so the reported time is the mean over
-/// those keystrokes.
+/// the session the setup half left composing, so the reported time is what those
+/// keystrokes cost together. The cost of one keystroke is that number divided by their
+/// count, which is the quantity the case is named for: criterion reports a mean per
+/// iteration, and one iteration is the whole run of keys.
 ///
 /// The seed is typed in the setup half, which keeps the allocations it costs outside
 /// the measurement: what the iteration measures is a session that is already

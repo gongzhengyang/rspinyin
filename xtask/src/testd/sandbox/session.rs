@@ -422,7 +422,10 @@ impl Sandbox {
 ///
 /// Each attempt gets a path of its own under the sandbox's runtime directory, so a bus left
 /// behind by a previous attempt cannot be mistaken for the current one.
-fn bus_address(runtime_home: &Path, attempt: u32) -> String {
+///
+/// Visible to the parent module so that the naming rule -- the whole of the retry's recovery
+/// -- is pinned by a test without a Fcitx5 session to start.
+pub(super) fn bus_address(runtime_home: &Path, attempt: u32) -> String {
     format!(
         "unix:path={}",
         runtime_home.join(format!("bus.{attempt}")).display()

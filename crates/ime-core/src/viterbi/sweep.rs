@@ -316,13 +316,23 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
                 let Ok(index) = u32::try_from(index) else {
                     continue;
                 };
-                let edge_score = self.sources.scorer.edge_score(
-                    self.sources.lm,
-                    self.sources.uf,
-                    prev_word,
-                    edge.word.text,
-                    edge.characters,
-                );
+                let edge_score = self
+                    .sources
+                    .scorer
+                    .edge_score(
+                        self.sources.lm,
+                        self.sources.uf,
+                        prev_word,
+                        edge.word.text,
+                        edge.characters,
+                    )
+                    // The edge's own penalty, subtracted after the score rather than folded
+                    // into it: an abbreviated edge and a full-spelling edge for the same word
+                    // are scored by the same language model, and what separates them is that
+                    // one of them guessed at the reading. Subtracting here is what makes the
+                    // ordering a property of the scores rather than of the order the edges
+                    // were pushed in.
+                    .saturating_sub(edge.penalty_q8);
                 // One segment is charged per edge rather than the whole path at the
                 // end. The penalty is linear in the segment count, so the two add up
                 // to the same total -- and this way no path carries its own count.

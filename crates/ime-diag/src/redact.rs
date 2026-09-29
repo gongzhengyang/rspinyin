@@ -13,11 +13,21 @@
 //! |---|---|
 //! | `raw`, `text`, `preedit`, `input`, `candidate_text`, `word`, `commit_text` | `<redacted:len=N>`, `N` being the character count of the withheld value |
 //! | `app` and anything else | the value, with a leading home-directory prefix rewritten to `~` |
+//! | the message of a non-sensitive session | the text, with every `name=value` pair whose name is denied replaced by the placeholder |
 //! | any field of a sensitive session | nothing, except the `app` hash |
 //! | the message of a sensitive session | nothing |
 //!
 //! `N` counts the value as it would have been rendered: one recorded with `%` or as a plain
 //! `&str` renders as itself, while one recorded with `?` renders with its `Debug` quoting.
+//!
+//! # Free text
+//!
+//! A message is a static template by project rule, but it is still free text: a caller that
+//! wrote `info!("raw={raw}")` would put a value into the one part of a line the field rules
+//! do not reach. [`scrub_denied_values`] closes that path for the message field and for the
+//! panic message a crash record carries, by replacing the value of any `name=value` pair
+//! whose name is denied. It is the same second line of defence as the field rules, applied
+//! to the text between the fields.
 //!
 //! # The two lines of defence
 //!
@@ -91,6 +101,136 @@ pub fn is_denied_field(name: &str) -> bool {
 /// byte count of a pinyin buffer is a poor description of it.
 pub fn redaction_placeholder(len: usize) -> String {
     format!("{PLACEHOLDER_PREFIX}{len}>")
+}
+
+/// The characters that end an unquoted value in free text.
+const VALUE_TERMINATORS: [char; 9] = [' ', '\t', '\n', '\r', ',', ';', ')', ']', '}'];
+
+/// Replaces the value of every denied field name in free text with the placeholder.
+///
+/// A field name only counts at a word boundary and only when an `=` follows it, so the
+/// structural names that merely start with a denied one -- `raw_len`, `input_buffer`,
+/// `keyword` -- are left alone, exactly as [`is_denied_field`] leaves them alone as fields.
+/// A quoted value runs to its closing quote, which is what a `Debug` rendering carries; any
+/// other value runs to the next blank or separator.
+///
+/// # Parameters
+///
+/// - `text`: the message or payload to scan.
+///
+/// # Returns
+///
+/// The text with the values replaced, or the same text borrowed when it holds no denied
+/// assignment at all -- which is the case for every static template, and the reason this
+/// costs no allocation on the ordinary path.
+///
+/// # Panics
+///
+/// Never.
+///
+/// # Examples
+///
+/// ```
+/// use ime_diag::redact::scrub_denied_values;
+///
+/// assert_eq!(
+///     scrub_denied_values("decode gave up: raw=abc"),
+///     "decode gave up: raw=<redacted:len=3>"
+/// );
+/// // A structural name that merely starts with a denied one is not a value.
+/// assert_eq!(scrub_denied_values("raw_len=3"), "raw_len=3");
+/// ```
+pub fn scrub_denied_values(text: &str) -> Cow<'_, str> {
+    if find_denied_assignment(text, 0).is_none() {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    while let Some((_, raw_value_start)) = find_denied_assignment(text, cursor) {
+        let value_start = skip_blanks(text, raw_value_start);
+        let value_end = value_end(text, value_start);
+        out.push_str(&text[cursor..value_start]);
+        out.push_str(&redaction_placeholder(
+            text[value_start..value_end].chars().count(),
+        ));
+        // Always forward: the name and its `=` are ahead of the value, so the next scan
+        // starts strictly later than this one did.
+        cursor = value_end;
+    }
+    out.push_str(&text[cursor..]);
+    Cow::Owned(out)
+}
+
+/// Finds the next `name=value` pair whose name is denied, at or after byte index `from`.
+///
+/// # Returns
+///
+/// The byte index of the name and the byte index of the value, or `None` when the rest of
+/// the text carries no denied name.
+fn find_denied_assignment(text: &str, from: usize) -> Option<(usize, usize)> {
+    text.char_indices()
+        .filter(|(index, _)| *index >= from)
+        .find_map(|(index, _)| denied_assignment_at(text, index))
+}
+
+/// The `name=value` pair that starts at byte index `index`, when its name is denied.
+fn denied_assignment_at(text: &str, index: usize) -> Option<(usize, usize)> {
+    // A name only counts at a word boundary, so `keyword` is not `word`. A byte above
+    // ASCII is the tail of another character and counts as a boundary.
+    if index > 0 && is_word_byte(text.as_bytes()[index - 1]) {
+        return None;
+    }
+    let tail = &text[index..];
+    let name = longest_denied_prefix(tail)?;
+    let after_name = tail[name.len()..].trim_start_matches([' ', '\t']);
+    let after_equals = after_name.strip_prefix('=')?;
+    Some((index, text.len() - after_equals.len()))
+}
+
+/// The longest name in [`DENIED_FIELDS`] that `text` starts with.
+///
+/// The longest one, because `commit_text` starts with `text`: taking the shorter match
+/// would leave `commit_` in the line and withhold only the tail of the name.
+fn longest_denied_prefix(text: &str) -> Option<&'static str> {
+    DENIED_FIELDS
+        .iter()
+        .copied()
+        .filter(|name| text.starts_with(*name))
+        .max_by_key(|name| name.len())
+}
+
+/// Whether `byte` can be part of a word, so that a name found inside one is not a field.
+fn is_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// The first index at or after `from` that holds a character which is not a blank.
+fn skip_blanks(text: &str, from: usize) -> usize {
+    from + text[from..]
+        .find(|ch| !matches!(ch, ' ' | '\t'))
+        .unwrap_or(text.len() - from)
+}
+
+/// The end of the value that starts at byte index `start`.
+///
+/// A quoted value runs through its closing quote; any other value runs to the next blank or
+/// separator; a value with no end in the text runs to the end of it.
+fn value_end(text: &str, start: usize) -> usize {
+    let tail = &text[start..];
+    let Some(first) = tail.chars().next() else {
+        return start;
+    };
+    if first == '"' || first == '\'' {
+        let body = start + first.len_utf8();
+        return match text[body..].find(first) {
+            Some(offset) => body + offset + first.len_utf8(),
+            None => text.len(),
+        };
+    }
+    start
+        + tail
+            .find(|ch| VALUE_TERMINATORS.contains(&ch))
+            .unwrap_or(tail.len())
 }
 
 /// Rewrites a leading home-directory prefix of `value` to `~`.
@@ -504,9 +644,13 @@ impl<'w, 'h> RedactVisitor<'w, 'h> {
         };
         if name == MESSAGE_FIELD {
             // The message is a static template by project rule, so it is written as it is --
-            // with the home prefix shortened like any other value.
+            // with the home prefix shortened like any other value, and with any `name=value`
+            // pair whose name is denied replaced by the placeholder. A template is free text
+            // all the same, and this is the one place a value could otherwise reach a line
+            // without passing a field rule.
+            let scrubbed = scrub_denied_values(&value);
             self.pad();
-            self.write_value(&value);
+            self.write_value(&scrubbed);
             return;
         }
         self.write_pair(name, &value);

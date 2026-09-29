@@ -27,15 +27,29 @@
 //! keys a bounded walk drops follows from the graph's own edge order, so it is
 //! the same set on every run.
 //!
+//! # The abbreviation walk
+//!
+//! Beside the span walk, an input whose syllables are typed as initials reaches words
+//! no key spells out: `nh` means `ni'hao` with letters left out, and the dictionary is
+//! asked for it through [`Lexicon::prefix`]. That walk lives in `abbrev.rs`, runs only
+//! for a node a path reaches and only while [`DecodeFlags::ABBREV`] is set, and marks
+//! every edge it adds with [`LatticeEdge::penalty_q8`] so that a full spelling outranks
+//! an abbreviation at equal dictionary weight. Its cost is bounded on four axes -- the
+//! readings of one node, the syllables of one reading, the queries of one node, and the
+//! edges every extension walk may add together ([`MAX_TOTAL_EDGES`]) -- which is what
+//! keeps the lattice of an ambiguous input inside the decode budget.
+//!
 //! # Borrowing
 //!
 //! An edge holds the dictionary's own [`WordRef`]: the word text points straight
 //! into the mapped string pool and is never copied here.
 
-use ime_types::{CandidateSource, Lexicon, SyllableId, UserFreqSource, WordFlags, WordRef};
+use ime_types::{
+    CandidateSource, DecodeFlags, Lexicon, SyllableId, UserFreqSource, WordFlags, WordRef,
+};
 use smallvec::SmallVec;
 
-use crate::segment::{DagEdge, MAX_NODES, MAX_SYLLABLE_LEN, SyllableDag};
+use crate::segment::{DagEdge, MAX_NODES, MAX_SYLLABLE_LEN, Readings, SyllableDag};
 
 /// Longest word span, in syllables, the lattice considers.
 ///
@@ -61,6 +75,20 @@ pub const FALLBACK_SINGLES: usize = 3;
 /// is; it is far above what a real input needs, where a span usually has one
 /// reading and a second one only where the graph branches.
 const MAX_KEYS_PER_NODE: usize = 24;
+
+/// Most edges the extension walks may add to one lattice.
+///
+/// The exact walk is never cut -- a lattice missing a word the dictionary holds is a
+/// wrong answer, while a slow one is only slow -- so this is the ceiling the walks
+/// beside it fill up to, and they share it in the order the design fixes: the
+/// abbreviation walk takes what it needs first and the fuzzy walk takes what is left,
+/// so turning both on cannot make a lattice grow without bound. The exact walk's own
+/// bound is [`MAX_KEYS_PER_NODE`] keys of [`WORDS_PER_KEY`] words per node, which is
+/// far past what a real dictionary offers; this ceiling is the same "strongest eight"
+/// budget spent once per node of the widest graph a request can produce, and the sweep
+/// scores every one of those edges once per path that reaches its node, so it is a few
+/// hundred microseconds at the widest beam.
+pub const MAX_TOTAL_EDGES: usize = MAX_LATTICE_NODES * WORDS_PER_KEY;
 
 /// Most nodes one lattice has: one per byte of the normalized input plus the
 /// terminal node.
@@ -97,6 +125,19 @@ pub struct LatticeEdge<'dict> {
     pub source: CandidateSource,
     /// The word, borrowed from the dictionary's mapping.
     pub word: WordRef<'dict>,
+    /// Score penalty the edge carries, in the Q16.16 unit the sweep ranks with.
+    ///
+    /// Zero for an edge the exact walk produced, and the penalty of the extension that
+    /// found it -- [`ABBREV_PENALTY_Q8`](crate::segment::abbrev::ABBREV_PENALTY_Q8) for an
+    /// abbreviated one -- so that a full spelling outranks an abbreviation at equal
+    /// dictionary weight. The lattice records the penalty rather than applying it: the
+    /// score of an edge is the sweep's to compute, and this is the one term of that score
+    /// the lattice knows and the sweep cannot derive from the word and its predecessor.
+    /// The order the edges sit in is a second, weaker guarantee -- the exact walk's edges
+    /// come before the abbreviation walk's, so a tie falls the right way even on a sweep
+    /// that ignores this field -- and the penalty is what makes the outcome a matter of
+    /// the score rather than of the order.
+    pub penalty_q8: i32,
 }
 
 /// Every word edge of one input, grouped by the node they leave.
@@ -104,9 +145,10 @@ pub struct LatticeEdge<'dict> {
 /// # Examples
 ///
 /// ```
-/// use ime_core::segment::SyllableDag;
+/// use ime_core::segment::{Readings, SyllableDag};
 /// use ime_core::viterbi::build_lattice;
-/// use ime_types::{ImeError, Lexicon, WordFlags, WordIter, WordRef};
+/// use ime_core::viterbi::lattice::LatticeOptions;
+/// use ime_types::{DecodeFlags, ImeError, Lexicon, WordFlags, WordIter, WordRef};
 ///
 /// struct One;
 /// impl Lexicon for One {
@@ -133,11 +175,18 @@ pub struct LatticeEdge<'dict> {
 ///
 /// let mut dag = SyllableDag::new();
 /// assert!(dag.build("nihao").is_ok());
-/// let lattice = build_lattice(&dag, &One, &One, true);
+/// let mut readings = Readings::new();
+/// let lattice = build_lattice(&dag, &One, &One, LatticeOptions {
+///     fallback_single: true,
+///     flags: DecodeFlags::empty(),
+///     readings: &mut readings,
+/// });
 /// let edges = lattice.edges_from(0);
 /// assert_eq!(edges.len(), 1);
 /// assert_eq!(edges[0].word.text, "你好");
 /// assert_eq!(edges[0].syllables, 2);
+/// // An edge the exact walk found carries no penalty.
+/// assert_eq!(edges[0].penalty_q8, 0);
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct Lattice<'dict> {
@@ -149,6 +198,9 @@ pub struct Lattice<'dict> {
     /// Whether the dictionary refused a lookup, which makes the lattice an
     /// incomplete picture of what it holds.
     lookup_failed: bool,
+    /// Whether the abbreviation enumeration was cut short by its own cap, which makes
+    /// the lattice miss the vaguest readings of the input.
+    abbrev_truncated: bool,
 }
 
 impl<'dict> Lattice<'dict> {
@@ -159,7 +211,8 @@ impl<'dict> Lattice<'dict> {
     /// takes for a twelve-syllable input. The estimate is the average the walk produces --
     /// every node contributes at most [`WORDS_PER_KEY`] edges for its one-syllable spans,
     /// plus the single-character fallbacks when they are on -- so a dictionary that is richer
-    /// than that grows the vector once more rather than being refused.
+    /// than that, or a build the abbreviation walk adds edges to, grows the vector once more
+    /// rather than being refused.
     ///
     /// # Panics
     ///
@@ -171,6 +224,7 @@ impl<'dict> Lattice<'dict> {
             edges: Vec::with_capacity(nodes.saturating_mul(per_node)),
             starts: SmallVec::new(),
             lookup_failed: false,
+            abbrev_truncated: false,
         }
     }
 
@@ -232,15 +286,49 @@ impl<'dict> Lattice<'dict> {
     pub fn lookup_failed(&self) -> bool {
         self.lookup_failed
     }
+
+    /// Returns whether the abbreviation walk left readings of the input out of the
+    /// lattice.
+    ///
+    /// The signal behind the `decode/abbrev-truncated` diagnostic: an input with more
+    /// readings than the enumeration cap holds is still decoded, with the most specific
+    /// readings the cap left room for, and this is what tells a caller the answer is
+    /// built from a subset. It is a fact about the input rather than about the flag set,
+    /// so a caller that logs it once has to remember that it already did. Always `false`
+    /// while [`DecodeFlags::ABBREV`] is clear, because the walk is never entered.
+    pub fn abbrev_truncated(&self) -> bool {
+        self.abbrev_truncated
+    }
+}
+
+/// The switches one lattice build reads and the buffer it reuses.
+///
+/// Grouped rather than passed one by one because the three travel together: a build is
+/// asked for the same thing every time and differs only in these, and the buffer is the
+/// caller's, so that a decode that runs once per keystroke hands the same allocation
+/// back instead of building one per node.
+#[derive(Debug)]
+pub struct LatticeOptions<'a> {
+    /// Whether a one-syllable span the dictionary has no word for is filled in with
+    /// single-character candidates. Turning it off leaves the lattice without a path
+    /// for such an input, which the decoder answers with a pass-through candidate.
+    pub fallback_single: bool,
+    /// The switches of the request being decoded.
+    ///
+    /// [`DecodeFlags::ABBREV`] is the whole abbreviation gate: with the bit clear the
+    /// abbreviation walk is never entered, no reading is enumerated and no prefix query
+    /// is made, so a build costs what it cost before abbreviation existed.
+    pub flags: DecodeFlags,
+    /// The buffer the abbreviation enumeration reuses.
+    ///
+    /// It is cleared and filled once per node the walk reaches, and the syllable vectors
+    /// it holds are handed back to the next call, so a decode that keeps one of these
+    /// stops allocating after the first input of a given shape.
+    pub readings: &'a mut Readings,
 }
 
 /// Builds the lattice of `dag`: every word stored under the key of every span of
 /// every reading of the input.
-///
-/// `fallback_single` decides whether a one-syllable span the dictionary has no
-/// word for is filled in with single-character candidates. Turning it off leaves
-/// the lattice without a path for such an input, which the decoder answers with a
-/// pass-through candidate.
 ///
 /// The dictionary's user-word flags and `user`'s own record of coined words are
 /// both read, because the two can disagree: a word can sit in the base dictionary
@@ -254,10 +342,10 @@ pub fn build_lattice<'dict>(
     dag: &SyllableDag,
     lexicon: &'dict dyn Lexicon,
     user: &'dict (dyn UserFreqSource + 'dict),
-    fallback_single: bool,
+    options: LatticeOptions<'_>,
 ) -> Lattice<'dict> {
-    let mut lattice = Lattice::with_capacity(usize::from(dag.len()) + 1, fallback_single);
-    build_lattice_into(&mut lattice, dag, lexicon, user, fallback_single);
+    let mut lattice = Lattice::with_capacity(usize::from(dag.len()) + 1, options.fallback_single);
+    build_lattice_into(&mut lattice, dag, lexicon, user, options);
     lattice
 }
 
@@ -277,11 +365,17 @@ pub fn build_lattice_into<'dict>(
     dag: &SyllableDag,
     lexicon: &'dict dyn Lexicon,
     user: &'dict (dyn UserFreqSource + 'dict),
-    fallback_single: bool,
+    options: LatticeOptions<'_>,
 ) {
     lattice.edges.clear();
     lattice.starts.clear();
     lattice.lookup_failed = false;
+    lattice.abbrev_truncated = false;
+    let LatticeOptions {
+        fallback_single,
+        flags,
+        readings,
+    } = options;
     let mut builder = Builder {
         lexicon,
         user,
@@ -290,6 +384,13 @@ pub fn build_lattice_into<'dict>(
         key: String::with_capacity(MAX_KEY_BYTES),
         singles: SmallVec::new(),
         stack: SmallVec::new(),
+        flags,
+        readings,
+        live_node: false,
+        live: [false; MAX_LATTICE_NODES],
+        extension_edges: 0,
+        extensions_full: false,
+        abbrev_truncated: false,
     };
     let nodes = usize::from(dag.len()) + 1;
     for node in 0..nodes {
@@ -297,6 +398,7 @@ pub fn build_lattice_into<'dict>(
         builder.lattice.starts.push(first);
         builder.node(dag, node);
     }
+    builder.lattice.abbrev_truncated = builder.abbrev_truncated;
 }
 
 /// One key the walk has spelled out, and where it ends.
@@ -328,21 +430,38 @@ struct Single {
 /// The key and the two stacks are held across the whole build rather than
 /// allocated per span, and the key is sized for the longest word, so the walk
 /// never grows a buffer. The lattice is borrowed rather than owned, which is what
-/// lets a caller build into a lattice it keeps.
-struct Builder<'a, 'lattice> {
+/// lets a caller build into a lattice it keeps. The abbreviation walk's own state
+/// -- the switches, its enumeration buffer and the reachability of the nodes -- is
+/// held here as well, because it runs node by node inside the same pass.
+struct Builder<'a, 'lattice, 'buf> {
     lexicon: &'a dyn Lexicon,
     user: &'a dyn UserFreqSource,
     fallback_single: bool,
     lattice: &'lattice mut Lattice<'a>,
-    /// Key under construction, reused by every span the walk spells.
+    /// Key under construction, reused by every span the walk spells and, once the spans
+    /// of a node are done, by the abbreviation query spelled for the same node.
     key: String,
     /// The one-syllable spans of the node being walked.
     singles: SmallVec<[Single; SINGLES_INLINE]>,
     /// Spans still to be spelled, in the order the graph produced them.
     stack: SmallVec<[Frame; SINGLES_INLINE]>,
+    /// Switches of the request being decoded; `ABBREV` gates the abbreviation walk.
+    flags: DecodeFlags,
+    /// The enumeration buffer the abbreviation walk hands to `readings_into`.
+    readings: &'buf mut Readings,
+    /// Whether the node being walked is one a path reaches.
+    live_node: bool,
+    /// `live[i]` is set once an edge leaving a reachable node reaches node `i`.
+    live: [bool; MAX_LATTICE_NODES],
+    /// Edges the extension walks have added, measured against [`MAX_TOTAL_EDGES`].
+    extension_edges: usize,
+    /// Whether the extension walks have reached their ceiling.
+    extensions_full: bool,
+    /// Whether the abbreviation enumeration was cut short by its own cap.
+    abbrev_truncated: bool,
 }
 
-impl Builder<'_, '_> {
+impl Builder<'_, '_, '_> {
     /// Enumerates every word edge that leaves `node`.
     ///
     /// The walk is explicit -- a stack of spans, never recursion -- so a long
@@ -354,6 +473,12 @@ impl Builder<'_, '_> {
         let Ok(node) = u16::try_from(node) else {
             return;
         };
+        // Every path starts at node 0, and every other node is walked whether or not a
+        // path reaches it -- the exact walk's spans are cheap there, because the graph
+        // has no edge to spell. The abbreviation walk is the exception: it reads the
+        // input rather than the graph, so a node nothing reaches would make it enumerate
+        // readings and query the dictionary for words no candidate can use.
+        self.live_node = node == 0 || self.live.get(usize::from(node)).copied().unwrap_or(false);
         self.stack.push(Frame {
             node,
             syllables: 0,
@@ -375,6 +500,7 @@ impl Builder<'_, '_> {
         if self.fallback_single {
             self.fallbacks();
         }
+        self.abbrev(dag, node);
     }
 
     /// Spells one span and records the words stored under its key.
@@ -430,7 +556,11 @@ impl Builder<'_, '_> {
                 characters: u16::try_from(word.text.chars().count()).unwrap_or(u16::MAX),
                 source,
                 word,
+                penalty_q8: 0,
             });
+        }
+        if covered {
+            self.reach(edge.end);
         }
         covered
     }
@@ -439,7 +569,13 @@ impl Builder<'_, '_> {
     /// dictionary had no word of its own for.
     fn fallbacks(&mut self) {
         let lexicon = self.lexicon;
-        for single in &self.singles {
+        // The spans are read by index rather than by iterator so that each one is copied
+        // out before the edge is pushed: the marking below borrows the builder, and an
+        // iterator over `singles` would hold it for the whole loop.
+        for index in 0..self.singles.len() {
+            let Some(single) = self.singles.get(index).copied() else {
+                continue;
+            };
             if single.covered {
                 continue;
             }
@@ -454,11 +590,27 @@ impl Builder<'_, '_> {
                                 .unwrap_or(u16::MAX),
                             source,
                             word,
+                            penalty_q8: 0,
                         });
+                        self.reach(single.end);
                     }
                 }
                 Err(_) => self.lattice.lookup_failed = true,
             }
+        }
+    }
+
+    /// Marks the node an edge reaches as one a path can reach.
+    ///
+    /// The marking follows the walk: an edge of a node nothing reaches leads nowhere a
+    /// candidate could be built from, so it marks nothing either. Node 0 is the root
+    /// every path starts from and is reachable by definition.
+    fn reach(&mut self, end: u16) {
+        if !self.live_node {
+            return;
+        }
+        if let Some(slot) = self.live.get_mut(usize::from(end)) {
+            *slot = true;
         }
     }
 
@@ -473,6 +625,15 @@ impl Builder<'_, '_> {
     }
 }
 
+/// The abbreviation walk: the extra edges an input reaches when a syllable may be
+/// typed as its initial alone.
+///
+/// It lives in `lattice/abbrev.rs` because it is the one part of the build that reads
+/// the input rather than the graph, and because the walk's own file is at its line
+/// budget. The module is private: what a caller sees of it is the edges it adds and
+/// the penalty they carry.
+mod abbrev;
+
 /// Test doubles shared by the lattice and the decoder tests.
 ///
 /// They live in `lattice/testing.rs` rather than in the decoder's own test module
@@ -483,240 +644,4 @@ impl Builder<'_, '_> {
 pub(crate) mod testing;
 
 #[cfg(test)]
-mod tests {
-    use super::testing::{MockLexicon, NoUser};
-    use super::*;
-
-    /// Builds the lattice of `raw` against `lexicon`, with fallbacks on.
-    fn lattice_of<'a>(raw: &str, lexicon: &'a MockLexicon) -> Lattice<'a> {
-        let mut dag = SyllableDag::new();
-        assert!(dag.build(raw).is_ok(), "building {raw:?}");
-        build_lattice(&dag, lexicon, &NoUser, true)
-    }
-
-    /// Returns the texts of the edges leaving `node`.
-    fn texts<'a>(lattice: &'a Lattice<'_>, node: usize) -> Vec<&'a str> {
-        lattice
-            .edges_from(node)
-            .iter()
-            .map(|edge| edge.word.text)
-            .collect()
-    }
-
-    #[test]
-    fn test_build_lattice_finds_the_words_of_every_span() {
-        let lexicon = MockLexicon::with(&[("ni", "你"), ("hao", "好"), ("ni'hao", "你好")]);
-        let lattice = lattice_of("nihao", &lexicon);
-        assert_eq!(texts(&lattice, 0), vec!["你", "你好"]);
-        // `hao` starts at byte 2 of `nihao`, and the terminal node has no edges.
-        assert_eq!(texts(&lattice, 2), vec!["好"]);
-        assert!(lattice.edges_from(5).is_empty());
-        assert!(!lattice.is_empty());
-    }
-
-    #[test]
-    fn test_build_lattice_reads_every_spelling_of_an_ambiguous_input() {
-        // `xian` cuts four ways, and the readings are not interchangeable: the
-        // one-syllable reading is 先 and the two-syllable one is 西安. A span is
-        // therefore looked up once per spelling. Node indices are byte offsets, so the
-        // 西 of `xi` and the 先 of `xian` both leave node 0, while the 安 of `xi'an`
-        // starts two bytes in and leaves node 2.
-        let lexicon = MockLexicon::with(&[("xian", "先"), ("xi", "西"), ("an", "安")]);
-        let lattice = lattice_of("xian", &lexicon);
-        assert_eq!(texts(&lattice, 0), vec!["西", "先"]);
-        assert_eq!(texts(&lattice, 2), vec!["安"]);
-        // Both readings reach the terminal node: 先 in one edge, and 西安 through
-        // the `xi` edge followed by the `an` edge out of node 2.
-        let direct = lattice
-            .edges_from(0)
-            .iter()
-            .any(|edge| usize::from(edge.end) == 4);
-        assert!(direct);
-        assert!(!lattice.edges_from(2).is_empty());
-    }
-
-    #[test]
-    fn test_build_lattice_keeps_only_the_strongest_words_of_a_key() {
-        let rows: Vec<(&'static str, &'static str)> = (0..WORDS_PER_KEY + 2)
-            .map(|index| {
-                (
-                    "shi",
-                    ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"][index],
-                )
-            })
-            .collect();
-        let lexicon = MockLexicon::with(&rows);
-        let lattice = lattice_of("shi", &lexicon);
-        let kept = lattice.edges_from(0);
-        assert_eq!(kept.len(), WORDS_PER_KEY);
-        assert_eq!(kept[0].word.text, "一");
-        assert_eq!(kept[WORDS_PER_KEY - 1].word.text, "八");
-    }
-
-    #[test]
-    fn test_build_lattice_stops_spelling_spans_at_the_word_length_limit() {
-        // Seven `a`s segment one way only -- a chain of seven syllables -- so the walk
-        // can spell a span of any length up to the limit and no longer. The dictionary
-        // holds a word for the six-syllable span and one for the seven-syllable span.
-        let rows = [("a'a'a'a'a'a", "六"), ("a'a'a'a'a'a'a", "七")];
-        let lexicon = MockLexicon::with(&rows);
-        let lattice = lattice_of("aaaaaaa", &lexicon);
-        // Two edges only: the six-syllable key is spelled from node 0 and from node 1,
-        // and the seven-syllable key is never looked up, so no edge carries 七.
-        assert_eq!(lattice.len(), 2);
-        assert_eq!(texts(&lattice, 0), vec!["六"]);
-        assert_eq!(texts(&lattice, 1), vec!["六"]);
-        assert_eq!(lattice.edges_from(0)[0].syllables, MAX_WORD_SYLLABLES);
-    }
-
-    #[test]
-    fn test_build_lattice_falls_back_only_where_no_word_covers_the_syllable() {
-        let lexicon = MockLexicon::with(&[("ni", "你")])
-            .single("ni", &["伱"])
-            .single("hao", &["好", "号", "浩", "郝"]);
-        let lattice = lattice_of("nihao", &lexicon);
-        // `ni` has a word of its own, so the fallback list is not used for it;
-        // `hao` has none, so it is, and only its first three candidates.
-        assert_eq!(texts(&lattice, 0), vec!["你"]);
-        assert_eq!(texts(&lattice, 2), vec!["好", "号", "浩"]);
-    }
-
-    #[test]
-    fn test_build_lattice_without_the_fallback_switch_leaves_spans_uncovered() {
-        let lexicon = MockLexicon::with(&[("ni", "你")]).single("hao", &["好"]);
-        let mut dag = SyllableDag::new();
-        assert!(dag.build("nihao").is_ok());
-        let lattice = build_lattice(&dag, &lexicon, &NoUser, false);
-        assert_eq!(texts(&lattice, 0), vec!["你"]);
-        assert!(lattice.edges_from(2).is_empty());
-    }
-
-    #[test]
-    fn test_build_lattice_labels_a_user_word() {
-        // `coined` names the word, not the lookup key: the frozen `UserFreqSource` is
-        // queried with the word text (`Scorer::edge_score` passes `uf.freq(word)`), so a
-        // mock that recorded the key here would label nothing.
-        let lexicon = MockLexicon::with(&[("ni", "你"), ("hao", "好")]).coined("好");
-        let lattice = lattice_of("nihao", &lexicon);
-        assert_eq!(lattice.edges_from(0)[0].source, CandidateSource::Dict);
-        assert_eq!(lattice.edges_from(2)[0].source, CandidateSource::UserDict);
-    }
-
-    #[test]
-    fn test_build_lattice_reports_a_refused_lookup() {
-        let lexicon = MockLexicon::with(&[("ni", "你")]).failing("hao");
-        let lattice = lattice_of("nihao", &lexicon);
-        assert!(lattice.lookup_failed());
-        // The failing key simply contributes nothing, and the fallback still
-        // leaves a path to the end.
-        assert_eq!(texts(&lattice, 0), vec!["你"]);
-    }
-
-    #[test]
-    fn test_build_lattice_gives_every_node_a_range_and_orders_the_edges() {
-        let lexicon = MockLexicon::with(&[("ni", "你"), ("hao", "好"), ("ni'hao", "你好")]);
-        let lattice = lattice_of("nihao", &lexicon);
-        assert_eq!(lattice.node_count(), 6);
-        let mut seen = 0usize;
-        for node in 0..lattice.node_count() {
-            let (first, last) = lattice.edge_range(node);
-            assert!(first <= last);
-            assert_eq!(last - first, lattice.edges_from(node).len());
-            for index in first..last {
-                assert!(lattice.edge_at(index).is_some());
-            }
-            seen += last - first;
-        }
-        assert_eq!(seen, lattice.len());
-        // A node past the end, and an edge index past the end, are answered
-        // rather than panicking.
-        assert!(lattice.edges_from(lattice.node_count()).is_empty());
-        assert!(lattice.edge_at(lattice.len()).is_none());
-    }
-
-    #[test]
-    fn test_build_lattice_of_an_empty_graph_has_no_edges() {
-        let lexicon = MockLexicon::with(&[]);
-        let dag = SyllableDag::new();
-        let lattice = build_lattice(&dag, &lexicon, &NoUser, true);
-        assert!(lattice.is_empty());
-        assert_eq!(lattice.len(), 0);
-        assert_eq!(lattice.node_count(), 1);
-        assert!(lattice.edges_from(0).is_empty());
-    }
-
-    #[test]
-    fn test_build_lattice_counts_characters_and_syllables_of_each_edge() {
-        let lexicon = MockLexicon::with(&[("zhong", "中"), ("zhong'guo", "中国")]);
-        let lattice = lattice_of("zhongguo", &lexicon);
-        let edges = lattice.edges_from(0);
-        assert_eq!(edges.len(), 2);
-        assert_eq!(edges[0].word.text, "中");
-        assert_eq!(edges[0].syllables, 1);
-        assert_eq!(edges[0].characters, 1);
-        assert_eq!(edges[1].word.text, "中国");
-        assert_eq!(edges[1].syllables, 2);
-        assert_eq!(edges[1].characters, 2);
-    }
-
-    #[test]
-    fn test_lattice_with_capacity_sizes_the_edge_vector_for_the_graph() {
-        let lattice: Lattice<'_> = Lattice::with_capacity(4, true);
-        assert!(lattice.is_empty());
-        assert_eq!(lattice.node_count(), 0);
-        assert_eq!(
-            lattice.edges.capacity(),
-            4 * (WORDS_PER_KEY + FALLBACK_SINGLES),
-            "the fallbacks are part of the estimate when they are on"
-        );
-        // A node count past the ceiling is cut to it, so a hand-built configuration cannot
-        // make the lattice allocate without bound.
-        let bounded: Lattice<'_> = Lattice::with_capacity(usize::MAX, false);
-        assert_eq!(bounded.edges.capacity(), MAX_LATTICE_NODES * WORDS_PER_KEY);
-    }
-
-    #[test]
-    fn test_build_lattice_into_replaces_the_contents_and_keeps_the_buffer() {
-        let lexicon = MockLexicon::with(&[
-            ("ni", "你"),
-            ("hao", "好"),
-            ("ni'hao", "你好"),
-            ("zhong", "中"),
-        ]);
-        let mut dag = SyllableDag::new();
-        assert!(dag.build("nihao").is_ok());
-        let mut lattice = Lattice::with_capacity(usize::from(dag.len()) + 1, true);
-        build_lattice_into(&mut lattice, &dag, &lexicon, &NoUser, true);
-        assert_eq!(texts(&lattice, 0), vec!["你", "你好"]);
-        let grown = lattice.edges.capacity();
-        // A second build into the same lattice describes the second input and leaves the
-        // buffer the first one grew in place.
-        assert!(dag.build("zhongguo").is_ok());
-        build_lattice_into(&mut lattice, &dag, &lexicon, &NoUser, true);
-        assert_eq!(texts(&lattice, 0), vec!["中"]);
-        assert_eq!(lattice.node_count(), usize::from(dag.len()) + 1);
-        assert!(
-            lattice.edges.capacity() >= grown,
-            "the edge vector keeps its allocation"
-        );
-        assert!(!lattice.lookup_failed());
-    }
-
-    #[test]
-    fn test_build_lattice_into_clears_a_refusal_of_the_previous_build() {
-        let lexicon = MockLexicon::with(&[("ni", "你")]).failing("hao");
-        let mut dag = SyllableDag::new();
-        assert!(dag.build("nihao").is_ok());
-        let mut lattice = Lattice::default();
-        build_lattice_into(&mut lattice, &dag, &lexicon, &NoUser, true);
-        assert!(lattice.lookup_failed(), "the second syllable is refused");
-        let mut whole = SyllableDag::new();
-        assert!(whole.build("ni").is_ok());
-        build_lattice_into(&mut lattice, &whole, &lexicon, &NoUser, true);
-        assert!(
-            !lattice.lookup_failed(),
-            "a build that reads everything clears the previous refusal"
-        );
-        assert_eq!(texts(&lattice, 0), vec!["你"]);
-    }
-}
+mod tests;

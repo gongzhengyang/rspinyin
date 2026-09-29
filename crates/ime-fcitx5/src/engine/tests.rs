@@ -8,6 +8,7 @@
 
 mod effects;
 mod routing;
+mod table;
 
 use std::sync::Mutex;
 

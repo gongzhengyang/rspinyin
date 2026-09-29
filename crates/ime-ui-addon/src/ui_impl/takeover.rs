@@ -9,13 +9,47 @@
 //! draws, decodes or captures anything. The flags it reads belong to
 //! `super::availability`; the name of the previous user interface is reported rather than
 //! logged, because it is the value a restore needs.
+//!
+//! # Threading
+//!
+//! [`register_takeover`] reaches the host, so it belongs on the Fcitx5 host thread.
+//! Asking is `UserInterfaceManager::updateAvailability()`, which walks every
+//! user-interface addon, calls `available()` on each one and suspends or resumes the one
+//! it picks; none of that may run from a worker thread while the main loop is inside the
+//! same manager. A caller whose state changed on another thread -- the UI start-up
+//! reporting the window ready, a platform probe answering -- has to get back onto the
+//! host loop before calling this.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::addon::candidate_window_ready;
+use crate::addon::{UI_NOT_READY_CODE, candidate_window_ready};
 use crate::ffi::{UiActivation, activate_ui, current_ui};
 
 use super::availability::window_backend_available;
+
+/// Diagnostic code recorded when the host routes input-panel updates to this plugin.
+pub const TAKEOVER_ACTIVE_CODE: &str = "ui/takeover/active";
+
+/// Diagnostic code recorded when the host has no user interface of this plugin to
+/// switch to.
+pub const TAKEOVER_NOT_REGISTERED_CODE: &str = "ui/takeover/not-registered";
+
+/// Diagnostic code recorded when another user interface stayed active after the request.
+///
+/// This is the code that says the plugin will not fight the user's own choice of user
+/// interface, so it is the one to grep for when the self-drawn window does not appear on
+/// a system where the addon is installed and available.
+pub const TAKEOVER_DECLINED_CODE: &str = "ui/takeover/declined";
+
+/// Diagnostic code recorded when no platform backend can host the candidate window.
+///
+/// The platform layer spells the same code for the same condition, so a session without
+/// a backend is greppable under one code whether the tier ladder or the takeover reports
+/// it.
+pub const NO_BACKEND_CODE: &str = "platform/compositor/unsupported";
+
+/// Diagnostic code recorded when this build has no host ABI to ask.
+pub const NO_HOST_CODE: &str = "ffi/host-not-linked";
 
 /// Whether the host kept another user interface active after being asked to switch.
 ///
@@ -94,25 +128,30 @@ impl TakeoverOutcome {
     /// The diagnostic line this outcome records.
     ///
     /// Each line starts with the stable `domain/action/reason` code an operator greps
-    /// for and then names the condition. `ui/not-ready` is the code the lifecycle
-    /// already uses for "the window is not up yet", and
-    /// `platform/compositor/unsupported` the one the platform layer uses for "no
-    /// backend can host a window"; the takeover's own codes are `ui/takeover/active`,
-    /// `ui/takeover/not-registered` and `ui/takeover/declined`.
+    /// for and then names the condition. The code is the leading field and is built from
+    /// the constant that spells it, so a code has exactly one spelling in this crate and
+    /// a grep for it matches every line it produced. `ui/not-ready` and
+    /// `platform/compositor/unsupported` are shared with the lifecycle and the platform
+    /// layer respectively; this module's own codes are [`TAKEOVER_ACTIVE_CODE`],
+    /// [`TAKEOVER_NOT_REGISTERED_CODE`] and [`TAKEOVER_DECLINED_CODE`].
     pub fn diagnostic(&self) -> String {
         match self {
             Self::Active { previous_ui } => {
                 let previous = previous_ui.as_deref().unwrap_or("none");
-                format!("ui/takeover/active: previous={previous}")
+                format!("{TAKEOVER_ACTIVE_CODE}: previous={previous}")
             }
-            Self::NotReady => String::from(NOT_READY_LINE),
-            Self::Unsupported => String::from(NO_BACKEND_LINE),
-            Self::NotRegistered => String::from(NOT_REGISTERED_LINE),
+            Self::NotReady => format!("{UI_NOT_READY_CODE}: {NOT_READY_DETAIL}"),
+            Self::Unsupported => format!("{NO_BACKEND_CODE}: {NO_BACKEND_DETAIL}"),
+            Self::NotRegistered => {
+                format!("{TAKEOVER_NOT_REGISTERED_CODE}: {NOT_REGISTERED_DETAIL}")
+            }
             Self::Declined { active_ui } => {
                 let active = active_ui.as_deref().unwrap_or("another user interface");
-                format!("ui/takeover/declined: {active} stays active; the takeover is not retried")
+                format!(
+                    "{TAKEOVER_DECLINED_CODE}: {active} stays active; the takeover is not retried"
+                )
             }
-            Self::Unavailable => String::from(NO_HOST_LINE),
+            Self::Unavailable => format!("{NO_HOST_CODE}: {NO_HOST_DETAIL}"),
         }
     }
 
@@ -122,36 +161,38 @@ impl TakeoverOutcome {
     }
 }
 
-/// The line recorded while the candidate window does not exist yet.
-const NOT_READY_LINE: &str = "ui/not-ready: the takeover waits for the candidate window";
+/// What the line recorded while the candidate window does not exist yet says.
+const NOT_READY_DETAIL: &str = "the takeover waits for the candidate window";
 
-/// The line recorded when no platform backend can host the candidate window.
+/// What the line recorded when no platform backend can host the candidate window says.
 ///
-/// The fallback tier is a degraded look, not a broken input method, which is what the
-/// trailing clause tells an operator who finds this in the log. The literal is built
-/// with `concat!` so that no source line carries an unbreakable 120-column string.
-const NO_BACKEND_LINE: &str = concat!(
-    "platform/compositor/unsupported: no backend can host the window; ",
-    "ClassicUI keeps drawing"
+/// The fallback tier is a degraded look, not a broken input method, so the line names
+/// both what keeps working and what the session is missing: an operator who finds this
+/// in the log is looking for a way out of the tier, not only for the reason. The literal
+/// is built with `concat!` so that no source line carries an unbreakable 120-column
+/// string.
+const NO_BACKEND_DETAIL: &str = concat!(
+    "no backend can host the window; ClassicUI keeps drawing, and a compositor offering ",
+    "a layer-shell, popup or subsurface surface is what enables the self-drawn window"
 );
 
-/// The line recorded when the host has no user interface of this plugin to switch to.
-const NOT_REGISTERED_LINE: &str = concat!(
-    "ui/takeover/not-registered: the host has no user interface of ours; ",
-    "ClassicUI keeps drawing"
-);
+/// What the line recorded when the host has no user interface of this plugin says.
+const NOT_REGISTERED_DETAIL: &str =
+    "the host has no user interface of ours; ClassicUI keeps drawing";
 
-/// The line recorded when there is no host ABI to ask at all.
-const NO_HOST_LINE: &str = "ffi/host-not-linked: user-interface takeover requested";
+/// What the line recorded when there is no host ABI to ask at all says.
+const NO_HOST_DETAIL: &str = "user-interface takeover requested";
 
 /// Attempts the takeover and reports what happened.
 ///
-/// Idempotent and cheap: a caller re-runs it when the state it depends on changes —
-/// the UI thread reporting ready, the platform probe answering — and every branch
-/// either does nothing or asks the host once. A repeat after a successful takeover
-/// reports [`TakeoverOutcome::Active`] again, naming this plugin as its own
-/// predecessor, so the value worth recording is the one from the attempt that switched.
-/// The caller records [`TakeoverOutcome::diagnostic`]; this function records nothing.
+/// Idempotent and cheap, but **not thread-agnostic**: it reaches the host, so it runs on
+/// the Fcitx5 host thread — see the module documentation. A caller re-runs it when the
+/// state it depends on changes — the UI thread reporting ready, the platform probe
+/// answering — and every branch either does nothing or asks the host once. A repeat
+/// after a successful takeover reports [`TakeoverOutcome::Active`] again, naming this
+/// plugin as its own predecessor, so the value worth recording is the one from the
+/// attempt that switched. The caller records [`TakeoverOutcome::diagnostic`]; this
+/// function records nothing.
 pub fn register_takeover() -> TakeoverOutcome {
     apply_takeover(plan_takeover(
         candidate_window_ready(),
@@ -180,13 +221,21 @@ fn ask_host() -> TakeoverOutcome {
     match activate_ui() {
         UiActivation::Active => TakeoverOutcome::Active { previous_ui },
         UiActivation::NotRegistered => TakeoverOutcome::NotRegistered,
-        UiActivation::OtherUiActive => {
-            // The host kept another user interface. Stop asking.
-            TAKEOVER_DECLINED.store(true, Ordering::Release);
-            TakeoverOutcome::Declined {
-                active_ui: current_ui(),
-            }
-        }
+        // Read after the request: for a refusal this is the user interface that stayed
+        // active, which is the one the user chose.
+        UiActivation::OtherUiActive => record_refusal(current_ui()),
         UiActivation::Unavailable => TakeoverOutcome::Unavailable,
     }
+}
+
+/// Records that the host kept another user interface active, and reports it.
+///
+/// The latch is the whole point of this function, and it is split out of [`ask_host`] so
+/// that the branch is reachable from a test: a host that refuses cannot be arranged in
+/// one. What it stores is the promise the card makes to the user — a choice of user
+/// interface is not this plugin's to override — and the promise only holds if the refusal
+/// survives the lifecycle events that follow it.
+pub(super) fn record_refusal(active_ui: Option<String>) -> TakeoverOutcome {
+    TAKEOVER_DECLINED.store(true, Ordering::Release);
+    TakeoverOutcome::Declined { active_ui }
 }

@@ -1,4 +1,4 @@
-//! `xtask testd engine` -- the in-process engine direct-drive channel.
+//! `xtask testd-engine` -- the in-process engine direct-drive channel.
 //!
 //! # What this is
 //!
@@ -9,13 +9,22 @@
 //!
 //! # How it stays separate from the XTEST path
 //!
-//! The other channel (`testd x11`) injects real key and pointer events into a running
-//! fcitx5 session and reads the candidate window back through X11. That channel is the
-//! only one that can say anything about the host, the compositor, the window geometry or
-//! the end-to-end latency. This one never starts a process, never opens a display and
-//! never measures a duration: it holds the engine in its own address space and calls it.
+//! The other channel (`xtask testd`) injects real key and pointer events into a running
+//! fcitx5 session and reads the candidate window back through X11, and `xtask
+//! testd-client` reads back what the application received. Those channels are the only
+//! ones that can say anything about the host, the compositor, the window geometry or the
+//! end-to-end latency. This one never starts a process, never opens a display and never
+//! measures a duration: it holds the engine in its own address space and calls it.
+//!
 //! A result from here is a statement about the engine's contract; a claim about the host
-//! belongs to the other channel, and the two must never be reported as each other.
+//! belongs to the other channel, and the two must never be reported as each other. **A
+//! green run here is not an end-to-end green**: the route a keystroke travels -- X server,
+//! xcb frontend, Fcitx5, the addon -- is not exercised at all, and nothing here can
+//! detect a defect that only that route produces. No test can compare the two channels'
+//! verdicts either, because they need different environments: this one passes on a
+//! machine with no display server, and the other needs a live session. The comparison is
+//! therefore the operator's, and the line a run ends with carries the boundary so that a
+//! quoted result cannot lose it.
 //!
 //! # Determinism
 //!
@@ -38,10 +47,15 @@
 //! # What the harness drives
 //!
 //! A step drives one frozen `KeyAction`, and only the actions whose whole effect the
-//! engine owns: typing, Backspace, the caret, Escape and a bare decode. Committing,
-//! selecting, paging and the mode toggles belong to the session state machine, which
-//! `ime-core` does not export from its crate root yet; a scenario that names one is
-//! reported as a divergence rather than silently ignored.
+//! engine's decode layer owns: typing, Backspace, the caret, Escape and a bare decode.
+//! Committing, selecting, paging and the mode toggles are the session state machine's,
+//! and a scenario that names one is reported as a divergence rather than silently
+//! ignored. The reason is not that the machine is out of reach -- `ime_core::state`
+//! exports it -- but that nothing a scenario can assert describes one of those effects:
+//! the expectation model covers candidates, the preedit, a frozen code and the page, so a
+//! step that drove a commit would observe nothing, and a step that observes nothing is
+//! indistinguishable from a passing one. Driving the session machine needs a scenario
+//! model that can assert a commit, a selection and a page flip first.
 
 mod builtin;
 mod cli;
@@ -61,6 +75,7 @@ use crate::testd::engine::scenario::{Divergence, Scenario};
 use ime_core::input::InputBuffer;
 use ime_core::preedit::build_preedit;
 use ime_core::segment::{HINT_INLINE_BOUNDARIES, SyllableDag};
+use ime_core::state::Paging;
 use ime_core::viterbi::Decoder;
 use ime_types::{
     CandidateSource, DecodeRequest, DecodeResult, KeyAction, LanguageModel, Lexicon, PageState,
@@ -76,12 +91,6 @@ use crate::testd::engine::scenario::{Observation, StepPrint, decode_code, drives
 /// One hundred replays of a handful of keystrokes costs milliseconds, and it is the
 /// shortest run that would have caught every ordering drift seen so far.
 pub const REPEAT_RUNS: usize = 100;
-
-/// Candidates one page of the window holds.
-///
-/// The shipped candidate limit is five pages of nine, which is where the page projection
-/// below takes its width from.
-const PAGE_SIZE: usize = 9;
 
 /// One scripted session, driven straight against the engine.
 ///
@@ -208,7 +217,7 @@ impl<'a> Session<'a> {
             }
         }
         let preedit = build_preedit(&self.buffer, &self.dag);
-        let page = project_page(result.candidates.len());
+        let page = page_state(result.candidates.len());
         Observation {
             raw: self.buffer.raw().to_owned(),
             caret: self.buffer.caret(),
@@ -226,12 +235,11 @@ impl<'a> Session<'a> {
     ///
     /// The hint's offsets are offsets into the normalized spelling, so it describes the
     /// buffer only when normalization was byte for byte: nothing dropped, and the same
-    /// length. The session state machine maps the hint back through a helper that lives
-    /// in the session module, which `ime-core` does not export from its crate root, so
-    /// the harness writes the grid back in the case where the two coincide and leaves the
-    /// buffer's own coarser grid alone otherwise. The check comes first because a grid
-    /// that did not describe the input would trip `InputBuffer::set_boundaries`'s debug
-    /// assertion rather than be ignored.
+    /// length. The session state machine maps the hint back onto the raw input through a
+    /// helper of its own, private to that crate, so the harness writes the grid back in
+    /// the case where the two coincide and leaves the buffer's own coarser grid alone
+    /// otherwise. The check comes first because a grid that did not describe the input
+    /// would trip `InputBuffer::set_boundaries`'s debug assertion rather than be ignored.
     ///
     /// # Panics
     ///
@@ -376,24 +384,17 @@ fn push_code(codes: &mut Vec<String>, code: &str) {
     }
 }
 
-/// Returns the page state the window would draw for a candidate list of `count`.
+/// Returns the paging state the window would draw for a candidate list of `count`.
 ///
-/// A projection, not a second paging implementation: `ime_core::state::paging` owns the
-/// real paging state machine and is not exported from the crate root yet, so the harness
-/// counts the pages a list fills against the frozen "five pages of nine" budget the
-/// decoder's own candidate limit comes from. A scenario that only decodes therefore
-/// always sees page one; the expectation exists so that a page assertion has somewhere to
-/// land once the state machine is reachable, and so that the candidate list's size is
-/// checked against the page budget in the meantime.
+/// The paging is the engine's own rather than a second count of pages: the page size, the
+/// five-page reach and the one-based page number are `ime_core::state::Paging`'s
+/// arithmetic, and a harness that recomputed them could pass while the engine's copy was
+/// wrong. The state is the one a session with no configuration document starts from, so
+/// the page size is `ui.max_per_row`'s default of five candidates a row.
 ///
 /// # Panics
 ///
 /// Never panics.
-fn project_page(count: usize) -> PageState {
-    let total = count.div_ceil(PAGE_SIZE).max(1);
-    PageState {
-        current: 1,
-        total: u8::try_from(total).unwrap_or(u8::MAX),
-        page_size: u8::try_from(PAGE_SIZE).unwrap_or(u8::MAX),
-    }
+fn page_state(count: usize) -> PageState {
+    Paging::default().page_state(u16::try_from(count).unwrap_or(u16::MAX))
 }

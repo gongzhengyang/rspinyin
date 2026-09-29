@@ -17,6 +17,12 @@
 //! in memory -- and `freq_degraded` is the fallback a store past its loading ceiling takes,
 //! where the answer costs a read transaction. The fallback case exists so that the path
 //! stays measurable, not to hold it to the interactive budget.
+//!
+//! `forget` is the other key path, and the budget it is measured against is 0.05ms: the
+//! keystroke that drops a word must cost a map insert and nothing else. `list_words` and
+//! `export_tsv` are the management paths, which nothing calls while the user is typing;
+//! they are here so that the cost of a page and of a document is a number rather than a
+//! guess, not to hold them to an interactive budget.
 
 use std::hint::black_box;
 use std::path::PathBuf;
@@ -188,6 +194,53 @@ fn userdb_bench(c: &mut Criterion) {
                 db.commit(Durability::Eventual)
                     .map(|report| report.written)
                     .ok()
+            });
+        });
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The key path the 0.05ms budget is stated for. The key set is small and rotates: a key
+    // is forgotten once and then only re-marked, so the tombstone set stops growing and no
+    // flush is charged to the case. What is measured is the check and the insert, which is
+    // the whole of what a keystroke costs here.
+    if let Some((db, dir)) = loaded(fixture("forget", &keys("seen", 1000), HYDRATE_CAP)) {
+        let forgotten = keys("forgotten", 64);
+        let mut cursor = 0usize;
+        group.bench_function("forget", |bencher| {
+            bencher.iter(|| {
+                let key = &forgotten[cursor % forgotten.len()];
+                cursor = cursor.wrapping_add(1);
+                black_box(db.forget(black_box(key)))
+            });
+        });
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // One page of the management enumeration against a thousand-record store: the page is
+    // what the cost tracks, and the store is what it must not.
+    if let Some((db, dir)) = loaded(fixture("list", &keys("seen", 1000), HYDRATE_CAP)) {
+        group.bench_function("list_words", |bencher| {
+            bencher.iter(|| {
+                black_box(
+                    db.list_words(black_box(0), black_box(50))
+                        .map(|rows| rows.len()),
+                )
+            });
+        });
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The whole store rendered as a document. The buffer is reused across iterations, which
+    // is what a caller that writes the document out would do too.
+    if let Some((db, dir)) = loaded(fixture("export", &keys("seen", 1000), HYDRATE_CAP)) {
+        let mut document = Vec::with_capacity(64 * 1024);
+        group.bench_function("export_tsv", |bencher| {
+            bencher.iter(|| {
+                document.clear();
+                db.export_tsv(&mut document).ok()
             });
         });
         drop(db);

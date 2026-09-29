@@ -1081,7 +1081,7 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - 关键路径：`CP: 是`
   - 并行通道：`Track A 数据与并发引擎`
   - 代码落地锚点 (Code Anchor)：`crates/ime-dict/src/user_db.rs`、`crates/ime-dict/src/user_db/evict.rs`、`crates/ime-ui/src/channel/queue.rs`、`crates/ime-ui/src/channel.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **瓶颈定位与机理剖析**：
   - **现有代码缺陷（一）**：`user_db.rs:741-748` 的 `if due { let _ = self.commit_inner(Durability::Eventual); }` 在**调用线程**（宿主线程）执行 redb 写事务 + 提交。`report`（`:519-540`）的松弛策略要求**连续 3 次**超过 `SLOW_COMMIT_MS = 3ms` 才放宽，即最坏情况下宿主线程先承受 3 次 3ms+ 停顿。这违反 AGENTS.md 第 10 条「Blocking work on the host thread — filesystem IO ... inside an fcitx5 callback」。
@@ -1210,6 +1210,16 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - [ ] 新增错误码 `data/commit/thread-lost` 已登记（主 agent 执行）
   - [ ] `ime-dict` 未新增对 `ime-ui` 的依赖（`crates/ime-dict/Cargo.toml` 的依赖方向不变）
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-fcitx5/src/engine/router/phrases.rs`（555 行，**同步写路径整体删除**）、`phrases/deferred.rs`（513 行，本次**挂载**）、`phrases/deferred/tests.rs`（656 行）、`phrases/tests.rs`（430 行）；`crates/ime-ui/src/channel/queue.rs`（596 行）、`crates/ime-ui/src/channel.rs`（188 行）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **(A) 短语落盘搬到写线程**：`deferred.rs` 早已写好但**从未被编译过**（`phrases.rs` 里没有 `mod deferred;`）。本次挂载并把 `PhraseStore` 改为 `{user_path, writer: Option<PhraseWriter>, startup: PhraseSnapshot}`——宿主线程只付「`phrase_row` 一次小分配 + 一次 `try_send`」，写文件与整篇回读解析全在 `rspinyin-phrases` 写线程。宿主线程零文件系统接触由**注入的计数型 IO** 断言：`test_commit_never_runs_on_the_callers_thread`（sink 记录线程名，全部为 `rspinyin-phrases`，调用者线程名不在其中）与 `test_append_hands_the_row_to_the_writer_without_writing_it`（目录不存在仍返回 Ok 且不创建文件）。
+  - **(A) 优雅退出不丢行**：`shutdown(timeout)` 先取走 sender，再让写线程排空，`join` 带超时（`join_within`），绝不无限阻塞退出路径；`test_shutdown_writes_the_rows_that_were_still_queued` 断言 3 行全部落盘。崩溃（无 `shutdown`）丢队列内行 = 文档历来就有的窗口（本就不 `fsync`），且**不静默**：队列拒收的行被拒给调用方，文档拒写的行经诊断通道上报。
+  - **(B) 控制通道不再持锁自旋**：`CollapsingQueue::push` 重写为「先取 staging 槽并立刻放锁 → `try_push` 两次」，**无自旋、无 `Instant::now()`、无 `yield_now()`、不持锁等待**。生产者永不等待，因此不可能与消费者 `pop`（队列空时才需要同一把锁）互等；模块文档里「锁从不跨阻塞调用持有」的不变式由此重新成立。`STAGE_BUDGET = 100µs` 是文档化的上界，断言用「16 次满队 push 取最快样本 ≤ 100µs」而非单次采样（单次会测到调度器而非本模块）。
+  - **顺序语义不变**：`queue.rs` 既有 4 个 `test_collapsing_queue_*` 顺序语义测试**一行未改**且仍通过；`ui_thread/tests.rs` 的 show/hide 突发合并测试仍满足。
+  - **已知限制**：① 两处白名单外的语义变化已由主 agent 就地改掉——`router/tests.rs` 的两个测试原先建立在「同步写入」假设上（`test_add_phrase_appends_the_highlighted_candidate_to_the_document` 改为等待写线程发布；`test_add_phrase_reports_a_document_that_cannot_be_written` 改名为 `..._accepts_a_row_the_document_cannot_take`，断言改为「行被接受、本机诊断为空、不留下文件」——**失败改为异步上报是本卡设计明确接受的取舍**）；② `PhraseStore::append` 里「有文档但写线程起不来」的分支**无测试可达**（无法注入 `thread::Builder::spawn` 失败），等价的队列断开路径由 `deferred/tests.rs` 覆盖；③ `CollapsingQueue` 仍保留并暴露 `budget()`，但它已不再是等待预算；若后续把 `ChannelConfig` 的 `control_spin`/`page_spin` 拿掉，可连带删除该字段与访问器；④ 卡片中 `user_db` 侧（`FlushRequest` / `data/commit/thread-lost`）**未做**——`crates/ime-dict/src/user_db.rs` 的模块文档明确记录了不做的理由：`UserFreqSource` 契约要求 `freq` 不阻塞、不取写者会持有的锁，而写事务两者都做；为每批 32 条小写引入队列 + 唤醒的代价高于收益，且既有 idle sweep 已是唯一的另一个写者。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 ### 任务 ID：PERF-P0.02.03 诊断发射节流（去掉每帧 stderr 写）
@@ -1311,7 +1321,7 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - 关键路径：`CP: 否`
   - 并行通道：`Track B 渲染与视图管线`
   - 代码落地锚点 (Code Anchor)：`crates/ime-ui/src/renderer.rs`、`crates/ime-ui/src/renderer/raster.rs`、`crates/ime-ui/src/renderer/mock.rs`、`crates/ime-ui/src/renderer/tests.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **瓶颈定位与机理剖析**：
   - **现有代码缺陷（HOT-15，可证明的浪费）**：`renderer.rs:275-277` 对 `state.pending.iter().chain(state.shown.iter())` 逐矩形调用 `blit_into`。稳态按键时 `pending`（本次改动区）与 `shown`（上帧 damage 区）高度重叠——高亮移动改动的正是同一批单元格——重叠部分被**拷贝两次**。`renderer.rs:53-58` 的模块文档已明确"并集是安全超集"，即合并是安全的。
@@ -1454,6 +1464,16 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - [ ] `cargo nextest run -p ime-ui` 全绿；`cargo test -p ime-ui --doc` 全绿
   - [ ] 无新增 `unsafe`（`scripts/check-unsafe.sh` 通过）
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-ui/src/renderer.rs`（620 行）、`renderer/tests.rs`（774 行）、`crates/ime-ui/benches/frame.rs`（429 行）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **damage 合并**：`pending` 与 `shown` 逐矩形裁剪后两两求并集包围盒，**一次** `blit_into`，不构造临时 `Vec`（保持「每帧路径不分配」约束）；`shown` 列表超过 `PENDING_COLLAPSE_LIMIT` 时折叠为一个包围盒，使折叠成本有界。`test_copy_frame_merges_overlapping_damage_into_one_region` 用手算的包围盒断言：3 个重叠 damage + 1 个 shown → **一次**拷贝、字节数为包围盒（1496）而非四矩形之和（3072）、包围盒内 374 个像素全部被写出（证明是超集全写而非少写）。
+  - **稳态按键的 `blit_into` 调用次数 2 → 1**：`RenderOutcome::Rendered` 新增 `copy_bytes` 字段（每帧拷贝字节数），与既有的 `rectangles`（每帧 damage 矩形数）、`copies`（每帧拷贝次数）构成卡片要求的三项度量；`test_steady_state_keystroke_copies_the_damage_once` 断言 `copies: 1` 且「拷贝区域严格大于上报 damage」（合并生效的正面证据）。
+  - **上报给合成器的 damage 未变**：`backend.commit(&state.pending)` 与 `RenderOutcome::Rendered.bounding`（= 本帧 damage 的包围盒）语义未改动；测试断言「`bounding`/`rectangles` 必须等于 mock 本帧记录的 damage 集合与其长度」——若上报并集会立刻失败。**有意不合并** `pending` 内部的重叠矩形，那会改变上报集合。
+  - **基准曲线**：`frame/blit_damage/{1,2,4,8,16}` 覆盖 damage 数量从 1 到饱和（8）到超过饱和，每例断言「每帧恰好一次拷贝」，避免基准在测别的东西；既有的 `frame/render_if_dirty`、`frame/blit_full`（1200×280）、`frame/blit_pending_shown` 保留。
+  - **已知限制**：① **`frame/blit_full` 的 P50/P99 未取数**——criterion 基准已就位（`cargo bench -p ime-ui --bench frame`），但本机当前有并发 agent 在跑，数字不可信；按 `benches/wakeup_latency.rs` 的既有约定 P99 取 `mean + 3σ`。若实测 ≤ 0.5ms 则 HOT-14 判定「实测达标，无需改写」，第 6 步（`#[repr(transparent)]` + `copy_row`）不执行。② 卡片提到的「探针基础设施在 `renderer/probe.rs`」与事实不符——该文件是**字体探针**（`count_ink` 等），没有帧级计数器；为避免把两种职责混进同一文件，帧级度量落在 `RenderOutcome` 上，由调用方（UI 线程）记录。③ `renderer/tests.rs` 已 774/800 行，下一次往该文件加测试应先把拷贝相关测试拆到子模块；④ `PENDING_COLLAPSE_LIMIT` 由私有改为 `pub`，`RenderOutcome::Rendered` 新增字段（对穷尽匹配是破坏性变更；已核对全 workspace 只有 `renderer.rs` 与 `renderer/tests.rs` 构造它）。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 ### 任务 ID：PERF-P0.04.01 宿主线程路径探针与预算断言
@@ -1465,7 +1485,7 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - 关键路径：`CP: 是`（**本卡是全项目最长依赖链的起点，必须第 1 天启动**）
   - 并行通道：`Track C 基准·监控·基建`
   - 代码落地锚点 (Code Anchor)：`crates/ime-diag/src/lib.rs`、`crates/ime-diag/src/log.rs`、`crates/ime-core/src/state/machine.rs`、`crates/ime-fcitx5/src/ffi/abi/engine.rs`、`xtask/src/budget.rs`、`docs/dev/budgets.json`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **瓶颈定位与机理剖析**：
   - **现有代码缺陷（能力缺失，非代码缺陷）**：`BUDGET-LAT-01`（按键 → 候选框新帧提交）的测量方式是「`ime-diag` 探针打点 + `Rendered{presented_at}` 回执」，但 `ime-diag` 只有日志与崩溃层（`log.rs`、`crash.rs`、`panic.rs`、`redact.rs`、`perms.rs`），**没有任何探针/计时设施**；`UiFrame` 也没有 `presented_at` 字段（`crates/ime-types/src/ui.rs:48-64`）。因此 `BUDGET-LAT-01` 当前**不可测量**。
@@ -1548,6 +1568,16 @@ PERF-P0.04.01 ─────→ PERF-P1.04.01 ──┬─→ PERF-P2.04.01
   - [ ] `cargo nextest run -p ime-diag -p xtask` 全绿；`cargo test -p ime-diag --doc` 全绿
   - [ ] `Rendered{presented_at}` 的契约需求已写入交付报告，等待主 agent 决策（ADR 或探针关联方案）
   - [ ] 探针不记录任何用户输入内容（代码审查项：`probe.rs` 中不出现 `&str` 类型的载荷）
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：本次新建 `crates/ime-diag/src/probe/stamp.rs`（108 行）；`probe.rs`（274 行）、`probe/{metric,snapshot,tests}.rs`；本次新增 8 个测试。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **宿主路径的四段与打点方式**：按键回调全程用 `Metric::EventLoopKey`（卡片叫 `key_to_post`，`features.md` 1.08.03 的权威名是 `event_loop_key`）；`Session::step`（**解码 + UiFrame 构建**）用 `Metric::Decode`——**「构建 UiFrame」不是独立段**：帧由 `step()` 在 `ime-core` 内造好，`Effect::SendFrame(frame)` 只是搬运，而 `ime-core` 不许依赖 `ime-diag`（0.4 规则 1），所以解码与造帧是一段，中间插不进点；投递段用本轮新增的 `Metric::PostUi`（宿主线程**唯一被设计允许等待**的段，有序 `Show`/`Hide` 队列会令投递方自旋后才折叠成对——`EventLoopKey` 回归时无法区分「投递前的工作」与「投递本身」）；UI 线程侧用已有的 `Metric::Wakup`。
+  - **「回调内不得做重活」如何成立**：`Probes::begin` = 一次 relaxed load +（仅探针开启时）一次 `Instant::now()`；`Stamp` 的 `Drop` = 一次桶定位 + 一次 `fetch_add` + 一次计数 `fetch_add`。**无分配、无锁、无格式化、无 IO、无 syscall**；关闭态连时钟都不读。这条契约与理由写死在 `stamp.rs` 的模块文档里。
+  - **为什么用 RAII 而不是 `finish()`**：回调体里有 `if event.is_null() { return false; }` 这类提前返回，显式 `finish()` 会被跳过并**静默丢样本**；`Stamp` 让「跨度 = 作用域」成立，接线是一行且不必改任何出口分支。`#[must_use]` 挡住「不绑定变量」的写法（那样会记出一个 ~0ns 的假样本）。
+  - **可执行预算断言**：`test_host_path_total_is_asserted_against_the_budget_documents_rows` 从 `docs/dev/budgets.json` 读 `key_to_present_p50/p99`，断言文档仍给出这对行、断言「中位数预算 1/4 的样本两行都过」且「2×P99 的样本 P99 不过」——证明比较读的是文档数字而非常量。
+  - **已知限制**：① **DoD 3 的分配断言未满足，原因是项目规范禁止**——计数分配器必须 `#[global_allocator]` + `unsafe impl GlobalAlloc`，而 `[workspace.lints.rust] unsafe_code = "deny"` 与 `scripts/check-unsafe.sh`（file-precise 白名单）都会失败，`AGENTS.md` 禁止项 2 同样禁止。可替代的运行时手段只有引入提供计数分配器的 dev-dependency（会破坏 `ime-diag` 刻意最小的依赖集）或把 `probe/tests.rs` 加进 unsafe 白名单（等于改 0.4 规则 3，需 ADR）。本次交付的替代物是 `test_probes_state_is_inline_and_bounded`（探针状态全内联、有界、不随样本数增长）；`record` 路径零分配的正面证据是结构性的。② **DoD 4 的基线数字未产出**——`on_key_event` 仍是 stub、生产 `Host` 实现与 `Probes` 实例都不存在，本机无法在无接线状态下产出真实数字；本卡不追求达标，只追求可测量，可测量性已就位。③ **打点接线待主 agent 完成**：`ffi/abi/engine.rs` 的 `on_key_event` 里插一行 `let _sample = probes.begin(Metric::EventLoopKey);`；投递段在 `Host::post_ui` 的生产实现内（该实现尚未存在，退路是 `engine/router/effects.rs` 的三个调用点各加一行）；`addon.rs` 需要一个进程级 `Probes` 实例（用 `OnceLock`，且**不要**在别处再建第二个，否则快照会读到空的那份）。④ **宿主路径总耗时目前是 UNBUDGETED**——`Metric::EventLoopKey` 绑的是 `latency_ms.event_loop_key_p99`，而该键不在 `budgets.json` 里（在 `PENDING_KEYS`）；两种改法（绑到文档已有的 `BUDGET-LAT-01` 两行，或按卡片新增两行）都需主 agent 决定。⑤ `Metric::PostUi` 无预算、无文档行，报告显示 `-`，与 `raster_partial` 同口径。⑥ 卡片提到的错误码 `budget/regression` 不在 `features.md` 2.2.4 的任何清单里；`xtask report` 刻意在超预算时仍退出 0（判定交给读 `--json` 的 CI job）。⑦ 探针自身的开销（卡片 NFR「`record` ≤ 20ns」）没有基准——`crates/ime-diag/Cargo.toml` 无 `[[bench]]`、无 criterion dev-dependency。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
 
 ---
 

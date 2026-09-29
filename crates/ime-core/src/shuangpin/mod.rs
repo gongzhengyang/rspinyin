@@ -38,6 +38,7 @@
 //! currently unreachable from the keyboard; the tables stay faithful to the published
 //! layouts rather than dropping a key the schemes define.
 
+pub mod fallback;
 pub mod microsoft;
 pub mod sogou;
 pub mod xiaohe;

@@ -303,3 +303,95 @@ fn test_redaction_helpers_count_characters_and_read_session_ids() {
     assert_eq!(parse_session("SessionId(42)"), Some(42));
     assert_eq!(parse_session("none"), None);
 }
+
+#[test]
+fn test_redact_format_withholds_every_denied_name_at_the_event_level() {
+    // The denylist is asserted as a list by `test_is_denied_field_matches_the_documented_list`;
+    // this is the assertion that the formatter applies it to every name on that list --
+    // including the ones no caller uses today, and a value that arrives as a number
+    // rather than as a string.
+    let state = state_at(LevelFilter::INFO);
+    let (sink, _guard) = capture(&state);
+    let planted = String::from("fixture-alpha");
+
+    tracing::info!(
+        raw = %planted,
+        text = %planted,
+        preedit = %planted,
+        input = %planted,
+        candidate_text = %planted,
+        word = %planted,
+        commit_text = %planted,
+        "candidates built"
+    );
+    tracing::info!(raw = 42u64, "key handled");
+
+    let text = sink.text();
+    assert!(!text.contains("fixture-alpha"), "{text}");
+    assert!(
+        !text.contains("raw=42"),
+        "a denied value is withheld whatever its type:\n{text}"
+    );
+    for name in DENIED_FIELDS {
+        let withheld_pair = format!("{name}=<redacted:len=");
+        assert!(
+            text.contains(withheld_pair.as_str()),
+            "{name} is on the denylist but reached the sink:\n{text}"
+        );
+    }
+}
+
+#[test]
+fn test_redact_format_scrubs_a_denied_assignment_inside_the_message() {
+    // A message is a static template by project rule, but a template that quotes a value
+    // is free text all the same: the denylist has to reach the message too, or the one
+    // place a value could be interpolated would be the one place it is not checked.
+    let state = state_at(LevelFilter::INFO);
+    let (sink, _guard) = capture(&state);
+    let planted = String::from("fixture-alpha");
+
+    tracing::info!("decode gave up: raw={planted}");
+    tracing::info!(raw_len = 13u64, "candidates built");
+
+    let text = sink.text();
+    assert!(!text.contains("fixture-alpha"), "{text}");
+    assert!(text.contains("raw=<redacted:len=13>"), "{text}");
+    // A structural name that merely starts with a denied one is not a value.
+    assert!(text.contains("raw_len=13"), "{text}");
+}
+
+#[test]
+fn test_scrub_denied_values_replaces_only_denied_assignments() {
+    assert_eq!(&*scrub_denied_values("raw=abc"), "raw=<redacted:len=3>");
+    // A quoted value runs through its closing quote, which is what a `Debug` rendering
+    // carries and what the placeholder's count has to include.
+    assert_eq!(
+        &*scrub_denied_values("preedit=\"fixture-alpha\""),
+        "preedit=<redacted:len=15>"
+    );
+    // Two pairs on one line are both replaced, and the text between them survives.
+    assert_eq!(
+        &*scrub_denied_values("raw=ab, text=cd"),
+        "raw=<redacted:len=2>, text=<redacted:len=2>"
+    );
+    // A value at the end of the text, and a pair with no value at all.
+    assert_eq!(&*scrub_denied_values("word=ab"), "word=<redacted:len=2>");
+    assert_eq!(&*scrub_denied_values("word="), "word=<redacted:len=0>");
+    // The longest name wins, so `commit_text` is not read as `text`.
+    assert_eq!(
+        &*scrub_denied_values("commit_text=ab"),
+        "commit_text=<redacted:len=2>"
+    );
+    // A name only counts at a word boundary and only with an `=` after it, so the
+    // structural names and the near misses are left exactly as they were.
+    for untouched in [
+        "raw_len=6",
+        "input_buffer=2",
+        "keyword=abc",
+        "commit_tex=1",
+        "raw: 6",
+        "",
+    ] {
+        assert_eq!(&*scrub_denied_values(untouched), untouched, "{untouched}");
+    }
+}

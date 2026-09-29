@@ -1,12 +1,13 @@
 //! Unit tests for the configuration model.
 //!
 //! Responsibility: pin the repair rules -- the table of scalar keys that must fall back to
-//! their built-in default, the two key-binding lists, and the size budget of `Config`
-//! itself -- and the whitelist `KeyName` is parsed against.
+//! their built-in default, the two key-binding lists, the defaults of the sections that
+//! ship a switch beside a value, and the size budget of `Config` itself -- and the
+//! whitelist `KeyName` is parsed against.
 //!
-//! Boundaries: everything here is in memory. No document is read, no file is touched, and
-//! the only input is `Config::default` with one field changed, so the suite depends on no
-//! clock, no environment and no dictionary.
+//! Boundaries: everything here is in memory. The documents the suite parses are string
+//! literals, so no file is touched; every other input is `Config::default` with one field
+//! changed. The suite depends on no clock, no environment and no dictionary.
 
 use super::*;
 
@@ -39,7 +40,9 @@ fn rejected(warnings: &[ImeError]) -> Vec<String> {
 /// them, so a rule missing from this table is a rule nothing checks.
 fn scalar_breakers() -> Vec<ScalarBreaker> {
     vec![
-        ("schema_version", |c: &mut Config| c.schema_version = 2),
+        ("schema_version", |c: &mut Config| {
+            c.schema_version = CONFIG_SCHEMA_VERSION + 1;
+        }),
         ("engine.max_raw_len", |c: &mut Config| {
             c.engine.max_raw_len = 0
         }),
@@ -63,6 +66,7 @@ fn scalar_breakers() -> Vec<ScalarBreaker> {
         ("phrases.max_entries", |c: &mut Config| {
             c.phrases.max_entries = 0
         }),
+        ("data.backup_keep", |c: &mut Config| c.data.backup_keep = 0),
     ]
 }
 
@@ -254,5 +258,181 @@ fn test_phrases_max_entries_bounds() {
         let (repaired, warnings) = config.repaired();
         assert!(warnings.is_empty());
         assert_eq!(repaired.phrases, expected);
+    }
+}
+
+/// The configuration a document produces, failing the test when it cannot be read.
+///
+/// The model is pinned twice: as values built by hand above, and as documents below. The
+/// second form is what a user actually has, and it is the only way to reach the loader's
+/// answer to a key.
+fn parsed_document(text: &str) -> (Config, Vec<ImeError>) {
+    match Config::from_document(text) {
+        Ok(parsed) => parsed,
+        Err(error) => panic!("the document must be readable: {error}"),
+    }
+}
+
+#[test]
+fn test_engine_abbrev_default_is_off() {
+    // An abbreviation is ambiguous by nature -- `nh` reads as `ni'hao` as readily as
+    // `na'he` -- so a user who never asked for one must not have it answered ahead of
+    // the full spelling.
+    assert!(!Config::default().engine.abbrev, "the default is off");
+    assert!(
+        Config::default().validate().is_empty(),
+        "a flag needs no repair rule"
+    );
+}
+
+#[test]
+fn test_engine_abbrev_leaves_the_other_keys_alone() {
+    // The switch is one flag of one section. Turning it on, and leaving it off, must both
+    // leave every other key exactly as it was: a flag that moved anything beside itself
+    // would be a decode change nobody asked for.
+    let (repaired, warnings) = tweaked(|c| c.engine.abbrev = true).repaired();
+    assert!(warnings.is_empty(), "a flag cannot hold an unusable value");
+    assert!(repaired.engine.abbrev, "the value is carried");
+    assert_eq!(
+        EngineConfig {
+            abbrev: false,
+            ..repaired.engine
+        },
+        Config::default().engine,
+        "only the switch moved"
+    );
+
+    // Off is the default, so a configuration that spells it out is the built-in one.
+    assert_eq!(tweaked(|c| c.engine.abbrev = false), Config::default());
+}
+
+#[test]
+fn test_data_section_defaults() {
+    let data = Config::default().data;
+    assert_eq!(data.durability, Durability::Eventual);
+    assert!(
+        data.backup_enabled,
+        "the user's words are copied by default"
+    );
+    assert_eq!(data.backup_keep, DEFAULT_BACKUP_KEEP);
+    assert_eq!(DEFAULT_BACKUP_KEEP, 3);
+    // Both values are constants, so the relation between them is checked at compile time
+    // rather than by a runtime assertion that could only ever restate the numbers above.
+    const _: () = assert!(MAX_BACKUP_KEEP > DEFAULT_BACKUP_KEEP);
+
+    // The section has a `Default` of its own because two of its three keys are not
+    // zero-valued, so the two spellings of the same defaults are pinned together.
+    assert_eq!(DataConfig::default(), data);
+
+    // The section is usable as it ships: repairing the defaults changes nothing and
+    // reports nothing.
+    let (repaired, warnings) = Config::default().repaired();
+    assert!(warnings.is_empty());
+    assert_eq!(repaired.data, data);
+}
+
+#[test]
+fn test_data_backup_keep_bounds() {
+    let key = [String::from("data.backup_keep")];
+
+    // Zero is not a usable count: the rotation removes the oldest generations past the
+    // count once a new one has landed, so it would remove the copy it had just written.
+    let zero = tweaked(|c| c.data.backup_keep = 0);
+    assert_eq!(rejected(&zero.validate()), key);
+    let (repaired, warnings) = zero.repaired();
+    assert_eq!(rejected(&warnings), key);
+    assert_eq!(repaired.data.backup_keep, DEFAULT_BACKUP_KEEP);
+
+    // The ceiling is the other half: one generation is at most the store's export ceiling
+    // on disk, so a document cannot ask for a backup directory nothing bounds.
+    let over = tweaked(|c| c.data.backup_keep = MAX_BACKUP_KEEP + 1);
+    assert_eq!(rejected(&over.validate()), key);
+    let (repaired, warnings) = over.repaired();
+    assert_eq!(rejected(&warnings), key);
+    assert_eq!(repaired.data.backup_keep, DEFAULT_BACKUP_KEEP);
+
+    // Both ends of the range are accepted, so the bound is inclusive and a user who asks
+    // for exactly the limit is not silently moved back to the default.
+    for keep in [1, MAX_BACKUP_KEEP] {
+        let config = tweaked(|c| c.data.backup_keep = keep);
+        assert!(config.validate().is_empty(), "the range is inclusive");
+        let expected = config.data;
+        let (repaired, warnings) = config.repaired();
+        assert!(warnings.is_empty());
+        assert_eq!(repaired.data, expected);
+    }
+}
+
+#[test]
+fn test_data_backup_enabled_is_a_value_not_a_mistake() {
+    // A flag has no value outside its set, so there is nothing for a rule to report: both
+    // spellings are accepted, and the one that was written survives the repair.
+    for enabled in [true, false] {
+        let config = tweaked(|c| c.data.backup_enabled = enabled);
+        assert!(config.validate().is_empty(), "a flag cannot be unusable");
+        let (repaired, warnings) = config.repaired();
+        assert!(warnings.is_empty());
+        assert_eq!(
+            repaired.data.backup_enabled, enabled,
+            "the value is carried"
+        );
+    }
+}
+
+#[test]
+fn test_engine_section_reads_abbrev_from_a_document() {
+    let (config, warnings) = parsed_document("[engine]\nabbrev = true\n");
+    assert!(warnings.is_empty(), "every value is usable: {warnings:?}");
+    assert!(config.engine.abbrev, "the key is carried");
+    assert_eq!(
+        EngineConfig {
+            abbrev: false,
+            ..config.engine
+        },
+        Config::default().engine,
+        "the keys beside it are still the built-in ones"
+    );
+
+    // Off is what a document that never mentions the key gets, and a document that says so
+    // explicitly is the built-in configuration.
+    assert_eq!(
+        parsed_document("[engine]\nabbrev = false\n").0,
+        Config::default()
+    );
+}
+
+#[test]
+fn test_data_section_reads_the_backup_keys_from_a_document() {
+    let (config, warnings) = parsed_document(
+        "[data]\n\
+         backup_enabled = false\n\
+         backup_keep = 7\n",
+    );
+    assert!(warnings.is_empty(), "every value is in range: {warnings:?}");
+    assert!(!config.data.backup_enabled);
+    assert_eq!(config.data.backup_keep, 7);
+    // The key beside them is still read: one setting does not cost the user the rest of
+    // the section.
+    assert_eq!(config.data.durability, Durability::Eventual);
+}
+
+#[test]
+fn test_data_section_repairs_a_backup_keep_a_document_writes_out_of_range() {
+    let out_of_range = [String::from("0"), (MAX_BACKUP_KEEP + 1).to_string()];
+    for written in out_of_range {
+        let document = format!("[data]\nbackup_keep = {written}\n");
+        let (config, warnings) = parsed_document(&document);
+
+        assert_eq!(
+            config.data.backup_keep, DEFAULT_BACKUP_KEEP,
+            "the default is restored"
+        );
+        assert_eq!(rejected(&warnings), [String::from("data.backup_keep")]);
+        assert!(
+            warnings.iter().any(|warning| warning
+                .to_string()
+                .contains(&format!("{written} is outside"))),
+            "the reason quotes what the document said: {warnings:?}"
+        );
     }
 }

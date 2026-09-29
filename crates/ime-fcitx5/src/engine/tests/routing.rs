@@ -372,7 +372,10 @@ fn test_key_event_full_width_and_punctuation_toggle_the_status_strip() {
     assert!(router.key_event(IC, &press(KEY_SPACE, SHIFT), &mut host));
     let frame = host.last_frame().expect("a frame");
     assert!(frame.status.full_width, "the switch reached the frame");
-    assert_eq!(frame.status.mode_label, "中");
+    assert_eq!(
+        frame.status.mode_label, "全拼",
+        "the header names the layout the shipped configuration declares"
+    );
 
     // Ctrl+. switches the punctuation, the other way round from the shipped default.
     assert!(router.key_event(IC, &press(KEY_PERIOD, CTRL), &mut host));
@@ -405,7 +408,10 @@ fn test_key_event_ctrl_space_toggles_the_host_input_state() {
     assert!(router.key_event(IC, &press(KEY_SPACE, CTRL), &mut host));
     assert_eq!(host.toggles(), [false, true]);
     let frame = host.last_frame().expect("a frame");
-    assert_eq!(frame.status.mode_label, "中");
+    assert_eq!(
+        frame.status.mode_label, "全拼",
+        "Chinese mode shows the layout's name again"
+    );
 }
 
 #[test]

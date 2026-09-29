@@ -1,4 +1,4 @@
-//! The seven metrics the runtime probes record.
+//! The eight metrics the runtime probes record.
 //!
 //! Responsibility: name each metric once and say how it is reached -- which
 //! histogram on [`Probes`](super::Probes) it lives in, which field of a snapshot
@@ -18,7 +18,7 @@ use super::{HistSnapshot, Histogram, Probes};
 ///
 /// A constant rather than `Metric::ALL.len()` so that it can be an array length;
 /// a test keeps the two in step.
-pub const METRIC_COUNT: usize = 7;
+pub const METRIC_COUNT: usize = 8;
 
 /// The unit a metric is printed in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,10 +71,27 @@ pub enum Metric {
     Wakeup,
     /// One `on_key_event`, decode and posting included.
     EventLoopKey,
+    /// One command handed to the UI thread, as the host thread experiences it: the
+    /// channel hand-off and the wakeup that follows it.
+    ///
+    /// The last segment of the host path, and the only one where the design lets the
+    /// host thread wait at all: the ordered `Show` / `Hide` queue may make the poster
+    /// spin before it collapses a pair. A key whose end-to-end latency regressed has
+    /// to be attributable to the work before the post or to the post itself, and
+    /// without this metric the two cannot be told apart.
+    ///
+    /// The design states no threshold for it, so a report prints it without a budget
+    /// rather than against an invented one -- the same way it treats
+    /// [`Metric::RasterPartial`].
+    PostUi,
 }
 
 impl Metric {
     /// Every metric, in the order a report lists them.
+    ///
+    /// The order is the order a report's rows and a snapshot's records are written in,
+    /// so a metric is appended rather than inserted: a reader diffing two reports then
+    /// sees the numbers that moved instead of the whole table.
     pub const ALL: [Self; METRIC_COUNT] = [
         Self::KeyToPresent,
         Self::Decode,
@@ -83,6 +100,7 @@ impl Metric {
         Self::FirstKeyToVisible,
         Self::Wakeup,
         Self::EventLoopKey,
+        Self::PostUi,
     ];
 
     /// The name a report prints and a snapshot file carries.
@@ -95,13 +113,14 @@ impl Metric {
             Self::FirstKeyToVisible => "first_key_to_visible",
             Self::Wakeup => "wakeup",
             Self::EventLoopKey => "event_loop_key",
+            Self::PostUi => "post_ui",
         }
     }
 
     /// The unit a report prints this metric in.
     pub const fn unit(self) -> Unit {
         match self {
-            Self::Wakeup => Unit::Micros,
+            Self::Wakeup | Self::PostUi => Unit::Micros,
             Self::KeyToPresent
             | Self::Decode
             | Self::RasterFull
@@ -134,6 +153,7 @@ impl Metric {
             Self::FirstKeyToVisible => &probes.first_key_to_visible,
             Self::Wakeup => &probes.wakeup,
             Self::EventLoopKey => &probes.event_loop_key,
+            Self::PostUi => &probes.post_ui,
         }
     }
 
@@ -147,6 +167,7 @@ impl Metric {
             Self::FirstKeyToVisible => &metrics.first_key_to_visible,
             Self::Wakeup => &metrics.wakeup,
             Self::EventLoopKey => &metrics.event_loop_key,
+            Self::PostUi => &metrics.post_ui,
         }
     }
 
@@ -160,6 +181,7 @@ impl Metric {
             Self::FirstKeyToVisible => &mut metrics.first_key_to_visible,
             Self::Wakeup => &mut metrics.wakeup,
             Self::EventLoopKey => &mut metrics.event_loop_key,
+            Self::PostUi => &mut metrics.post_ui,
         }
     }
 }

@@ -37,10 +37,12 @@ pub fn scenarios() -> Vec<Scenario> {
         falls_back_to_single_characters(),
         fills_a_page_and_the_next(),
     ];
-    // Both refusal codes a Phase 1 dictionary can answer with, so that the degraded
-    // branch of the decode is covered for each of them.
-    all.push(refused_lookup("dict/unavailable"));
-    all.push(refused_lookup("dict/unsupported"));
+    // One scenario per code the mock dictionary can refuse a lookup with, so that the
+    // degraded branch of the decode is covered for every one of them and not only for the
+    // two a Phase 1 dictionary is expected to raise in practice.
+    for code in ["dict/unavailable", "dict/corrupt", "dict/unsupported"] {
+        all.push(refused_lookup(code));
+    }
     all
 }
 
@@ -234,9 +236,10 @@ fn ranking_follows_the_language_model() -> Scenario {
 /// One input whose readings fill more than one page of the window.
 ///
 /// `dede` reads as `de|de` and nothing else, so every reading is either one word of the
-/// `de'de` key or a pair of words from the `de` key. Eight words each side is what the
-/// lattice takes from one key, which is sixteen readings: one page of nine, and a second
-/// page of seven.
+/// `de'de` key or a pair of words from the `de` key. The beam keeps sixteen paths to the
+/// end of the input, and every one of them spells a different text, so the list holds
+/// sixteen candidates: four pages of the five a row holds by default, the last of them
+/// holding one.
 fn fills_a_page_and_the_next() -> Scenario {
     let single = ["的", "得", "德", "地", "底", "低", "滴", "敌"];
     let whole = [
@@ -250,7 +253,7 @@ fn fills_a_page_and_the_next() -> Scenario {
             key('e', candidates("的", 8, &["敌"])),
             key('d', candidates("ded", 1, &[])),
             key('e', candidates("得到", 16, &["得逞", "的敌"])),
-            decode(page(1, 2)),
+            decode(page(1, 4)),
         ],
     )
 }

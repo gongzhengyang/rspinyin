@@ -13,6 +13,8 @@ use std::collections::BinaryHeap;
 use std::ops::Bound;
 use std::time::Duration;
 
+use redb::ReadOnlyTable;
+
 use super::*;
 
 /// The idle sweep thread, when one could be started.
@@ -107,6 +109,11 @@ impl Inner {
     /// on the keeping side, which is the side that cannot delete more than the policy
     /// allows. The heap holds only stamps, never keys, so its size is bounded by the
     /// eviction target rather than by the store.
+    ///
+    /// A pinned record takes no part in the ranking: it is exempt from eviction, so it must
+    /// not be one of the records the percentile counts either, or the policy would remove
+    /// fewer records than it names. The pin is read from the metadata table rather than from
+    /// the loaded set, because a store too large to load holds no pins in memory at all.
     fn stale_threshold(&self, rank: u64) -> Result<Option<u64>, ImeError> {
         let txn = self
             .db
@@ -115,13 +122,19 @@ impl Inner {
         let table = txn
             .open_table(USER_WORDS)
             .map_err(|error| store_error(&self.path, &error))?;
+        let meta = txn
+            .open_table(USER_META)
+            .map_err(|error| store_error(&self.path, &error))?;
         let mut oldest: BinaryHeap<u64> = BinaryHeap::with_capacity(rank as usize);
         let mut seen = 0u64;
         for entry in table
             .iter()
             .map_err(|error| store_error(&self.path, &error))?
         {
-            let (_, value) = entry.map_err(|error| store_error(&self.path, &error))?;
+            let (key, value) = entry.map_err(|error| store_error(&self.path, &error))?;
+            if is_pinned(&meta, key.value(), &self.path)? {
+                continue;
+            }
             seen += 1;
             let stamp = value.value().1;
             if (oldest.len() as u64) < rank {
@@ -163,6 +176,9 @@ impl Inner {
 
     /// Examines the next [`EVICT_BATCH`] keys after `after` and returns the stale ones
     /// together with the last key examined, which is the next cursor.
+    ///
+    /// A pinned record is never stale however old its stamp is: the sweep passes over it and
+    /// leaves the cursor where it was, so the batch it belongs to still ends.
     fn scan_stale(&self, after: Option<&str>, threshold: u64) -> Result<StaleBatch, ImeError> {
         let txn = self
             .db
@@ -170,6 +186,9 @@ impl Inner {
             .map_err(|error| store_error(&self.path, &error))?;
         let table = txn
             .open_table(USER_WORDS)
+            .map_err(|error| store_error(&self.path, &error))?;
+        let meta = txn
+            .open_table(USER_META)
             .map_err(|error| store_error(&self.path, &error))?;
         let range = match after {
             Some(key) => table.range::<&str>((Bound::Excluded(key), Bound::Unbounded)),
@@ -180,7 +199,7 @@ impl Inner {
         let mut last: Option<Box<str>> = None;
         for entry in range.take(EVICT_BATCH) {
             let (key, value) = entry.map_err(|error| store_error(&self.path, &error))?;
-            if value.value().1 < threshold {
+            if value.value().1 < threshold && !is_pinned(&meta, key.value(), &self.path)? {
                 stale.push(Box::from(key.value()));
             }
             last = Some(Box::from(key.value()));
@@ -193,7 +212,10 @@ impl Inner {
     /// Both memories hold totals for the keys just removed, so they have to go: a later
     /// `freq` of an evicted key must answer zero, not a count the store no longer holds.
     /// Each lock is taken once per key rather than once per batch, so that a record
-    /// arriving while the sweep runs never waits behind the whole batch.
+    /// arriving while the sweep runs never waits behind the whole batch. The metadata row
+    /// goes with the record: it is keyed by the same key, and a row left behind would be
+    /// read by the next record that takes that key, giving it a creation time and a pin
+    /// that belonged to the word the user had before.
     fn delete_batch(&self, keys: &[Box<str>]) -> Result<(), ImeError> {
         let mut txn = self
             .db
@@ -203,9 +225,14 @@ impl Inner {
             let mut table = txn
                 .open_table(USER_WORDS)
                 .map_err(|error| store_error(&self.path, &error))?;
+            let mut meta = txn
+                .open_table(USER_META)
+                .map_err(|error| store_error(&self.path, &error))?;
             for key in keys {
                 table
                     .remove(key.as_ref())
+                    .map_err(|error| store_error(&self.path, &error))?;
+                meta.remove(key.as_ref())
                     .map_err(|error| store_error(&self.path, &error))?;
             }
         }
@@ -218,4 +245,21 @@ impl Inner {
         }
         Ok(())
     }
+}
+
+/// Whether the metadata row of `key` says the user pinned it.
+///
+/// A key with no metadata row is a record an older build wrote, and it was not pinned:
+/// there was no way to pin one then. Reading the table rather than the loaded set is what
+/// makes the exemption work for a store too large to load, which holds no pins in memory.
+///
+/// # Errors
+/// Returns [`ImeError::DictUnavailable`] when the lookup fails.
+fn is_pinned(
+    meta: &ReadOnlyTable<&str, (u64, u64)>,
+    key: &str,
+    path: &Path,
+) -> Result<bool, ImeError> {
+    let held = meta.get(key).map_err(|error| store_error(path, &error))?;
+    Ok(held.is_some_and(|guard| guard.value().1 != 0))
 }

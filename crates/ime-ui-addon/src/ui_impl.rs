@@ -4,7 +4,7 @@
 //! stops the host from drawing its own candidate window by becoming that user
 //! interface, not by disabling ClassicUI: an addon that hard-disables another addon
 //! takes the candidates away from every other user of it. This module is the Rust half
-//! of the role — the four callbacks the C++ `fcitx::UserInterface` subclass forwards
+//! of the role — the callbacks the C++ `fcitx::UserInterface` subclass forwards
 //! (`src/ffi/cpp/ui_glue.cpp`), the state those callbacks leave behind, and the
 //! takeover decision the addon lifecycle runs.
 //!
@@ -34,6 +34,14 @@
 //! a second time when the host kept another user interface active. The value a restore
 //! needs is the previous user interface's name, which the outcome carries.
 //!
+//! Every branch reports a stable `domain/action/reason` code, exported here as
+//! [`TAKEOVER_ACTIVE_CODE`], [`TAKEOVER_NOT_REGISTERED_CODE`] and
+//! [`TAKEOVER_DECLINED_CODE`] — plus [`NO_BACKEND_CODE`] and [`NO_HOST_CODE`] for the
+//! two conditions the takeover shares with the platform layer and the FFI boundary. A
+//! caller records the line [`TakeoverOutcome::diagnostic`] returns; the takeover never
+//! records anything itself. It does reach the host, though, so it belongs on the Fcitx5
+//! host thread and not on a worker: see `takeover`'s module documentation.
+//!
 //! # Module map
 //!
 //! Each callback and the state behind it lives in the submodule it belongs to:
@@ -58,4 +66,7 @@ pub use self::availability::{
 };
 pub use self::cursor_rects::{latest_cursor_rect, on_cursor_rect};
 pub use self::panel::{PanelMirror, PanelUpdate, on_input_panel_update, panel_mirror};
-pub use self::takeover::{TakeoverOutcome, register_takeover};
+pub use self::takeover::{
+    NO_BACKEND_CODE, NO_HOST_CODE, TAKEOVER_ACTIVE_CODE, TAKEOVER_DECLINED_CODE,
+    TAKEOVER_NOT_REGISTERED_CODE, TakeoverOutcome, register_takeover,
+};

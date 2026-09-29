@@ -20,8 +20,8 @@
 //!
 //! ```text
 //! # key <TAB> the text the key commits
-//! rq	2026-09-29
-//! dz	user@example.com
+//! rq<TAB>2026-09-29
+//! dz<TAB>user@example.com
 //! ```
 //!
 //! The key is folded to lower case and must then be 1..=[`MAX_PHRASE_KEY_LEN`] bytes
@@ -37,6 +37,23 @@
 //! half-loaded one. Entries are held sorted by key with their bodies concatenated
 //! into a single pool, which makes a lookup a binary search per candidate key length
 //! and a hit a pair of byte ranges rather than a copy.
+//!
+//! # Writing
+//!
+//! The other half of the document: [`phrase_row`], [`append_phrase`] and
+//! [`replace_phrase`] turn an entry into a row and a row into a document, and they are
+//! as pure as the reader -- text in, text out, no file. The file belongs to the host
+//! layer, which resolves the path, keeps the document private and performs the one
+//! write; a caller that has a single entry to add renders the row and appends it without
+//! reading the document at all, which is what keeps a saved phrase off the read path.
+//!
+//! The writer checks what the reader checks, so a document it produces is one the reader
+//! accepts and reads back as the entry that was written; the tests beside this module
+//! assert that round trip in both directions. Where the two differ it is a property of
+//! the *line* rather than of the entry: a body holding a tab or a line break is refused,
+//! because no single row can carry it, and the key is folded but not trimmed, because a
+//! caller that builds a row is not a hand-edited document and a space in a key is a
+//! defect it should see.
 //!
 //! # Matching
 //!
@@ -56,6 +73,14 @@
 use ime_types::{Candidate, CandidateSource, ImeError};
 
 use crate::segment::{MAX_SYLLABLE_LEN, lookup};
+
+// The write half of a document, in its own file: the reader and the table above are what
+// a decode reads, and the writer is what the host layer appends a saved phrase with. The
+// two halves meet at `RowFault` and at the key alphabet, which stay here so that a row the
+// writer produces is checked by the same rules a row is read by.
+mod writer;
+
+pub use writer::{append_phrase, phrase_row, replace_phrase};
 
 /// Longest key a phrase may have, in bytes.
 ///
@@ -325,13 +350,18 @@ impl PhraseTable {
     ///
     /// Never.
     pub fn text(&self, hit: PhraseHit) -> &str {
-        match self.entry_of(hit) {
-            Some(entry) => self
-                .pool
-                .get(usize::from(entry.start)..usize::from(entry.end))
-                .unwrap_or(""),
-            None => "",
-        }
+        let Some(entry) = self.entry_of(hit) else {
+            return "";
+        };
+        // The offsets were taken from this pool, so the conversion is lossless on every
+        // target this builds for. `try_from` rather than `as` because a silent truncation
+        // would slice the wrong bytes instead of failing, and the answer for a hit that
+        // names no entry is the empty string either way.
+        let (Ok(start), Ok(end)) = (usize::try_from(entry.start), usize::try_from(entry.end))
+        else {
+            return "";
+        };
+        self.pool.get(start..end).unwrap_or("")
     }
 
     /// Returns how many entries the table holds.
@@ -463,7 +493,9 @@ pub fn inject_phrase_candidates(
         },
     );
     for (position, held) in candidates.iter_mut().enumerate() {
-        held.index = u16::try_from(position).unwrap_or(u16::MAX).saturating_add(1);
+        held.index = u16::try_from(position)
+            .unwrap_or(u16::MAX)
+            .saturating_add(1);
     }
     1
 }
@@ -492,32 +524,51 @@ enum RowFault {
     EmptyText,
     /// The body is longer than [`MAX_PHRASE_TEXT_LEN`].
     TextTooLong,
+    /// The body holds a tab or a line break, which no single row can carry.
+    ///
+    /// Only the writer raises this one: a row that held either would not be one row when
+    /// it was read back, so the reader never sees an entry with this fault.
+    NotOneLine,
     /// The table already holds `max_entries` rows.
     OverLimit,
 }
 
 impl RowFault {
-    /// The reason a diagnostic carries for this fault, with the line it was on.
+    /// The reason a diagnostic carries for this fault, prefixed with where the row was.
     ///
     /// The reason states what is wrong with the row and never quotes it: a phrase
     /// document is the user's own text, and a diagnostic is not a place to copy it to.
-    fn reason(self, line: usize, max_entries: usize) -> String {
+    fn reason_at(self, at: &str, max_entries: usize) -> String {
         match self {
-            Self::Shape => format!("line {line}: not two tab-separated fields"),
+            Self::Shape => format!("{at}: not two tab-separated fields"),
             Self::KeyAlphabet => {
-                format!("line {line}: the key is empty or holds a character outside a-z and '")
+                format!("{at}: the key is empty or holds a character outside a-z and '")
             }
-            Self::KeyTooLong => {
-                format!("line {line}: the key is longer than {MAX_PHRASE_KEY_LEN} bytes")
-            }
-            Self::EmptyText => format!("line {line}: the phrase is empty"),
+            Self::KeyTooLong => format!("{at}: the key is longer than {MAX_PHRASE_KEY_LEN} bytes"),
+            Self::EmptyText => format!("{at}: the phrase is empty"),
             Self::TextTooLong => {
-                format!("line {line}: the phrase is longer than {MAX_PHRASE_TEXT_LEN} bytes")
+                format!("{at}: the phrase is longer than {MAX_PHRASE_TEXT_LEN} bytes")
             }
+            Self::NotOneLine => format!("{at}: the phrase holds a tab or a line break"),
             Self::OverLimit => {
-                format!("line {line}: the table is already at its limit of {max_entries} entries")
+                format!("{at}: the table is already at its limit of {max_entries} entries")
             }
         }
+    }
+
+    /// The reason a diagnostic carries for this fault, with the line it was on.
+    fn reason(self, line: usize, max_entries: usize) -> String {
+        self.reason_at(&format!("line {line}"), max_entries)
+    }
+
+    /// The reason a diagnostic carries for a row the writer refuses.
+    ///
+    /// The same wording without a line number, because the row is not in a document yet.
+    /// [`RowFault::OverLimit`] cannot reach here: the entry limit belongs to the loader,
+    /// which applies it while a document is read, and a writer that counted rows would
+    /// have to read the whole document for every append.
+    fn write_reason(self) -> String {
+        self.reason_at("the new entry", 0)
     }
 }
 
@@ -629,7 +680,7 @@ fn is_key_byte(byte: u8) -> bool {
 /// lets a user's own table override a built-in one: the loader reads the built-in
 /// document and then the user's, and the later definition wins.
 fn assemble(mut rows: Vec<RawRow>, mut report: PhraseReport) -> (PhraseTable, PhraseReport) {
-    rows.sort_by(|left, right| (*left.key).cmp(&*right.key));
+    rows.sort_by_key(|row| row.key.clone());
     let mut unique: Vec<RawRow> = Vec::with_capacity(rows.len());
     for row in rows {
         match unique.last_mut() {

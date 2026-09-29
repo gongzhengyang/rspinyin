@@ -233,7 +233,10 @@ mod tests {
             serde_json::from_str(&report.render_json()).expect("the report is valid JSON");
         assert_eq!(document["verdict"], Value::from("PASS"));
         assert_eq!(document["keys"], Value::from(1_832));
-        assert_eq!(document["metrics"].as_array().map(Vec::len), Some(7));
+        assert_eq!(
+            document["metrics"].as_array().map(Vec::len),
+            Some(ime_diag::probe::METRIC_COUNT)
+        );
         assert!(document["counters"]["ui.frame.coalesced"].is_u64());
         assert_eq!(document["metrics"][1]["name"], Value::from("decode"));
         assert_eq!(document["metrics"][1]["p99_us"], Value::from(2_400));

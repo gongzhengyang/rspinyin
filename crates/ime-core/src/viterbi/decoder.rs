@@ -20,7 +20,8 @@
 //!
 //! A decode never answers with an empty candidate list. When there is no reading at all -- the
 //! input has no segmentation, or no word of the dictionary covers it and the single-character
-//! fallback is off -- the answer is one pass-through candidate holding the raw input, with
+//! fallback is off, or the abbreviation walk that reads the input's letters instead finds
+//! nothing either -- the answer is one pass-through candidate holding the raw input, with
 //! `degraded` set. A window that renders nothing looks to the user like an input method that
 //! has stopped responding, which is a worse failure than showing the text they typed.
 
@@ -175,7 +176,10 @@ impl Decoder {
     ///
     /// The segmentation graph is built here, from `req.raw`. With
     /// [`DecodeFlags::USER_DICT`](ime_types::DecodeFlags::USER_DICT) clear, the user's own
-    /// words and counts take no part in the ranking or in the labels.
+    /// words and counts take no part in the ranking or in the labels; with
+    /// [`DecodeFlags::ABBREV`](ime_types::DecodeFlags::ABBREV) set, the lattice is widened
+    /// by the initial-letter readings of the input, so that `nh` reaches the word keyed
+    /// `ni'hao` and `bjdx` the one keyed `bei'jing'da'xue`.
     ///
     /// This is the convenience form: it builds a workspace for the call and throws it away. A
     /// caller that decodes more than once -- which is every session, once per keystroke --

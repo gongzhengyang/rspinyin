@@ -22,6 +22,9 @@ pub(crate) struct MockLexicon {
     singles: BTreeMap<&'static str, Vec<&'static str>>,
     failing: BTreeSet<&'static str>,
     coined: BTreeSet<&'static str>,
+    /// Whether every prefix query is refused, which is the state a dictionary that has
+    /// not implemented prefix enumeration is in.
+    prefix_failing: bool,
 }
 
 impl MockLexicon {
@@ -36,6 +39,7 @@ impl MockLexicon {
             singles: BTreeMap::new(),
             failing: BTreeSet::new(),
             coined: BTreeSet::new(),
+            prefix_failing: false,
         }
     }
 
@@ -95,6 +99,22 @@ impl MockLexicon {
         self.coined.insert(word);
         self
     }
+
+    /// Makes every prefix query fail, leaving the exact lookups alone.
+    ///
+    /// A dictionary that has not implemented prefix enumeration refuses the query, and
+    /// the lattice reports that as an incomplete picture rather than as a miss. A test
+    /// that builds with the abbreviation switch clear and still sees no refusal has
+    /// shown that the query was never made.
+    pub(crate) fn refusing_prefix(mut self) -> Self {
+        self.prefix_failing = true;
+        self
+    }
+}
+
+/// Returns how many syllables a key spells: one per `'`-separated part.
+fn syllables_of(key: &str) -> u8 {
+    u8::try_from(key.split('\'').count()).unwrap_or(1)
 }
 
 impl Lexicon for MockLexicon {
@@ -102,7 +122,7 @@ impl Lexicon for MockLexicon {
         if self.failing.contains(key) {
             return Err(ImeError::Unsupported);
         }
-        let syllables = u8::try_from(key.split('\'').count()).unwrap_or(1);
+        let syllables = syllables_of(key);
         let words: Vec<WordRef<'_>> = self
             .words
             .get(key)
@@ -125,8 +145,37 @@ impl Lexicon for MockLexicon {
         Ok(WordIter::from_vec(words))
     }
 
-    fn prefix(&self, _prefix: &str, _limit: usize) -> Result<WordIter<'_>, ImeError> {
-        Err(ImeError::Unsupported)
+    /// Every word whose key starts with `prefix`, in key order.
+    ///
+    /// The mock's weights are all equal, so key order is a valid descending-weight order
+    /// and the answer is the same on every run. The syllable count is the key's own, as
+    /// the contract describes, which is what lets a caller tell a word that covers the
+    /// span it asked about from one that merely starts with the same letters.
+    fn prefix(&self, prefix: &str, limit: usize) -> Result<WordIter<'_>, ImeError> {
+        if self.prefix_failing || self.failing.contains(prefix) {
+            return Err(ImeError::Unsupported);
+        }
+        let coined = &self.coined;
+        let words: Vec<WordRef<'_>> = self
+            .words
+            .range(prefix..)
+            .take_while(|(key, _)| key.starts_with(prefix))
+            .flat_map(|(key, texts)| {
+                let syllables = syllables_of(key);
+                texts.iter().map(move |text| WordRef {
+                    text,
+                    weight: 1,
+                    syl_count: syllables,
+                    flags: if coined.contains(text) {
+                        WordFlags::USER
+                    } else {
+                        WordFlags::empty()
+                    },
+                })
+            })
+            .take(limit)
+            .collect();
+        Ok(WordIter::from_vec(words))
     }
 
     fn fallback_single(&self, syl: SyllableId, limit: usize) -> Result<WordIter<'_>, ImeError> {
@@ -146,6 +195,63 @@ impl Lexicon for MockLexicon {
             })
             .unwrap_or_default();
         Ok(WordIter::from_vec(words))
+    }
+}
+
+/// Texts the generated answers of [`PageLexicon`] are built from.
+const PAGE_TEXTS: [&str; 8] = [
+    "你好", "中国", "北京", "大学", "天气", "不错", "今天", "我们",
+];
+
+/// A dictionary that answers every query with a page of words.
+///
+/// The lattice tests that drive the extension walks to their ceiling need a dictionary
+/// far richer than [`MockLexicon`] can be without thousands of rows, so this one derives
+/// its answer from the query rather than from a table: every key, every prefix and every
+/// fallback has words. The syllable count is the query's own, so a word always covers
+/// exactly the span it was asked about, and the texts come from a fixed pool -- a real
+/// dictionary answers two different keys with the same word as well, and the lattice does
+/// not care, because candidates are deduplicated by the sweep rather than here.
+pub(crate) struct PageLexicon {
+    /// Words one query answers with.
+    per_query: usize,
+}
+
+impl PageLexicon {
+    /// Builds a dictionary that answers every query with `per_query` words.
+    pub(crate) fn new(per_query: usize) -> Self {
+        Self { per_query }
+    }
+
+    /// The words one query spelling `syllables` syllables answers with.
+    fn answer(&self, syllables: u8) -> WordIter<'static> {
+        let words = PAGE_TEXTS
+            .into_iter()
+            .take(self.per_query)
+            .map(|text| WordRef {
+                text,
+                weight: 1,
+                syl_count: syllables,
+                flags: WordFlags::empty(),
+            })
+            .collect();
+        WordIter::from_vec(words)
+    }
+}
+
+impl Lexicon for PageLexicon {
+    fn lookup(&self, key: &str) -> Result<WordIter<'_>, ImeError> {
+        Ok(self.answer(syllables_of(key)))
+    }
+
+    fn prefix(&self, prefix: &str, _limit: usize) -> Result<WordIter<'_>, ImeError> {
+        // The page is the same whatever the query spells, which is the shape of a query
+        // with a whole first-letter block of the dictionary behind it.
+        Ok(self.answer(syllables_of(prefix)))
+    }
+
+    fn fallback_single(&self, _syl: SyllableId, _limit: usize) -> Result<WordIter<'_>, ImeError> {
+        Ok(self.answer(1))
     }
 }
 

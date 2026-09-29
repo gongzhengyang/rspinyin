@@ -426,7 +426,7 @@ KEY-P2.03.02 <── KEY-P2.02.02 <── KEY-P2.02.01 <── KEY-P2.01.02 <─
   - 关键路径：`CP: 是`
   - 并行通道：`Track A 按键总线与焦点引擎`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine/arbiter.rs`（新建）、`crates/ime-core/src/state/machine.rs`（新增只读查询方法）、`crates/ime-core/src/state/mod.rs`（导出）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   本卡关闭本项目**最高危**的缺陷 `KEY-DEF-01`。规则只有一条，但必须由代码强制而不是由注释声明：
@@ -525,6 +525,15 @@ KEY-P2.03.02 <── KEY-P2.02.02 <── KEY-P2.02.01 <── KEY-P2.01.02 <─
   - [ ] `executability` 与 `step` 的镜像性测试覆盖全部 15 个 `KeyAction` 变体，零漂移；
   - [ ] `TC-RT-07`（200 个随机 keysym 的"绝不吞键"）在接入 `arbitrate` 后仍然通过——即返回 `Consumed` 的那些必须产生了至少一个非 `Diagnose` 的 `Effect`。
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-fcitx5/src/engine/context.rs`（约 715 行）、`engine/context/tests.rs`（799 行，夹具改为「打字打出来的真实合成会话」，新增/改造约 12 个用例）。`arbiter.rs` 与 `arbiter/tests.rs` 本次**零改动**——源码 API 已是正确形态，接线只需在调用侧完成。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **接线方式**：`SessionView::arbitrate(action, cfg)` 是唯一实现体，内部只调 `arbiter::arbitrate`；`dispatch_in_composition` 的 `claim(self.action_for(event))` 与 `dispatch_in_session` 的整段手写规则（`is_mode_chord` + `state == Idle` + `InputChar|EnterTempEnglish` 白名单）**整体替换**为同一句仲裁调用；模块内的私有 `claim` 与 `is_mode_chord` 副本已删除（后者的唯一权威版本在 `arbiter.rs`）。层间不矛盾：合成层与会话层问的是同一个函数，同一 `(action, session, cfg)` 必得同一答案，并由「遍历语料的全量对拍」证明「整条总线 = 仲裁器 + 两条前置规则（release、修饰键按下）」。
+  - **`Executability` 实际只有两个变体**（`Executable` / `Inert`，非卡片设想的三态）：映射为 `Executable → Consumed::Consumed`（`filterAndAccept`）、`Inert → Consumed::Ignored`（放行宿主）。**不可执行的动作不再被 claim**，这正是 `KEY-DEF-01` 的修复点。
+  - **与卡片 DoD 2 的偏差（有意，需记录）**：卡片说「Composing 态下同一批键全部返回 `Consumed`」——**不应满足**。那批键里 `Shift+Tab`（高亮已在首项）、`-`/`Up`（已在首页）、`Right`（光标已在末尾）、`6`~`9`（本页仅 5 项）都确实无事可做，吃键正是 `KEY-DEF-01` 的另一半；卡片自身的映射表也写着「Composing 下 `5`（本页仅 3 项）→ `Ignored`」，与该 DoD 行自相矛盾。实际落地为「会话可执行者 `Consumed`、不可执行者 `Ignored`」。
+  - **已知限制**：① **`Dispatcher` 仍无生产调用方**——把 `router.rs::key_event` 切到 `dispatch` + `action_for` 属 `KEY-P1.02.05`；接线后生产路径才真正走仲裁（`Dispatcher::new(config.keys)` + `set_session_config(config.session)`）；② `Dispatcher::new` 由 `const fn` 降为 `fn`（`SessionConfig::default()` 非 const），属 API 松绑，不破坏调用方；③ `SessionView::candidate_count` 已不再是 claim 判定的输入（仲裁器直接读会话），其文档已改写为「层若要知道数字键是否命中候选，应问 `arbitrate`，计数答不了」，方法本身按卡片 DoD 第 5 条保留；④ `arbiter/tests.rs` 现 865 行（`tests.rs` 子模块放宽到 1200，未超限）。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
+
 ---
 
 ### 任务 ID：KEY-P0.01.03 修饰键持有状态机（Modifier Hold）
@@ -536,7 +545,7 @@ KEY-P2.03.02 <── KEY-P2.02.02 <── KEY-P2.02.01 <── KEY-P2.01.02 <─
   - 关键路径：`CP: 否`
   - 并行通道：`Track A 按键总线与焦点引擎`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine/modifier.rs`（新建）、`crates/ime-fcitx5/src/engine/context.rs`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   features.md 3.5 要求「`Shift`（按住）全局：临时切换中/英；松开恢复」。当前契约下这**不可实现**——`translate_key:231` 对所有 release 返回 `Ignore`，`KeyAction` 的 15 个变体里没有一个表达"修饰键按下/松开"。
@@ -647,6 +656,17 @@ KEY-P2.03.02 <── KEY-P2.02.02 <── KEY-P2.02.01 <── KEY-P2.01.02 <─
   - [ ] `Shift+Space` 只产生 `ToggleFullWidth`，不产生 `ToggleLang`；
   - [ ] 全部测试不依赖真实时钟：`at_ms` 由调用方传入（`engine.rs:353` 的 `press`/`release` 辅助函数已按此模式提供 `time_ms`）。
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-fcitx5/src/engine/modifier.rs`（约 340 行：`HOLD_THRESHOLD_MS`、`ModifierKey`、`HoldOutcome`、`ModifierHold`）、`engine/modifier/tests.rs`（453 行，22 个用例）、`engine/context.rs`（`Dispatcher` 新增 `hold` / `pending_hold` 与 `arm_hold` / `take_hold_outcome` / `clear_hold`，`dispatch` 顶部插入 release 分支与 `mark_used` 钩子）。
+  - **接线**（主 Agent 完成）：`engine.rs` 导出 `HOLD_THRESHOLD_MS`、`HoldOutcome`、`ModifierHold`、`ModifierKey`。
+  - **验证命令与结果**：`just ci` 退出 0（fmt、clippy `-D warnings`、nextest 1992 个用例、doctest、10 个审计脚本全部通过）。
+  - **不读时钟**：状态机完全由注入的 `at_ms` 驱动，模块内无 `Instant::now()` / `SystemTime::now()`，无定时器、无轮询——与 `features.md` 2.1「禁止轮询定时器」一致；测试无 `sleep`。
+  - **与卡片的三处偏离（已在代码注释中说明）**：① 白名单给的是 `crates/ime-config/src/keymap/hold.rs`，但卡片的代码落地锚点是 `engine/modifier.rs`，且 `ime-config` 当时没有 `keymap` 模块（子 Agent 不得改 `lib.rs`），按卡片锚点落地；② 卡片实施步骤 3（删除 `engine.rs` 的 `Shift → ToggleLang` 行）未执行——`KEY-P0.01.01` 已落地 `is_shift_press` 守卫，删行会同时破坏 doctest 与既有用例，DoD 4 改由总线层证明；③ 卡片实施步骤 4 的 `HostMode` 抽象未实现——`arm(key, at_ms, was_enabled)` 与 `HoldOutcome::Restore { was_enabled }` 已把宿主使能态当作 `bool` 传入传出，机器因此已是纯函数、无需 mock。
+  - **已知限制**：
+    1. **消费被追踪修饰键的 release 意味着应用侧会失去 Shift 的 key-up**。这是卡片 DoD 3 明确要求的行为，但只有在 `Dispatcher` 接到 `filterAndAccept` 时才会真正生效——`Dispatcher` 目前仍无生产调用方。
+    2. `ModifierHold::release` 的形参是 `Option<ModifierKey>`（卡片草稿写的是 `ModifierKey`）：宿主对**每个**键都投递 release，「这个 release 不是我的」必须可表达。
+  - **环境**：Rust 1.98.0、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 ### 任务 ID：KEY-P0.01.04 序列按键与 Leader Key 状态机
@@ -658,7 +678,7 @@ KEY-P2.03.02 <── KEY-P2.02.02 <── KEY-P2.02.01 <── KEY-P2.01.02 <─
   - 关键路径：`CP: 否`
   - 并行通道：`Track A 按键总线与焦点引擎`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine/sequence.rs`（新建）、`crates/ime-fcitx5/src/engine/context.rs`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   技能要求的"序列按键（Chords）与 Leader Key 状态机"。`translate_key` 是纯函数，一次只看一个事件，无法表达 `Ctrl+K` 之后等第二段。
@@ -744,6 +764,16 @@ KEY-P2.03.02 <── KEY-P2.02.02 <── KEY-P2.02.01 <── KEY-P2.01.02 <─
   - [ ] 状态机不引入任何定时器、不读时钟（`at_ms` 由事件携带）；
   - [ ] `Consumed::ChainPending` 在 `on_key_event` 中映射为 `true`，且有测试固定该映射。
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-fcitx5/src/engine/sequence.rs`（777 行）、`sequence/tests.rs`（777 行，本次新增 5 个用例）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **本次补的两处读接口**：① `KeySequence::leader() -> Option<SequencePrefix>`——多段序列中始终回报**开头的 leader stroke**（不是最后一段），完成/重置后为 `None`；这是卡片「序列进行中的回显/提示」唯一缺的读接口（`state()` 只回答「有没有」，无法命名提示里的键）。② `KeySequence::reset()`——焦点丢失 / `on_reset` / `on_deactivate` 用的清空路径，丢弃半途序列且**不产生报告、不重放**，与 `offer` 的 `Abandoned` 相对：那时有「正在到达的键」可交还，reset 时没有。留下不清的序列会跨上下文被下一段按键补全（跨应用触发和弦），故必须在上下文切换时清。
+  - **`Abandoned` 的语义**：**只交还第二段**（`keeps_key() == false` → `arbitrate_sequence` → `Consumed::Ignored`）；已被吃掉的前缀**不重放**——宿主在序列接受它的那一刻就 `filterAndAccept` 了，卡片状态表也只要求「第二段交还宿主」，`Abandoned { prefix, buffered }` 负责报告这笔账。
+  - **不读时钟**：`has_expired` 读 `event.time_ms`；`test_key_sequence_offer_reads_the_time_from_the_event_and_no_clock` 断言同一相对时间线平移到 1,000,000ms 后决策逐项相同。
+  - **与总线的词汇一致**：`test_sequence_decision_agrees_with_the_walks_vocabulary` 逐一钉住五种决策对应的 `arbitrate_sequence` 结果，并断言 `keeps_key() == !matches!(walk, Consumed::Ignored)`——机器与总线的「这个键归谁」不许分歧。
+  - **已知限制**：① **`Consumed::ChainPending` 到 `true` 的后半段未落地**——`crates/ime-fcitx5/src/ffi/abi/engine.rs` 的 `on_key_event` 目前是 Stub，无条件返回 `false`；`on_focus_out`/`on_reset`/`on_deactivate` 三处也还是空 Stub，需接 `reset` 路径（否则序列状态在焦点丢失时不会清空，`KEY-DEF-12` 不关闭）。本卡可固定的前半（`Opened → ChainPending` 且 `ChainPending` 属于「保留键」）已由测试钉死。② **`Dispatcher` 尚未持有 `KeySequence`**——需在 `context.rs` 的 `dispatch` 中、release / `is_shift_press` 守卫之后、`for context in self.active_contexts()` **之前**调用 `offer`，并用 `arbiter::arbitrate_sequence` 把 `Opened` 映射成 `Consumed::ChainPending`；被序列吃掉的键同样应 `hold.mark_used()`。卡片口径是「序列优先级高于**除浮层外**的所有上下文」——浮层打开时应让 `ModalOverlay` 层先决。③ `KeySequence::offer` 的形参是 `&SequenceTable<T>` 而非卡片草稿的 `&[SequencePrefix]`，`SequenceDecision` 是带 `Completed { binding }` 与 `Abandoned { .. }` 的泛型五变体而非四变体（均为本次之前既有设计）。④ `SequenceTable::bind` 拒绝「是已绑序列的前缀」与「扩展已绑序列」的绑定，这是超时可安全丢弃的前提——卡片未提及，已写入模块文档。⑤ `leader()` 目前无生产消费者（Phase 2 的状态条/速查面板才是）。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
+
 ---
 
 ### 任务 ID：KEY-P0.01.05 `Config` → `KeyBindings` 投影与热重载
@@ -755,7 +785,7 @@ KEY-P2.03.02 <── KEY-P2.02.02 <── KEY-P2.02.01 <── KEY-P2.01.02 <─
   - 关键路径：`CP: 是`
   - 并行通道：`Track B 命令接入与键位矩阵`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine.rs`（`KeyBindings` 与其投影）、`crates/ime-fcitx5/src/addon.rs`（`INIT_STEPS` 与热重载订阅）、`crates/ime-fcitx5/src/config_bridge.rs`（新建）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   关闭 `KEY-DEF-04`（配置到不了路由表）与 `KEY-DEF-21`（无构建步骤、无热重载）。本卡冻结 `KeyBindings` 作为 Track B 六张路由表卡片的共享接口。
@@ -861,6 +891,17 @@ KEY-P2.03.02 <── KEY-P2.02.02 <── KEY-P2.02.01 <── KEY-P2.01.02 <─
   - [ ] 白名单中的 10 个键名**全部**能被投影成至少一个可路由的键位，超出的键名产出 `keys/unroutable-binding`；
   - [ ] 热重载期间进行中的 composition 的 `raw`、候选列表与高亮**逐字段不变**（`AGENTS.md` 禁止事项 23）；
   - [ ] `INIT_STEPS` 的步骤名表在 `addon.rs:502-517` 的测试中同步更新，且新步骤均非 fatal。
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-config/src/reload.rs`（999 → 621 行）、本次新建 `reload/load.rs`（232 行）与 `reload/store.rs`（247 行）、`reload/tests.rs`（508 → 643 行，新增 6 个用例）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **接线方式**：`ConfigStore` 新增私有字段 `bindings: KeyBindings`，与 `Arc<Config>` 一起交付——**一次采纳一次投影**，绝不进按键热路径。`ConfigStore::load_at` 在**修好的配置**上投影并把诊断 append 进返回值；`reload` 的 `Updated` 分支 `bindings.reproject(&config.keys)` 后**整体采纳**（旧配置的翻页键不可能与新配置的高亮键并存），`Unchanged` 分支提前返回（表是 `[keys]` 的纯函数，而 `[keys]` 是 `Config` 相等性的一部分，故不重复投影也不重复报诊断），`Kept` 分支表与配置一并保持。
+  - **不重置进行中的 composition**（0.4 规则 10 / 禁止项 23）：表是 `Copy` 值、按值交付，调用方在重载前取走的表不会被改写（`test_reload_leaves_a_binding_table_a_caller_already_holds_untouched`）；store 只替换自己的字段，从不接触任何 session 状态。
+  - **两层诊断互补不重复**：白名单外的名字由 schema 拒绝（`keys.flip_keys`），白名单内但该列表无法路由的名字/跨列表冲突由投影报（`keys/unroutable-binding`、`keys/binding-conflict`）——比卡片措辞更精确，已由「只报一次」的断言钉住。
+  - **本次拆分**：`reload.rs` 由 999 行拆为 621 行的父模块（模块文档 + `DEFAULT_CONFIG_TOML` + `Partial*` + `merge_*` + `Config::from_document*`）加 `reload/load.rs`（文件 IO 那一半）与 `reload/store.rs`（`ReloadOutcome` / `ConfigStore`）。拆分是**纯搬家**：函数体逐字保留，唯一签名变化是 `unix_secs` → `pub(super)`；既有 pub 路径一个未变。顺带修正一处文档错位：`merge_ui` 没有文档注释，而它的那段文档被错接在 `merge_phrases` 上方。
+  - **本次同时补上的配置面**：`DEFAULT_CONFIG_TOML` 新增 `[scheme]`（三键）与 `[phrases]`、`[data]` 的 `backup_enabled`/`backup_keep`、`[engine]` 的 `abbrev`；`ConfigStore::scheme()` 访问器（返回 `decode_settings()` 的结果，读的是已 `repaired` 过的 section）；`schema_version` 由 **1 修正为 2**——模板原先自称 v1 却携带 v2 才有的段，会让新用户第二次启动时触发一次自我迁移、凭空多出一份 `config.toml.v1` 备份和一条 `config/migrated` 诊断。
+  - **已知限制**：① `ConfigStore::bindings()` / `scheme()` **尚无生产消费者**——`ime-fcitx5` 的路由层仍用自己的绑定表（另一张卡的范围）；② `reload/tests.rs` 的 `use super::*` 原先顺带带入 `env`/`fs`/`PathBuf`（它们随 `load.rs` 搬走），已补显式 std 导入；③ 卡片草图的 `ArcSwap<KeyBindings>` 未采用——`KeyBindings` 是 `Copy`，路由层在宿主线程单线程持有，用普通字段即可，可完全避开 `arc-swap` 新依赖。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
 
 ---
 

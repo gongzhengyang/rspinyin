@@ -16,6 +16,19 @@
 
 use super::*;
 
+/// What the store loaded into memory at open.
+///
+/// The counts are what the decoder reads on the hot path; the pinned set is what the
+/// keystroke that forgets a word reads, and it is kept separate because it is empty for
+/// every store whose owner never pinned anything -- which is every store today.
+#[derive(Debug, Default)]
+pub(super) struct Loaded {
+    /// The flushed count of every record.
+    pub(super) counts: HashMap<Box<str>, u32>,
+    /// The keys the user pinned, which eviction leaves alone.
+    pub(super) pinned: HashSet<Box<str>>,
+}
+
 /// Reads the whole store into memory, or reports that it is too large to load.
 ///
 /// The ceiling is a record count rather than a byte size because a record count is what a
@@ -26,7 +39,7 @@ use super::*;
 /// [`LARGE_STORE_CODE`] for it. Refusing to open would cost the user the history the store
 /// already holds over a condition the decode path survives -- the same trade
 /// [`Inner::stored_freq`] makes when a single read fails.
-pub(super) fn load_committed(db: &Database, cap: u64) -> Option<HashMap<Box<str>, u32>> {
+pub(super) fn load_committed(db: &Database, cap: u64) -> Option<Loaded> {
     let txn = db.begin_read().ok()?;
     let table = txn.open_table(USER_WORDS).ok()?;
     let stored = table.len().ok()?;
@@ -39,7 +52,18 @@ pub(super) fn load_committed(db: &Database, cap: u64) -> Option<HashMap<Box<str>
         let (key, value) = entry.ok()?;
         counts.insert(Box::from(key.value()), value.value().0);
     }
-    Some(counts)
+    // The pinned keys come along for the same reason the counts do: the keystroke that asks
+    // to forget a word may not open a read transaction to find out whether it is protected.
+    // Only the pinned ones are kept, so an ordinary store holds an empty set.
+    let mut pinned = HashSet::new();
+    let meta = txn.open_table(USER_META).ok()?;
+    for entry in meta.iter().ok()? {
+        let (key, value) = entry.ok()?;
+        if value.value().1 != 0 {
+            pinned.insert(Box::from(key.value()));
+        }
+    }
+    Some(Loaded { counts, pinned })
 }
 
 impl Inner {
@@ -72,6 +96,11 @@ impl Inner {
     /// every one of the hundreds of edges that name it in a single decode. The cache turns
     /// that into one transaction per distinct word per session.
     pub(super) fn on_demand(&self, key: &str) -> u32 {
+        // A key the user has just forgotten is answered before the cache: the cached total
+        // is what the file held when it was read, and the tombstone is the newer truth.
+        if lock(&self.pending).removed.contains(key) {
+            return 0;
+        }
         {
             let mut cache = lock(&self.cache);
             if let Some(hit) = cache.get(key) {
@@ -118,6 +147,30 @@ impl Inner {
     pub(super) fn forget_committed(&self, key: &str) {
         if self.is_hydrated {
             lock(&self.committed).remove(key);
+        }
+    }
+
+    /// Adopts a record an import wrote.
+    ///
+    /// The import's transaction has committed, so the file holds the merged value; the
+    /// in-memory map has to hold the same one, or a lookup would answer a count the store no
+    /// longer has. The cache entry goes for the same reason it does after an eviction -- it
+    /// is the fallback path's copy of the file, and the file changed under it -- and a
+    /// tombstone for the key goes too: the import has just put the word back, and the
+    /// removal it was waiting to flush is the older of the two statements.
+    pub(super) fn adopt_imported(&self, key: &str, weight: u32, pinned: bool) {
+        if self.is_hydrated {
+            lock(&self.committed).insert(Box::from(key), weight);
+        }
+        lock(&self.cache).remove(key);
+        lock(&self.pending).removed.remove(key);
+        // The pin is what the next `forget` reads, so it has to follow the file rather than
+        // wait for the next open.
+        let mut pins = lock(&self.pinned);
+        if pinned {
+            pins.insert(Box::from(key));
+        } else {
+            pins.remove(key);
         }
     }
 }

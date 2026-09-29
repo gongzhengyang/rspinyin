@@ -104,10 +104,12 @@ struct Payload {
     role: &'static str,
     /// Whether a missing build output is an error.
     ///
-    /// The icons are artwork and the licence texts are legal text: neither is produced by
-    /// the build, so a tree that has not produced them must still be packageable. What
-    /// must not happen is a *silent* omission, so a payload that is optional and absent is
-    /// reported by name and reason at the end of every run.
+    /// The licence texts are the only optional payloads. The icons are not: they are
+    /// committed to the repository rather than produced by the build, so an absent one is
+    /// a broken checkout, and a release that left them out would install a plugin
+    /// `fcitx5-configtool` shows with a placeholder. What must not happen to an optional
+    /// payload is a *silent* omission, so one that is absent is reported by name and
+    /// reason at the end of every run.
     optional: bool,
     /// The size budget the file is measured against, if it has one.
     budget: Option<Budget>,
@@ -173,7 +175,7 @@ const PAYLOADS: &[Payload] = &[
         name: "fcitx-rspinyin.png",
         candidates: &["assets/icon-48.png"],
         role: "icon",
-        optional: true,
+        optional: false,
         budget: None,
         exports: &[],
     },
@@ -181,7 +183,7 @@ const PAYLOADS: &[Payload] = &[
         name: "fcitx-rspinyin.svg",
         candidates: &["assets/icon.svg"],
         role: "icon",
-        optional: true,
+        optional: false,
         budget: None,
         exports: &[],
     },

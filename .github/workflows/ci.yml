@@ -1,15 +1,32 @@
 # rspinyin CI baseline.
 #
-# Seven jobs, per the architecture spec's CI matrix:
+# `just ci` is the whole gate suite (AGENTS.md section 2, features.md 0.3), and no job
+# here writes that set down again: `quality` runs `just ci` and nothing else, and the
+# jobs that run what the suite cannot -- a scan that needs the network, the host-ABI
+# half -- call the single recipe that owns it. A gate listed in this file but not in
+# the justfile is one nobody can run locally, and one listed in the justfile but not
+# here is one nobody enforces; the audit job's hand-written recipe list was exactly
+# that drift, and it is why the list now lives in one place.
 #
-#   quality       `just ci` -- the gate suite of features.md 0.3 plus every
-#                 architecture and licence audit, on a machine without the Fcitx5
-#                 development packages, so the pure-Rust path is proven
-#   host-abi      the same gates with a real libfcitx5core linked in, which is why
-#                 this is the job that installs the Fcitx5 development packages
-#   audit         the architecture rules of 0.4 and the licence obligations of
-#                 ADR-0000, plus the self-tests of the audit scripts and the budget
-#                 cross-check; today a strict subset of `just ci`
+# The release jobs (`reproducible`, `dictionary`, `size`) build and verify artifacts
+# rather than audit the tree, so they are not part of `just ci`; each asserts its own
+# artifact inline and reports a stable `dist/verify/...` code on failure.
+#
+#   quality       `just ci` -- the full gate suite, on a machine without the Fcitx5
+#                 development packages, so the pure-Rust path is proven. The
+#                 host-ABI half of the suite reports a skip here; the next job is
+#                 where it actually runs.
+#   host-abi      `just check-host`, the host-ABI half of that same suite, with
+#                 RSPINYIN_REQUIRE_HOST_ABI=1 so that a missing development package
+#                 fails instead of skipping; this is where the half `quality` had to
+#                 skip actually runs
+#   cross-arch    the aarch64 channel: `just check-arm64` builds both addons and runs
+#                 the host-ABI half of the suite on a native arm64 runner, so the
+#                 architecture claim rests on the code running rather than on the
+#                 files existing
+#   audit         the advisory scan, which needs the network and is therefore the
+#                 one gate `just ci` excludes; the architecture and licence audits
+#                 run in `quality` as part of the suite
 #   bench         budget regression; only on main and on PRs labelled `bench`
 #   reproducible  two clean release builds of one commit must agree byte for byte,
 #                 and the hardened link must be visible in the ELF headers
@@ -24,8 +41,7 @@
 # `ime-fcitx5/fcitx5-host` and `ime-ui-addon/fcitx5-host`, whose build scripts
 # abort when pkg-config cannot find the Fcitx5 development packages. `just ci`
 # encodes that split -- the two addon crates are gated on their default feature
-# set, and the C ABI link lives in `just check-host`, which only the host-abi
-# job can run.
+# set, and the C ABI link lives in `just check-host`, which the suite includes.
 #
 # The audit scripts are bash + python3 (shipped by the runner image), and
 # `just`/`cargo-nextest`/`cargo-audit`/`cargo-deny`/`cargo-public-api` come from
@@ -59,10 +75,10 @@ jobs:
   quality:
     name: quality
     runs-on: ubuntu-24.04
-    # The full suite: the four fixed commands of features.md 0.3, the audits and
-    # the script self-tests. The Fcitx5 development packages are deliberately
-    # not installed here -- a host-ABI build in this job would mean the
-    # dependency-free path had stopped being dependency-free.
+    # The full suite, as one recipe. The Fcitx5 development packages are deliberately
+    # not installed here -- a host-ABI build in this job would mean the dependency-free
+    # path had stopped being dependency-free -- so `just ci` reports the host-ABI half
+    # as skipped and the `host-abi` job is where it runs.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -89,6 +105,11 @@ jobs:
   host-abi:
     name: host-abi
     runs-on: ubuntu-24.04
+    # The host-ABI half of `just ci`, which `quality` cannot run because it has no
+    # Fcitx5 development packages. The two jobs are complementary halves of the same
+    # suite rather than one nested in the other: the suite's self-tests bind sockets and
+    # spawn helper processes, and running them on two runners per pull request would
+    # double their flake surface without adding a single assertion.
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -108,38 +129,110 @@ jobs:
       - name: Cache the cargo build
         uses: Swatinem/rust-cache@v2
       - name: Lint, test and doctest with the real C ABI linked
-        run: just check-host
+        # `just check-host` is the host-ABI half of `just ci`, so the suite still has
+        # one definition. RSPINYIN_REQUIRE_HOST_ABI=1 makes the Fcitx5 development
+        # packages a hard requirement: without it a runner whose apt install silently
+        # failed would report a skip and the job would pass having proved nothing.
+        run: RSPINYIN_REQUIRE_HOST_ABI=1 just check-host
+
+  cross-arch:
+    name: cross-arch
+    # The aarch64 channel, on GitHub's native arm64 image. `just check-arm64` builds
+    # both addons and runs the host-ABI half of the suite, and the recipe refuses to
+    # run anywhere but arm64 -- which is what keeps a mislabelled runner from passing
+    # this job with an x86_64 binary.
+    #
+    # The runner is not interchangeable with the x86_64 one. Both addons are cdylibs
+    # that link against arm64 `libFcitx5Core.so.7` and `libFcitx5Utils.so.2`, so a
+    # cross build would have to assemble a complete arm64 Fcitx5 sysroot first and
+    # would then run its tests under `qemu-aarch64`. The distribution's own arm64
+    # archive supplies the development packages here instead, and the C++ glue
+    # compiles against the same headers as every other job. The cross path is kept
+    # for developers (`just cross-arm64`); it is not what this job proves.
+    #
+    # If the repository's plan does not offer arm64 runners this job queues instead of
+    # failing, which reads as "pending" rather than as "the architecture is not
+    # covered". It must then be replaced -- the emulated `docker/setup-qemu-action@v3`
+    # path, with the container image pinned by digest -- or deleted, with aarch64
+    # marked unsupported in the delivery matrix. Leaving it queued is the one option
+    # that lies about the coverage.
+    #
+    # Longer than the `host-abi` job it mirrors: `check-arm64` builds the release
+    # artifacts and then the test profile, and the release profile is LTO with a
+    # single codegen unit.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Fcitx5 development packages
+        # All three, for the same reason as the `host-abi` job: the build scripts
+        # probe Fcitx5Core, Fcitx5Utils and Fcitx5Config before compiling the glue.
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Install just and cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Build for aarch64 and run the host-ABI gates
+        run: just check-arm64
+      - name: Record the measured sizes
+        # Not a gate -- `just check-arm64` already asserted both artifacts -- but an
+        # aarch64 artifact is not the same size as its x86_64 twin, and the size
+        # budget is only meaningful next to the number that was measured.
+        run: |
+          {
+            echo "### aarch64 artifacts"
+            echo
+            echo '| file | bytes |'
+            echo '|---|---|'
+            for library in target/release/librspinyin.so target/release/librspinyin_ui.so; do
+              printf '| %s | %s |\n' "$(basename "$library")" "$(stat -c%s "$library")"
+            done
+            echo
+            echo '```'
+            size target/release/librspinyin.so target/release/librspinyin_ui.so
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the aarch64 addons
+        # The handoff to packaging: an aarch64 `.deb`/`.rpm`/`PKGBUILD` needs these two
+        # files, and rebuilding them in that job would be a second definition of what
+        # this architecture builds.
+        uses: actions/upload-artifact@v4
+        with:
+          name: rspinyin-aarch64-addons
+          path: |
+            target/release/librspinyin.so
+            target/release/librspinyin_ui.so
+          retention-days: 30
 
   audit:
     name: audit
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned toolchain
         run: rustup show active-toolchain
-      - name: Install just, cargo-public-api, cargo-audit and cargo-deny
+      - name: Install just, cargo-audit and cargo-deny
         uses: taiki-e/install-action@v2
         with:
-          tool: just,cargo-public-api,cargo-audit,cargo-deny
-      - name: Install the nightly toolchain for the public-API audit
-        # `check-slint` drives `cargo public-api`, which needs a nightly rustdoc.
-        run: rustup toolchain install nightly --profile minimal
-      - name: Cache the cargo build
-        uses: Swatinem/rust-cache@v2
-      - name: Run the architecture and licence audits
-        run: just check-deps check-unsafe check-net check-slint check-ui check-dict
-      - name: Self-test the audit scripts
-        run: just check-self-tests
-      - name: Cross-check the performance budgets
-        run: just check-budget
+          tool: just,cargo-audit,cargo-deny
       - name: Scan the dependency closure for advisories and licence drift
-        # This is the one job that may reach the network, and it is why
-        # `check-advisories` is deliberately absent from `just ci`: `cargo audit`
-        # contacts the registry to check whether a version has been yanked, so
-        # putting it in the gate would make the whole suite fail on an offline
-        # machine. `deny.toml` carries the licence policy and the written
-        # exemptions; the audit step is where they are enforced.
+        # The one gate `just ci` excludes, and the reason this job exists at all:
+        # `cargo audit` contacts the registry to check whether a version has been
+        # yanked, so it cannot sit in a suite that has to pass on a machine with no
+        # network. Every other architecture, licence, budget and self-test audit runs
+        # in the `quality` job as part of `just ci` -- naming them again here would be
+        # a second definition of the suite, and the two would drift apart.
+        #
+        # `deny.toml` carries the licence policy and the written exemptions;
+        # `.cargo/audit.toml` carries the advisory exemption and its reason.
         run: just check-advisories
 
   bench:
@@ -330,8 +423,21 @@ jobs:
           cargo run --quiet -p xtask -- dictc
       - name: Build and package the addons
         run: just package
+      - name: Assert the archive carries the input method's icons
+        # The packager already refuses to plan a release without them, and the manifest
+        # step below would notice a payload that never made it into the archive. This
+        # checks the archive itself, because the promise is about what a user unpacks:
+        # Fcitx5 resolves `Icon=fcitx-rspinyin` through the hicolor theme, so an archive
+        # without these two files installs an input method with a blank icon.
+        run: |
+          for icon in fcitx-rspinyin.png fcitx-rspinyin.svg; do
+            tar -tzf dist/rspinyin-*.tar.gz | grep -q "/${icon}\$" \
+              || { echo "dist/verify/icon-missing: the archive carries no ${icon}" >&2; exit 1; }
+          done
       - name: Assert the size budgets
-        run: cargo run --quiet -p xtask -- budget --measure
+        # The recipe, not the `cargo run` behind it: a gate this file spells out for
+        # itself is a second definition of the gate, and the two drift.
+        run: just check-size
       - name: Assert what left the repository is stripped and still loadable
         # The packager checks both of these itself, with its own ELF reader. This step
         # checks them again with binutils, because the promise is about the file rather

@@ -25,6 +25,14 @@
 //! without a renderer. The two copies are pinned to each other by the unit tests
 //! beside this file and by that script; no third copy may exist.
 //!
+//! The shadow layers of §3.1.2 are the one exception, and it is a deliberate one: the
+//! bands they are drawn as are a falloff rather than a token, no Rust code reads them,
+//! and their only copy is the one `ui/theme.slint` computes. The tests in
+//! `slint_palette.rs` hold that copy to the falloff the specification describes, and the
+//! tests in `tests.rs` hold its height -- the two peaks `CandidateMetrics` declares in
+//! `ui/candidate.slint` -- to the same table, because nothing on the drawing path reads a
+//! peak: the ramp reaches the rasterizer as the per-band colours themselves.
+//!
 //! # Determinism
 //!
 //! Every token is an 8-bit integer. Alpha compositing is integer arithmetic with
@@ -247,9 +255,14 @@ pub struct ThemeTokens {
     pub state_pressed: Rgba8,
     /// 3.2 `separator`: the line under the header.
     pub separator: Rgba8,
-    /// 3.2 `shadow.inner`: the hard layer of §3.1.2 that keeps the edge crisp.
+    /// 3.2 `shadow.inner`: the hard layer of §3.1.2 that keeps the edge crisp. The layer
+    /// is drawn as the two bands `ui/theme.slint` declares in `shadow-inner-bands`, each
+    /// at a fraction of this token's alpha.
     pub shadow_inner: Rgba8,
-    /// 3.2 `shadow.outer`: the soft layer of §3.1.2 that gives the window height.
+    /// 3.2 `shadow.outer`: the soft layer of §3.1.2 that gives the window height. The
+    /// layer is drawn as the eight bands `ui/theme.slint` declares in
+    /// `shadow-outer-bands`, whose alphas are the layer's falloff; this token supplies
+    /// the three channels they are painted in.
     pub shadow_outer: Rgba8,
     /// 3.2 `status.dot.active`: the Chinese-mode indicator.
     pub status_dot_active: Rgba8,
@@ -452,6 +465,18 @@ pub trait ThemeSink {
     /// - `accent`: an opaque accent.
     fn set_accent(&mut self, accent: Rgba8);
 
+    /// Writes the font family the candidate window draws with.
+    ///
+    /// Deliberately not part of `apply`: the family is chosen once at startup by probing
+    /// which families this machine actually has, and it does not change with the theme.
+    /// Routing it through `apply` would rewrite it on every light/dark switch, which is
+    /// the one thing the probe exists to avoid doing more than once.
+    ///
+    /// # Parameters
+    ///
+    /// - `family`: a family name, or the empty string to leave the view's own default.
+    fn set_font_family(&mut self, family: &str);
+
     /// Writes the base alpha, `0.0..=1.0`.
     ///
     /// # Parameters
@@ -463,8 +488,10 @@ pub trait ThemeSink {
 /// Writes a resolved theme into the window's theme global.
 ///
 /// Three properties are written and nothing else is touched: the Slint global derives
-/// every other token from them, so a theme switch -- including the dark-to-light one
-/// -- is a property update, never a rebuild, and cannot flash.
+/// every colour token from them, so a theme switch -- including the dark-to-light one
+/// -- is a property update, never a rebuild, and cannot flash. The font family is the one
+/// token a switch deliberately leaves alone: it is resolved once at startup from the font
+/// probe's answer, and a family change would re-shape every glyph the window draws.
 ///
 /// # Parameters
 ///

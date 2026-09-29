@@ -1,14 +1,25 @@
 //! Unit tests for the configuration loader and the reload path.
 //!
 //! Responsibility: pin what reading and re-reading `config.toml` does to the filesystem --
-//! the template a fresh install is given, the backup a corrupt file is moved to, and the
-//! rule that a reload improves the configuration in force or leaves it alone.
+//! the template a fresh install is given and the defaults it states, the backup a corrupt
+//! file is moved to, the rule that a reload improves the configuration in force or leaves
+//! it alone, and the binding table and decode settings a reload adopts together with the
+//! configuration.
 //!
 //! Boundaries: every test names the file it owns and passes the stamp a backup name
 //! carries, so nothing here reads `$HOME` or the clock. The scratch directories live under
 //! the system temp directory, one per test.
 
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use ime_types::{ImeError, SchemeId};
+
 use super::*;
+use crate::keymap::{
+    BINDING_CONFLICT_CODE, FlipSet, HighlightSet, UNROUTABLE_BINDING_CODE, project_keys,
+};
 use crate::schema::{DigitZero, Durability, LogLevel, PunctMode, ThemeScheme};
 
 /// A scratch directory for one test, named after the test so two tests never share
@@ -114,7 +125,7 @@ fn test_load_reads_every_key_from_a_document() {
     let path = scratch("every-key").join(FILE_NAME);
     write(
         &path,
-        "schema_version = 1\n\
+        "schema_version = 2\n\
          [engine]\npunct_mode = \"english\"\nfull_width = true\n\
          auto_english_on_uppercase = false\npassthrough_url = false\nmax_raw_len = 1\n\
          verify_dict_on_load = \"header\"\n\
@@ -157,7 +168,7 @@ fn test_load_reads_every_key_from_a_document() {
     assert!(config.diagnostics.log_input_content && !config.diagnostics.probes);
 
     // The document was read, not written: the loader never rewrites a user's file.
-    assert!(read(&path).starts_with("schema_version = 1"));
+    assert!(read(&path).starts_with("schema_version = 2"));
 }
 
 #[test]
@@ -226,7 +237,13 @@ fn test_load_reports_every_kind_of_unusable_document() {
     write(&path, &format!("{at_limit}k_extra = 2\n"));
     let warnings = Config::load_at(&path, 7).1;
     assert_eq!(rejected(&warnings), [String::from(DOCUMENT_KEY)]);
-    assert!(warnings[0].to_string().contains("limit exceeded: 120"));
+    assert!(
+        warnings[0]
+            .to_string()
+            .contains(&format!("limit exceeded: {MAX_DOCUMENT_KEYS}")),
+        "the message names the ceiling in force: {}",
+        warnings[0]
+    );
 }
 
 #[test]
@@ -284,4 +301,346 @@ fn test_reload_keeps_the_configuration_it_cannot_replace() {
     assert_eq!(rejected(&warnings), [String::from(DOCUMENT_KEY)]);
     assert_eq!(**store.current(), Config::default());
     assert_eq!(kept_by(&mut store), [String::from(DOCUMENT_KEY)]);
+}
+
+#[test]
+fn test_load_projects_the_keys_section_into_the_binding_table() {
+    let path = scratch("load-bindings").join(FILE_NAME);
+    write(
+        &path,
+        "[keys]\ndigit_zero = \"flip\"\nenter_commit_raw = true\n\
+         flip_keys = [\"page_up\", \"page_down\"]\nhighlight_keys = [\"shift_tab\"]\n",
+    );
+
+    let (store, warnings) = ConfigStore::load_at(&path, 7);
+
+    assert!(warnings.is_empty(), "every entry is routable: {warnings:?}");
+    let bindings = store.bindings();
+    assert_eq!(bindings.digit_zero, DigitZero::Flip);
+    assert!(bindings.enter_commit_raw);
+    assert_eq!(bindings.flip_keys, FlipSet::PAGE_UP | FlipSet::PAGE_DOWN);
+    assert_eq!(bindings.highlight_keys, HighlightSet::SHIFT_TAB);
+    assert!(
+        !bindings.highlight_keys.contains(HighlightSet::TAB),
+        "the document's list replaces the built-in one rather than adding to it"
+    );
+}
+
+#[test]
+fn test_load_reports_a_binding_the_projection_cannot_route() {
+    // `left` is in the key-name whitelist, so the document is read without complaint --
+    // but it pages nothing, and an entry that cannot become a binding is reported rather
+    // than dropped in silence.
+    let path = scratch("load-unroutable").join(FILE_NAME);
+    write(&path, "[keys]\nflip_keys = [\"minus\", \"left\"]\n");
+
+    let (store, warnings) = ConfigStore::load_at(&path, 7);
+
+    assert_eq!(rejected(&warnings), [String::from(UNROUTABLE_BINDING_CODE)]);
+    assert_eq!(
+        store.bindings().flip_keys,
+        FlipSet::MINUS,
+        "the entry beside the rejected one still binds"
+    );
+}
+
+#[test]
+fn test_load_reports_an_unknown_key_name_once() {
+    // A name outside the whitelist is the schema's to refuse, and the entry is dropped
+    // before the projection ever sees it: one mistake must cost the user one diagnostic,
+    // not one per layer.
+    let path = scratch("load-unknown-name").join(FILE_NAME);
+    write(&path, "[keys]\nflip_keys = [\"minus\", \"esc\"]\n");
+
+    let (store, warnings) = ConfigStore::load_at(&path, 7);
+
+    assert_eq!(rejected(&warnings), [String::from(KEY_FLIP_KEYS)]);
+    assert_eq!(store.bindings().flip_keys, FlipSet::MINUS);
+}
+
+#[test]
+fn test_reload_adopts_the_reprojected_binding_table() {
+    let path = scratch("reload-bindings").join(FILE_NAME);
+    write(&path, "[keys]\nflip_keys = [\"minus\", \"equal\"]\n");
+    let (mut store, _) = ConfigStore::load_at(&path, 7);
+    assert_eq!(store.bindings().flip_keys, FlipSet::MINUS | FlipSet::EQUAL);
+
+    write(
+        &path,
+        "[keys]\nflip_keys = [\"page_up\", \"page_down\"]\nhighlight_keys = [\"left\", \"right\"]\n",
+    );
+
+    assert!(matches!(store.reload(), ReloadOutcome::Updated { .. }));
+    let bindings = store.bindings();
+    assert_eq!(bindings.flip_keys, FlipSet::PAGE_UP | FlipSet::PAGE_DOWN);
+    assert_eq!(
+        bindings.highlight_keys,
+        HighlightSet::LEFT | HighlightSet::RIGHT
+    );
+}
+
+#[test]
+fn test_reload_replaces_the_binding_table_whole() {
+    let path = scratch("reload-bindings-whole").join(FILE_NAME);
+    write(
+        &path,
+        "[keys]\nflip_keys = [\"minus\"]\nhighlight_keys = [\"tab\"]\n",
+    );
+    let (mut store, _) = ConfigStore::load_at(&path, 7);
+
+    write(
+        &path,
+        "[keys]\nflip_keys = [\"page_up\"]\nhighlight_keys = [\"shift_tab\"]\n",
+    );
+    assert!(matches!(store.reload(), ReloadOutcome::Updated { .. }));
+
+    let bindings = store.bindings();
+    assert_eq!(bindings.flip_keys, FlipSet::PAGE_UP);
+    assert_eq!(bindings.highlight_keys, HighlightSet::SHIFT_TAB);
+    assert!(
+        !bindings.flip_keys.contains(FlipSet::MINUS),
+        "no page key of the previous configuration survives"
+    );
+    assert!(
+        !bindings.highlight_keys.contains(HighlightSet::TAB),
+        "no highlight key of the previous configuration survives"
+    );
+}
+
+#[test]
+fn test_reload_reports_a_binding_conflict_through_the_reload_diagnostics() {
+    let path = scratch("reload-bindings-conflict").join(FILE_NAME);
+    write(&path, "[keys]\nflip_keys = [\"minus\"]\n");
+    let (mut store, _) = ConfigStore::load_at(&path, 7);
+
+    // One key claimed by both lists. The configuration layer's own repair settles a repeat
+    // inside one list, so a cross-list conflict reaches the projection, which is where it
+    // is reported.
+    write(
+        &path,
+        "[keys]\nflip_keys = [\"up\"]\nhighlight_keys = [\"up\"]\n",
+    );
+
+    let warnings = match store.reload() {
+        ReloadOutcome::Updated { warnings } => rejected(&warnings),
+        ReloadOutcome::Unchanged | ReloadOutcome::Kept { .. } => Vec::new(),
+    };
+
+    assert_eq!(warnings, [String::from(BINDING_CONFLICT_CODE)]);
+    let bindings = store.bindings();
+    assert!(
+        !bindings.flip_keys.contains(FlipSet::UP),
+        "the page binding is the one that gives way"
+    );
+    assert!(bindings.highlight_keys.contains(HighlightSet::UP));
+}
+
+#[test]
+fn test_reload_keeps_the_binding_table_when_the_file_cannot_be_read() {
+    let directory = scratch("reload-bindings-kept");
+    let path = directory.join(FILE_NAME);
+    write(&path, "[keys]\nflip_keys = [\"page_down\"]\n");
+    let (mut store, _) = ConfigStore::load_at(&path, 7);
+    let before = store.bindings();
+    assert_eq!(before.flip_keys, FlipSet::PAGE_DOWN);
+
+    // Gone, then corrupt: neither is something to adopt, so the table in force stays.
+    assert!(fs::remove_file(&path).is_ok());
+    assert_eq!(kept_by(&mut store), [String::from(DOCUMENT_KEY)]);
+    assert_eq!(
+        store.bindings(),
+        before,
+        "a kept configuration keeps its binding table"
+    );
+
+    write(&path, "this is not TOML\n");
+    assert_eq!(kept_by(&mut store), [String::from(DOCUMENT_KEY)]);
+    assert_eq!(store.bindings(), before);
+}
+
+#[test]
+fn test_reload_of_an_unchanged_document_leaves_the_binding_table_alone() {
+    let path = scratch("reload-bindings-unchanged").join(FILE_NAME);
+    // `left` pages nothing, so reading this document raises a diagnostic every time --
+    // which is why the unchanged case must not project again: a reload with nothing to
+    // adopt has nothing to report either.
+    write(&path, "[keys]\nflip_keys = [\"minus\", \"left\"]\n");
+    let (mut store, warnings) = ConfigStore::load_at(&path, 7);
+    assert_eq!(rejected(&warnings), [String::from(UNROUTABLE_BINDING_CODE)]);
+    let before = store.bindings();
+
+    assert!(matches!(store.reload(), ReloadOutcome::Unchanged));
+
+    assert_eq!(store.bindings(), before);
+    assert_eq!(before.flip_keys, FlipSet::MINUS);
+}
+
+#[test]
+fn test_reload_leaves_a_binding_table_a_caller_already_holds_untouched() {
+    // The configuration layer's half of the rule that a reload never disturbs a
+    // composition in progress: the table a component took before the reload is a copy,
+    // and the reload replaces the store's value rather than the copy.
+    let path = scratch("reload-bindings-snapshot").join(FILE_NAME);
+    write(&path, "[keys]\nflip_keys = [\"minus\"]\n");
+    let (mut store, _) = ConfigStore::load_at(&path, 7);
+    let in_flight = store.bindings();
+
+    write(&path, "[keys]\nflip_keys = [\"page_up\"]\n");
+    assert!(matches!(store.reload(), ReloadOutcome::Updated { .. }));
+
+    assert_eq!(
+        in_flight.flip_keys,
+        FlipSet::MINUS,
+        "the table a component started with is not rewritten underneath it"
+    );
+    assert_eq!(store.bindings().flip_keys, FlipSet::PAGE_UP);
+}
+
+#[test]
+fn test_store_bindings_match_the_configuration_in_force() {
+    // The invariant the store exists to keep: the table it hands out is always the
+    // projection of the configuration it hands out, at load and after every reload.
+    let path = scratch("bindings-invariant").join(FILE_NAME);
+    write(
+        &path,
+        "[keys]\nflip_keys = [\"minus\", \"left\"]\nhighlight_keys = [\"tab\", \"page_up\"]\n",
+    );
+    let (mut store, _) = ConfigStore::load_at(&path, 7);
+
+    assert_eq!(store.bindings(), project_keys(&store.current().keys).0);
+
+    write(
+        &path,
+        "[keys]\nflip_keys = [\"equal\"]\nhighlight_keys = [\"right\"]\n",
+    );
+    assert!(matches!(store.reload(), ReloadOutcome::Updated { .. }));
+
+    assert_eq!(store.bindings(), project_keys(&store.current().keys).0);
+}
+
+#[test]
+fn test_default_template_parses_to_the_built_in_defaults() {
+    // The template is two things at once: the documentation of every key a user may
+    // write, and the statement of the built-in defaults. A key added to one side and
+    // forgotten on the other is caught here rather than by a user whose fresh
+    // configuration does not behave the way the file in front of them says it does.
+    let (config, warnings) = match Config::from_document(DEFAULT_CONFIG_TOML) {
+        Ok(parsed) => parsed,
+        Err(error) => panic!("the shipped template must be readable: {error}"),
+    };
+
+    assert_eq!(config, Config::default(), "the template is the defaults");
+    assert!(
+        rejected(&warnings).is_empty(),
+        "no key of the template is unusable: {warnings:?}"
+    );
+    assert!(
+        config.validate().is_empty(),
+        "the template needs no repair: {:?}",
+        config.validate()
+    );
+}
+
+#[test]
+fn test_load_reads_the_scheme_section_into_the_decode_settings() {
+    let path = scratch("scheme-section").join(FILE_NAME);
+    write(
+        &path,
+        "[scheme]\nscheme = \"XiaoHe\"\nshow_hint = false\nkeep_full_pinyin = false\n",
+    );
+
+    let (store, warnings) = ConfigStore::load_at(&path, 7);
+
+    assert!(warnings.is_empty(), "every value is usable: {warnings:?}");
+    assert_eq!(
+        store.scheme(),
+        (SchemeId::XIAOHE, false),
+        "the layout is read in any case and the mixed-input switch with it"
+    );
+    assert_eq!(
+        store.scheme(),
+        store.current().scheme.decode_settings(),
+        "the accessor is the projection of the configuration in force"
+    );
+}
+
+#[test]
+fn test_store_scheme_defaults_to_full_pinyin_with_no_document() {
+    let path = scratch("scheme-default").join(FILE_NAME);
+
+    let (store, warnings) = ConfigStore::load_at(&path, 7);
+
+    assert!(warnings.is_empty(), "having no file yet is not a problem");
+    assert_eq!(
+        store.scheme(),
+        (SchemeId::FULL, true),
+        "a fresh install decodes full pinyin and still reads it inside a scheme"
+    );
+    assert_eq!(store.scheme(), store.current().scheme.decode_settings());
+}
+
+#[test]
+fn test_load_repairs_an_unimplemented_scheme_before_the_accessor_sees_it() {
+    // The boundary: a layout this build cannot compile. The section is repaired while
+    // the configuration is adopted, so the accessor can never hand a caller a layout
+    // that nothing decodes.
+    let path = scratch("scheme-custom").join(FILE_NAME);
+    write(
+        &path,
+        "[scheme]\nscheme = \"custom\"\nkeep_full_pinyin = false\n",
+    );
+
+    let (store, warnings) = ConfigStore::load_at(&path, 7);
+
+    assert_eq!(rejected(&warnings), [String::from("scheme.scheme")]);
+    assert_eq!(
+        store.scheme(),
+        (SchemeId::FULL, false),
+        "the repaired layout answers full pinyin, the key beside it is kept"
+    );
+    assert_eq!(store.scheme(), store.current().scheme.decode_settings());
+}
+
+#[test]
+fn test_reload_adopts_the_decode_settings_of_the_new_document() {
+    let path = scratch("reload-scheme").join(FILE_NAME);
+    write(&path, "[scheme]\nscheme = \"ziranma\"\n");
+    let (mut store, _) = ConfigStore::load_at(&path, 7);
+    assert_eq!(store.scheme(), (SchemeId::ZIRANMA, true));
+
+    write(
+        &path,
+        "[scheme]\nscheme = \"sogou\"\nkeep_full_pinyin = false\n",
+    );
+    assert!(matches!(store.reload(), ReloadOutcome::Updated { .. }));
+
+    assert_eq!(store.scheme(), (SchemeId::SOGOU, false));
+    assert_eq!(
+        store.scheme(),
+        store.current().scheme.decode_settings(),
+        "the settings follow the configuration the reload adopted"
+    );
+}
+
+#[test]
+fn test_reload_keeps_the_decode_settings_when_the_file_cannot_be_read() {
+    let directory = scratch("reload-scheme-kept");
+    let path = directory.join(FILE_NAME);
+    write(
+        &path,
+        "[scheme]\nscheme = \"xiaohe\"\nkeep_full_pinyin = false\n",
+    );
+    let (mut store, _) = ConfigStore::load_at(&path, 7);
+    let before = store.scheme();
+    assert_eq!(before, (SchemeId::XIAOHE, false));
+
+    // Gone: nothing to adopt, so the configuration in force -- and the decode settings
+    // projected from it -- stay exactly as they were.
+    assert!(fs::remove_file(&path).is_ok());
+    assert_eq!(kept_by(&mut store), [String::from(DOCUMENT_KEY)]);
+    assert_eq!(
+        store.scheme(),
+        before,
+        "a kept configuration keeps its decode settings"
+    );
 }

@@ -1,16 +1,24 @@
 //! Tests for [`super`].
 //!
 //! Every test builds its own scratch root under the system temporary directory and a
-//! synthetic dictionary, so no test reads the operator's `$HOME`, the real `$XDG_*`
-//! directories, `data/compiled/base.dict`, or the Fcitx5 installed on the machine.
+//! synthetic dictionary, so no test reads `data/compiled/base.dict` or the Fcitx5 installed
+//! on the machine.
+//!
+//! Two tests read the operator's real `$HOME` and `$XDG_*` directories, and neither writes to
+//! them: the isolation promise is a claim about those directories, and the only way to check
+//! it is to look at them. Both take a [`RealDirWitness`] -- an existence and modification
+//! time per path -- before and after the work, and both have nothing to protect on a machine
+//! with no resolvable home directory, where they still exercise the sandbox itself.
 
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
+use super::reset::{MAX_RESET_SUFFIX, sha256_file};
+use super::session::bus_address;
 use super::{
-    DIR_MODE, RESET_MARK, RealDirWitness, RealDirs, Sandbox, SandboxError, owned_real_dir,
-    parse_addons, parse_maps,
+    DIR_MODE, RESET_MARK, RealDirWitness, RealDirs, ResetReport, Sandbox, SandboxError,
+    owned_real_dir, parse_addons, parse_maps,
 };
 
 /// A scratch directory that removes itself when the test ends, so a run leaves nothing
@@ -610,5 +618,262 @@ fn test_two_sandboxes_under_one_parent_do_not_share_state() {
     assert!(
         first.user_db().exists(),
         "the first sandbox is untouched by the second reset"
+    );
+}
+
+#[test]
+fn test_create_with_dict_refuses_a_root_that_would_own_the_real_directories() {
+    // The one test that names a real path: the guard exists for the operator's own
+    // directories, and a guard is checked by aiming at what it protects. The root preparation
+    // refuses before its first filesystem call, so the refusal has written nothing -- which is
+    // what the witness here checks. A machine whose home directory cannot be resolved has no
+    // directory to protect, and the pure `owned_real_dir` test above is the whole of the rule
+    // there. The dictionary source is never looked at: the guard refuses before the source is.
+    let Some(real) = RealDirs::from_env() else {
+        return;
+    };
+    assert!(
+        real.home.is_absolute() && real.data_home.is_absolute() && real.config_home.is_absolute(),
+        "a relative base directory is not one a sandbox could protect: {real:?}"
+    );
+    let root = real.data_home;
+    let witness = RealDirWitness::of(std::slice::from_ref(&root));
+
+    let result = Sandbox::create_with_dict(&root, Path::new("/dev/null"));
+
+    assert!(
+        matches!(&result, Err(SandboxError::RootOwnsRealDirs { .. })),
+        "a sandbox rooted at the operator's own data directory could reset it: {result:?}"
+    );
+    let changed = witness.changed();
+    assert!(
+        changed.is_empty(),
+        "the refusal comes before anything under the real data directory is created: {changed:?}"
+    );
+}
+
+#[test]
+fn test_a_full_case_leaves_the_real_directories_alone() {
+    // The assertion the isolation promise is checked with: everything a case does -- build a
+    // tree, stage the plugin, write state, reset -- runs while the operator's own plugin
+    // directories are watched, and none of it may reach them. The scratch tree is removed
+    // with the case, which is the other half of what a case is allowed to leave behind.
+    let witness = RealDirWitness::capture();
+    let root =
+        std::env::temp_dir().join(format!("rspinyin-sandbox-lifecycle-{}", std::process::id()));
+    {
+        let scratch = Scratch::new("lifecycle");
+        assert_eq!(
+            scratch.to_path_buf(),
+            root,
+            "the scratch tree this test removes"
+        );
+        let source = dictionary(&scratch);
+        let mut sandbox = Sandbox::create_with_dict(&scratch.join("sandbox"), &source)
+            .expect("creating the sandbox");
+        sandbox
+            .stage_plugin(&packaging(&scratch), &build(&scratch))
+            .expect("staging the plugin");
+        fs::write(sandbox.user_db(), b"learned frequencies").expect("writing the store");
+        fs::write(sandbox.config_file(), b"max_per_row = 3").expect("writing the configuration");
+        let frame = sandbox.mirror_dir().join("ui_frame.json");
+        fs::write(&frame, b"{\"revision\":4}").expect("writing the frame mirror");
+        sandbox.reset().expect("resetting the case's sandbox");
+        if let Some(real) = RealDirs::from_env() {
+            assert!(
+                owned_real_dir(&root, &real).is_none(),
+                "a case's tree is built outside the operator's own directories"
+            );
+        }
+    }
+
+    let changed = witness.changed();
+    assert!(
+        changed.is_empty(),
+        "a case must not touch the real plugin directories: {changed:?}"
+    );
+    assert!(
+        !root.exists(),
+        "a case that has ended leaves nothing behind in the temporary directory"
+    );
+}
+
+#[test]
+fn test_reset_twice_leaves_the_state_of_one_reset() {
+    let (_root, mut sandbox) = fresh("twice");
+    fs::write(sandbox.user_db(), b"learned frequencies").expect("writing the store");
+    let frame = sandbox.mirror_dir().join("ui_frame.json");
+    fs::write(&frame, b"{\"revision\":7}").expect("writing the frame mirror");
+
+    let first = sandbox.reset().expect("the first reset");
+    let second = sandbox.reset().expect("the second reset");
+
+    assert!(
+        !first.moved.is_empty(),
+        "the first reset took the case's state away: {first:?}"
+    );
+    assert_eq!(
+        second,
+        ResetReport::default(),
+        "a second reset finds nothing left to take away, which is what makes it idempotent"
+    );
+    assert!(sandbox.dict_matches_source().expect("hashing the copy"));
+    assert!(
+        sandbox.data_dir().join("user.redb.reset.0").is_file(),
+        "the first reset's evidence survives the second"
+    );
+    assert!(
+        !sandbox.user_db().exists() && !sandbox.mirror_dir().join("ui_frame.json").exists(),
+        "the state the first reset took away is still gone"
+    );
+}
+
+#[test]
+fn test_reset_reports_the_path_it_could_not_move_and_stops_there() {
+    let (_root, mut sandbox) = fresh("unmovable");
+    fs::write(sandbox.config_file(), b"max_per_row = 3").expect("writing the configuration");
+    // A file where the data directory belongs: the store below it cannot be inspected, let
+    // alone moved, and the reset has to say which path it was.
+    fs::remove_dir_all(sandbox.data_dir()).expect("removing the data directory");
+    fs::write(sandbox.data_dir(), b"not a directory").expect("blocking the data directory");
+    let store = sandbox.user_db().to_path_buf();
+
+    let result = sandbox.reset();
+
+    assert!(
+        matches!(&result, Err(SandboxError::Io { path, .. }) if *path == store),
+        "the refusal names the path it could not inspect: {result:?}"
+    );
+    assert!(
+        sandbox.config_file().is_file(),
+        "the reset stops at the first refusal rather than half-applying itself"
+    );
+}
+
+#[test]
+fn test_reset_refuses_when_every_name_beside_the_store_is_taken() {
+    let (_root, mut sandbox) = fresh("exhausted");
+    fs::write(sandbox.config_file(), b"max_per_row = 3").expect("writing the configuration");
+    let store = sandbox.user_db().to_path_buf();
+    fs::write(&store, b"learned frequencies").expect("writing the store");
+    let name = store.file_name().expect("the store has a name");
+    for suffix in 0..=MAX_RESET_SUFFIX {
+        let mut aside = name.to_os_string();
+        aside.push(format!("{RESET_MARK}{suffix}"));
+        fs::write(store.with_file_name(aside), b"an earlier reset").expect("taking the name");
+    }
+
+    let result = sandbox.reset();
+
+    assert!(
+        matches!(&result, Err(SandboxError::ResetNameExhausted { path }) if *path == store),
+        "the refusal names the file whose names are taken: {result:?}"
+    );
+    assert_eq!(
+        fs::read(&store).expect("reading the store"),
+        b"learned frequencies",
+        "nothing was overwritten to make room for a reset"
+    );
+    assert!(
+        sandbox.config_file().is_file(),
+        "the reset stops at the refusal rather than half-applying itself"
+    );
+}
+
+#[test]
+fn test_reset_rebuilds_a_dictionary_copy_that_is_gone() {
+    let (_root, mut sandbox) = fresh("dict-gone");
+    fs::remove_file(sandbox.dict_path()).expect("removing the copy");
+    assert!(
+        !sandbox.dict_matches_source().expect("hashing the copy"),
+        "a copy that is not there does not match its source"
+    );
+
+    let report = sandbox.reset().expect("resetting a sandbox with no copy");
+
+    assert!(report.dict_restored, "the copy had to be rebuilt");
+    assert!(
+        sandbox.dict_path().is_file() && sandbox.dict_matches_source().expect("hashing the copy"),
+        "the rebuilt copy hashes to the pristine source"
+    );
+}
+
+#[test]
+fn test_sha256_file_matches_the_published_digest() {
+    let root = Scratch::new("sha256");
+    let empty = root.join("empty.dict");
+    let abc = root.join("abc.dict");
+    fs::write(&empty, b"").expect("writing the empty file");
+    fs::write(&abc, b"abc").expect("writing the three-byte file");
+
+    assert_eq!(
+        sha256_file(&empty).expect("hashing the empty file"),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "the digest is written as lowercase hexadecimal"
+    );
+    assert_eq!(
+        sha256_file(&abc).expect("hashing `abc`"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "the dictionary copy is compared with its source through this digest"
+    );
+}
+
+#[test]
+fn test_sha256_file_reports_a_file_it_cannot_read() {
+    let root = Scratch::new("sha256-missing");
+
+    let result = sha256_file(&root.join("absent.dict"));
+
+    assert!(
+        matches!(result, Err(SandboxError::Io { .. })),
+        "a file that is not there is a refusal rather than an empty digest"
+    );
+}
+
+#[test]
+fn test_bus_address_gives_each_start_attempt_a_path_of_its_own() {
+    let runtime = Path::new("/run/case/sandbox/runtime");
+
+    assert_eq!(
+        bus_address(runtime, 0),
+        "unix:path=/run/case/sandbox/runtime/bus.0"
+    );
+    assert_ne!(
+        bus_address(runtime, 0),
+        bus_address(runtime, 1),
+        "a retry must not reuse the bus the attempt that failed left behind"
+    );
+}
+
+#[test]
+fn test_log_path_is_the_archived_session_log() {
+    let (root, sandbox) = fresh("log-path");
+
+    assert_eq!(sandbox.log_path(), root.join("sandbox/harness/fcitx5.log"));
+}
+
+#[test]
+fn test_mapped_addon_libraries_without_a_session_is_empty() {
+    let (_root, sandbox) = fresh("no-session");
+
+    assert!(
+        sandbox
+            .mapped_addon_libraries()
+            .expect("reading the memory map")
+            .is_empty(),
+        "a sandbox that started nothing has mapped nothing"
+    );
+}
+
+#[test]
+fn test_stop_fcitx5_without_a_session_is_a_noop() {
+    let (_root, mut sandbox) = fresh("no-child");
+
+    sandbox.stop_fcitx5();
+    sandbox.stop_fcitx5();
+
+    assert!(
+        sandbox.dict_matches_source().expect("hashing the copy"),
+        "stopping a session that was never started leaves the sandbox usable"
     );
 }

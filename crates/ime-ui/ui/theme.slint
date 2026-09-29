@@ -1,12 +1,16 @@
 // The candidate window's colour tokens (docs/dev/features.md 3.2), the light/dark
-// switch and the acrylic base alpha.
+// switch, the acrylic base alpha, the two typographic tokens every run of text in
+// the window draws with, and the band colours the two shadow layers of 3.1.2 are
+// painted from.
 //
 // Imported by `candidate.slint`; this file is not compiled as a root document.
 //
-// `src/theme.rs` writes exactly three of these properties -- `dark`, `accent` and
-// `base-alpha` -- and every other token derives from them. Three writes are what
-// makes a theme switch a property update rather than a rebuild, which is what keeps
-// a dark-to-light switch from flashing.
+// `src/theme.rs` writes three of these properties on every theme switch -- `dark`,
+// `accent` and `base-alpha` -- and every colour token derives from them. Three writes
+// are what makes a theme switch a property update rather than a rebuild, which is what
+// keeps a dark-to-light switch from flashing. The font family is the fourth property
+// the Rust side writes and the one deliberately left out of a switch: it is resolved
+// once at startup, because re-shaping every glyph is not something a switch may do.
 //
 // The values are the 3.2 table's, spelled the way the table spells them, because
 // `scripts/check-ui-spec.sh` compares the two line by line; each token carries the
@@ -19,6 +23,11 @@
 // the 8-bit channel two different ways: `with-alpha()` rounds the fraction, while the
 // `rgba()` builtin truncates it. `src/theme.rs` therefore carries the byte each token
 // actually paints with, which leaves seven of them one step below the rounded value.
+//
+// The shadow bands at the end of the global are the one thing here that is not a 3.2
+// row: 3.1.2 fixes the two layers' geometry and colours, and the bands are how a layer
+// with a blur radius is actually rasterized by the renderer this project ships. They
+// are built from `shadow-outer` and `shadow-inner` and are declared beside them.
 
 export global Theme {
     // True while the dark palette is in use. Written by `src/theme.rs`; `true` is the
@@ -33,6 +42,35 @@ export global Theme {
     // not. Written by `src/theme.rs` from the negotiation result and the contrast
     // self-check; it is the only value the degradation ladder changes.
     in property <float> base-alpha: 0.85;
+
+    // -- typography (3.1.1, 3.1.4) ------------------------------------------
+
+    // The CJK-capable family every run of text in the window draws with: the preedit,
+    // the status label, the candidate numbers, the candidate text and its annotation.
+    //
+    // The default is the family every Linux baseline ships. The font probe in
+    // `crates/ime-ui/src/renderer/probe.rs` measures which family this machine can
+    // actually draw CJK with and the window takes that answer once, before the first
+    // frame; a machine that can draw none keeps this value and reports
+    // `ui/font/missing-cjk`. A theme switch never touches the property: a family change
+    // would re-shape every glyph, and the window must not reflow on a dark-to-light
+    // switch.
+    //
+    // `in-out` rather than `in`, because the property carries a value the window can
+    // draw with on its own and the probe's answer replaces it -- the same shape as the
+    // window's `container-width`, which the layout writes over the metrics default.
+    in-out property <string> font-family: "Noto Sans CJK SC";
+
+    // The optical nudge every run of text in the window takes (3.1.4).
+    //
+    // A run of CJK text centred by its em box does not read centred: the glyphs fill the
+    // upper part of the box and leave the descender band empty, so the line sits about half
+    // a pixel high next to a disc or a rule. The containers that hold text start their
+    // content this much lower, and because they all read this one value the header line and
+    // the candidate cells stay on one optical baseline. It is a sub-pixel calibration rather
+    // than a grid size: the 4dp grid of 3.1.4 governs the window's geometry, and this sits
+    // on top of it. The exact fraction is what a rendered frame has to confirm.
+    out property <length> optical-nudge: 0.5px;
 
     // 3.2 `surface.base`, and the fill the panel is painted with. The fill is the
     // only token that carries the acrylic alpha: every other token is composited
@@ -64,6 +102,69 @@ export global Theme {
     // 3.2 `shadow.*`: the two material layers of 3.1.2.
     out property <color> shadow-inner: dark ? rgba(0,0,0,0.35) : rgba(0,0,0,0.08);
     out property <color> shadow-outer: dark ? rgba(0,0,0,0.42) : rgba(0,0,0,0.16);
+
+    // -- the two shadow layers, as bands (3.1.2) ----------------------------
+    //
+    // 3.1.2 draws L3 as `0 8dp 28dp shadow.outer` and L2 as `0 1dp 2dp shadow.inner`. The
+    // window paints each layer as concentric rounded bands that tile outward from the
+    // panel, so the cost follows the panel's perimeter rather than its area. A blur is a
+    // falloff, and a run of equal-alpha bands does not make one: because the bands tile
+    // without overlapping, the composite alpha at any point is exactly the alpha of the
+    // single band covering it, so equal alphas composite to one flat wash with a hard
+    // outer edge -- the cheapest-looking thing a floating panel can do.
+    //
+    // The falloff therefore has to reach the rasterizer as a per-band colour, which is
+    // why the two tables below live here. It cannot be an `opacity`: the software
+    // renderer this project ships does not apply `opacity` to the frame it produces -- a
+    // rectangle at `opacity: 0.1` and the same rectangle at `opacity: 1.0` rasterize
+    // identically -- so a ramp written in `opacity` would draw every band at full
+    // strength and the falloff would silently not exist. Baking the ramp into
+    // `with-alpha()` is the same picture on a renderer that does honour `opacity`, and it
+    // is the only one that is drawn here.
+    //
+    // Both tables are ordered outermost first, which is the order the drawing loop walks
+    // them in: band 0 is the widest and faintest ring, the last band is the one hugging
+    // the panel. `CandidateShadow` in `ui/candidate.slint` tiles each layer with exactly as
+    // many rings as its table holds -- the counts are `CandidateMetrics.shadow-band-count`
+    // and `shadow-inner-band-count` -- and paints ring `band` with the entry at that index.
+    //
+    // The height of each ramp is a token of its own in `CandidateMetrics`:
+    // `shadow-band-opacity` is L3's peak and `shadow-inner-opacity` L2's, and each is the
+    // alpha the last entry below is built from. Nothing on the drawing path reads those two
+    // tokens -- the ramp reaches the rasterizer as these colours -- so the pair is a number
+    // written in two files, and `src/theme/tests.rs` is what holds the two copies together.
+    //
+    // Each table is one line because `scripts/check-ui-spec.sh` reads this global one
+    // declaration per line; a wrapped declaration is a gate error, not a style choice.
+
+    // L3, the soft outer shadow: eight bands tiling the 28dp blur, each at the square of
+    // its position in the ramp. The square is the tail a Gaussian blur of a straight edge
+    // leaves behind, and it is why the bands are not evenly spaced in alpha -- a linear
+    // ramp reads visibly too bright in the middle of the falloff. The alphas are
+    // `0.18 * ((i + 1) / 8) ^ 2`, so the band against the panel paints at 0.18 -- 46 of
+    // 255 -- and the outermost at 0.003, one step above nothing.
+    //
+    // 3.1.2 names that 0.18 as the layer's own alpha, so `with-alpha()` replaces the
+    // token's rather than scaling it, and `shadow-outer` contributes the three channels
+    // the ramp is painted in. Those channels are black in both schemes, which is why the
+    // ramp reads the same on a light desktop and a dark one: the layer that has to stay
+    // legible on both is the inner one, and that one does scale with its token.
+    //
+    // The 0.18 is the same number `CandidateMetrics.shadow-band-opacity` carries: it is the
+    // ramp's peak, and the entry below that hugs the panel is where it lands.
+    out property <[color]> shadow-outer-bands: [shadow-outer.with-alpha(0.0028125), shadow-outer.with-alpha(0.01125), shadow-outer.with-alpha(0.0253125), shadow-outer.with-alpha(0.045), shadow-outer.with-alpha(0.0703125), shadow-outer.with-alpha(0.10125), shadow-outer.with-alpha(0.1378125), shadow-outer.with-alpha(0.18)];
+
+    // L2, the tight inner shadow: two bands of 1dp rather than one of 2dp, because a
+    // single thick ring has a visible boundary where it meets the panel and reads as an
+    // outline. The band hugging the panel carries three quarters of `shadow-inner`'s own
+    // alpha and the one outside it carries a third, so the layer darkens the edge instead
+    // of drawing a line on it. Both fractions are of the token's alpha, which is what
+    // keeps the layer lighter in the light scheme than in the dark one.
+    //
+    // The three quarters is the same number `CandidateMetrics.shadow-inner-opacity`
+    // carries: it is the weight of the band against the panel, and it is the last entry
+    // below.
+    out property <[color]> shadow-inner-bands: [shadow-inner.with-alpha(0.35 * (dark ? 0.35 : 0.08)), shadow-inner.with-alpha(0.75 * (dark ? 0.35 : 0.08))];
 
     // 3.2 `status.dot.*`
     out property <color> status-dot-active: accent;

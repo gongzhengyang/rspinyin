@@ -99,6 +99,22 @@ if [ -n "$destdir" ]; then
     uninstall_args+=(--destdir "$destdir")
 fi
 
+# Uninstalling reads the manifest `xtask install` wrote and undoes it, so it runs the
+# same binary -- and that binary has to be built. A user who removed the Rust toolchain
+# after installing is exactly the user who runs this, so the missing prerequisite is
+# named here rather than surfacing as `command not found`.
+if ! command -v cargo >/dev/null 2>&1; then
+    cat >&2 <<'MISSING'
+platform/toolchain/missing: `cargo` is not on PATH.
+Uninstalling reads the install manifest and restores what the install displaced, and
+both are done by the `xtask` binary, which has to be built. It needs the toolchain
+pinned by rust-toolchain.toml (https://rustup.rs). Removing the plugin by hand is
+possible but leaves the backups behind: the manifest under <datadir>/rspinyin names
+every file this installer replaced.
+MISSING
+    exit 1
+fi
+
 cargo run --quiet -p xtask -- install ${uninstall_args[@]+"${uninstall_args[@]}"}
 
 if [ "$dry_run" -eq 1 ]; then

@@ -72,7 +72,7 @@
 | `crash/<毫秒时间戳>-<线程id>.txt` | `$XDG_DATA_HOME/rspinyin/crash/` | `0600`（目录 `0700`） | 崩溃记录（结构字段的封闭集合，见第 4 节） | 是 | 已落地 |
 | `config.toml.v1` | `$XDG_CONFIG_HOME/rspinyin/` | `0600` | 配置迁移前的原件 | 是 | 规划中（配置迁移任务） |
 | `phrases.tsv` | `$XDG_CONFIG_HOME/rspinyin/` | `0600` | 用户自定义短语 | 是 | 规划中（自定义短语任务） |
-| `backups/*.tsv` | `$XDG_DATA_HOME/rspinyin/backups/` | `0600` | 用户词条备份 | 是 | 规划中（备份任务） |
+| `backups/user-YYYYMMDD-HHMMSS.tsv` | `$XDG_DATA_HOME/rspinyin/backups/` | `0600`（目录 `0700`） | **用户词条的完整备份**，与 `user.redb` 同一份数据（词 + 词频），按时间戳命名的世代文件；默认保留 3 份，最旧的先删 | 是（丢失回滚能力，不影响 `user.redb`） | 已落地（写入在插件卸载时于工作线程完成；`user.redb` 损坏时启动即从最新可导入的世代回滚） |
 
 权限上的三条边界行为（`paths.rs`，均为代码可查的实际行为）：
 

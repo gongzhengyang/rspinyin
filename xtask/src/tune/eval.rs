@@ -150,6 +150,29 @@ pub(super) struct Metrics {
     pub(super) weight_hit: u64,
 }
 
+impl Metrics {
+    /// Rows whose expected word was ranked first, as a percentage of the rows scored.
+    ///
+    /// This is the number the grid search maximizes, and the one a comparison between two
+    /// weight tuples is read from.
+    pub(super) fn first_rate(&self) -> f64 {
+        percent(self.first_choice, self.rows)
+    }
+
+    /// Rows whose expected word is reachable within [`REPORT_CANDIDATES`], as a
+    /// percentage of the rows scored.
+    pub(super) fn reach_rate(&self) -> f64 {
+        percent(self.in_top_nine, self.rows)
+    }
+
+    /// The weighted first-choice rate: the weights of the rows that hit over the weight of
+    /// every row, so a row the set marks as important moves this number further than the
+    /// plain rate does.
+    pub(super) fn weighted_rate(&self) -> f64 {
+        percent(self.weight_hit, self.weight_total)
+    }
+}
+
 /// Scores one evaluation set.
 ///
 /// # Errors
@@ -199,13 +222,15 @@ pub(super) fn report(path: &Path, weights: &ScoreWeights, metrics: &Metrics) {
         path.display(),
         metrics.empty
     );
-    let first = percent(metrics.first_choice, rows);
-    println!("tune: first {first:.1}% ({}/{rows})", metrics.first_choice);
-    let weighted = percent(metrics.weight_hit, metrics.weight_total);
-    println!("tune: weighted {weighted:.1}%");
-    let reachable = percent(metrics.in_top_nine, rows);
     println!(
-        "tune: reachable {reachable:.1}% ({}/{rows})",
+        "tune: first {:.1}% ({}/{rows})",
+        metrics.first_rate(),
+        metrics.first_choice
+    );
+    println!("tune: weighted {:.1}%", metrics.weighted_rate());
+    println!(
+        "tune: reachable {:.1}% ({}/{rows})",
+        metrics.reach_rate(),
         metrics.in_top_nine
     );
     println!("tune: weights {weights:?}");

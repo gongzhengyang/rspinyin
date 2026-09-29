@@ -15,14 +15,27 @@
 //! ```text
 //! user.redb
 //!   user_words   &str -> (u32 commits, u64 last_used_ms)   one record per key
+//!   user_meta    &str -> (u64 created_ms, u64 pinned)      one row per record that has one
 //!   meta         &str -> u64                               schema_version
 //! ```
+//!
+//! The second table holds what was added after the first release: when a word was first
+//! learned, and whether the user pinned it. It is a table of its own rather than two more
+//! fields on `user_words` because redb decodes a fixed-width tuple by slicing exactly the
+//! bytes the tuple needs, so a row written by an older build -- twelve bytes -- read as a
+//! longer tuple indexes past its end and panics. With a table of its own, a record that has
+//! no metadata row is simply one an older build wrote, and it reads as what it was: unpinned
+//! and unstamped. A `pinned` column is stored as a `u64` rather than a `bool` for the same
+//! class of reason -- redb's `bool` decoder is `unreachable!()` on any byte but 0 and 1.
 //!
 //! Durability: records accumulate in memory and reach the disk on the first of three
 //! triggers -- [`COMMIT_BATCH`] distinct keys, [`COMMIT_INTERVAL_MS`] of typing, or the
 //! ceiling [`PENDING_CAPACITY`]. A crash costs at most the current window (`ASM-20`); a
 //! graceful shutdown loses nothing, because the owner calls [`UserDb::final_commit`]
-//! before the store is dropped.
+//! before the store is dropped. A removal travels the same path: it is a tombstone in the
+//! same delta, so a word the user has forgotten is gone from the ranking at once and from
+//! the file at the next flush, and a crash before that flush costs the removal the way it
+//! costs the records of the same window.
 //!
 //! Reads: the counts the store has flushed live in memory. A store holding at most
 //! [`HYDRATE_CAP`] records is loaded whole at open and kept in step with the file by the
@@ -38,29 +51,47 @@
 //! they were committed, and a writer thread would need a queue and a wakeup for a batch
 //! of thirty-two small writes. The idle sweep in [`evict`] is the only other writer.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use ime_types::{DictError, ImeError, UserFreqSource};
+use ime_types::{DictError, ImeError, UserFreqSource, WordRef};
 use redb::{Database, Durability, ReadableTable, ReadableTableMetadata, TableDefinition};
 
 #[cfg(test)]
 use std::cell::Cell;
 
+mod backup;
 mod cache;
 mod evict;
+mod export;
+mod flush;
 mod hydrate;
+mod manage;
 
 use self::cache::LruCache;
 use self::evict::{Sweep, start_sweep};
 use self::hydrate::load_committed;
 
+pub use self::backup::{
+    BACKUP_FAILED_CODE, BACKUP_INTERVAL_MS, BACKUP_KEEP_DEFAULT, BACKUP_RESTORED_CODE,
+    BACKUP_SUBDIR, BackupConfig, BackupFile, BackupOutcome, MAX_BACKUP_KEEP, RestoreOutcome,
+    backup_dir, list_backups, recover_user_db_with_backup, run_backup,
+};
+pub use self::export::{EXPORT_LIMIT_BYTES, ImportReport};
+pub use self::manage::{ForgetOutcome, MAX_LIST_LIMIT, UserRecord};
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod manage_tests;
+
+#[cfg(test)]
+mod export_tests;
 
 /// Distinct keys that accumulate before a flush is due.
 pub const COMMIT_BATCH: usize = 32;
@@ -131,6 +162,12 @@ const SCHEMA_VERSION: u64 = 1;
 const SCHEMA_KEY: &str = "schema_version";
 /// One record per key: commits so far and the last time it was used.
 const USER_WORDS: TableDefinition<&str, (u32, u64)> = TableDefinition::new("user_words");
+/// One row per key that has one: when it was first learned, and whether it is pinned.
+///
+/// A key with no row here is a record an older build wrote -- see the module documentation.
+/// The pin flag is a `u64` holding zero or one rather than a `bool`, because redb's `bool`
+/// decoder panics on any other byte and this table is read from a user's own file.
+const USER_META: TableDefinition<&str, (u64, u64)> = TableDefinition::new("user_meta");
 /// Store-wide markers; version 1 holds only the schema version.
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 
@@ -185,7 +222,8 @@ impl Clock for SystemClock {
 /// What one flush did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CommitReport {
-    /// Number of keys written; zero when nothing was pending.
+    /// Number of records written; zero when nothing was pending. A removal is not a record
+    /// and is not counted here.
     pub written: usize,
     /// Duration of the write transaction in microseconds.
     pub elapsed_us: u64,
@@ -207,6 +245,15 @@ struct Pending {
 struct PendingState {
     /// One entry per key touched since the last successful flush.
     entries: HashMap<Box<str>, Pending>,
+    /// Keys the user asked to forget since the last successful flush.
+    ///
+    /// A removal travels the path a record does -- the next flush applies it -- so the
+    /// keystroke that asks for one costs a map insert rather than a write transaction
+    /// (`ASM-04`, `ASM-20`). The tombstone is also what makes the word leave the candidate
+    /// list at once: `freq` answers zero for it whether or not the file still holds it. A
+    /// failed flush drops the tombstones with the deltas of the same window, and the store
+    /// is read-only from then on.
+    removed: HashSet<Box<str>>,
     /// Monotonic nanoseconds of the last flush, so that the interval trigger measures
     /// typing time rather than wall-clock time.
     last_flush_nanos: u64,
@@ -307,6 +354,11 @@ fn stamp_schema(path: &Path, db: &Database) -> Result<(), ImeError> {
             .map_err(|error| store_error(path, &error))?;
         txn.open_table(USER_WORDS)
             .map_err(|error| store_error(path, &error))?;
+        // Created here rather than on first use: a read transaction cannot create a table,
+        // so a store whose metadata table was never written would fail the first
+        // enumeration instead of answering an empty one.
+        txn.open_table(USER_META)
+            .map_err(|error| store_error(path, &error))?;
     }
     txn.set_durability(Durability::Immediate);
     txn.commit().map_err(|error| store_error(path, &error))?;
@@ -332,6 +384,12 @@ struct Inner {
     is_hydrated: bool,
     /// Deltas recorded but not yet flushed.
     pending: Mutex<PendingState>,
+    /// The keys the user pinned, which eviction leaves alone.
+    ///
+    /// Only the pinned keys are held, so an ordinary store pays for an empty set. The flags
+    /// are loaded at open for the same reason the counts are: a keystroke that asks to
+    /// forget a word may not open a read transaction to find out whether it is pinned.
+    pinned: Mutex<HashSet<Box<str>>>,
     /// The frequency cache, consulted before the store itself.
     cache: Mutex<LruCache>,
     /// Set once the store can no longer be written.
@@ -366,101 +424,6 @@ impl Inner {
             .open_table(USER_WORDS)
             .map_err(|error| store_error(&self.path, &error))?;
         table.len().map_err(|error| store_error(&self.path, &error))
-    }
-
-    /// Writes one batch of deltas, merging each with what the store already holds.
-    ///
-    /// The error is the rendered `redb` failure rather than a typed one: it is carried to
-    /// the caller as the reason of the read-only diagnostic, which the frozen error model
-    /// spells as a string.
-    fn write_batch(
-        &self,
-        drained: &[(Box<str>, Pending)],
-        durability: Durability,
-    ) -> Result<(), String> {
-        #[cfg(test)]
-        if take_injected_failure() {
-            return Err("injected flush failure".to_string());
-        }
-        let mut txn = self.db.begin_write().map_err(|error| error.to_string())?;
-        {
-            let mut table = txn
-                .open_table(USER_WORDS)
-                .map_err(|error| error.to_string())?;
-            for (key, delta) in drained {
-                let previous = table
-                    .get(key.as_ref())
-                    .map_err(|error| error.to_string())?
-                    .map_or((0, 0), |guard| guard.value());
-                let merged = (
-                    previous.0.saturating_add(delta.count),
-                    previous.1.max(delta.last_used_ms),
-                );
-                table
-                    .insert(key.as_ref(), merged)
-                    .map_err(|error| error.to_string())?;
-            }
-        }
-        txn.set_durability(durability);
-        txn.commit().map_err(|error| error.to_string())?;
-        // The in-memory map adopts what was just written, so a later read answers from
-        // memory rather than going back to the file. The failure path above returns before
-        // this point, and it must: the transaction rolled back, so the map is still right.
-        self.adopt(drained);
-        Ok(())
-    }
-
-    /// Enters read-only mode after a failed flush.
-    ///
-    /// The drained deltas never reached the disk, so the cache -- which counts committed
-    /// plus pending -- is rolled back to the last committed values. Reads keep working: a
-    /// store that cannot learn must still answer, or the decoder would lose the history it
-    /// already has.
-    ///
-    /// The in-memory counts are deliberately left untouched and stay hydrated: they only
-    /// ever hold what reached the file, the failed transaction wrote nothing, so they are
-    /// still the truth -- and a store that can no longer be written is the one store that
-    /// most needs its reads to stay in memory.
-    fn degrade(&self, drained: &[(Box<str>, Pending)]) {
-        self.readonly.store(true, Ordering::Release);
-        let mut cache = lock(&self.cache);
-        for (key, delta) in drained {
-            if let Some(value) = cache.get(key) {
-                cache.insert(key, value.saturating_sub(delta.count));
-            }
-        }
-    }
-
-    /// Reports a flush and relaxes the batching policy when the disk is slow.
-    ///
-    /// A run of flushes past [`SLOW_COMMIT_MS`] costs more than the budget allows, so the
-    /// store batches harder instead of blocking the host thread more often. One slow flush
-    /// is not enough to act on -- see [`SLOW_COMMIT_STREAK`] -- and a fast flush resets the
-    /// run, so a single hiccup cannot move the policy. The relaxation itself is one-way: a
-    /// store that has been slow keeps the wider window rather than oscillating between the
-    /// two policies.
-    fn report(&self, written: usize, elapsed_us: u64) -> CommitReport {
-        let streak = if elapsed_us >= SLOW_COMMIT_MS * 1_000 {
-            self.slow_streak
-                .fetch_add(1, Ordering::Relaxed)
-                .saturating_add(1)
-        } else {
-            self.slow_streak.store(0, Ordering::Relaxed);
-            0
-        };
-        let mut relaxed = false;
-        if streak >= SLOW_COMMIT_STREAK && self.batch.load(Ordering::Relaxed) < RELAXED_COMMIT_BATCH
-        {
-            self.batch.store(RELAXED_COMMIT_BATCH, Ordering::Relaxed);
-            self.interval_ms
-                .store(RELAXED_COMMIT_INTERVAL_MS, Ordering::Relaxed);
-            relaxed = true;
-        }
-        CommitReport {
-            written,
-            elapsed_us,
-            relaxed,
-        }
     }
 }
 
@@ -518,10 +481,13 @@ impl UserDb {
         let db = Database::create(&path).map_err(|error| store_error(&path, &error))?;
         stamp_schema(&path, &db)?;
         let loaded = load_committed(&db, hydrate_cap);
+        let is_hydrated = loaded.is_some();
+        let held = loaded.unwrap_or_default();
         let mut inner = Arc::new(Inner {
             db,
-            is_hydrated: loaded.is_some(),
-            committed: Mutex::new(loaded.unwrap_or_default()),
+            is_hydrated,
+            committed: Mutex::new(held.counts),
+            pinned: Mutex::new(held.pinned),
             pending: Mutex::new(PendingState::default()),
             cache: Mutex::new(LruCache::new(CACHE_CAPACITY)),
             readonly: AtomicBool::new(false),
@@ -607,28 +573,7 @@ impl UserDb {
     /// # Errors
     /// As [`UserDb::final_commit`].
     fn commit_inner(&self, durability: Durability) -> Result<CommitReport, ImeError> {
-        if self.is_readonly() {
-            return Ok(CommitReport::default());
-        }
-        let drained: Vec<(Box<str>, Pending)> = {
-            let mut pending = lock(&self.inner.pending);
-            if pending.entries.is_empty() {
-                return Ok(CommitReport::default());
-            }
-            pending.last_flush_nanos = self.inner.clock.now_nanos();
-            pending.entries.drain().collect()
-        };
-        let started = self.inner.clock.now_nanos();
-        match self.inner.write_batch(&drained, durability) {
-            Ok(()) => {
-                let elapsed_us = self.inner.clock.now_nanos().saturating_sub(started) / 1_000;
-                Ok(self.inner.report(drained.len(), elapsed_us))
-            }
-            Err(reason) => {
-                self.inner.degrade(&drained);
-                Err(ImeError::DataReadonly { reason })
-            }
-        }
+        self.inner.flush(durability)
     }
 
     /// How many records are waiting to be flushed.
@@ -638,6 +583,15 @@ impl UserDb {
     #[cfg(test)]
     fn pending_len(&self) -> usize {
         lock(&self.inner.pending).entries.len()
+    }
+
+    /// How many removals are waiting to be flushed.
+    ///
+    /// Test-only, and the counterpart of [`UserDb::pending_len`]: a tombstone is the one
+    /// other thing the pending state holds.
+    #[cfg(test)]
+    fn pending_removed_len(&self) -> usize {
+        lock(&self.inner.pending).removed.len()
     }
 
     /// How many keys the in-memory counts hold, or `None` when the store was not loaded.
@@ -665,11 +619,20 @@ impl UserFreqSource for UserDb {
             let base = committed.get(key).copied().unwrap_or(0);
             // The delta is read under its own lock while `committed` is still held, in the
             // order the module fixes: `committed` first, then `pending`, never the reverse.
-            let delta = {
+            let (forgotten, delta) = {
                 let pending = lock(&self.inner.pending);
-                pending.entries.get(key).map_or(0, |entry| entry.count)
+                (
+                    pending.removed.contains(key),
+                    pending.entries.get(key).map_or(0, |entry| entry.count),
+                )
             };
-            return base.saturating_add(delta);
+            // A tombstone outranks the count the file still holds: the user asked for the
+            // word to go, and the flush that makes the file agree has not run yet.
+            return if forgotten {
+                0
+            } else {
+                base.saturating_add(delta)
+            };
         }
         // The store was too large to load, so the answer has to come from the file. The
         // fallback is bounded by the ceiling rather than by the word count: `on_demand`
@@ -688,6 +651,10 @@ impl UserFreqSource for UserDb {
             .store(now_nanos, Ordering::Relaxed);
         let due = {
             let mut pending = lock(&self.inner.pending);
+            // Committing the word again takes the tombstone back: the user is asking for it
+            // to be learned, which is the opposite of the removal still waiting to be
+            // flushed, and the later statement wins.
+            pending.removed.remove(key);
             let entry = pending.entries.entry(Box::from(key)).or_insert(Pending {
                 count: 0,
                 last_used_ms: now_ms,
@@ -723,6 +690,38 @@ impl UserFreqSource for UserDb {
         // the user coined. The table that marks a coined word, and the write path that
         // fills it, arrive with the Phase 2 user-word support.
         false
+    }
+
+    fn forget(&self, key: &str) -> bool {
+        // The frozen method answers whether a record went away; `forget_with_outcome` is
+        // the same call with the reason kept, which is what the host reports a diagnostic
+        // from. A pinned record and a read-only store both answer `false`, because neither
+        // removed anything -- and the caller that needs to tell them apart asks for the
+        // outcome instead.
+        self.forget_with_outcome(key) == ForgetOutcome::Removed
+    }
+
+    fn list(&self, offset: u64, limit: u16) -> Result<Vec<WordRef<'_>>, ImeError> {
+        // The store cannot serve this method, and the reason is a property of the signature
+        // rather than a gap in the implementation. `WordRef<'a>`'s text borrows for as long
+        // as `&self`, and the store's word set changes under it: a borrow can be taken out
+        // of a mutex guard only for as long as the guard lives, and the store's keys live
+        // behind one -- `committed` for a loaded store, the cache for a fallback one --
+        // because `record` and `forget` take `&self` and must be able to write. There is no
+        // safe way to publish them for `'self`, and the two ways to fake it are both
+        // forbidden here: leaking the keys grows the resident set with the user's
+        // vocabulary, and reaching past the guard needs `unsafe`, which this crate confines
+        // to `mmap.rs`.
+        //
+        // `dict/unsupported` is the contract's code for a capability the build does not
+        // provide, and it is what a caller falls back from: `UserDb::list_words` answers the
+        // same page as owned rows, and `UserFreqSource::export_tsv` answers the whole store.
+        let _ = (offset, limit);
+        Err(ImeError::Unsupported)
+    }
+
+    fn export_tsv(&self, writer: &mut dyn std::io::Write) -> Result<u64, ImeError> {
+        self.inner.write_export(writer)
     }
 }
 

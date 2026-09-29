@@ -13,7 +13,23 @@
 #   part), rustls, native-tls, tungstenite, quinn, zmq
 #
 # and, as feature-scoped bans, tokio and async-std when their network features
-# are enabled.
+# are enabled, and getrandom when its browser entropy features are enabled.
+#
+# `getrandom` is the one crate banned by feature rather than by name. The
+# workspace depends on it legitimately -- it is the OS entropy source, reached
+# through `ahash` and the hashers built on it -- but its `js` and `wasm_js`
+# features swap that OS source for the browser's `crypto.getRandomValues`, which
+# exists for wasm builds and means nothing to an offline Linux input method. The
+# crate name alone cannot tell the two apart, so the rule reads the resolved
+# feature list of the `getrandom` node instead.
+#
+# A resolve node's feature list is a union over platforms when `--all-features`
+# is used without `--filter-platform`, so in principle a wasm-only edge could
+# surface a feature that the Linux build never compiles. `wasm_js` is opt-in and
+# nothing in this workspace turns it on: every resolved `getrandom` node carries
+# `std` and nothing else, so the rule is exact here rather than conservative. If
+# a future dependency ever enables it for a wasm target only, that is a question
+# about the edge -- filtering it by target -- and not a reason to drop the rule.
 #
 # Matching is per dash/underscore-separated segment of the crate name, so
 # variants such as `hyper-util`, `curl-sys`, `tokio-rustls`, `quinn-proto` and
@@ -31,8 +47,8 @@
 #
 # Exit codes: 0 = pass, 1 = violation, 2 = usage or environment error.
 #
-# Self-test: `--self-test` injects banned packages, a banned feature and a
-# benign look-alike into the real metadata document and asserts the outcomes.
+# Self-test: `--self-test` injects banned packages, banned features and benign
+# look-alikes into the real metadata document and asserts the outcomes.
 # It also snapshots the working tree before the injections and compares it
 # afterwards, which is the assertion behind "the self-test has no side effects":
 # the original design added a banned dependency to a real Cargo.toml and had to
@@ -50,7 +66,7 @@ usage() {
     cat <<'USAGE'
 usage: scripts/check-no-network.sh [--self-test] [--metadata-file FILE] [--root DIR]
 
-  --self-test            inject banned and benign packages and assert the outcomes
+  --self-test            inject banned and benign packages and features and assert the outcomes
   --metadata-file FILE   analyse a captured `cargo metadata` document
   --root DIR             repository root (default: parent of this script)
 USAGE
@@ -157,6 +173,16 @@ def banned_segments(name):
 NET_FEATURE_CRATES = ("tokio", "async-std")
 NET_FEATURE_PREFIX = "net"
 
+# Crates that are only banned while a browser entropy feature is enabled.
+# `getrandom` stays a legal dependency of this workspace -- `ahash` and the
+# hashers built on it need an OS entropy source -- so it is the feature list,
+# not the name, that decides. `js` and `wasm_js` are the two spellings its
+# browser backend has carried; both redirect the crate to `crypto.getRandomValues`
+# and away from the kernel. Only the `getrandom` node's own list is read, so a
+# feature of the same name on any other crate is untouched.
+WEB_ENTROPY_CRATES = ("getrandom",)
+WEB_ENTROPY_FEATURES = frozenset({"js", "wasm_js"})
+
 try:
     document = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
 except (OSError, ValueError) as error:
@@ -219,6 +245,12 @@ elif mode == "banned-tls-variant":
     inject_package("native-tls")
 elif mode == "net-feature":
     enable_feature("tokio", "net")
+elif mode == "web-entropy-feature":
+    enable_feature("getrandom", "wasm_js")
+elif mode == "legacy-entropy-feature":
+    enable_feature("getrandom", "js")
+elif mode == "benign-entropy-feature":
+    enable_feature("getrandom", "custom")
 elif mode == "benign-lookalike":
     inject_package("surface-nets")
 elif mode == "benign-tls-lookalike":
@@ -276,6 +308,18 @@ for package_id, name in sorted(names.items(), key=lambda item: item[1]):
                 f"{name}: network feature enabled: {', '.join(enabled)}{where}"
             )
 
+    if name in WEB_ENTROPY_CRATES:
+        features = nodes.get(package_id, {}).get("features", [])
+        enabled = sorted(
+            feature for feature in features if feature in WEB_ENTROPY_FEATURES
+        )
+        if enabled:
+            path = path_from_workspace(package_id)
+            where = f" (dependency path: {' -> '.join(path)})" if path else ""
+            problems.append(
+                f"{name}: web entropy feature enabled: {', '.join(enabled)}{where}"
+            )
+
 if problems:
     print("check-no-network: FAIL", file=sys.stderr)
     for problem in problems:
@@ -287,7 +331,10 @@ if problems:
     )
     sys.exit(1)
 
-print(f"check-no-network: PASS ({scanned} packages scanned, no network capability)")
+print(
+    f"check-no-network: PASS ({scanned} packages scanned, "
+    "no network capability, no web entropy source)"
+)
 PY
 }
 
@@ -378,11 +425,14 @@ if [ "$mode" = "self-test" ]; then
     expect_violation banned-variant "openssl-sys" "a banned variant (openssl-sys)"
     expect_violation banned-tls-variant "native-tls" "a trailing-segment TLS crate (native-tls)"
     expect_violation net-feature "tokio: network feature enabled" "tokio with the net feature"
+    expect_violation web-entropy-feature "getrandom: web entropy feature enabled: wasm_js" "getrandom with the wasm_js feature"
+    expect_violation legacy-entropy-feature "getrandom: web entropy feature enabled: js" "getrandom with the js feature"
     expect_clean benign-lookalike "an unrelated name (surface-nets)"
     expect_clean benign-tls-lookalike "a medial tls that means thread-local storage (scoped-tls-hkt)"
+    expect_clean benign-entropy-feature "a non-browser getrandom feature (custom)"
     expect_clean none "the workspace after removing the violations"
     assert_repository_unchanged
-    echo "check-no-network: self-test PASS (4 injected violations detected, clean graph accepted, no side effects)"
+    echo "check-no-network: self-test PASS (6 injected violations detected: banned crates, banned network features, a web entropy feature; clean graph and 3 benign look-alikes accepted; no side effects)"
     exit 0
 fi
 

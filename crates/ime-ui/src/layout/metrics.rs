@@ -343,14 +343,48 @@ impl Metrics {
 }
 
 #[cfg(test)]
+// The tests stay in this file rather than moving to `layout/metrics/` once they pass the
+// length `AGENTS.md` 3.6 sets, and the reason is not brevity: `scripts/check-ui-spec.sh`
+// excludes exactly this file from its reference-closure scan, so a metric a test names here
+// does not stop looking dead. The same names in a sibling file would, and the gate's "no
+// constant is dead" assertion would go quiet for every one of them.
 mod tests {
     use super::*;
+
+    /// The grid's Slint source, which declares the second component the palette reuses.
+    const GRID_SLINT: &str = include_str!("../../ui/candidate_grid.slint");
 
     /// The rendered error text, which is what diagnostics and tests match on.
     fn failure(source: &str) -> String {
         parse_metrics(source)
             .expect_err("the source is expected to fail")
             .to_string()
+    }
+
+    /// A Slint source with every `//` comment removed.
+    ///
+    /// The rules the structural tests below assert are written out in the file's own prose,
+    /// so a search that kept the comments would report the explanation of a rule as a
+    /// violation of it.
+    fn code_without_comments(source: &str) -> String {
+        source
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Whether a line of Slint code binds the `opacity` property.
+    ///
+    /// `window-opacity` is a different property -- the appear motion's, written by the adapter
+    /// but deliberately bound to nothing -- so the name is matched as a whole word and not as
+    /// a suffix.
+    fn binds_opacity(line: &str) -> bool {
+        // A *binding* is the property name at the start of the line and nothing before it:
+        // `opacity: dim;` binds, while `out property <float> shadow-band-opacity: 0.18;`
+        // declares a token whose name happens to end in the same word. Matching the name
+        // anywhere in the line would call every band token a binding.
+        line.trim_start().starts_with("opacity:")
     }
 
     #[test]
@@ -499,5 +533,105 @@ mod tests {
         assert_eq!(metrics.shadow_margin, 8.0);
         assert_eq!(metrics.max_pages, 5);
         assert_eq!(metrics.shadow_band_opacity, 0.5);
+    }
+
+    #[test]
+    fn test_metrics_cell_radius_stays_concentric_with_the_container() {
+        let metrics = *metrics().expect("ui/candidate.slint declares a readable metrics block");
+        // 3.1.1 states the derivation and not only the number: the grid sits
+        // `container-padding` inside the container, so the corner that reads as the same curve
+        // is the container's minus that padding. `candidate.slint` derives the cell radius
+        // that way, and this pins the three numbers it derives from -- a change to either of
+        // the first two that leaves the table's 4dp behind is a concentricity break rather
+        // than a rounding.
+        assert_eq!(
+            metrics.cell_radius,
+            metrics.container_radius - metrics.container_padding,
+            "the cell's corner must be concentric with the container's"
+        );
+        assert_eq!(
+            metrics.cell_radius, 4.0,
+            "and 3.1.1 fixes it at 4dp for the 12dp container"
+        );
+    }
+
+    #[test]
+    fn test_candidate_slint_header_starts_on_the_candidate_grid_axis() {
+        // The preedit and the first candidate cell are drawn on one left axis: 3.1.1's header
+        // sketch puts `ni'hao'a` and the first cell's edge in one column, and the strip spans
+        // the panel's full width, so its left inset has to be the padding the grid insets its
+        // cells by. Taking the strip's own `header-padding-h` there instead -- which the file
+        // did before -- puts the first glyph 2dp right of the first cell's edge. The layout is
+        // Slint's and a test may not need a display server, so the source is where the axis is
+        // asserted; the pixels it produces are the adapter's scenes to check.
+        let code = code_without_comments(CANDIDATE_SLINT);
+        let strip = "padding-left: CandidateMetrics.container-padding;";
+        let cells = "area-padding: CandidateMetrics.container-padding;";
+        let right = "padding-right: CandidateMetrics.header-padding-h;";
+        assert!(
+            code.contains(strip),
+            "the header strip must start on the candidate grid's axis"
+        );
+        assert!(
+            code.contains(cells),
+            "and the grid must inset its cells by that same axis"
+        );
+        assert!(
+            code.contains(right),
+            "the strip keeps 3.1.1's 10dp on the right, away from the container edge"
+        );
+    }
+
+    #[test]
+    fn test_candidate_slint_exports_the_components_a_second_document_reuses() {
+        // 3.5's command palette reuses the header and the grid, so both have to be components
+        // another document can import: exported, declared once, and instantiated by the window
+        // rather than inlined into it. That the grid is importable is a fact of this crate's
+        // own build -- the window imports it, below -- while the header's is the half a second
+        // document would have to prove.
+        let candidate = code_without_comments(CANDIDATE_SLINT);
+        let grid = code_without_comments(GRID_SLINT);
+        let header = "export component Header inherits Rectangle";
+        let grid_component = "export component CandidateGrid inherits VerticalLayout";
+        let import = "import { CandidateData, CandidateGrid } from \"candidate_grid.slint\";";
+        assert!(
+            candidate.contains(header),
+            "the header is an export component of the window's own file"
+        );
+        assert!(
+            grid.contains(grid_component),
+            "the grid is an export component of its own file"
+        );
+        assert!(
+            candidate.contains(import),
+            "the window imports the grid instead of declaring one"
+        );
+        for component in ["Header {", "CandidateGrid {"] {
+            assert!(
+                candidate.contains(component),
+                "the window instantiates {component}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_candidate_slint_binds_no_opacity_and_takes_no_focus() {
+        // Two properties of the platform this project ships, and the source is the only place
+        // either can be asserted. Element opacity is not usable on the software renderer this
+        // project ships: a *bound* one does not fade its subtree, so a marker gated by an
+        // opacity of zero is not a hidden marker. And the candidate window must never take
+        // keyboard focus (features.md 0.4 rule 5): no `TextInput`, no `forward-focus` and no
+        // `focus()` call may appear in this file.
+        let code = code_without_comments(CANDIDATE_SLINT);
+        assert!(
+            !code.lines().any(binds_opacity),
+            "no element may bind opacity; the motion is drawn as geometry instead"
+        );
+        for forbidden in ["TextInput", "forward-focus", "focus("] {
+            assert!(
+                !code.contains(forbidden),
+                "{forbidden} would take keyboard focus"
+            );
+        }
     }
 }

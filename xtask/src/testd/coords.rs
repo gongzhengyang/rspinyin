@@ -60,6 +60,25 @@ pub fn dp_to_px(value: i32, scale: f32) -> i32 {
     scaled.round() as i32
 }
 
+/// Replaces a device pixel ratio that cannot be used with the neutral one.
+///
+/// The rule is `ime-ui`'s `normalize_scale`: a ratio that is zero, negative or not a number
+/// is replaced by `1.0` rather than propagated. It is duplicated for the same reason
+/// [`dp_to_px`] is -- `xtask` does not link the renderer -- and pinned by the same values
+/// that module's own test asserts, so the two cannot drift apart unnoticed.
+///
+/// A ratio that arrives from outside a running plugin (a command-line `--scale`, a probe
+/// report) is the one that needs this: the renderer never sees an unusable ratio, because
+/// it normalises at its own boundary, but the harness would otherwise label a capture with
+/// a number no audit can divide by.
+pub fn normalize_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
+}
+
 /// Converts a point in the container's own pixels into screen-absolute pixels.
 ///
 /// The hit map the interaction layer reports is container-relative, so a cell's centre
@@ -145,6 +164,19 @@ mod tests {
             "an unusable ratio cannot move a point"
         );
         assert_eq!(dp_to_px(10, f32::INFINITY), 0);
+    }
+
+    #[test]
+    fn test_normalize_scale_replaces_a_ratio_that_cannot_be_used() {
+        assert_eq!(normalize_scale(1.5).to_bits(), 1.5f32.to_bits());
+        assert_eq!(normalize_scale(3.0).to_bits(), 3.0f32.to_bits());
+        for unusable in [0.0, -2.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                normalize_scale(unusable).to_bits(),
+                1.0f32.to_bits(),
+                "a ratio the renderer would replace must be replaced here too: {unusable}"
+            );
+        }
     }
 
     #[test]

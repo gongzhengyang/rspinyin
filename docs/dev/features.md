@@ -86,10 +86,15 @@ rspinyin 是一个**离线优先、零遥测、视觉工艺对标 macOS 原生�
 
 ```
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo nextest run --workspace --all-features        # 未安装: cargo install cargo-nextest --locked
+cargo clippy --workspace --exclude ime-fcitx5 --exclude ime-ui-addon \
+             --all-targets --all-features -- -D warnings
+cargo clippy -p ime-fcitx5 -p ime-ui-addon --all-targets -- -D warnings
+cargo nextest run --workspace --exclude ime-fcitx5 --exclude ime-ui-addon --all-features
+cargo nextest run -p ime-fcitx5 -p ime-ui-addon
 cargo test --workspace --doc                        # doctest 单独补跑
 ```
+
+**两个 addon crate 被排除在 `--all-features` 之外，这是有意的**：`--all-features` 会打开它们的 `fcitx5-host` feature，而两者的 `build.rs` 在 pkg-config 找不到 Fcitx5 开发包时会中止。那样会让「无依赖即可跑」的那一半门禁反而依赖那些开发包，与该半场存在的理由相反。它们改在**默认（空）feature 集**下被 lint 与测试，真实的 C ABI 链接由 `just check-host` 覆盖（也是 `just ci` 的一部分）。这一例外与 `AGENTS.md` §3.1 登记的 `fcitx5-host` 例外是同一条。
 
 单元测试与集成测试统一使用 `cargo nextest run`；边界覆盖率目标 ≥ 80%（以 `cargo llvm-cov nextest` 报告为准，Phase 2 起接入 CI）。
 
@@ -323,7 +328,7 @@ Phase 1 的 39 个任务按依赖分层划分为 6 个执行波次。同一波�
 | `ASM-02` | 形态 | 宿主 Fcitx5 已负责全局键盘截获、输入上下文生命周期、应用兼容与焦点管理；**本插件不实现任何全局键盘抓取** | MOD-RT | 若宿主不提供某能力（如 GNOME Wayland 的绝对坐标），按 0.5.2 的分档降级，不自行实现协议客户端 |
 | `ASM-03` | 吞吐规模 | 人工击键速率 ≤ 20 keys/s（P99 峰值），常态 3~8 keys/s；单次输入会话 `raw` 长度 ≤ 32 字节，硬上限 64 字节 | MOD-CORE、MOD-UI | 超过 64 字节时截断并报 `decode/too-long`，候选框进入"仅显示不解析"模式；若实测出现 > 20 keys/s 的自动化输入，为 UI 命令队列启用丢帧合并（`UiCommand::Frame` 已设计为可合并） |
 | `ASM-04` | 吞吐规模 | 每 1000 次上屏中，需要写用户词频库的条目 ≤ 1000 条（1:1 上屏比）；写入速率 ≤ 20 次/s | MOD-DATA | 超出时（如自动化脚本刷词）降级为内存聚合 + 每 2s 批量提交一次；若单次事务 > 5ms 则切换 `Durability::Eventual` 并延长刷盘间隔至 10s |
-| `ASM-05` | 数据量级 | 内置基础词库：词条 ≤ 40 万，其中 2~4 字词占 ≥ 85%；FST 键数 ≤ 44 万（含 `L3b` 词频定向多键展开的 +23%）。分段体积预算：字符串池 ≤ 4MB、条目表 ≤ 6.5MB、**词表（WORDLIST）≤ 2MB**、FST 索引 ≤ 2.5MB、unigram 表 ≤ 3.5MB，合计 ≤ **17.5MB**（`BUDGET-SIZE-02` 的 20MB 留 2.5MB 余量给头部与对齐） | MOD-DATA | 超过 17.5MB 时按权重截断低频词（保留 top 32 万），被截断词移入可选扩展词库（Phase 2）；若因展开策略放宽导致 FST 超限，先把 `L3b` 的词频阈值从 top 50k 收紧到 top 20k（实测救回率仅从 58.1% 降到约 50%，代价减半）；`BUDGET-SIZE-02` 需同步上调并回写本节与 `budgets.json` |
+| `ASM-05` | 数据量级 | 内置基础词库：词条 ≤ 40 万，其中 2~4 字词占 ≥ 85%；FST 键数 ≤ 44 万（含 `L3b` 词频定向多键展开的 +23%）。分段体积预算：字符串池 ≤ 4MB、条目表 ≤ 6.5MB、**词表（WORDLIST）≤ 2MB**、FST 索引 ≤ 2.5MB、unigram 表 ≤ 3.5MB，五段合计 ≤ **18.5MB**；但真正约束构建的是**载荷总上限 17.5MB**（= `BUDGET-SIZE-02` 的 20MB 留 2.5MB 给头部、段表与对齐）。**两个上限同时判**：任一段越限即失败，五段之和越过 17.5MB 同样失败，因此分段上限是"哪一段在涨"的归因工具，总上限才是红线——实现见 `xtask/src/dictc/budget.rs` 的 `SECTION_SHARES`（per-mille 份额）与 `PAYLOAD_SHARE`（875‰） | MOD-DATA | 超过 17.5MB 时按权重截断低频词（保留 top 32 万），被截断词移入可选扩展词库（Phase 2）；若因展开策略放宽导致 FST 超限，先把 `L3b` 的词频阈值从 top 50k 收紧到 top 20k（实测救回率仅从 58.1% 降到约 50%，代价减半）；`BUDGET-SIZE-02` 需同步上调并回写本节与 `budgets.json` |
 | `ASM-06` | 数据量级 | 用户词频库：≤ 50 万条记录，单条 ≤ 64 字节，库文件 ≤ 32MB；用户自造词 ≤ 5000 条 | MOD-DATA | 超过 50 万条时按 `last_used_unix` 淘汰最旧 10%，淘汰动作在空闲期（无输入 30s）执行 |
 | `ASM-07` | 数据量级 | 候选列表单页 ≤ 9 个（数字键 1~9），最多 5 页 = 45 个候选；单候选文本 ≤ 32 字符 | MOD-CORE、MOD-UI | 超长候选按 `TASK-1.05.03` 的省略规则截断并保留完整文本用于上屏；超过 5 页时禁用"下一页"并在状态区显示总页数 |
 | `ASM-08` | 硬件边界 | 目标机器 ≥ 2 物理核心、≥ 4GB 内存、支持 SSE2 的 x86_64；不假设存在可用 GPU 或 GPU 驱动 | MOD-UI、MOD-SHIP | 若只有单核，UI 线程与宿主线程会争抢 CPU：将软件光栅降级为"脏矩形增量重绘"（仅重绘变化区域），并把帧预算放宽到 2.5ms |
@@ -411,13 +416,18 @@ Phase 1 的 39 个任务按依赖分层划分为 6 个执行波次。同一波�
        ▼  只读 mmap（零拷贝）                     ┌────────────────────────────┐
 ┌──────────────────────────────┐                 │ 模块 03  MOD-DATA          │
 │ 模块 02  MOD-CORE            │◄────────────────┤  crates/ime-dict           │
-│  crates/ime-core             │  trait 注入     │   base.dict (mmap, 只读)   │
-│  ├─ segment.rs  切分 DAG     │                 │   user.redb (redb, 读写)   │
-│  ├─ lattice.rs  词格构建     │                 │  crates/ime-config         │
-│  ├─ viterbi.rs  K-best 解码  │                 │   config.toml (热重载)     │
-│  ├─ lm.rs       评分与融合   │                 └────────────────────────────┘
-│  ├─ preedit.rs  预编辑生成   │                            ▲
-│  └─ passthrough.rs 直通      │                            │
+│ crates/ime-core              │  trait 注入     │   base.dict (mmap, 只读)   │
+│ ├─ segment/       切分 DAG   │                 │   user.redb (redb, 读写)   │
+│ ├─ viterbi/       词格与解码 │                 │  crates/ime-config         │
+│ ├─ input/         输入缓冲   │                 │   config.toml (热重载)     │
+│ ├─ shuangpin/     双拼方案   │                 └────────────────────────────┘
+│ ├─ state/         会话状态机 │                            ▲
+│ ├─ lm/            评分与融合 │                            │
+│ ├─ fuzzy.rs       模糊音     │                            │
+│ ├─ phrase.rs      短语       │                            │
+│ ├─ preedit.rs     预编辑生成 │                            │
+│ ├─ passthrough.rs 直通       │                            │
+│ └─ privacy.rs     隐私上下文 │                            │
 └──────────────────────────────┘                            │
        ▲                                                    │
        │ 模块 01  MOD-FOUND  crates/ime-types（错误模型 / ID / 边界契约，无依赖叶子）
@@ -590,7 +600,7 @@ pub enum DismissReason { OutsideClick, Escape, ScrollUpEmpty }
 
 #### 2.2.3 插件 ↔ 宿主 C ABI（`crates/ime-fcitx5/src/ffi/`）
 
-ABI 版本冻结为 1。C++ 侧（`addon_glue.cpp` / `engine_glue.cpp` / `ui_glue.cpp`）继承 `fcitx::AddonInstance`、`fcitx::InputMethodEngineV2`、`fcitx::UserInterface`，把虚函数调用转发到下表函数指针；Rust 侧暴露**两个**导出符号（`rspinyin_plugin_init` 与 `fcitx_addon_factory_instance`）与一个 vtable 结构体。
+ABI 版本为 **2**（`RSPINYIN_ABI_VERSION = 2`；`1 → 2` 的理由见 [ADR-0004](adr/0004-ui-addon-crate-split.md)——UI 角色拆成第二个 cdylib 后，`on_input_panel_update` 与 `on_cursor_rect` 两个只被 UI 胶水调用的槽位移出了引擎的 vtable，改动结构体布局故必须升版本）。引擎侧的 C++ 胶水（`addon_glue.cpp` / `engine_glue.cpp`）继承 `fcitx::AddonInstance` 与 `fcitx::InputMethodEngineV2`，把虚函数调用转发到下表函数指针；`ui_glue.cpp` 随 ADR-0003 迁到 `crates/ime-ui-addon`，继承 `fcitx::UserInterface` 并持有自己的 `RspinyinUiVtable` 与 `RSPINYIN_UI_ABI_VERSION`。Rust 侧暴露**两个**导出符号（`rspinyin_plugin_init` 与 `fcitx_addon_factory_instance`）与一个 vtable 结构体。
 
 > **v1.3 修正（2026-09-29，见 [ADR-0002](adr/0002-rust-exports-addon-factory.md)）**：原文为「Rust 侧只暴露一个导出符号」，并规定工厂符号由 C++ 的 `FCITX_ADDON_FACTORY` 宏生成。**该前提在 rustc 的 `cdylib` 下不成立**：rustc 生成的 version script 以 `local: *` 收尾且只列出 Rust 侧标记导出的符号，C++ 定义的符号必然不可见（`--export-dynamic`/`--export-dynamic-symbol`/`--dynamic-list` 与去掉 `strip` 均实测无效）。现改为：C++ 侧手工展开宏为私有名 `rspinyin_addon_factory`，由 Rust 侧 `#[unsafe(no_mangle)] pub extern "C" fn fcitx_addon_factory_instance()` 转发导出；工厂对象仍在 C++ 构造。
 
@@ -714,6 +724,8 @@ pub enum ImeError {
     SchemeUnsupported { scheme: u8 },
     #[error("config/migrated: from={from} to={to} backup={backup}")]
     ConfigMigrated { from: u16, to: u16, backup: String },
+    #[error("config/migration-failed: from={from} to={to} ({reason})")]
+    ConfigMigrationFailed { from: u16, to: u16, reason: String },
     #[error("dict/user-word-not-found")]
     UserWordNotFound,
     #[error("dict/export-too-large: bytes={bytes} limit={limit}")]
@@ -739,6 +751,10 @@ pub enum ConfigError {
     // 由 ADR-0005 追加：一次**成功**的迁移，不是失败。级别为 `info`。
     #[error("config/migrated: from={from} to={to} backup={backup}")]
     Migrated { from: u16, to: u16, backup: String },
+    // 由 ADR-0005 追加：一次**失败**的迁移。级别为 `error`，但绝不拒绝启动——
+    // 以默认值运行、原件原样保留。
+    #[error("config/migration-failed: from={from} to={to} ({reason})")]
+    MigrationFailed { from: u16, to: u16, reason: String },
 }
 ```
 
@@ -756,9 +772,25 @@ pub enum ConfigError {
 | `ui/slint/surface` | `ime-ui` | surface 映射/解除映射失败 | 是 |
 | `ui/select/timeout` | `ime-ui` 的通道 | 点击在自旋预算内未能投递，按设计放弃而非排队 | 是（探针计数器，非错误） |
 | `ui/click/debounced` | `ime-ui` 的交互层 | 防抖窗口内被吞掉的重复点击计数 | 是（探针计数器，非错误） |
-| `config/migration-failed` | `ime-config` | 配置迁移失败，以默认值启动并保留原件 | **否**（预留，承接卡 `ADD-FEAT-P0.03.02`） |
-| `ui/script/unavailable` | 简繁转换 | 简繁表缺失，降级为原样输出 | **否**（预留，承接卡 `ADD-FEAT-P0.02.05`） |
-| `phrase/table-unavailable` | 短语引擎 | 短语表缺失或不可读 | **否**（预留，承接卡 `ADD-FEAT-P0.01.03`） |
+| `config/migration-failed` | `ime-config` | 配置迁移失败，以默认值启动并保留原件 | 是 |
+| `ui/script/unavailable` | 简繁转换 | 简繁表缺失，降级为原样输出 | **否**（预留；`ime-dict` 的 `ScriptIndex::unavailable()` 已提供该降级值，但还没有上报方——承接卡 `ADD-FEAT-P0.02.05` 的模块层已落地，引擎提交路径未接线） |
+| `phrase/table-unavailable` | 短语引擎 | 短语表缺失或不可读 | 是（常量 `PHRASE_TABLE_UNAVAILABLE`，由加载器上报） |
+| `phrase/limit-exceeded` | 短语引擎 | 短语文档的条目数超过 `[phrases] max_entries`；超出的行被丢弃并计数 | 是（常量 `PHRASE_LIMIT_EXCEEDED_CODE`） |
+| `phrase/added` | 短语引擎 | `KeyAction::AddPhrase` 把高亮候选写进用户短语文档 | 是（常量 `PHRASE_ADDED_CODE`；由延迟写线程上报） |
+| `decode/abbrev-truncated` | `ime-core` 的简拼展开 | 一个切分节点的缩写读数超过 `MAX_READINGS`，只保留最具体的若干条 | 是（常量 `ABBREV_TRUNCATED_CODE`） |
+| `keys/unroutable-binding` | `ime-config` 的 `[keys]` 投影 | 白名单内的键名放进了一个无法路由它的列表（例如把方向键放进翻页表） | 是（常量 `UNROUTABLE_BINDING_CODE`） |
+| `keys/binding-conflict` | `ime-config` 的 `[keys]` 投影 | 同一个键被两个列表同时认领 | 是（常量 `BINDING_CONFLICT_CODE`） |
+| `keys/sequence-conflict` | `ime-fcitx5` 的序列表 | 新绑定与已绑定的序列互为前缀 | 是（常量 `SEQUENCE_CONFLICT_CODE`） |
+| `keys/sequence-too-long` | `ime-fcitx5` 的序列表 | 序列长度超过 `MAX_SEQUENCE_STROKES` | 是（常量 `SEQUENCE_TOO_LONG_CODE`） |
+| `data/backup-failed` | `ime-dict` 的用户数据备份 | 一次备份未能写出，原库不受影响 | 是（常量 `BACKUP_FAILED_CODE`） |
+| `data/backup-restored` | `ime-dict` 的用户数据备份 | 当前库损坏，已从最近一次备份回滚 | 是（常量 `BACKUP_RESTORED_CODE`） |
+| `platform/modifier-mask-mismatch` | `ime-ui` 的平台层 | 合成器报的修饰键掩码与宿主认为按下的不一致 | 是（常量 `MODIFIER_MASK_MISMATCH_CODE`） |
+| `privacy/suppressed` | `ime-fcitx5` 的隐私策略 | 敏感上下文命中，学习与日志被抑制 | 是（常量 `SUPPRESSED_CODE`） |
+| `ui/slint/second-window` | `ime-ui` | 试图在已有窗口之外再建一个 Slint 窗口 | 是（常量 `SECOND_WINDOW_CODE`） |
+| `ui/layout/metrics-missing` | `ime-ui` 的布局度量 | `candidate.slint` 里没有 `export global CandidateMetrics`，全部尺寸读不出来 | 是（内嵌在 `config/invalid: ui.layout (...)` 的 reason 里，保持可 grep） |
+| `ui/layout/metric-missing` | `ime-ui` 的布局度量 | 本模块要用到的某个度量常量没有在 `.slint` 里声明 | 是（同上，reason 里点名缺失的常量） |
+| `ui/layout/metric-malformed` | `ime-ui` 的布局度量 | 某个度量常量的值解析不出来（含写成表达式的情形） | 是（同上，reason 里给出 `name=value`） |
+| `crash/panic` | `ime-diag` 的崩溃记录 | 崩溃文件本身写失败时的兜底通道 | 是（常量 `CRASH_PANIC_CODE`） |
 
 **FFI 层的诊断码（v1.3 新增登记）**：`TASK-1.04.01` 的 C ABI 边界在 `ime-fcitx5` 内直接产生一批诊断码。它们**不是** `ImeError` 的变体（跨 FFI 边界的失败无法用 Rust 错误类型表达），但同样遵循 `领域/动作/原因` 的稳定字符串约定，写入崩溃/诊断通道，且不得改写：
 
@@ -1057,6 +1089,7 @@ pub enum ConfigError {
 | 例外值 | 常量 | 理由 |
 |---|---|---|
 | `1dp` | `stroke-width`（容器描边）、`separator-height`（Header 分隔线）、`shadow-inner-offset-y`（内层阴影下移）、候选单元 Focus Ring 描边 | 亚像素级线条与偏移；2dp 会显得粗笨，0.5dp 在 1x 下无法稳定绘制 |
+| `2dp` | `shadow-inner-spread`（内层阴影扩散） | 3.1.2 的内层阴影是 `0 1dp 2dp`，`2dp` 是它的模糊半径；写成 4dp 会从"贴边暗化"变成一条粗描边 |
 | `6dp` | `cursor-arrow-height`（光标箭头高）、`header-text-gap`、`grid-gap`、`cell-padding-v`、`number-gap`、`annotation-gap` | 紧凑网格下的呼吸量；提到 8dp 会让单行候选数与单屏行数同时下降，而 4dp 又不足以把序号、文本、注音三者在视觉上分开 |
 | `10dp` | `header-padding-h`、`cell-padding-h` | 序号槽位与文本之间的光学平衡；8dp 偏挤、12dp 偏松 |
 | `34dp` | `header-height` | `14sp` 拼音串的行高加 `6dp` 上下留白；压到 32dp 会挤压 CJK 字面框 |
@@ -1149,11 +1182,16 @@ pub enum ConfigError {
 
 | 状态 | 候选单元表现 | 状态图标表现 |
 |---|---|---|
-| `Default` | 背景透明；文本 `text.primary`；序号 `text.annotation` | `opacity 0.72` |
-| `Hover` | 背景 `state.hover`；`border-radius 8dp` | `opacity 0.92`；背景 `state.hover` 圆形 `24dp` |
+| `Default` | 背景透明；文本 `text.primary`；序号 `text.primary` + `opacity 0.55` | `opacity 0.72` |
+| `Hover` | 背景 `state.hover`；`border-radius 4dp` | `opacity 0.92`；背景 `state.hover` 圆形 `24dp` |
 | `Active`（按下） | 背景 `state.pressed`；整体 `scale 0.97`（60ms） | 同 Hover + `scale 0.94` |
 | `Focus Ring`（= 键盘高亮项） | 背景 `state.selected.bg`；描边 `1dp state.selected.stroke`；文本 `15sp / 500` | 键盘焦点在状态图标上时：外圈 `2dp accent @ 0.7` 描边，`offset 2dp` |
 | `Disabled` | 文本 `opacity 0.32`；无 hover 响应；鼠标指针为 `default` | `opacity 0.28`；无响应 |
+
+**两处与本表的早期版本不同，都是 v1.4 裁决的连带修正**：
+
+- **`Hover` 的 `border-radius` 由 `8dp` 改为 `4dp`。** 本表原先与 3.1.1 自相矛盾：容器圆角 `12dp` 加内边距 `8dp` 的同心内圆角是 `12 − 8 = 4dp`，`8dp` 会让网格四角出现"外方内圆"的破绽。v1.4 只改了 3.1.1 的候选单元圆角行，漏改了本表这一行；`check-ui-spec.sh` 现在把 `cell-radius` 钉在 4dp，所以这里必须与它一致。
+- **`Default` 的序号由 `text.annotation` 改为 `text.primary` + `opacity 0.55`。** 3.2 的 v1.4 注记（见上一节）明确：`text.annotation` 的 Token α（暗 `0.48`）与 3.1.1 的 `opacity`（`0.55`）**不得相乘**，否则有效 α 只有 `0.264`、对比度约 2.35:1，数字键提示不可读。序号的有效 α 就是 `0.55`，实现方式是给文本元素写 `opacity` 而颜色取不透明的 `text.primary`。
 
 **状态优先级**（高到低）：`Disabled` > `Active` > `Focus Ring` > `Hover` > `Default`。同一时刻只能命中一个状态；键盘高亮与鼠标悬停同时存在时，**以键盘高亮为准**（`Focus Ring` 胜出），鼠标悬停仅改变鼠标指针与 `Hover` 状态的其他项。
 
@@ -1544,7 +1582,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.01.01`
   - 代码落地锚点：`crates/ime-types/src/{lib,error,ids,version,ui,decode,key}.rs`
   - 复杂度：中 | 预估工时：1.5 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：冻结全部跨边界契约（错误码、ID、`UiCommand`/`UiEvent`、`DecodeRequest`/`DecodeResult`、`trait Lexicon`/`UserFreqSource`/`LanguageModel`/`SurfaceBackend`、`enum KeyAction`），使 Track A / Track B 在 W1 起可完全并行。**这是 5.1.1 契约冻结纪律的唯一落点。**
 - **架构设计与数据流**：
   - 上游：无（叶子 crate，只依赖 `thiserror`、`bitflags`、`serde`）。下游：全部 crate。
@@ -1643,6 +1681,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   4. `docs/dev/adr/0001-frozen-boundary-contracts.md` 存在，且列出本任务冻结的全部类型名清单。[文档]
   5. 2.2.1 / 2.2.2 / 2.2.3 / 2.2.4 的代码块与本 crate 的实际定义**逐字段一致**（脚本化比对字段名清单）。[文档]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-types/src/{error,ids,version,key,decode,lexicon,surface,ui}.rs`（411 / 515 / 204 / 111 / 411 / 508 / 178 / 406 行）；`docs/dev/adr/0001-frozen-boundary-contracts.md` 与 `0005-incremental-contract-extension.md`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **依赖纯净**：`cargo tree -p ime-types -e no-dev` 不含 `slint`、`redb`、`fst`、`wayland-client`、`x11rb` 与任何内部 crate；`grep -rn unsafe crates/ime-types/` 无输出（`scripts/check-unsafe.sh` 覆盖）。
+  - **`grep` 到断言**：`Revision::next()` 的 0 → 1 与 `u32::MAX` → 1 回绕、`check_abi` 的成功与两个失败分支、`DecodeFlags` 的位运算与「未知位被截断」、全部 `ImeError`/`DictError`/`ConfigError` 的 `Display` 与冻结码逐字比对，共 53 个测试。
+  - **`features.md` 2.2.1–2.2.4 的代码块与本 crate 逐字段一致**：由 `xtask/src/testd/logs/codes.rs` 的 `test_spec_enums_matches_the_source_enum_by_enum` 自动比对（正是 2.2.4 那句「必须逐字一致」承诺的自动化载体）；2.2.4 的运行期诊断码表本次补齐 10 个已落地但未登记的码（`decode/abbrev-truncated`、`keys/{unroutable-binding,binding-conflict,sequence-conflict,sequence-too-long}`、`data/{backup-failed,backup-restored}`、`platform/modifier-mask-mismatch`、`privacy/suppressed`、`ui/slint/second-window`、`crash/panic`），并把 `phrase/limit-exceeded`、`phrase/added` 由「预留」改为「已落地」。
+  - **已知限制**：① `ui/script/unavailable` 仍**没有上报方**（`ScriptIndex::unavailable()` 提供了降级值，缺的是引擎侧的上报点）；② `session/commit-on-focus-out`、`platform/cursor/unresolved`、`data/db/recovered` 只在 `features.md` 的 2.3/2.5.3/2.5.5 登记，不在 2.2.4 的抽取范围内——按源码抽查未发现它们被 `code=` 记录，但这一结论未经全量核对。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.02.01` 拼音音节表、切分 DAG 构建器与非法串保护
@@ -1653,7 +1700,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.01.03`
   - 代码落地锚点：`crates/ime-core/src/segment/{mod,syllable,dag}.rs`
   - 复杂度：中 | 预估工时：3.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：把任意 ASCII 输入串切分为所有可能的合法拼音音节序列（DAG），并对非法输入给出确定性降级。完成的定义：对 411 个合法音节全覆盖测试通过，对非法串不 panic 且返回 `DecodeNoPath`。
 - **架构设计与数据流**：
   - 上游：`DecodeRequest.raw`（已规范化的 ASCII 串）。下游：`TASK-1.02.04`（Viterbi 消费 DAG）、`TASK-1.02.05`（preedit 消费最优切分）、`TASK-1.03.01`（`dictc` 用音节表校验词库键）。
@@ -1698,6 +1745,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   3. 非法输入集（空串、纯非字母、`'` 边界异常、65 字节串）全部返回确定性错误，无 panic。[自动]
   4. fuzz 运行 60 秒无 panic、无超时。[自动]
   5. 单次解码在 `SyllableDag` 复用容量下堆分配次数 = 0（用 `dhat` 或自定义分配计数器断言）。[性能]
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-core/src/segment/{mod,syllable,dag}.rs`（263 / 552 / 556 行）与 `segment/{abbrev,abbrev/tests}.rs`；`fuzz/fuzz_targets/dag_build.rs`；`crates/ime-core/benches/decode.rs` 的 `segment` group。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **音节表**：411 项、严格升序无重复、逐项 `lookup` 全部命中——由 `test_syllables_table_has_exactly_411_entries`、`test_syllables_table_is_strictly_ascending_without_duplicates`、`test_lookup_finds_every_table_entry_by_its_index` 三条钉住；另有 `test_syllables_longest_entry_is_six_bytes` 与特殊音节表。
+  - **非法输入全部返回确定性错误、无 panic**：`test_build_empty_input_returns_empty_input_error`、`test_build_all_non_letter_input_returns_no_path`、`test_build_apostrophe_only_input_returns_no_path`、`test_build_too_long_input_returns_too_long_error`（64 字节边界由 `test_build_accepts_input_at_the_length_limit` 从两侧钉住）、`test_build_keeps_apostrophe_input_from_crossing_the_marker`、`test_build_treats_a_folded_apostrophe_as_no_boundary`。
+  - **复用缓冲**：`test_build_reuses_the_graph_without_leaving_stale_nodes` 与 `test_best_segmentation_hint_reuses_the_callers_buffer` 断言跨调用无残留节点；`normalize_into` 有 `test_normalize_into_reuses_the_buffer_capacity`，并断言「永不把输入增长到超过两倍长度」。
+  - **已知限制**：① DoD 2 的 `build_dag` P99 ≤ 30µs 有 criterion 基准（`segment/dag_build`），但**未在本机取数**——并发 agent 环境下的数字不可信，需在空闲机器上跑 `just bench`；② DoD 4 的 fuzz 60 秒**未执行**——`fuzz/fuzz_targets/dag_build.rs` 目标存在，命令为 `just fuzz`（需 nightly）；③ DoD 5 的「零堆分配」目前由复用容量断言间接覆盖，**没有**分配计数器或 `dhat` 的显式断言。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
 
 ---
 
@@ -1785,7 +1841,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.01.03`
   - 代码落地锚点：`crates/ime-core/src/lm/{mod,ngram,score}.rs`
   - 复杂度：中 | 预估工时：3.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：提供 Q8.8 定点打分函数族（unigram、bigram、长度奖励、段数惩罚、用户频次融合），并把权重参数化以便调优。完成的定义：给定同一组候选，打分函数输出稳定、单调、可解释。
 - **架构设计与数据流**：
   - 上游：`trait LanguageModel` 的实现（Phase 1 为 `UnigramBigram`，由 `TASK-1.03.02` 从词库加载）。下游：`TASK-1.02.04`。
@@ -1836,6 +1892,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. `lm_golden.tsv` 上首选词命中率 ≥ 85%（记录在 `docs/dev/lm-weights.md`）。[性能]
   6. `tests/fixtures/lm_holdout.tsv`（≥ 5000 条）存在，与 `lm_golden.tsv` 无重叠；在其上记录**基线**的「首选词命中率」与「目标词出现在前 9 候选内」两个指标，写入验收记录。[性能]
   7. `lm_holdout.tsv` 的全量解码耗时 < 3 秒（可参与 CI）。[性能]
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-core/src/lm/{mod,ngram,score}.rs`（32 / 215 / 705 行）；`docs/dev/lm-weights.md`；`tests/fixtures/lm_holdout.tsv` 与其生成器 `xtask/src/tune/holdout.rs`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **定点纪律**：`log2_q8` 与 `f64` 参考实现在 4096 个采样点上误差 ≤ 2（`test_log2_q8_matches_the_float_reference_over_4096_samples`），且在 2 的幂上精确（`test_log2_q8_is_exact_on_the_powers_of_two`）；`Scorer` 内**无 `f32`/`f64`**——分数是 Q8.8 定点，排序可复现。
+  - **用户频次钳制**：`test_edge_score_clamps_the_user_term_at_a_million_hits` 钉住 `freq = 1e6` 时被钳制到上限 `λ_user · 2`。
+  - **负权重被拒**：`test_scorer_new_rejects_a_negative_weight` 断言 `Scorer::new` 返回 `ConfigInvalid`；`test_default_weights_are_the_documented_tuple` 钉住出厂权重与文档一致。
+  - **已知限制**：① **`lm_golden.tsv` 上的首选词命中率 ≥ 85% 未取数**——需要跑 `xtask dictc quality` / `xtask tune`，且基准数字必须在空闲机器上取；② **`tests/fixtures/lm_holdout.tsv` 仍是旧的 2 列、按总频次取 top-N 的版本**，新的四分层生成器已就绪但需 `cargo run -p xtask -- tune --gen-holdout` 重生成（该文件不在本轮任何卡的写白名单内）；③ 该留出集在 `features.md` 6.1.1 与 `R-08` 中被记在 `TASK-1.02.04` 名下，但那张卡的正文与 DoD 从未提到它——它的生成器是 `xtask/src/tune/holdout.rs`，属本卡的调优链；④ `docs/dev/lm-weights.md` 的前后对比表由 `xtask tune --grid` 打印，需人工落盘。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
 
 ---
 
@@ -1972,7 +2037,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.01.03`
   - 代码落地锚点：`crates/ime-core/src/passthrough.rs`
   - 复杂度：低 | 预估工时：1.5 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：定义"什么输入不该被输入法处理"的判定与直通路径，以及临时英文模式的进入/退出条件。完成的定义：URL、邮箱、代码片段、纯数字等场景下用户不被输入法打断。
 - **架构设计与数据流**：
   - 上游：`raw`、光标前后文（来自 `InputContext` 的 `surroundingText`，可选）。下游：`TASK-1.04.04`（决定 `on_key_event` 返回 `true` 还是 `false`）。
@@ -2014,6 +2079,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   4. 全角映射对 `0x21..=0x7E` 全部 94 个字符与空格断言正确。[自动]
   5. `grep -n 'HashMap' crates/ime-core/src/passthrough.rs` 无输出。[自动]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-core/src/passthrough.rs` 与 `passthrough/{punctuation,surrounding,tests}.rs`（219 / 58 / 346 行）；`crates/ime-core/benches/passthrough.rs`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **表驱动覆盖**：`passthrough/tests.rs` 的 40 余组用例；中文标点替换表覆盖 12 个 ASCII 标点并逐项断言映射结果；全角映射对 `0x21..=0x7E` 全部 94 个字符与空格断言正确。
+  - **`classify` 无 `HashMap`**：替换表是排序数组 + 二分，`grep -n 'HashMap' crates/ime-core/src/passthrough.rs` 无输出。
+  - **三处与卡片不同的实现决策（均已在源码注释写明理由）**：① **规则顺序**——临时英文守卫排在「大写上屏」与 URL 规则**之前**，而不是卡片列的第 4 位。按卡片的字面顺序，临时英文模式下敲一个大写字母会命中规则 3、把那个字母上屏并退出该模式——正是该模式存在的目的所要防止的。② **英文标点模式返回 `HostHandles`** 而非卡片写的回落 `Decode`——`Decode` 会把标点交给规范化器，而后者把它当非法输入字符丢掉，于是按逗号什么也不会发生；交给宿主直通才会原样打出。③ **双引号配对**——卡片把它映射到两个目标；在没有按键记忆的前提下，实现用周边文本中未闭合引号的数量配对，宿主不报时降级为开引号。
+  - **已知限制**：① DoD 2 的 `classify` ≤ 500ns 有基准（`passthrough/classify`）但**未在空闲机器上取数**——`.dev-progress.json` 记录过它在负载下测到 511ns、几分钟后重跑 726ns，criterion 还报过一次 +40% 的假回归；② `PassthroughFlags` 增加了第五个字段 `temp_english`（默认 `false`）——它是会话状态而非配置键，但卡片的规则 4 是状态守卫，在纯分类器里没有它就不可达；四个配置支撑的字段与卡片默认值完全一致。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.02.07` 解码性能基准与预算断言
@@ -2024,7 +2098,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.02.04`、`TASK-1.02.03`
   - 代码落地锚点：`crates/ime-core/benches/decode.rs`、`docs/dev/budgets.json`、`xtask/src/budget.rs`
   - 复杂度：中 | 预估工时：2.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：把 `BUDGET-LAT-02`（解码 P99 ≤ 3ms）变成**可自动判定的门禁**，并建立后续所有性能任务的基准模板。完成的定义：`just bench` 跑完后自动比对阈值，超预算即以非零码退出。
 - **架构设计与数据流**：
   - 上游：`docs/dev/budgets.json`（由 `TASK-1.01.02` 建立）。下游：`TASK-1.08.03`（运行时探针复用同一份阈值）、Phase 3 的压测。
@@ -2059,6 +2133,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   4. 基准的 `meta.json` 记录 CPU 型号、`scaling_governor`、`RUSTFLAGS`。[自动]
   5. 基准在无 `$HOME` 写权限的环境下仍可运行。[自动]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-core/benches/decode.rs`（395 行，`decode`/`segment`/`lm`/`session` 四个 criterion group）、`benches/{input,passthrough}.rs`、`crates/ime-dict/benches/{dict,userdb}.rs`、`crates/ime-ui/benches/{frame,histogram,wakeup_latency}.rs`；`xtask/src/budget/bench.rs` 的 case↔预算键↔单位绑定表 `CASE_BINDINGS`；`xtask/src/budget.rs` 的 `run_check`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **阈值单源**：`xtask budget --check` 读 criterion 输出并断言，阈值全部来自 `docs/dev/budgets.json`——生产路径里没有任何一处复述预算数字（本轮做过系统性清扫，唯一真实硬编码在测试里，已改为从文档读值）。`mean + 3σ` 的 `3` 收敛为唯一常量 `SIGMAS`。
+  - **反向验证已就位**：DoD 3 要求「故意把 `budgets.json` 的 `decode_p99` 改成 `0.001` 后门禁失败」——实现为注入阈值写单元测试（`test_check_refuses_a_group_no_case_is_bound_to` 等），**不真的改 `docs/dev/budgets.json`**。
+  - **元数据**：`xtask/src/budget/meta.rs` 的 `RunMeta` 记录 CPU 型号、`scaling_governor`、`RUSTFLAGS`，`serde_json` 输出。**已知限制**：树内目前**没有读取方**（无 `from_json`），该记录只写不读。
+  - **已知限制**：① **本卡最重要的一条——所有基准数字都还没有在空闲机器上取过**。`.dev-progress.json` 的 blocker 3 就是这条：每次取数都赶上了并发 agent，criterion 报出过 +40% 的假回归。`cargo bench --workspace` 曾在 2026-09-30 启动过一次（当时没有子 agent 在编译），但构建失败（某个 agent 正在写 `crates/ime-dict`，声明了 `mod manage_tests;` 却还没写文件），因此**没有产出任何 criterion 数字**。正确顺序是：树可编译 + 无 agent 运行 → `just bench` → `xtask budget --check`。② 「无 `$HOME` 写权限时仍可运行」未单独断言——criterion 默认写到 `target/criterion`，本卡的 `--check` 不读 `$HOME`。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.03.01` 词库二进制格式 v1 与 `dictc` 编译工具
@@ -2069,7 +2152,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.01.03`、`TASK-1.02.01`
   - 代码落地锚点：`crates/ime-dict/src/format/{mod,writer,reader}.rs`、`xtask/src/dictc.rs`、`data/raw/*.tsv`、`data/sources.toml`、`data/raw/polyphone.tsv`
   - 复杂度：高 | 预估工时：4.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：定义并实现词库的二进制容器格式与离线编译器。完成的定义：给定 `data/raw/base.tsv`（≥ 40 万词条），`xtask dictc` 产出 `base.dict`（≤ 16MB），且 `reader` 能零拷贝打开并通过全部 CRC 校验。
 - **架构设计与数据流**：
   - 上游：`data/raw/*.tsv`（`词<TAB>带声调拼音<TAB>权重<TAB>标志`，UTF-8）。下游：`TASK-1.03.02`、`TASK-1.03.03`、`TASK-1.03.05`。
@@ -2166,6 +2249,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   10. **`L3b` 确定性**：同一输入连续编译两次，`base.dict` **逐字节一致**（`sha256` 相同）。[自动]
   11. **可复现的测量脚本**：`scripts/dict-probe.py` 能在白名单来源上重跑 ADR-0000 的覆盖率与错音率测量，输出的数字与 ADR 记录一致（±1pp）。[自动]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-dict/src/format/{mod,reader,writer}.rs`（792 / 768 / 714 行）；`xtask/src/dictc.rs` 与 `xtask/src/dictc/{source,source/*,manifest,budget,quality}.rs`；`data/sources.toml`；`scripts/check-dict-sources.sh`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **往返与损坏**：`test_finish_writes_a_readable_file_and_leaves_no_temporary`、`test_encode_writes_a_header_that_parses_back`、`test_parse_reads_entries_words_and_keys` 覆盖往返；`test_parse_rejects_a_corrupted_magic`、`test_parse_rejects_a_corrupted_section_table`、`test_parse_rejects_a_corrupted_section_byte`、`test_load_rejects_a_container_whose_checksum_does_not_match` 覆盖篡改——全部返回对应的 `DictError` 变体，无 panic。
+  - **不可信输入**（0.4 规则 8）：长度与偏移全部走 `checked_`/`saturating_`/`TryFrom`；`test_parse_header_rejects_layout_disagreements`、`test_add_section_rejects_misaligned_record_payloads`、`test_accessors_reject_out_of_range_requests`、`test_encode_places_sections_on_alignment_boundaries` 覆盖边界。
+  - **`WORDLIST` 间接层**：多键展开**只增加 `WORDLIST` 的 `word_id` 引用**、不复制 `ENTRIES` 行——`test_lookup_finds_one_word_under_every_key_of_a_polyphone_word` 钉住同一 `word_id` 在多个键下命中。
+  - **已知限制**：① **`base.dict` 目前只有 5,441 条**——`data/raw/jieba-dict.tsv`（349,046 行）已在仓库中、已在 `data/sources.toml` 登记，`load_words` 也已能读它的两列格式，但 `dictc` 的默认 `--input` 指向 5,871 行的 `base.tsv`。这是「输入不准」的根因，重产出 `data/compiled/base.dict` 属发布动作，需单独执行；② DoD 4 的「40 万词条 ≤ 90 秒、输出 ≤ 16MB」与 DoD 2 的「5000 词往返逐字节一致」需实际编译一次，未在空闲机器上取数；③ DoD 9 的 `L3b` 展开受控性（键数增幅 ∈ [15%, 30%]、`CAP` 2 与 4 的对比）需在真实词表上跑；④ DoD 10 的「同一输入连续编译两次逐字节一致」需实跑核对；⑤ `data/raw/polyphone.tsv` 有一处重复行（`自行车	zi'xing'che`），会被 `dictc quality` 以重复行拒绝；⑥ `scripts/dict-probe.py` 是否存在未核对。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.03.02` FST 索引构建与 mmap 只读加载
@@ -2176,7 +2268,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.03.01`
   - 代码落地锚点：`crates/ime-dict/src/fst_index.rs`
   - 复杂度：中 | 预估工时：3.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：把 `FST` 段以零拷贝方式加载为可查询的 `fst::Map`，并实现 `trait Lexicon` 的 `lookup` / `prefix` / `fallback_single` 三个方法。完成的定义：单次 `lookup` ≤ 3µs，`base.dict` 加载后插件内存增量 ≤ `BUDGET-MEM-02`。
 - **架构设计与数据流**：
   - 上游：`TASK-1.03.01` 的 `base.dict`。下游：`TASK-1.02.04`（词格构建）、`TASK-1.02.03`（LM 查询）。
@@ -2231,6 +2323,17 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. 词库文件在加载后被删除，`lookup` 仍正常工作（旧 inode 映射有效）。[自动]
   6. **`WORDLIST` 间接层正确**：对含多音字的词（如 `银行`）分别用 `yin'hang` 与 `yin'xing` 查询，两者都能命中同一 `word_id`；返回的 `WordRef.text` 相同且 `weight` 一致。[自动]
   7. **展开键的边界**：`wordlist_start + count` 越界时返回 `DictError::LengthOutOfRange` 而非越界读取（用篡改后的 value 构造测试）。[自动]
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-dict/src/fst_index/{read,tests,word_buf_tests}.rs`（120 / 493 / 98 行）、`crates/ime-dict/src/mmap.rs`、`crates/ime-dict/src/entry.rs`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **`lookup` 与 TSV 源逐字段一致**：`test_lookup_matches_the_reader_over_the_development_dictionary`、`test_lookup_reads_the_flags_of_an_entry`、`test_lookup_returns_the_words_of_a_key_in_ranking_order`。
+  - **旧 inode 映射有效**：`test_lookup_survives_deleting_the_dictionary_file` 断言文件在加载后被删除时 `lookup` 仍正常工作。
+  - **`WORDLIST` 间接层正确**：`test_lookup_finds_one_word_under_every_key_of_a_polyphone_word` 对含多音字的词分别用两个键查询，两者命中同一 `word_id`，返回的 `WordRef.text` 相同且 `weight` 一致。
+  - **越界返回而非读取**：`test_lookup_reports_a_value_that_leaves_its_section`、`test_lookup_records_a_malformed_record_once`、`test_lookup_returns_nothing_for_a_key_that_is_not_in_the_index`；越界打包值由 `read_words_into → word_ids` 在**读取任何 word id 之前**用 `checked_mul`/`checked_add` + `wordlist.get(from..to)` 拦下。
+  - **`unsafe` 只在一处**：`grep -rn unsafe crates/ime-dict/src/` 仅命中 `mmap.rs`，由 `scripts/check-unsafe.sh` 强制。
+  - **已知限制**：① **DoD 2 的 `lookup` P99 ≤ 3µs 有基准（`dict/lookup`）但未在空闲机器上取数**；② **DoD 3 的「`FstLexicon::load` ≤ 60ms；`smaps_rollup` 的 `Anonymous + Private_Dirty` 增量 ≤ 25MB」未实测**——`BUDGET-MEM-03` 是契约，需要在空闲机器上跑一次进程级测量；③ 无 fuzz 目标覆盖容器读取（`fuzz/` 只有 `dag_build`），进程内的确定性扫描（逐字节翻转 + 噪声）在 `FEAT-TEST-P0.03.02` 里作为补偿。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
 
 ---
 
@@ -2313,7 +2416,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.01.03`
   - 代码落地锚点：`crates/ime-dict/src/user_db.rs`
   - 复杂度：高 | 预估工时：3.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：实现 `trait UserFreqSource` 的持久化后端，提供"记录上屏 → 批量落盘 → 频次查询"的完整链路，并在写失败时无损降级为只读模式。完成的定义：连续输入 8 小时，词频数据无丢失（优雅退出）、无阻塞（单次 `record` ≤ 5µs）、无内存增长。
 - **架构设计与数据流**：
   - 上游：`TASK-1.03.07`（会话提交时调 `record`）。下游：`TASK-1.02.03`（LM 打分的 `freq` 查询）、`TASK-1.06.02`（敏感输入抑制时跳过 `record`）。
@@ -2370,6 +2473,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. 数据库文件权限为 `0600`。[自动]
   6. 模拟 10 字/秒 × 5 分钟的输入，RSS 漂移 ≤ 2MB。[性能]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-dict/src/user_db.rs` 与 `user_db/{cache,hydrate,evict,flush,manage,export,backup,tests}.rs`；`crates/ime-dict/benches/userdb.rs`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **耐久性契约**：三触发器（`COMMIT_BATCH` / `COMMIT_INTERVAL_MS` / `PENDING_CAPACITY`）、`SLOW_COMMIT_STREAK = 3` 的松弛判据、只读降级、idle sweep。
+  - **热路径零 store 读**：`test_user_db_loaded_lookup_opens_no_store_read`（水合态连续 1000 次 `freq`，redb 读事务增量 == 0）。
+  - **本次修掉的一处真实缺陷**：`user_db/manage.rs` 的 `Ranked::cmp` **反了**——`BinaryHeap` 把最大值放在顶部，而枚举返回的最后一行才是应当被替换的候选；反转后每一 push 都会把它最好的那行挤出去，堆最终保存的是 store 里**最差**的那批行。症状是 `list_words(0, 2)` 返回 `["w4","w0"]` 而不是 `["w4","w3"]`。
+  - **已知限制**：① **DoD 1 的 P99 数字（`record` ≤ 5µs / `freq` 命中 ≤ 100ns / `commit` ≤ 1.5ms）未在空闲机器上取数**——基准用例已补（`userdb/freq_hit`、`freq_miss`、`freq_degraded`），需跑 `cargo bench -p ime-dict`；② **DoD 3 的 `HYDRATE_CAP` RSS 上限未验证且很可能超标**——卡片要求水合 50000 条后 RSS 增量 ≤ 2MB，按字节算术估算 `HashMap<Box<str>, u32>` × 5 万条约 2.5–3.5MB；`#[ignore]` 的 soak 测试已写未跑（`cargo nextest run -p ime-dict --run-ignored all`），跑完后需三选一：换紧凑键表示、下调 `HYDRATE_CAP`、或按实测调整该 DoD 数字（**预算声明属主裁决**）；③ 一处**有意偏离卡片**：卡片说 `hydrated: true → false` 仅允许在 `degrade` 时发生，实现未在 `degrade` 里翻转——`counts` 只含「已到达文件」的值，失败事务已回滚，它仍等于文件；翻转会让只读库在解码热路径上开始开读事务，与该卡的目的相反（已在 `degrade` 的文档注释写明）；④ `freq` 水合态是 **2 次短锁**（`committed`、`pending`）而非卡片写的 1 次——卡片自己的伪码也是两个锁；⑤ `data/user-db/large` 与 `data/commit/slow-disk` 已登记进 2.2.4，但**目前没有任何生产代码调用 `UserDb`**（`ime-fcitx5` 只经冻结的 `UserFreqSource` 拿 `&dyn`），故两个码都还没有上报方。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.03.05` 词库/用户库损坏自愈与原子替换
@@ -2380,7 +2492,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.03.02`、`TASK-1.03.04`
   - 代码落地锚点：`crates/ime-dict/src/recover.rs`
   - 复杂度：中 | 预估工时：2.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：定义"文件损坏时的行为"这一独立可测的子系统：隔离损坏文件、重建可用状态、写诊断。完成的定义：任意一个数据文件损坏，输入法都能启动并提供**可用的降级功能**，且损坏文件被保留而非删除。
 - **架构设计与数据流**：
   - 上游：`TASK-1.03.02` 的 `FstLexicon::load`、`TASK-1.03.04` 的 `UserDb::open`。下游：`TASK-1.04.02`（Addon 初始化时调用）、`TASK-1.08.01`（诊断日志）。
@@ -2432,6 +2544,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   4. 把数据目录设为不可写 → `ReadonlyMode`，且输入功能不受影响（直通上屏可用）。[自动]
   5. `atomic_replace` 在目标路径已存在时，任何时刻目标文件要么是旧完整内容要么是新完整内容（用 1000 次并发读断言）。[自动]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-dict/src/recover.rs` 与 `recover/{quarantine,tests}.rs`（137 / 708 行）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **原子替换**：`test_atomic_replace_writes_the_bytes_and_leaves_no_temporary`、`test_atomic_replace_never_exposes_a_partial_file_to_a_reader`、`test_atomic_replace_leaves_the_target_intact_when_the_write_cannot_start`、`test_atomic_replace_creates_a_missing_parent_directory`；`test_finish_replaces_an_existing_file_atomically` 与 `test_finish_creates_a_missing_parent_directory` 覆盖 writer 侧。
+  - **隔离而非删除**：`test_move_aside_never_overwrites_an_existing_quarantine`、`test_move_aside_reports_a_missing_file_and_leaves_nothing_behind`、`test_move_aside_refuses_a_path_without_a_file_name`——损坏的原文件被改名到 `*.corrupt.<unix秒>` 并**从不删除**。
+  - **用户库重建**：`recover_user_db` 对 0 字节文件与随机字节文件返回 `UserDbRebuilt` 且新库可用；连续两次调用第二次返回 `Healthy`。
+  - **已知限制**：① 「1000 次并发读」这一条的实际断言形式未逐字核对（实现用的是「临时文件 + 原子改名」，属性由 `rename(2)` 的原子性保证）；② 只读降级（数据目录不可写 → `ReadonlyMode`）的**消费方接线**见 `TASK-1.06.01` 的验收记录——`paths::ensure_dirs` 现在会置进程级只读标志，但 `ime-fcitx5` 的 addon 尚未遍历 `layout.notices()` 把它变成诊断与 `StatusStrip.readonly`。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.03.06` 配置模型：TOML 加载、校验、热重载
@@ -2442,7 +2563,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.01.03`
   - 代码落地锚点：`crates/ime-config/src/{lib,schema,watcher}.rs`、`config/default.toml`
   - 复杂度：中 | 预估工时：2.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：提供带默认值、带校验、带热重载的配置系统。完成的定义：任何非法配置都不会导致启动失败或输入中断，且热重载期间正在进行的输入会话不丢失（0.4 规则 10）。
 - **架构设计与数据流**：
   - 上游：`$XDG_CONFIG_HOME/rspinyin/config.toml`。下游：`TASK-1.02.06`（`[engine]` 段）、`TASK-1.03.04`（`[data]` 段）、`TASK-1.04.04`（`[keys]` 段）、`TASK-1.05.04`（`[ui]`/`[theme]` 段）、`TASK-1.08.01`（`[diagnostics]` 段）。
@@ -2530,6 +2651,16 @@ CP 总工期 = 29.0 人天（9 个任务）
   4. 热重载：修改 `ui.max_per_row` 后 350ms 内生效；`InputBuffer.raw` 与候选列表不变。[自动]
   5. `diagnostics.log_input_content` 无论取值如何，日志中都不出现用户输入的实际字符（脚本化断言日志内容不含测试输入串）。[自动]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-config/src/{schema,reload,migrate,keymap,scheme}.rs`；本轮把 `reload.rs` 由 999 行拆为 621 行的父模块 + `reload/load.rs`（232 行）+ `reload/store.rs`（247 行）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **校验与修复**：`Config::repaired()` 逐键修复并给出稳定键名（`config/invalid`），`test_repaired_restores_the_default_of_every_scalar_key` 用 `scalar_breakers()` 表强制「每条标量规则都在表里」。
+  - **文件不存在时写带注释的模板**：`Config::load` 在无文件时写出 `DEFAULT_CONFIG_TOML`；本轮新增 `test_default_template_parses_to_the_built_in_defaults` 断言「解析模板 == `Config::default()` 且无任何 `config/invalid` 诊断」——这条正是模板文档里承诺却一直缺失的守卫。
+  - **本轮修掉的一处真实缺陷**：模板声明 `schema_version = 1`，而 `CONFIG_SCHEMA_VERSION` 已是 **2**（ADR-0005），且模板携带 v2 才有的段——新用户第二次启动会触发一次**自我迁移**，凭空多出一份 `config.toml.v1` 备份和一条 `config/migrated` 诊断。已改为 2 并更新注释；模板同时补齐 `[scheme]`（三键）、`[phrases]`（三键）、`[data]` 的 `backup_enabled`/`backup_keep`、`[engine]` 的 `abbrev`。
+  - **迁移框架**：`migrate.rs` 的 `V1ToV2` 步骤有 20 余条测试（幂等、原件逐字保留、备份名冲突时两份原件都留、模式继承、写不进去时保持内存迁移、未知顶层键不动、链中缺步骤时拒绝）。**本轮修掉的一处静默缺陷**：`V1ToV2` 已经在写 `data.backup_enabled`/`data.backup_keep`，但 `PartialData` 丢字段，**迁移写进去的键至今被 serde 静默忽略**——已在 `merge_data` 接线。
+  - **已知限制**：① **DoD 4 的「修改 `ui.max_per_row` 后 350ms 内生效」未做端到端验证**——重载由宿主 `reloadConfig()` 触发（无文件监视器，这是刻意的：宿主已经拥有触发器），所以「350ms 内」这个时延取决于宿主，不取决于本 crate；② DoD 5 的「脚本化断言日志不含测试输入串」由 `ime-diag` 的脱敏层承担（见 `TASK-1.08.01` 的验收记录）；③ `[scheme]` 的 `show_hint`/`keep_full_pinyin` 写错**类型**（如 `show_hint = "yes"`）是整份文档失败（`key = "config"` → 文件被隔离），而非逐键诊断——`Config::from_document` 的 `# Errors` 已明文规定；④ `data.backup_keep` 的上界 `MAX_BACKUP_KEEP = 32` 与 `ime-dict::user_db::backup` 的同名常量是两处书写，二者必须恒等（已在文档注释里写明这层耦合）。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.03.07` 输入会话状态机与翻页/选择语义
@@ -2540,7 +2671,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.02.04`、`TASK-1.03.03`（软）、`TASK-1.03.06`
   - 代码落地锚点：`crates/ime-core/src/state/{mod,machine,paging}.rs`
   - 复杂度：高 | 预估工时：3.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：实现 2.3 定义的输入会话状态机与候选分页/高亮语义，作为引擎与 UI 之间的**唯一真值源**。完成的定义：任意 `(状态, KeyAction)` 组合都有确定次态，无遗漏分支（用穷尽测试断言）。
 - **架构设计与数据流**：
   - 上游：`KeyAction`（`TASK-1.04.04` 翻译）、`UiEvent`（`TASK-1.05.06` 鼠标）、`DecodeResult`。下游：`UiCommand`（投递给 UI 线程）、`CommitRequest`（交回 `TASK-1.04.04` 执行上屏）、`UserFreqSource::record`。
@@ -2608,6 +2739,16 @@ CP 总工期 = 29.0 人天（9 个任务）
   4. `revision` 不匹配的 `UiEvent::Select` 被丢弃并产生 `Effect::Diagnose(ImeError::UiStaleSelect)`。[自动]
   5. `step` 耗时 ≤ 50µs，`Effect` 数量 ≤ 4 时零堆分配（分配计数器断言）。[性能]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-core/src/state/{machine,effects,frame,outcome,transitions,boundaries,paging,scheme}.rs` 与 `state/tests.rs`（829 行）+ `state/tests/{workspace,scheme,frame}.rs`；`crates/ime-core/src/input/buffer.rs`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **状态机表全覆盖**：2.3 状态机表的全部行转为测试用例，24 类 `(状态, 事件)` 组合无遗漏（`match` 的穷尽性 + 测试覆盖计数双重断言）。翻页边界：首页向上、末页向下均返回 `false` 且状态不变（不环绕）。
+  - **文本保持**：`reconcile` 的「高亮在第 3 项时重新解码，若该词仍在列表中则高亮跟随，不在则归零」。
+  - **过期事件被丢弃**：`revision` 不匹配的 `UiEvent::Select` 被丢弃并产生 `Effect::Diagnose(ImeError::UiStaleSelect)`。
+  - **本次拆分**：`machine.rs` 由 938 行拆到 758 行，`MAX_EFFECTS`/`Effects`/`Effect`/`AnchorHint` 移入 `state/effects.rs`、`FrameContext` 移入 `state/frame.rs`、`clear_result`/`renumber`/`write_boundaries`/`empty_preedit` 移入 `state/outcome.rs`（全部 `pub(super)`），由 `pub use` 重新导出，pub 路径零变化。
+  - **已知限制**：① DoD 5 的「`step` ≤ 50µs 与零堆分配」**未取数**——有 `session` criterion group，但没有分配计数器断言；② 三处与后续卡的接口约定已登记在 `.dev-progress.json` 的 `cross_task_notes`：`InputBuffer::push_char` 是「追加到末尾 + 光标跟随到末尾」（Phase 1 不做字符级光标编辑）、`BackspaceOutcome::BufferEmpty` 的含义是「这一键之后缓冲为空」而非「删掉了一个音节」、`set_boundaries` 只应在切分成功时调用；③ preedit 的音节分隔来自 `best_segmentation_hint`（最少音节、并列取更长）而**不是** Viterbi 获胜路径的 `decoded.segments`——这是刻意的：preedit 是**输入**的视图，最大匹配读法跨按键稳定，而由获胜路径驱动的分隔会在排序变化时重画（用户眼前闪烁）；④ preedit 的长度上界是 `2*64-1 = 127` 而非卡片算的 96（64 个单字节音节需要 63 个分隔符），代码不截断——截断会隐藏用户打的内容，真实上界已写进模块文档，由 header 从左侧裁切。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.04.01` `fcitx5-sys`：C++ 胶水、C ABI 契约与工厂符号导出
@@ -2618,7 +2759,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.01.01`、`TASK-1.01.03`
   - 代码落地锚点：`crates/ime-fcitx5/build.rs`、`crates/ime-fcitx5/src/ffi/abi.rs`、`crates/ime-fcitx5/src/ffi/cpp/addon_glue.cpp`
   - 复杂度：高 | 预估工时：5.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
   - **风险提示**：本任务是 6.1 风险 R-01 的落点。**必须在 W1 第一天开始技术预研（spike）**，验证三件事：(a) Rust `cdylib` 能否导出 fcitx5 可识别的 addon 工厂符号；(b) C++ 虚基类能否通过 C ABI vtable 安全地跨语言调用；(c) `fcitx::UserInterface` 与 `fcitx::InputMethodEngineV2` 的虚函数签名在 Fcitx5 5.1.x 内是否稳定。若任一项不可行，按 6.1 的对策调整架构（见该节）。
 - **目标与职责**：建立 Rust 与 Fcitx5 C++ 宿主之间的全部 FFI 基础设施。完成的定义：一个最小可加载的 fcitx5 插件 `.so`，能被 `fcitx5` 成功 `dlopen` 并输出 `rspinyin addon loaded` 日志。
 - **架构设计与数据流**：
@@ -2671,6 +2812,16 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. `docs/dev/spikes/abi-spike.md` 记录 spike 结论（可行性、`nm` 输出、`fcitx5` 版本、遇到的坑）。[文档]
   6. `grep -rn unsafe crates/ime-fcitx5/src/` 仅命中 `ffi/` 目录下的文件。[自动]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-fcitx5/src/ffi/{mod,abi}.rs` 与 `ffi/abi/{types,lifecycle,engine,tests}.rs`；`ffi/cpp/{addon,engine}_glue.cpp`；`crates/ime-fcitx5/build.rs`；`docs/dev/spikes/abi-spike.md`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **工厂符号**：`FCITX_ADDON_FACTORY` 由 C++ 生成（宏依赖 C++ 模板与 `fcitx::AddonManager` 的完整定义，Rust 侧无法构造）；Rust 侧只导出 `rspinyin_plugin_init` 一个符号与一个 vtable。两条独立保证它不被裁掉：`build.rs` 显式加 `-fvisibility=default`，以及 `-Wl,--undefined=fcitx_addon_factory_instance`（归档成员可能被判无用而丢弃）。
+  - **ABI 版本门**：`RSPINYIN_ABI_VERSION = 2`；`check_abi` 的成功与两个失败分支有测试，不匹配时 `on_addon_init` 返回 `false` 并写诊断。
+  - **`unsafe` 隔离**：`grep -rn unsafe crates/ime-fcitx5/src/` 仅命中 `ffi/`，由 `scripts/check-unsafe.sh` 强制（380 个 Rust 文件扫描通过）。
+  - **spike 结论已记录**：`docs/dev/spikes/abi-spike.md`（185 行）记录可行性、`nm` 输出位置、Fcitx5 版本与遇到的坑。**其中 `nm -D` 与 `fcitx5 -r` 的实测输出仍是占位**——需要一次 release 构建与真实会话回填。
+  - **已知限制**：① DoD 1/2 是**实验室项**（`fcitx5-diagnose` 中状态为 `Loaded`、`fcitx5-configtool` 中可添加可切换），本机未执行；② DoD 4 的「`on_addon_destroy` ≤ 250ms 且 `ps -T` 中 `rspinyin-ui` 线程已消失」需要真实会话；③ DoD 3 的「`on_addon_init` 同步部分 ≤ 120ms」有打点但未取数；④ 故意在某个 vtable 函数内 `panic!` 的兜底测试（DoD 4）——`catch_unwind` 的包装已就位，但该用例是否真实存在未逐条核对。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.04.02` Addon 注册、生命周期与 `rspinyin.conf`
@@ -2681,7 +2832,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.04.01`
   - 代码落地锚点：`crates/ime-fcitx5/src/addon.rs`、`crates/ime-fcitx5/src/ffi/cpp/addon_glue.cpp`、`packaging/fcitx5/rspinyin.conf`、`packaging/fcitx5/rspinyin-im.conf`
   - 复杂度：中 | 预估工时：2.5 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：让插件被 fcitx5 正确发现、加载、初始化、销毁，并注册为一个可切换的中文输入法。完成的定义：`fcitx5-configtool` 中能看到 "Rust Pinyin" 输入法并可添加使用。
 - **架构设计与数据流**：
   - 上游：`TASK-1.04.01` 的 ABI。下游：`TASK-1.04.03` ~ `TASK-1.04.05`、`TASK-1.07.01`。
@@ -2758,6 +2909,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. `rspinyin.conf` 的 `Version` 与 `Cargo.toml` 一致（`xtask check-versions`）。[自动]
   6. 故意让 `Config::load` 返回默认值（配置文件损坏）时，插件仍成功加载并可用。[自动]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-fcitx5/src/addon.rs`（783 行）与 `addon/tests.rs`；`packaging/fcitx5/rspinyin-im.conf`；`crates/ime-fcitx5/src/engine/router/config.rs`（128 行，本轮新建）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **`INIT_STEPS` 现为 8 步**：本轮新增 `key-bindings`（位于 `config` 之后）与 `config-watch`，两步均**非 fatal**。名字表由 `test_init_steps_pin_the_documented_lifecycle` 钉住（8 步名 + 仅 `diagnostics` 为 fatal）。
+  - **配置驱动路由**：`RoutingConfig::from_config(&Config)` 是纯投影（`project_keys` + `scheme.decode_settings()`），`init_key_bindings` 把它装进路由层；无 store 时回落 `Config::default()`，路由层**永不空表**。投影非法条目只丢该条并回报 `keys/unroutable-binding` / `keys/binding-conflict`。
+  - **热重载不打断输入**：`on_config_reload` 只换路由表，不改会话；`Updated` 才采纳，`Kept`/`Unchanged` 保持原值并把警告送诊断通道。
+  - **已知限制**：① **`config` 步骤本身仍是 pending 桩**——`load_config()` 尚未落地，其文档「ime-config has no loader yet」已过时；`init_key_bindings` 因此当前投影的是内置默认值并报 `lifecycle/pending: key-bindings awaits ...`。实现它需要决定启动时是否写模板文件（`ConfigStore::load` 会写），这是一次产品决定。② **宿主重载触发槽缺失**——ABI vtable 没有 `reloadConfig` 槽（改 ABI 需升版本）；`config-watch` 记录该缺口，`on_config_reload()` 已实现并测试，接线时把宿主回调指向它即可。③ **默认中文标签由 "中" 变为 "全拼"**——出厂 `show_hint = true`，`mode_label` 现在优先用 `config.scheme.header_hint()`，与 `features-add.md` 的产品设计一致；`engine/tests/routing.rs` 的两处断言已同步。④ 重复诊断：`ConfigStore::load_at` 已投影过 `[keys]` 并报过同样警告，`config` 步骤落地后同一警告会由 `key-bindings` 再报一次（诊断节流会折叠成一行）。⑤ `addon.rs` 现 783 行，仅余 17 行；再增长应把「配置在 force」整段（648–780 行）下移到 `engine/router/` 的叶子文件。⑥ `KEY-P0.01.05` 把投影锚在新建 `crates/ime-fcitx5/src/config_bridge.rs`，实际落在 `engine/router/config.rs`（功能等价）。⑦ 卡片提到的 `ime_config::reload::ConfigWatcher` 并不存在——`reload.rs` 明确「刻意不做文件监视器，宿主持有触发」。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.04.03` 自定义 `UserInterface` 接管与 ClassicUI 抑制
@@ -2768,7 +2928,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.04.02`（UI 线程就绪度是**运行期条件**，由 `available()` 检查，不构成任务依赖）
   - 代码落地锚点：`crates/ime-fcitx5/src/ffi/cpp/ui_glue.cpp`、`crates/ime-fcitx5/src/ui_impl.rs`
   - 复杂度：中 | 预估工时：3.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
   - **说明**：本任务是 2.6 修正 #1 的落点——以 `fcitx::UserInterface` 注册接管替代 describe.md 的"UI Suppressor 硬关闭"。
 - **目标与职责**：注册一个名为 `rspinyin` 的 `fcitx::UserInterface`，接管候选面板的渲染，使 fcitx5 不再调用 ClassicUI 绘制候选框。完成的定义：自绘候选框出现时，ClassicUI 的候选框**不同时出现**。
 - **架构设计与数据流**：
@@ -2832,6 +2992,16 @@ CP 总工期 = 29.0 人天（9 个任务）
   3. `update` / `updateCursor` 回调耗时 ≤ 100µs（宿主线程打点，P99）。[性能]
   4. T4 档（模拟：强制平台探测失败）时 `available()` 返回 `false`，fcitx5 回退 ClassicUI，输入功能完整。[自动]
   5. `ui_takeover.json` 在接管时写入原值；`xtask uninstall` 后 fcitx5 的活跃 UI 恢复为原值。[自动]
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-ui-addon/src/ui_impl/{takeover,availability,panel,cursor_rects,tests}.rs`；`crates/ime-ui-addon/src/addon.rs`；`crates/ime-ui-addon/src/ffi/abi.rs` 与 `ffi/cpp/ui_glue.cpp`；`packaging/fcitx5/rspinyin-ui.conf`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **抑制原理（不硬关 ClassicUI）**：`UIPriority=10`（ClassicUI 为 0）+ `Category=UI`，由 Fcitx5 的 `UserInterfaceManager::updateAvailability()` 按优先级选第一个 `available()` 为真的；Rust 半的 `on_input_panel_update` 恒返回 `false`（自绘），胶水侧从不修改 Fcitx5 设置。
+  - **不强行改回**：拒绝被闩锁（`record_refusal`），`plan_takeover` 中 `Declined` 优先于 `Ask`，`resume()` 清闩锁；诊断码 `ui/takeover/declined` 现在**有产生方**（本轮把它从内联 `format!` 抽成 `pub const`，`grep '"ui/takeover/declined"'` 从 0 次变为可命中）。
+  - **T4 档**：`plan_availability = is_window_ready && is_backend_available`，无后端 → `false`，fcitx5 回退 ClassicUI；诊断同时说明原因、仍可用的降级、以及需要什么样的合成器。
+  - **跨进程约束满足**：引擎 crate 的模块表里没有 `ui_impl`、`INIT_STEPS` 六步里没有 `ui-registration`；接管决策全在 `crates/ime-ui-addon`，两库不共享任何静态量。
+  - **已知限制**：① **DoD 1 在当前接线下达不成**——`INIT_STEPS` 的 `ui-registration` → `register_ui()` → `register_takeover()` 在 addon 加载时执行**一次**，那一刻 `candidate_window_ready()` 与 `window_backend_available()` 都必为 `false`，于是 `plan_takeover` 恒返回 `NotReady`/`Unsupported`，**`ask_host()` 在生产中永不执行**，`ui/takeover/active` 与 `ui/takeover/declined` 都不会被上报。`takeover.rs` 承诺的「状态变化时重跑」没有任何调用方。修法需要 C++：新增一个 fire-and-forget 入口把 `updateAvailability()` 投递到 Fcitx5 主循环（**不能**从 UI 工作线程直接调 `rspinyin_ui_activate()`——它内部会遍历所有 UI addon 并 suspend/resume 被选中者，跨线程是数据竞争，在 `available()` 内重入则直接递归）。② **DoD 5 未满足**——`ui_takeover.json` 只有读方没有写方；更深一层是 **ADR-0004 决策 1 已经取消了「写全局配置」这个机制**（Fcitx5 按 `UIPriority` + `available()` 选活跃 UI，插件不写任何 Fcitx5 设置），因此没有「被顶掉的旧值」需要备份与恢复，卡片这条 DoD 被架构取代。③ **DoD 3 的「回调 ≤100µs」无探针、无基准、无预算行**——`crates/ime-ui-addon` 没有 bench target 与 criterion dev-dependency；附带发现：卡片 NFR「`update` 回调不得分配超过 2 次」在胶水里不成立（`panel.preedit().toString()` 与 `list->candidate(index).text().toString()` 每个候选一次临时 `std::string`）。④ 本机不可验证项共七条（自绘出现时 ClassicUI 不出现、切回时自绘不出现、手动改回后不再切回、T4 档下 ClassicUI 仍出候选框、宿主线程 P99、`ui_takeover.json` 端到端、`librspinyin_ui.so` 被选中为活跃 UI），全部需要真实 fcitx5 会话或手动改 UI 设置。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 
@@ -2942,7 +3112,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.04.02`
   - 代码落地锚点：`crates/ime-fcitx5/src/cursor.rs`、`crates/ime-fcitx5/src/screen.rs`
   - 复杂度：高 | 预估工时：3.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
   - **风险提示**：这是 6.1 风险 R-03 的落点。`fcitx::InputContext::cursorRect()` 返回**相对客户端窗口**的矩形，转换为屏幕绝对坐标需要宿主前端提供窗口几何。**必须在 W2 用真实环境验证三级来源的实际可用性**，并把结论写入 `docs/dev/spikes/cursor-probe.md`。
 - **目标与职责**：把 fcitx5 提供的客户端坐标转换为屏幕物理像素坐标，并完成多屏、缩放、退化矩形的归一化。完成的定义：在 X11 与 Wayland（至少 wlroots 档）下，候选框的水平中心与光标水平中心偏差 ≤ 2 物理像素，垂直方向紧贴光标下方 ≤ 4 物理像素。
 - **架构设计与数据流**：
@@ -3005,6 +3175,14 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. 拔掉一块显示器后，`refresh_layout` 在 200ms 内被触发，候选框不再定位到已消失的屏幕。[实验室]
   6. `docs/dev/spikes/cursor-probe.md` 记录 5 个应用 × 2 种显示服务器的原始值、解析值与偏差。[文档]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-ui-addon/src/cursor.rs` 与 `cursor/{resolver,sources,tests}.rs`；`crates/ime-ui-addon/src/screen.rs`；`docs/dev/spikes/cursor-probe.md`（286 行）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **阶梯式解析**：`resolve` 按优先级逐级尝试多个来源，产出 `ime_types::Anchor`（冻结契约）。
+  - **退化输入被归一化、无 panic**：`w=0, h=0` 的退化矩形与非法 scale（`0.0`）都有测试。
+  - **已知限制**：① DoD 1（5 个应用中候选框与光标的偏差 ≤ 2 / 4 物理像素）、DoD 2（双屏 + 混合 DPI）、DoD 5（拔掉显示器后 200ms 内 `refresh_layout`）都是**实验室项**，本机不可验证——本机是单屏 WSL2，没有第二块屏也没有可拔的显示器；② DoD 4 的 `resolve` 分级耗时（第 1/3 级 ≤ 200µs、第 2 级 ≤ 500µs）**未取数**；③ `docs/dev/spikes/cursor-probe.md` 存在且记录了原始值与解析值，但其内容是否覆盖「5 个应用 × 2 种显示服务器」的全部十个格子未逐格核对。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2（单屏，有 X11/XWayland，无 Wayland 合成器）、Fcitx5 5.1.7、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.04.06` X11 ARGB 透明窗口后端
@@ -3015,7 +3193,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.04.05`、`TASK-1.01.03`
   - 代码落地锚点：`crates/ime-ui/src/platform/x11.rs`
   - 复杂度：中 | 预估工时：3.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：实现 `trait SurfaceBackend` 的 X11 后端：32 位 ARGB override-redirect 窗口 + MIT-SHM 共享内存缓冲 + 输入区域整形。完成的定义：一个可在真实 X11 会话中显示半透明圆角候选框、鼠标可点击、**永不夺取键盘焦点**的窗口。
 - **架构设计与数据流**：
   - 上游：`TASK-1.01.03` 的 `SurfaceBackend`、`TASK-1.04.05` 的 `Anchor`。下游：`TASK-1.05.01`（Slint Platform 消费像素缓冲）。
@@ -3075,6 +3253,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. SHM 段在 `Drop` 后不残留（`ipcs -m` 无本进程的段）。[自动]
   6. 单帧 `commit` ≤ 0.4ms（`criterion` 基准 `x11/commit`，需真实 X11）。[性能]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-ui/src/platform/x11.rs` 与 `platform/x11/` 下的文件。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **永不夺取焦点是结构性的**：X11 后端的事件掩码**不含** `KEY_PRESS`/`KEY_RELEASE`，且从不调用 `XSetInputFocus`——这条被登记为硬约束（`ASM-05` 的焦点模型），由测试断言，若后来者「顺手」加上键盘掩码就是最高级别缺陷。
+  - **无合成器时强制不透明**：`xcb_get_selection_owner(_NET_WM_CM_S<screen>)` 非 0 表示有活跃合成器；无合成器时把 `base_alpha` 强制为 255，记 `platform/x11/no-compositor`。
+  - **SHM 段不残留**：`Drop` 后 `ipcs -m` 无本进程的段。
+  - **已知限制**：① DoD 1（半透明圆角候选框、圆角外 alpha = 0 的截图像素采样）、DoD 2（显示候选框前后 `xcb_get_input_focus()` 不变）、DoD 3（阴影预留区点击穿透）都是**实验室项**，需要真实 X11 会话；② **DoD 6 的 `x11/commit` ≤ 0.4ms 基准未取数**——需真实 X11 且需空闲机器；③ `docs/dev/features.md` 3.1.4 的措辞与本节卡片的 NFR 有出入：卡片说「例外仅 `1px` 描边与 `6dp` 光标箭头」，而 v1.4 裁决已把它改为**显式例外清单**（新增 `10dp`/`34dp`/`2dp` 三档）——以 3.1.4 的清单为准，`scripts/check-ui-spec.sh` 按该清单构造白名单。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2（有 X11/XWayland）、Fcitx5 5.1.7、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.04.07` Wayland 四档窗口后端（layer-shell / popup / canvas / 兜底）
@@ -3085,7 +3272,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.04.05`、`TASK-1.01.03`
   - 代码落地锚点：`crates/ime-ui/src/platform/wayland/{mod,layer_shell,popup,canvas_popup,probe}.rs`
   - 复杂度：高 | 预估工时：5.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
   - **风险提示**：本任务是 6.1 风险 R-02 的落点。**必须在 W2 第一天开始 spike**：在 Sway、Hyprland、KWin、GNOME 四个真实会话中分别验证 T1/T2/T3 的可用性，把结论写入 `docs/dev/spikes/wayland-tiers.md`。若 T3（全屏透明父 surface）在 Mutter 上因"全屏表面夺取焦点"或"合成器拒绝透明全屏"而不可行，则 GNOME 档直接落到 T4（回退 ClassicUI），并在 0.5.2 矩阵中把 Mutter 档的"候选框绝对定位"改为 `不支持`。
   - **验证环境阻塞（W2 前必须解决）**：本机（WSL2 + WSLg）**无法验证本任务的任何一档**——`wlr-protocols` 未安装，且 WSLg 的合成器是 Weston（不实现 `zwlr_layer_shell_v1`）。因此 **R-02 的 spike 无法在本机闭环**，必须提前准备外部环境（真机 / VM + 嵌套合成器 / CI 中的 `cage` 或 `sway --headless`）。**这是 0.5.5 唯一一个"本机完全不可验证"的任务**，也是 `TASK-1.07.02` 建立测试矩阵时的首要交付。若 W2 时环境仍未就绪，本任务只能产出**未经真实合成器验证的代码**，其全部 `[实验室]` 验收项必须标注"本机不可验证"，不得标记 `[x]`。
 - **目标与职责**：实现 Wayland 的 T1/T2/T3 三档窗口后端与 T4 兜底探测，全部实现同一个 `trait SurfaceBackend`。完成的定义：在四个真实合成器会话中，至少 Sway/Hyprland（T1）与 KWin（T2）达到像素级定位，Mutter 达到 T3 或明确 T4 并回退。
@@ -3159,6 +3346,16 @@ CP 总工期 = 29.0 人天（9 个任务）
   6. `docs/dev/spikes/wayland-tiers.md` 记录四个合成器的版本、档位结论、失败原因（若 T3 被放弃，必须给出明确的放弃理由）。[文档]
   7. 连续 100 次显示/隐藏，`wl_shm` pool 大小不增长（无泄漏）。[自动]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-ui/src/platform/wayland/{mod,backend,client,events,layer_shell,popup,canvas_popup,probe,shm}.rs` 与 `backend_tests.rs`、`probe_tests.rs`（`#[path]` 挂载）；本次新建 `docs/dev/spikes/wayland-tiers.md`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **四档梯子**：T1 `zwlr_layer_shell_v1`（`OVERLAY` + `TOP|LEFT` + margins，`keyboard_interactivity = none`）→ T2 `xdg_popup`（positioner 锚在光标上，合成器负责翻转滑移）→ T3 同一个 popup 但关掉 constraint adjustment、由 `canvas_popup` 自己算矩形 → T4 不注册 `UserInterface`，宿主自己的候选列表接管（`ASM-13`）。`probe::TierLadder` 从 registry 选起始档，再用一次 configure 确认；`CONFIGURE_TIMEOUT` 内没有 configure 就降级，降级链单向、有界、可终止。
+  - **永不夺取键盘焦点**：T1 请求 `keyboard_interactivity = none`（合成器无法覆盖）；后端**从不调用** `xdg_popup.grab`；**从不绑定** `wl_keyboard`；`client::ProtocolClient` **没有任何方法**能取得焦点；梯子还主动监视 `events::WireEvent::KeyboardEnter`，一旦到达即判当前档失败并降级，而不是把一个偷焦点的窗口留在屏幕上。
+  - **单位换算只有一处**：契约数物理像素，协议数 surface-local 单位；两个坐标系之间的每次穿越都只走 `surface_offset` / `physical_offset` / `SurfaceRect` 三者之一。buffer scale 设为输出的 device pixel ratio，合成器不会把任何逻辑像素上采样。
+  - **无显示服务器下可测的部分**：梯子的选档与降级、几何换算在五档 ratio 下的往返一致性、`wl_buffer.release` 未到时 `acquire_buffer` 返回 `NoFreeBuffer` 而**不是**重用缓冲（DoD 5）、连续 100 次显示/隐藏后 `wl_shm` pool 大小不增长（DoD 7）、事件解码、请求顺序。
+  - **已知限制**：① **本机四档全不可验证**——WSLg 的合成器是 Weston，`ASM-13` 明确把它列在四档之外；`wlr-protocols` 未安装，`zwlr_layer_shell_v1` 连协议对象都拿不到；没有可切换的 Sway/Hyprland/KWin/Mutter 会话。这不是「没跑」而是**跑不了**，理由与真机必须确认的四件事逐条记在 `docs/dev/spikes/wayland-tiers.md`。② 协议常量是按公开协议描述核对的，**不是按合成器核对的**。③ **popup 档的父表面问题是开放的**：positioner 的锚矩形必须落在父表面的窗口几何内，而 xdg-shell 没有任何请求能让客户端指定 toplevel 的位置，因此父表面必须覆盖整个输出；合成器是否愿意映射这样一个父表面而**不给它键盘**正是梯子的焦点检查要回答的问题。若答案是「不愿意」，该合成器的诚实结论就是 T4。④ T3 的可行性本身依赖 ③。⑤ 在真机四项被确认之前，正确的表述是「Wayland 后端已实现、已推理、未在真机验证；验证不可行时按 T4 降级到宿主候选列表」，而不是「Wayland 已支持」。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2（WSLg/Weston，无可用合成器）、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.05.01` 自定义 Slint Platform 与软件光栅渲染器接入
@@ -3169,7 +3366,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.04.06`、`TASK-1.04.07`、`TASK-1.01.03`
   - 代码落地锚点：`crates/ime-ui/src/slint_platform.rs`、`crates/ime-ui/src/renderer.rs`
   - 复杂度：高 | 预估工时：4.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
   - **说明**：本任务是 2.6 修正 #2、#3 的落点——以自建 `slint::platform::Platform` + 软件光栅替代 `winit` 后端与 GPU 渲染。
 - **目标与职责**：把 `SurfaceBackend` 的裸像素缓冲接到 Slint 的软件渲染器上，使 `.slint` 组件能渲染到我们的 surface。完成的定义：一个 `.slint` 测试组件（含圆角矩形、文本、渐变）能在 X11 与 Wayland 下正确显示。
 - **架构设计与数据流**：
@@ -3253,6 +3450,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   6. `grep -rn unsafe crates/ime-ui/src/` 无输出。[自动]
   7. `docs/dev/spikes/pixel-format.md` 记录布局结论与验证方法。[文档]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-ui/src/slint_platform.rs`、`crates/ime-ui/src/renderer.rs` 与 `renderer/{raster,mock,probe,tests}.rs`；本次新建 `docs/dev/spikes/pixel-format.md`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **`unsafe` 为零**：`grep -rn unsafe crates/ime-ui/src/` 无输出——帧先光栅化进本 crate 自己拥有的 scratch，事后再整体拷进 surface 缓冲；代价是一次全帧拷贝，收益是这个 crate 保持零 `unsafe`（把 `&mut [u8]` 视作四字节像素切片需要为对齐与长度做论证，那意味着 `unsafe`，而 `ime-ui` 不在白名单里）。
+  - **像素格式结论**：`wl_shm` 的 `WL_SHM_FORMAT_ARGB8888` 与 32 位 X11 `TrueColor` visual 都持有 `0xAARRGGBB` 字，小端主机上字节序都是 `B, G, R, A`。Slint 1.13 只为 `Rgb8Pixel`/`Rgb565Pixel`/`PremultipliedRgbaColor` 实现了 `TargetPixel`，其中只有后者带 alpha 而它按 `R, G, B, A` 存放——**与 surface 的顺序相反**。本项目改为在 surface 的字节序上实现 `TargetPixel`，于是拷进 surface 缓冲是**一次纯字节拷贝**，且「格式一致」成了类型的性质而不是每次都要对着 spike 重新核对的事。
+  - **`MockBackend` 上的像素断言**：圆角外 alpha = 0；矩形中心的颜色与 `.slint` 声明的值一致（±1/255）。
+  - **已知限制**：① **DoD 2 的真机截图比对未做**（本机无可用 Wayland 合成器；X11 侧需要一次真实的候选框会话）；② **DoD 3 的渲染耗时（全量 ≤ 1.5ms、脏区 ≤ 0.2ms）与 DoD 4 的内存上限（≤ 18MB RSS）未取数**——两者都需要进程级测量，且基准数字在并发 agent 环境下不可信；③ **DoD 5 的「静止 10 秒内 `render_if_dirty` 的 commit 次数 = 0」有断言**（`surface.rs` 的 `test_surface_idle_render_reports_no_deadline_and_commits_nothing`）；④ 结论只在小端主机上成立；⑤ scratch 的两处富余（`STRIDE_SLACK = 2` 像素、`ROW_SLACK = 1` 行）是**防御性**的：它们掩盖了「Slint 的尺寸往返出现一次舍入误差」这一情形，使它在渲染器里表现为静默使用富余区而不是 abort——这是有意的取舍（abort 会让整个输入法失去候选框），代价是这类舍入误差不会自己冒出来。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、Slint 1.13 软件渲染器、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.05.02` UI 线程模型与命令队列（跨线程唤醒）
@@ -3263,7 +3469,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.05.01`
   - 代码落地锚点：`crates/ime-ui/src/{ui_thread,channel}.rs`
   - 复杂度：高 | 预估工时：3.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
   - **说明**：本任务是 2.5.1（双事件循环与零延迟唤醒）的落点。
 - **目标与职责**：实现 UI 线程的 `poll(2)` 事件循环、跨线程命令通道、背压策略与优雅关闭。完成的定义：宿主线程投递命令后 UI 线程在 50µs 内被唤醒；空闲时无轮询、零 CPU。
 - **架构设计与数据流**：
@@ -3347,6 +3553,14 @@ CP 总工期 = 29.0 人天（9 个任务）
   6. 在 UI 线程内 `panic!` 后，`send()` 静默丢弃命令，宿主进程不崩溃。[自动]
   7. `grep -rn unsafe crates/ime-ui/src/` 无输出。[自动]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-ui/src/ui_thread.rs` 与 `ui_thread/{event_loop,surface,tests}.rs`；`crates/ime-ui/src/channel.rs` 与 `channel/{queue,command,event,wakeup}.rs`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **队列语义是契约**：`Frame`/`Theme` 是 latest-wins 单槽，`Show`/`Hide` 有序且不可丢弃，`UiEvent::Select` 永不丢弃。**本轮的一处真实修正**：`CollapsingQueue::push` 原先在队列满时以 `spin_loop()`/`yield_now()` 自旋整个 budget，且自旋期间**持有 `staged` 互斥锁**——生产者是宿主线程，队列满即主循环忙等，而且会阻塞消费者的 `pop`。现改为「先取 staging 槽并立刻放锁 → `try_push` 两次」，塞不进就把**最新值**放 staging 并计数，**无自旋、不持锁等待**。
+  - **`UiSurface` 不再要求 `Send`**：`pub trait UiSurface: Send` 无法被任何持有 Slint platform 的 surface 实现（`RspinyinPlatform` 持有 `Rc`，组件句柄是引用计数）。`Box<dyn UiSurface>` 由工厂在 UI 线程内建、由同一个线程的循环消费，从不跨边界，故该约束买不到任何东西，代价却是生产用的 surface。现在改由「连接必须在将轮询它的线程上创建」来保证同一件事。
+  - **已知限制**：① DoD 1（唤醒延迟 P99 ≤ 50µs，基准 `ui/wakeup_latency`，10000 次投递）**未在空闲机器上取数**；② DoD 2 的「空闲 60 秒 `pidstat` CPU ≤ 0.3% 单核」是进程级测量，未取数；③ DoD 3 的「连续投递 10000 个 `Frame` 只处理 ≤ 100 帧」由 `ui_thread/tests.rs` 的突发合并测试覆盖（64 次 push → collapsed 56、放闸后恰好 9 条、最后一条为 `Hide(63)`），但 10000 次那一档未跑；④ DoD 4 的「`Show`/`Hide` 保序」由 mock backend 记录调用序列断言；⑤ DoD 5 的「`shutdown()` ≤ 200ms、连续两次不 panic、UI 线程在 `ps -T` 中消失」中，前两条有断言，第三条需真实进程；⑥ DoD 6 的「UI 线程内 panic 后 `send()` 静默丢弃命令、宿主进程不崩溃」有断言。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.05.03` `candidate.slint`：候选框骨架与布局约束
@@ -3357,7 +3571,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.05.01`、`TASK-1.01.03`
   - 代码落地锚点：`crates/ime-ui/ui/candidate.slint`、`crates/ime-ui/src/layout.rs`
   - 复杂度：中 | 预估工时：3.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：用 `.slint` 实现候选框的骨架（容器、Header、候选区占位、阴影预留），并把 3.1 的全部尺寸规范固化为可复用的组件与属性。完成的定义：`.slint` 的尺寸常量与 3.1 的表格**逐项一致**（脚本化比对），且组件设计为可复用于 Phase 2 的命令面板。
 - **架构设计与数据流**：
   - 上游：`UiFrame`（通过 `TASK-1.05.05` 的 adapter 绑定）。下游：`TASK-1.05.04`（主题）、`TASK-1.05.05`（网格）、`TASK-1.05.07`（尺寸回读）。
@@ -3449,6 +3663,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   4. `Header` 与 `CandidateGrid` 是独立 `export component`，可被第二个 `.slint` 文件 import 并渲染（用一个测试用 `.slint` 断言）。[自动]
   5. 全部尺寸为 `4dp` 整数倍（除 `1px` 与 `6dp`），脚本断言通过。[自动]
   6. `scale_factor` 从 1.0 改为 2.0 后，`window-width`/`window-height` 正确翻倍。[自动]
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-ui/ui/candidate.slint`（523 行）、`ui/candidate_grid.slint`、`crates/ime-ui/src/layout.rs` 与 `layout/metrics.rs`；`scripts/check-ui-spec.sh`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **DoD 1 满足**：`scripts/check-ui-spec.sh` 输出 `PASS`——它把 3.1.1 的尺寸表、3.2 的颜色表（三路：规范 ↔ `theme.slint` 用 Slint 自己的取整规则求值 ↔ `theme.rs`）、3.1.4 的 4dp 网格与例外清单，以及引用闭包逐项比对。
+  - **DoD 4 满足**：`Header` 与 `CandidateGrid` 是独立 `export component`，可被第二个 `.slint` 文件 import 并渲染（有测试用的 `.slint` 断言）。
+  - **DoD 5 满足**：全部尺寸为 4dp 整数倍或落在 3.1.4 的**显式例外清单**里（脚本断言）。**卡片 NFR 的措辞已过时**——它写「例外仅 `1px` 描边与 `6dp` 光标箭头」，而 v1.4 裁决已把规则改为「保留 4dp 网格、显式列例外」，清单现有 `1dp`/`2dp`/`6dp`/`10dp`/`34dp` 五档（本轮为内层阴影的 `shadow-inner-spread` 补了 `2dp` 一行）。**以 3.1.4 的清单为准**。
+  - **已知限制**：① **DoD 2 的渲染耗时（全量 ≤ 1.5ms、尺寸不变重绘 ≤ 0.4ms）未取数**——基准 `render/full` 与 `render/reshadow_cached` 是否存在需核对；② **DoD 3 的真实环境截图比对（圆角、描边、双层阴影，暗色与亮色两套）是视觉项**，需真机；③ 卡片 NFR 里的「阴影缓存优化」——把阴影层渲染到独立 `Image`（`SharedPixelBuffer`）并在尺寸变化时才重建——与**实测结论冲突**：本项目用 Slint 的软件渲染器，`drop-shadow-*` 是 no-op，而阴影只能靠多层半透明几何画出来；当前的实现（`CandidateShadow` 的 8 环带 + 2 内环带）由另一张卡（`UI-OPT-P0.06.01`）交付并测试。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、Slint 1.13 软件渲染器、cargo-nextest 0.9.143。
 
 ---
 
@@ -3740,7 +3963,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.04.05`、`TASK-1.05.03`
   - 代码落地锚点：`crates/ime-ui/src/geometry.rs`
   - 复杂度：中 | 预估工时：3.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
   - **说明**：本任务同时是 `Placement::Auto` 语义的唯一实现处，也是 `hit_map` 的产出处（`TASK-1.05.06` 消费）。
 - **目标与职责**：根据光标位置、候选框尺寸、屏幕可用区域计算最终窗口位置与内部布局，实现底部翻转、边缘夹取与极端小屏降级。完成的定义：3.1.3 的 6 条极端场景逐条可验证。
 - **架构与数据流**：
@@ -3798,6 +4021,14 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. `compute` ≤ 20µs（`criterion` 基准 `ui/geometry`）。[性能]
   6. `window_size` 的两个分量均为偶数。[自动]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-ui/src/geometry.rs` 与 `geometry/{placement,tests}.rs`（786 行）；`crates/ime-ui/src/layout/metrics.rs`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **翻转与夹取**：光标在屏幕底部时自动翻转到上方（`placement == Above` 且箭头不绘制）；边缘夹取按输出边界收缩；`bounds` 为 `None` 时退化为「用理想位置、不夹取」，无 panic。
+  - **`window_size` 两分量恒偶**：由 `even_up`、`in_container` 减 2×shadow、`window_w = container_w + 2*shadow` 保证；`narrow` 走 `even_down`。测试覆盖 6 尺寸 × 7 比例，含 `u32::MAX` 触发 narrow，以及本轮新增的「输出宽度为奇数」分支。
+  - **已知限制**：① **DoD 1「多屏下候选框出现在光标所在的那块屏」未验证**——本机是单屏 WSL2，没有第二块屏；② **DoD 4「`hit_map` 与 `.slint` 实际元素坐标的偏差 ≤ 1 物理像素」的一致性校验由 `xtask/src/testd/ui_metrics` 与 `scripts/check-ui-spec.sh` 分担**，不是本模块自己的断言；③ **DoD 5 的 `ui/geometry` ≤ 20µs 基准未取数**（基准是否存在需核对）；④ `crates/ime-ui/src/geometry/tests.rs` 现 786 行，逼近 800——它不在 `tests/` 目录下，若按 800 严判则下次加用例前应外移到 `crates/ime-ui/tests/`。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2（单屏）、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.05.08` 出现/消失/选中过渡动效（Spring 积分器）
@@ -3808,7 +4039,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.05.02`、`TASK-1.05.03`
   - 代码落点锚点：`crates/ime-ui/src/spring.rs`、`crates/ime-ui/ui/spring.slint`
   - 复杂度：中 | 预估工时：2.5 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：实现 3.3 的全部动效参数与 Spring 物理积分器，特别是"高亮框飞行中重定向保留速度"这一不可被 bezier 替代的行为。完成的定义：3.3.1 的推导指标（稳定时间 181ms、过冲 0.63%）与实现实测值偏差 ≤ 15%。
 - **架构设计与数据流**：
   - 上游：`TASK-1.05.02` 的帧驱动、`TASK-1.05.05` 的高亮索引变化。下游：`TASK-1.05.03` 的 `.slint` 属性。
@@ -3886,6 +4117,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. 动效期间的重绘脏区面积 ≤ 高亮框新旧位置并集面积 × 1.2。[自动]
   6. 消失动效进行中收到 `Show`，`opacity` 从当前值续接（不跳变到 0 再升到 1）。[视觉]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-ui/src/spring/{transition,set,highlight}.rs`；`crates/ime-ui/src/adapter.rs`（759 行）与 `adapter/tests.rs`（1035 行）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **稳态与过冲**：`spring/transition.rs` 是标准的二阶积分器；`test_highlight_retarget_preserves_velocity_in_flight` 钉住「飞行中改目标保留速度」（这正是不跳变的机制）。
+  - **关闭时瞬时到位**：`set_enabled`/`snap_all`/`duration` 在关闭时返回 0；`test_adapter_motion_disabled_mid_flight_writes_the_end_values_at_once` 覆盖**飞行途中**关闭。
+  - **静止时不重绘**：`surface.rs` 的 `render` 在 `is_animating() == false` 时返回 `Ok(None)`；`test_surface_idle_render_reports_no_deadline_and_commits_nothing` 断言 `committed_frames()` 不增长。**没有任何 Slint 属性过渡（`animate`）**——Slint 内部时钟会让静止窗口挂着 timer（违反 `BUDGET-CPU-01`），且会让一帧依赖此前画了多少帧（破坏截图回归）。
+  - **已知限制**：① **DoD 6 在本项目的渲染器上不可实现**——`opacity` 绑定会让整棵子树**完全不绘制**（实测，不是 no-op），因此「`opacity` 从当前值续接」这条断言没有可绘制的对象。出现动效的替代是**几何生长**（面板 0.96 → 1.0，锚在光标侧边缘）；**消失动效在当前接线下完全没有可见效果**（`Adapter::set_visible(false)` 立即 `window.hide()`，`AppearAnim` 算出的 1.0→0 永远不会被光栅化）。② **DoD 1 的「稳定时间 ∈ [154, 208]ms、过冲 ≤ 1.13%」未取数**——需要真实会话下的帧序列采样；③ DoD 5 的「动效期间重绘脏区 ≤ 高亮框新旧位置并集 × 1.2」由 `spring/highlight.rs` 的既有断言覆盖；④ **`[ui.animation]` 配置通路是死的**——`ime-config` 已解析并校验 `AnimationConfig`，但 `UiCommand` 与 `SurfaceUpdate` 都没有动效载荷，`Adapter::new()` 硬编码 `MotionConfig::default()`，`Adapter::set_motion_enabled` 只有测试在调；因此配置改 `enabled=false` 不会改变行为。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、Slint 1.13 软件渲染器、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.06.01` 用户数据目录与文件权限基线
@@ -3896,7 +4136,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.01.01`
   - 代码落地锚点：`crates/ime-dict/src/paths.rs`、`crates/ime-diag/src/perms.rs`
   - 复杂度：低 | 预估工时：1.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：定义并强制 XDG 目录布局与文件权限，作为"用户数据不外泄"的第一道防线。完成的定义：所有由本插件创建的文件权限为 `0600`、目录为 `0700`，且目录不可写时进入只读模式而非报错退出。
 - **架构设计与数据流**：
   - 上游：`$XDG_CONFIG_HOME` / `$XDG_DATA_HOME` / `$XDG_RUNTIME_DIR`（`ASM-15`）。下游：`TASK-1.03.04`（`user.redb`）、`TASK-1.03.06`（`config.toml`）、`TASK-1.08.01`（日志）、`TASK-1.08.02`（崩溃）。
@@ -3945,6 +4185,16 @@ CP 总工期 = 29.0 人天（9 个任务）
   4. `rspinyin` 目录被符号链接到 `/tmp` 时拒绝写入并记 `data/path/symlink`。[自动]
   5. `ensure_dirs` ≤ 5ms。[性能]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-dict/src/paths.rs`（514 行）与 `paths/tests.rs`（629 行，本次新增 8 个用例、强化 4 个）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **创建时就带模式**：目录走 `DirBuilder::mode(DIR_MODE)`（创建路径**完全没有后续 chmod**）；文件走 `OpenOptions::mode(FILE_MODE)`，仅对**已存在**的文件经刚打开的 fd 收窄一次。目录侧的证据是「创建路径无 chmod + `notices` 为空」——若实现是 create-then-chmod，`tighten` 必然产生 `data/perms/fixed` 通知而被抓住。
+  - **本次修掉的一处真实缺陷**：`Preparation::degrade` 此前只把 `Paths.readonly` 置真，**从不设置进程级 `READONLY_MODE`**——只有无法解析基目录或路径超长时才置位。于是 `is_readonly_mode()`（`paths.rs` 自己声明「`ensure_dirs` 任一步失败即置位」）在 DoD 3 的主场景下返回 `false`，UI 侧的 `StatusStrip.readonly` 拿不到信号。修复后三处文档声明与代码一致。
+  - **符号链接逐段检查**：`first_symlink` 遍历 `root` 以下的**每个 component**（不只是最后一段），目录与文件两条调用点都接上；中段链接、悬空链接、无链接路径三种情形都有断言。
+  - **基目录只创建、从不收紧**：`test_ensure_dirs_in_leaves_the_base_directories_alone` 断言基目录不得出现在 `PERMS_FIXED` 通知中；同级文件 `0644` 原样保留、用户已收窄的 `0400` 不被放宽。
+  - **已知限制**：① DoD 2 与 DoD 4 的「记 `data/perms/fixed`」/「记 `data/path/symlink`」本模块已产出通知与标志，但**消费方 `crates/ime-fcitx5/src/addon.rs` 未接线**——`recover_stores()` 调了 `paths::ensure_dirs()` 却从不遍历 `layout.notices()`，也不读 `layout.is_readonly()` / `is_readonly_mode()`；DoD 3 的 `StatusStrip.readonly`（字段已由 ADR-0001 冻结在 `ime-types/src/ui.rs`）同理；② **`config.toml` 现在以 umask 默认模式创建**——`crates/ime-config/src/reload/load.rs` 的 `write_template` 用 `OpenOptions::new().write(true).create_new(true).open(path)`，**没有 `.mode(0o600)`**，典型 umask 下是 `0644`，正是卡片点名的「先建成 0644」窗口；③ `user_db` 自带的 `prepare_path` 有同类窗口（用 `create_dir_all` + 事后 `set_mode` 建目录；文件本身用 `.mode(FILE_MODE)` 是对的）；④ 「文件由 `open(2)` 的 mode 参数创建、不存在 0644 窗口」这一性质**无法用黑盒断言证明**（`create_private` 之后还有一次针对已存在文件的收窄，两种实现的最终状态完全相同）；要 umask 无关地加强需要 `libc` 作 dev-dependency；⑤ `ensure_dirs()`（读真实环境）没有直接测试——调用它会写用户的真实 `~/.local/share/rspinyin`，可注入的 `ensure_dirs_in` 是等价入口并已被完整覆盖；⑥ 符号链接检查在创建/打开之前完成，两者之间的 TOCTOU 未防护（单用户威胁模型内可接受）；⑦ `tighten` 不把用户已收窄的模式（如 `0400`）放宽回 `0600`，与卡片散文「已存在的文件强制 chmod 0600」字面不同，但与 DoD 1/2 一致，且与 `ime-diag/src/perms.rs` 的既有实现一致。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.06.02` 敏感输入上下文检测与学习抑制
@@ -3955,7 +4205,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.03.04`、`TASK-1.04.04`
   - 代码落地锚点：`crates/ime-core/src/privacy.rs`、`crates/ime-fcitx5/src/privacy_impl.rs`
   - 复杂度：中 | 预估工时：1.5 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：识别敏感输入上下文（密码框等），在其上抑制自学习与任何形式的输入内容记录。完成的定义：在密码框中输入的内容**不出现在** `user.redb`、日志、崩溃文件中的任何位置。
 - **架构设计与数据流**：
   - 上游：fcitx5 的 `InputContext` 能力标志与 `CapabilityFlag`（`Password`、`Sensitive`）。下游：`UserFreqSource::record` 的调用点（`TASK-1.04.04` 的 `apply_effects`）、`TASK-1.08.01`（日志脱敏）。
@@ -4008,6 +4258,16 @@ CP 总工期 = 29.0 人天（9 个任务）
   4. 黑名单命中的应用（大小写不敏感子串匹配）同样抑制学习与日志。[自动]
   5. `should_learn` ≤ 200ns（`criterion` 基准 `privacy/should_learn`）。[性能]
   6. `docs/dev/privacy.md` 存在，含数据流向图、存储位置、权限、`CapabilityFlag` 局限说明。[文档]
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-core/src/privacy.rs`、`crates/ime-fcitx5/src/privacy_impl.rs` 与 `privacy_impl/blacklist.rs`；`docs/dev/privacy.md`（本轮补上 `backups/user-YYYYMMDD-HHMMSS.tsv` 一行）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **密码框抑制学习**：`CapabilityFlag::Password` 置位时输入并上屏 20 个拼音串，`user.redb` 记录数增量 = 0；黑名单命中的应用（大小写不敏感子串匹配）同样抑制学习与日志。
+  - **零痕迹**：同场景下日志文件中不出现输入串的任何长度 ≥ 3 的子串；人为触发崩溃时崩溃文件中同样不出现——由 `ime-diag` 的 `RedactLayer`（第二道防线）+ 调用点不传（第一道防线）共同保证，`FEAT-TEST-P0.02.03` 的 `logs` 通道提供可执行的扫描断言。
+  - **应用标识符只记哈希**：`privacy_impl/blacklist.rs` 的匹配与日志路径都只处理哈希后的标识。
+  - **`privacy.md` 的内容**：数据流向图、存储位置与权限表（逐文件列出路径/模式/内容/可否删除/落地状态）、`CapabilityFlag::Password` 是「尽力而为」信号的边界说明、脱敏机制的两道防线、导出与备份的隐私含义、以及「实现状态与已知缺口」一节。
+  - **已知限制**：① DoD 5 的 `should_learn` ≤ 200ns 有基准（`privacy/should_learn`）但**未在空闲机器上取数**；② `CapabilityFlag` 的局限是真实的：它不是所有应用都会置位，因此「密码框不被学习」是**尽力而为**而非保证——这一点在 `privacy.md` 的第 3 节明确写出，而不是被含糊过去；③ `docs/dev/privacy.md` 第 2 节的表里 `ui_takeover.json` 一行标注「路径已预留，当前版本无写入点」，该判断在 `TASK-1.04.03` 的审计中被再次确认（ADR-0004 决策 1 取消了「写全局配置」这个机制）。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
 
 ---
 
@@ -4086,7 +4346,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - **schema 正确性**（本次最大的坑，已逐条核实）：`[[licenses.exceptions]]` 只接受 crate spec 与 `allow`，加 `reason` 会解析失败——理由因此写在注释里；`{ id, reason }` 只在 `[advisories] ignore` 与 `[bans] deny` 合法；`unused-license-exception` 是 0.18.6 才有的键，已避免使用。
   - **已知限制**：
     1. **`cargo deny check` 未接入任何 CI job**：`check-advisories` 不在 `just ci` 里（`cargo audit` 需联网），而 CI 的 `quality` job 装了 `cargo-deny` 却从不调用。落点应是 `audit` job（唯一联网的 job）。
-    2. **`check-no-network.sh` 未补卡片要求的 `getrandom` 按 feature 判定项**：该脚本用 `--all-features` 且不做 `--filter-platform`，节点 feature 列表是各平台并集，wasm 侧 feature 会误报。需先跑一次 `cargo metadata` 确认 `getrandom` 的实际 feature 集。
+    2. ~~**`check-no-network.sh` 未补卡片要求的 `getrandom` 按 feature 判定项**~~ **已补齐（2026-09-30）**：先实测了一次——`cargo metadata --format-version 1 --all-features` 解析出两个 `getrandom` 节点（0.3.4 与 0.4.3），**两者都只有 `features = ["std"]`**，`wasm_js` 都没开，所以规则可以按解析出的 feature 列表写而不会误报。规则已落地（`WEB_ENTROPY_CRATES` + `WEB_ENTROPY_FEATURES = {"js", "wasm_js"}`，精确等值匹配、只读该 crate 自己的 feature 列表），并补了 3 个自检用例：`web-entropy-feature`（`wasm_js`）、`legacy-entropy-feature`（`js`）各断言非零退出且报告点名 feature 名，`benign-entropy-feature`（`custom`）断言退出 0，证明规则不是「getrandom 上任何 feature 都算违规」。实测：`check-no-network: PASS (602 packages scanned, no network capability, no web entropy source)`，自检 `PASS (6 injected violations ... 3 benign look-alikes accepted)`。卡片原文写的是 `js`/`wasm`，实现按 `js` + `wasm_js` 两个精确名；裸 `wasm` 无实测依据故未加入。
     3. **DoD 2 的 `[实验室]` 真实会话断言仍缺口**：需在有 fcitx5 会话的机器上跑 `just check-net-runtime`。
     4. **DoD 7 的 `--check-links` 可达性未跑**（需网络）。
     5. `cargo deny check` 报 `warning[advisory-not-detected]`：`bincode` 的豁免条目从未触发（`bincode` 在锁文件中、通告也在本地 DB 中，但 cargo-deny 未报出该 unmaintained）。这些豁免条目因此是「备用」而非「在用」；不影响门禁结果。
@@ -4100,7 +4360,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.04.02`、`TASK-1.05.01`
   - 代码落地锚点：`xtask/src/install.rs`、`packaging/install.sh`、`packaging/uninstall.sh`
   - 复杂度：中 | 预估工时：2.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：定义并实现从源码构建到系统安装的完整路径，使 `just install` 一条命令即可让用户开始使用。完成的定义：全新系统上执行 `just install` 后重启 fcitx5，输入法可用；`just uninstall` 后系统恢复原状。
 - **架构设计与数据流**：
   - 上游：`TASK-1.04.02` 的配置文件、`TASK-1.05.01` 的 `.so`、`TASK-1.03.01` 的 `base.dict`。下游：`TASK-2.07.01`（deb/rpm/AUR 打包）。
@@ -4145,6 +4405,16 @@ CP 总工期 = 29.0 人天（9 个任务）
   6. `just uninstall` 不删除用户数据，且打印其位置与删除命令。[自动]
   7. `--dry-run` 只打印不执行（用只读文件系统验证）。[自动]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`xtask/src/install.rs`（813 → 221 行）+ `install/` 下的叶子模块（`payload`/`size`/`stage`/`place`/`verify`/`report`/`icon_cache` 与既有的 `elf`/`layout`/`manifest`/`takeover`/`uninstall`/`reversible`）；`packaging/{install,uninstall}.sh`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **可逆性**：安装必须可逆——卸载后文件集合与安装前**完全一致**，包括被替换文件的**权限位**。本轮修掉一处真实缺陷：`prepare_entry`/`remove_entry` 原先按 `FILE_MODE` 放置被替换的文件，**丢掉了它自己的模式**；现在备份携带被替换文件自身的模式（`manifest::mode_of`），卸载时按该模式恢复。`test_round_trip_restores_the_destination_tree_byte_for_byte` 断言逐字节往返。
+  - **`xtask install` 读词典再拷**：`verify_sizes` 对 `BaseDictionary` 载荷调 `check_dictionary`，后者委托给 `ime_dict::format::reader::Reader::open_with(path, Verify::Full)`——**唯一**知道如何校验魔数、版本、段表、偏移与校验和的地方（刻意委托而非重实现：第二份魔数检查可能与加载器不一致）。
+  - **`--dry-run`**：只打印计划，不碰文件系统。
+  - **本次拆分**：`install.rs` 由 813 行拆为 221 行的父模块（模块文档、`mod` 声明、三个常量、CLI 面、`run`、`install` 序列、`resolve_root` 与给 `xtask package` 的再导出）加 7 个叶子文件（最大 168 行）。零行为变化：每个被搬动的函数体逐字未改，`install()` 的步骤顺序逐行一致。
+  - **已知限制**：① **DoD 1/2 是实验室项**——「干净 Ubuntu 24.04 容器中 `just install` 成功、`fcitx5 -r` 后输入法可用」与「安装路径由 `pkg-config --variable=addondir Fcitx5Core` 决定，在 Ubuntu 与 Fedora 上均正确」需要两个容器；② **DoD 5 的 `strip` 后 `.so` ≤ 12MB、`base.dict` ≤ 20MB 未实测**——阈值来自 `docs/dev/budgets.json`，测量命令是 `just package` + `just check-size`；③ DoD 7 的「用只读文件系统验证」在本机未执行；④ `packaging/uninstall.sh` 在缺少 Rust 工具链时打印 `platform/toolchain/missing` 而非让 shell 说 `command not found`——这条已落地。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.08.01` 结构化日志、滚动与脱敏
@@ -4155,7 +4425,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.01.01`
   - 代码落地锚点：`crates/ime-diag/src/{log,redact}.rs`
   - 复杂度：中 | 预估工时：2.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：建立 `tracing` 日志基础设施，含滚动、级别过滤、字段脱敏。完成的定义：默认配置下日志文件**绝不包含**用户输入的字符内容。
 - **架构设计与数据流**：
   - 上游：全部 crate 的 `tracing` 宏调用。下游：`TASK-1.08.02`（崩溃日志）、`TASK-1.08.03`（探针输出）、用户问题排查。
@@ -4210,6 +4480,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   6. 日志目录不可写时降级到 `stderr` 且只输出 `Warn` 以上。[自动]
   7. `init_logging` ≤ 10ms；`info!` ≤ 5µs、被过滤的 `debug!` ≤ 50ns（`criterion` 基准）。[性能]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-diag/src/log.rs` 与 `log/tests.rs`；`crates/ime-diag/src/redact.rs` 与 `redact/tests.rs`；`crates/ime-diag/src/perms.rs`。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **两道防线**：第一道是**调用点不传**——`raw`/`text`/`preedit`/候选文本/提交文本都在 `ime-diag` 的脱敏 denylist 上，禁止被传进来；第二道是 `RedactLayer` 的字段名黑名单 + 敏感会话降级 + `$HOME` → `~` 替换。**脱敏层是防御性的第二道，不是可以随手记的许可证**——这条写进了 `AGENTS.md` 与模块文档。
+  - **零痕迹**：`FEAT-TEST-P0.02.03` 的 `logs` 通道提供可执行的扫描断言——注入一条含明文应用名的日志时 `assert_absent` 失败并指出该行（报文含行号、**不含**该行内容）。
+  - **权限**：日志文件 `0600`、目录 `0700`，由 `paths.rs` 的 `create_private`/`tighten` 保证；目录不可写时降级到 `stderr` 且只输出 `Warn` 以上。
+  - **已知限制**：① **DoD 7 的三项性能数字未取数**（`init_logging` ≤ 10ms、`info!` ≤ 5µs、被过滤的 `debug!` ≤ 50ns）——需要 criterion 基准，且需空闲机器；② DoD 5 的滚动（8MB 触发、历史 ≤ 3 个、总计 ≤ 32MB）有实现，但其断言是否覆盖全部三个数字未逐条核对；③ `ime-diag/src/perms.rs` 与 `ime-dict/src/paths.rs` **各有一份** `create_private`/`tighten`/`first_symlink`——层级顺序（`ime-dict` 不能依赖 `ime-diag`）不允许合并，两文件已在注释中互相声明；如需可评估抽公共 leaf crate。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### `TASK-1.08.02` panic 钩子、崩溃回溯与 FFI 边界兜底
@@ -4220,7 +4499,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.08.01`
   - 代码落地锚点：`crates/ime-diag/src/{panic,crash}.rs`、`crates/ime-diag-macros/src/lib.rs`
   - 复杂度：高 | 预估工时：2.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
   - **说明**：本任务承担两项职责：崩溃可诊断（panic hook）与**进程存活**（FFI 边界兜底 + `SIGBUS`/`SIGSEGV` 处理）。后者是输入法的硬要求——输入法崩溃会连带宿主 fcitx5 一起死，所有应用同时失去输入能力。
 - **目标与职责**：让任何 Rust panic 都不会导致进程退出，并留下可诊断的崩溃记录。完成的定义：人为在 UI 线程与宿主线程各注入一次 panic，进程存活、输入功能继续可用、崩溃文件完整。
 - **架构设计与数据流**：
@@ -4304,6 +4583,15 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. `SIGBUS` 模拟测试：进程以 70 退出，崩溃文件含信号名与地址。[自动]
   6. `#[no_panic_ffi]` 对 `()`/`bool`/`u32`/`*mut T` 四种返回类型均正确返回默认值。[自动]
   7. 崩溃文件体积 ≤ 64KB，回溯 ≤ 64 帧。[自动]
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-diag/src/panic.rs`、`crash/{record,signal,context}.rs`；`crates/ime-fcitx5/src/ffi/mod.rs` 的 panic 护栏（`catch_ffi`/`guard_ffi`/`write_stderr_line`/`emit_diagnostic`）；`crates/ime-ui-addon/src/ffi/` 下的同名护栏副本。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **FFI 不得 unwind**：每个 `extern "C"` 入口都被 panic guard 包住，panic 时返回 `false`/`0`/null 并写崩溃日志——跨 FFI unwind 是未定义行为。护栏在两个 cdylib 里**各复制一份**而非抽公共 crate：三个 `.cpp` 文件各自重复 `#[repr(C)]` 结构体定义，`addon_glue.cpp` 明确写了 "There is deliberately no shared header"；两个库要被独立 `dlopen`，让它们通过一个共享 crate 产生链接期耦合会破坏这份独立性。
+  - **`#[no_panic_ffi]`**：对 `()`/`bool`/`u32`/`*mut T` 四种返回类型都返回默认值（DoD 6）。
+  - **崩溃记录**：`crash/<毫秒时间戳>-<线程id>.txt`，含时间戳、线程名、位置、**脱敏后的** payload、回溯。
+  - **已知限制**：① **DoD 1 的「宿主线程 `on_key_event` 内 panic 后进程存活、候选框隐藏、下一次按键正常工作」与 DoD 2 的「UI 线程内 panic 后进程存活（连续 3 次后才退出并标记死亡）」需真实会话**；② **DoD 5 的 `SIGBUS` 模拟（进程以 70 退出、崩溃文件含信号名与地址）未执行**——`crash/signal.rs` 存在，但该用例需要 `unsafe` 的信号处理路径，而 `ime-diag` **不在 `unsafe` 白名单里**（白名单只有 `ime-fcitx5/src/ffi/**`、`ime-ui-addon/src/ffi/**`、`ime-dict/src/mmap.rs`）；③ DoD 7 的体积上限（≤ 64KB）与回溯帧数上限（≤ 64）有实现，断言是否覆盖需核对；④ DoD 4 的「崩溃文件与日志中不出现用户输入内容」由 `FEAT-TEST-P0.02.03` 的零痕迹扫描承担。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 
@@ -4395,7 +4683,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   6. 写 CI 的 `bench` job 集成（跑基准 + 比对预算）。
 - **验收标准 (DoD)**：
   1. `record` ≤ 20ns（`criterion` 基准 `probe/record`）。[性能]
-  2. 连续输入 5 分钟后 `xtask report --json` 输出含 7 项指标的 P50/P90/P99/P999，且与 `budgets.json` 逐项比对的结论正确。[自动]
+  2. 连续输入 5 分钟后 `xtask report --json` 输出含 8 项指标的 P50/P90/P99/P999，且与 `budgets.json` 逐项比对的结论正确。[自动]
   3. 人为把 `budgets.json` 的 `key_to_present_p99` 改成 `0.1` 后报告输出 FAIL（反向验证）。[自动]
   4. 探针关闭时 `record` 为纯空操作（`criterion` 基准显示 ≤ 2ns）。[性能]
   5. `report` 在按键数 < 500 时标注"样本不足"。[自动]
@@ -4637,7 +4925,7 @@ Phase 3 的详细任务卡见 [`./docs/dev/features/phase-3.md`](features/phase-
 8. **许可合规（ADR-0000）**：`OB-1` 归属徽章已上线（README 双语的徽章与链接可达）；`OB-4` 的 `check-slint-leak.sh` 在 CI 中生效且通过；`OB-3` 的嵌入式排除声明已写入 `licenses.md`；`data/sources.toml` 的词源全部为宽松许可且无未登记来源。[自动]
 9. 至少 20 人（或 3 名测试人员 × 1 周）的真实使用无崩溃、无输入丢失。[实验室]
 
-**出口准则的当前状态（2026-09-29 复核，**不是** Phase 1 已完成）**：39 张卡中 10 张为 `[x]`，其余仍在推进，因此本节整体仍未达成。逐条而言：
+**出口准则的当前状态（2026-09-30 复核，**不是** Phase 1 已完成）**：39 张卡中 12 张为 `[x]`，其余仍在推进，因此本节整体仍未达成。逐条而言：
 
 | 准则 | 状态 | 依据 |
 |---|---|---|

@@ -66,8 +66,13 @@ Fedora and `/usr/lib/fcitx5` on Arch, and a hardcoded path installs the plugin w
 Fcitx5 never looks for it.
 
 Useful options: `--dry-run` prints the plan and changes nothing, `--skip-build`
-installs what is already in `target/`, `--prefix PATH` and `--destdir PATH` relocate
-the installation, and `--no-sudo` never elevates. `just install` is the same command.
+installs what is already in `target/`, `--dict PATH` installs a `base.dict` compiled
+elsewhere instead of building one, `--prefix PATH` and `--destdir PATH` relocate the
+installation, and `--no-sudo` never elevates. `just install` is the same command.
+
+`--dict` is how a release archive installs without a Rust toolchain: the archive ships a
+compiled `base.dict`, and the installer reads it before copying it rather than trusting
+whatever path it was handed.
 
 Installed files:
 

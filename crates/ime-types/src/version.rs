@@ -34,7 +34,11 @@ pub const RSPINYIN_ABI_VERSION: u32 = 2;
 pub const DICT_FORMAT_VERSION: u16 = 1;
 
 /// Schema version of `config.toml`.
-pub const CONFIG_SCHEMA_VERSION: u16 = 1;
+///
+/// Moved 1 -> 2 by ADR-0005. Version 2 adds the `[scheme]`, `[phrases]` and
+/// `[script]` sections and the `[data]` keys; a version 1 document is migrated
+/// forward on load rather than rejected.
+pub const CONFIG_SCHEMA_VERSION: u16 = 2;
 
 /// Verifies that the host offers the ABI this build was compiled against.
 ///
@@ -105,10 +109,12 @@ mod tests {
         // the whole point of pinning them here rather than letting them drift.
         //
         // `RSPINYIN_ABI_VERSION` moved 1 -> 2 in ADR-0004, when the plugin split into two
-        // cdylibs and the two UI-only slots left the engine's vtable. The other two are
-        // still at their first version.
+        // cdylibs and the two UI-only slots left the engine's vtable, and
+        // `CONFIG_SCHEMA_VERSION` 1 -> 2 in ADR-0005, which added the `[scheme]`,
+        // `[phrases]` and `[script]` sections. `DICT_FORMAT_VERSION` is still at its
+        // first version.
         assert_eq!(RSPINYIN_ABI_VERSION, 2);
         assert_eq!(DICT_FORMAT_VERSION, 1);
-        assert_eq!(CONFIG_SCHEMA_VERSION, 1);
+        assert_eq!(CONFIG_SCHEMA_VERSION, 2);
     }
 }

@@ -6,6 +6,12 @@
 //! the host asks for it. The model lives in `crate::schema`; this module is the only
 //! place that knows a file exists.
 //!
+//! It is also where the two halves of a reload meet: the `[keys]` section of the
+//! document that is adopted is projected into the routing layer's binding table
+//! (`crate::keymap`) at that same moment, and both are handed out by
+//! [`ConfigStore`]. A table in force and the configuration in force therefore always
+//! come from one document, and neither can be observed half-replaced.
+//!
 //! # How a reload is triggered
 //!
 //! fcitx5 calls `reloadConfig()` on an addon whose configuration changed, and
@@ -22,20 +28,33 @@
 //! reported. The other half of 0.4 rule 10 is that the configuration is handed out as
 //! an `Arc` that is replaced rather than mutated, so a component in the middle of a
 //! composition keeps the settings it started with.
+//!
+//! # How the module is laid out
+//!
+//! This file holds the document model: the sections as a user writes them, the merge
+//! of one document over the built-in defaults, and the text of the template a fresh
+//! install is given. The two halves that act on that model sit beside it. The `load`
+//! submodule owns every touch of the filesystem -- where the file is, how it is read,
+//! and what is written when it is not there. The `store` submodule owns the
+//! configuration in force and the reload path. Both submodules are private, and what
+//! they hand out is re-exported below, so the public path of every item is the one it
+//! has always had.
 
-use std::env;
-use std::ffi::{OsStr, OsString};
-use std::fs;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+mod load;
+mod store;
+
+pub use load::default_path;
+pub use store::{ConfigStore, ReloadOutcome};
+
+use std::path::Path;
 
 use ime_types::{CONFIG_SCHEMA_VERSION, ConfigError, ImeError};
 use serde::Deserialize;
 
+use crate::migrate;
 use crate::schema::{
-    Config, KEY_FLIP_KEYS, KEY_HIGHLIGHT_KEYS, KeyName, MAX_DOCUMENT_KEYS, Rgb, Warnings,
+    Config, KEY_FLIP_KEYS, KEY_HIGHLIGHT_KEYS, KeyName, MAX_DOCUMENT_KEYS, MAX_PHRASE_ENTRIES, Rgb,
+    Warnings,
 };
 
 /// The name of the configuration file inside the configuration directory.
@@ -44,6 +63,13 @@ pub const FILE_NAME: &str = "config.toml";
 /// The key name reported for a failure that concerns the whole document rather than
 /// one of its keys.
 const DOCUMENT_KEY: &str = "config";
+
+/// The key a document declares its schema version under.
+const SCHEMA_VERSION_KEY: &str = "schema_version";
+
+/// The key name reported when `[phrases] max_entries` states a number the field cannot
+/// hold. A silent truncation would turn a too-large limit into a small one.
+const PHRASE_ENTRIES_KEY: &str = "phrases.max_entries";
 
 /// How many `.1`, `.2`, ... suffixes are tried before a backup name is given up on.
 const MAX_BACKUP_ATTEMPTS: u32 = 100;
@@ -64,8 +90,9 @@ pub const DEFAULT_CONFIG_TOML: &str = r##"# rspinyin configuration.
 # written here. The file is read at startup and again whenever the host asks the addon
 # to reload. A file that cannot be read or parsed never stops the input method.
 
-# Format version. Only 1 is understood.
-schema_version = 1
+# Format version. Only 2 is understood; a file written by an older build is migrated
+# once, with the original kept beside it.
+schema_version = 2
 
 [engine]
 # "chinese" replaces ASCII punctuation with its Chinese mark; "english" leaves it to
@@ -82,6 +109,9 @@ passthrough_url = true
 max_raw_len = 64
 # "full" verifies the whole dictionary when it is loaded, "header" only its header.
 verify_dict_on_load = "full"
+# Expand initial-letter abbreviations, so that `nh` reaches `你好`. Off by default: an
+# abbreviation is ambiguous by nature.
+abbrev = false
 
 [ui]
 # Show the composing text in the application's preedit area instead of the window.
@@ -121,9 +151,33 @@ enter_commit_raw = false
 flip_keys = ["minus", "equal", "up", "down"]
 highlight_keys = ["tab", "shift_tab"]
 
+[scheme]
+# The layout the keystrokes follow: "full" is plain pinyin, and "xiaohe", "ziranma",
+# "microsoft", "sogou" and "ziguang" are the double-pinyin layouts.
+scheme = "full"
+# Name the active layout in the candidate window's header.
+show_hint = true
+# Still read a full-pinyin syllable typed while a double-pinyin layout is active.
+keep_full_pinyin = true
+
+[phrases]
+# Let the phrase table take part in a decode. With it off the dictionary answers alone.
+enabled = true
+# The phrase document to read. Empty means the default location under the user's
+# configuration directory.
+file = ""
+# How many entries the table may hold, 1..=50000.
+max_entries = 5000
+
 [data]
 # "eventual" batches user-frequency writes; "immediate" flushes each one.
 durability = "eventual"
+# Copy the user's learned words automatically. On by default: the store cannot be
+# rebuilt from anywhere else.
+backup_enabled = true
+# How many backup generations are kept, 1..=32. The oldest is removed once a new one
+# has landed.
+backup_keep = 3
 
 [diagnostics]
 # "error" | "warn" | "info" | "debug" | "trace".
@@ -151,8 +205,10 @@ struct PartialConfig {
     ui: Option<PartialUi>,
     theme: Option<PartialTheme>,
     keys: Option<PartialKeys>,
+    scheme: Option<PartialScheme>,
     data: Option<PartialData>,
     diagnostics: Option<PartialDiagnostics>,
+    phrases: Option<PartialPhrases>,
 }
 
 /// The `[engine]` table of a document.
@@ -164,6 +220,31 @@ struct PartialEngine {
     passthrough_url: Option<bool>,
     max_raw_len: Option<u8>,
     verify_dict_on_load: Option<String>,
+    abbrev: Option<bool>,
+}
+
+/// The `[scheme]` table of a document.
+#[derive(Deserialize)]
+struct PartialScheme {
+    scheme: Option<String>,
+    show_hint: Option<bool>,
+    keep_full_pinyin: Option<bool>,
+    custom: Option<PartialCustomScheme>,
+}
+
+/// The `[scheme.custom]` table of a document.
+#[derive(Deserialize)]
+struct PartialCustomScheme {
+    initials: Option<Vec<String>>,
+    finals: Option<Vec<String>>,
+}
+
+/// The `[phrases]` table of a document.
+#[derive(Deserialize)]
+struct PartialPhrases {
+    enabled: Option<bool>,
+    file: Option<String>,
+    max_entries: Option<u64>,
 }
 
 /// The `[ui]` table of a document.
@@ -208,6 +289,8 @@ struct PartialKeys {
 #[derive(Deserialize)]
 struct PartialData {
     durability: Option<String>,
+    backup_enabled: Option<bool>,
+    backup_keep: Option<u8>,
 }
 
 /// The `[diagnostics]` table of a document.
@@ -309,23 +392,89 @@ impl Config {
     ///
     /// Never.
     pub fn from_document(text: &str) -> Result<(Self, Vec<ImeError>), ConfigError> {
-        let document: toml::Table = toml::from_str(text)
+        Self::from_document_at(text, None)
+    }
+
+    /// Builds a configuration from a document that was read from `path`.
+    ///
+    /// This is [`Config::from_document`] plus the one thing the string form cannot do: a
+    /// document written by an older build is migrated forward, and the file the migration
+    /// displaced is kept beside `path`. A caller holding only text passes `None`, and the
+    /// migration then happens in memory alone -- the next start migrates again, which is
+    /// what makes a migration idempotent.
+    ///
+    /// # Errors
+    ///
+    /// As [`Config::from_document`].
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    fn from_document_at(
+        text: &str,
+        path: Option<&Path>,
+    ) -> Result<(Self, Vec<ImeError>), ConfigError> {
+        let mut document: toml::Value = toml::from_str(text)
             .map_err(|error| document_error(format!("not a TOML document: {error}")))?;
-        let partial: PartialConfig = toml::from_str(text).map_err(|error| {
+
+        let mut warnings = Warnings::default();
+        // The migration runs before anything reads the document. A version check that
+        // came first would answer a version 1 file with the defaults, which is precisely
+        // the silent loss of every setting the migration exists to prevent.
+        //
+        // The declared version is read before the migration so that a refusal can name
+        // what it was asked to migrate from.
+        let declared = document
+            .get(SCHEMA_VERSION_KEY)
+            .and_then(toml::Value::as_integer)
+            .and_then(|value| u16::try_from(value).ok())
+            .unwrap_or(CONFIG_SCHEMA_VERSION);
+        match migrate::migrate(&mut document, path.unwrap_or_else(|| Path::new(""))) {
+            Ok(Some(report)) => warnings.report_error(ConfigError::Migrated {
+                from: report.from,
+                to: report.to,
+                backup: report
+                    .backup
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default(),
+            }),
+            // Already at this build's version: the common case, and the one that has to
+            // stay silent.
+            Ok(None) => {}
+            Err(error) => {
+                // A document this build cannot bring forward -- one written by a newer
+                // build, or a step that failed. It is never fatal and never moved aside:
+                // the defaults are used, the file is left exactly as it is, and the
+                // diagnostic names what went wrong. Moving a user's configuration out of
+                // the way because this build is older than the one that wrote it would
+                // destroy settings it merely does not understand.
+                warnings.report_error(ConfigError::MigrationFailed {
+                    from: declared,
+                    to: CONFIG_SCHEMA_VERSION,
+                    reason: error.to_string(),
+                });
+                return Ok((Self::default(), warnings.entries));
+            }
+        }
+
+        let partial: PartialConfig = document.clone().try_into().map_err(|error| {
             document_error(format!("a key holds a value of the wrong type: {error}"))
         })?;
 
-        let mut warnings = Warnings::default();
         if let Some(version) = partial.schema_version {
             if version != i64::from(CONFIG_SCHEMA_VERSION) {
                 warnings.report(
-                    "schema_version",
+                    SCHEMA_VERSION_KEY,
                     format!("unsupported schema version: {version}"),
                 );
                 return Ok((Self::default(), warnings.entries));
             }
         }
-        if count_keys(&document) > MAX_DOCUMENT_KEYS {
+        if document
+            .as_table()
+            .is_some_and(|table| count_keys(table) > MAX_DOCUMENT_KEYS)
+        {
             warnings.report_limit(DOCUMENT_KEY, MAX_DOCUMENT_KEYS);
         }
 
@@ -334,8 +483,10 @@ impl Config {
         merge_ui(partial.ui, &mut config);
         merge_theme(partial.theme, &mut config, &mut warnings);
         merge_keys(partial.keys, &mut config, &mut warnings);
+        merge_scheme(partial.scheme, &mut config, &mut warnings);
         merge_data(partial.data, &mut config, &mut warnings);
         merge_diagnostics(partial.diagnostics, &mut config, &mut warnings);
+        merge_phrases(partial.phrases, &mut config, &mut warnings);
 
         let (config, mut repaired) = config.repaired();
         warnings.entries.append(&mut repaired);
@@ -359,6 +510,48 @@ fn merge_engine(partial: Option<PartialEngine>, config: &mut Config, warnings: &
         &mut engine.verify_dict_on_load,
         warnings,
     );
+    engine.abbrev = partial.abbrev.unwrap_or(engine.abbrev);
+}
+
+/// Copies the `[phrases]` keys the document sets over the defaults.
+///
+/// `max_entries` is narrowed with `try_into` rather than `as`: a document may state a
+/// number wider than the field, and a silent truncation would turn a too-large limit into
+/// a small one. A value the field cannot hold is left at its default and reported.
+fn merge_phrases(partial: Option<PartialPhrases>, config: &mut Config, warnings: &mut Warnings) {
+    let Some(partial) = partial else { return };
+    let phrases = &mut config.phrases;
+    phrases.enabled = partial.enabled.unwrap_or(phrases.enabled);
+    if let Some(file) = partial.file {
+        phrases.file = file;
+    }
+    if let Some(entries) = partial.max_entries {
+        match u32::try_from(entries) {
+            Ok(entries) => phrases.max_entries = entries,
+            Err(_) => warnings.report_limit(PHRASE_ENTRIES_KEY, MAX_PHRASE_ENTRIES as usize),
+        }
+    }
+}
+
+/// Copies the `[scheme]` keys the document sets over the defaults.
+///
+/// The custom table is replaced whole rather than merged key by key: a table is a unit,
+/// and taking one list from the document and the other from the default would build a
+/// table neither side wrote.
+fn merge_scheme(partial: Option<PartialScheme>, config: &mut Config, warnings: &mut Warnings) {
+    let Some(partial) = partial else { return };
+    let scheme = &mut config.scheme;
+    take_enum(partial.scheme, &mut scheme.scheme, warnings);
+    scheme.show_hint = partial.show_hint.unwrap_or(scheme.show_hint);
+    scheme.keep_full_pinyin = partial.keep_full_pinyin.unwrap_or(scheme.keep_full_pinyin);
+    if let Some(custom) = partial.custom {
+        if let Some(initials) = custom.initials {
+            scheme.custom.initials = initials;
+        }
+        if let Some(finals) = custom.finals {
+            scheme.custom.finals = finals;
+        }
+    }
 }
 
 /// Copies the `[ui]` keys the document sets over the defaults.
@@ -423,6 +616,11 @@ fn merge_keys(partial: Option<PartialKeys>, config: &mut Config, warnings: &mut 
 fn merge_data(partial: Option<PartialData>, config: &mut Config, warnings: &mut Warnings) {
     let Some(partial) = partial else { return };
     take_enum(partial.durability, &mut config.data.durability, warnings);
+    // `backup_keep` is copied as written rather than narrowed here: the range check is
+    // `Config::repaired`'s, which owns every scalar rule and reports the key name, and a
+    // second check here would be a second place the bound is written down.
+    config.data.backup_enabled = partial.backup_enabled.unwrap_or(config.data.backup_enabled);
+    config.data.backup_keep = partial.backup_keep.unwrap_or(config.data.backup_keep);
 }
 
 /// Copies the `[diagnostics]` keys the document sets over the defaults.
@@ -442,320 +640,6 @@ fn merge_diagnostics(
         .log_input_content
         .unwrap_or(diagnostics.log_input_content);
     diagnostics.probes = partial.probes.unwrap_or(diagnostics.probes);
-}
-
-/// The configuration file the plugin reads when nothing else is specified:
-/// `$XDG_CONFIG_HOME/rspinyin/config.toml`, or `~/.config/rspinyin/config.toml` when
-/// `XDG_CONFIG_HOME` is unset or empty.
-///
-/// # Returns
-///
-/// The path, or `None` when neither `XDG_CONFIG_HOME` nor `HOME` is set: there is then
-/// no configuration directory to use, and the built-in defaults are all there is.
-pub fn default_path() -> Option<PathBuf> {
-    let base = match env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
-        Some(directory) => PathBuf::from(directory),
-        None => PathBuf::from(env::var_os("HOME")?).join(".config"),
-    };
-    Some(base.join("rspinyin").join(FILE_NAME))
-}
-
-/// What reading the configuration file produced.
-enum Document {
-    /// The file was read; the text is what it held.
-    Text(String),
-    /// There is no file at the path.
-    Missing,
-    /// The file exists but could not be read; the reason is already reported.
-    Unusable,
-}
-
-/// Reads the configuration document at `path`.
-///
-/// A file that is not there is reported as [`Document::Missing`] rather than as a
-/// failure: it is the state every user starts in, and the caller answers it by writing
-/// the documented default. A file that cannot be read is *not* moved aside -- the loader
-/// does not touch a file it could not even read.
-fn read(path: &Path, warnings: &mut Warnings) -> Document {
-    match fs::read_to_string(path) {
-        Ok(text) => Document::Text(text),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Document::Missing,
-        Err(error) => {
-            warnings.report(
-                DOCUMENT_KEY,
-                format!("cannot read the configuration file: {error}"),
-            );
-            Document::Unusable
-        }
-    }
-}
-
-/// The file name of `path`, or the default file name when it has none.
-fn file_name_of(path: &Path) -> OsString {
-    path.file_name()
-        .map(OsStr::to_os_string)
-        .unwrap_or_else(|| OsString::from(FILE_NAME))
-}
-
-/// Moves a file that cannot be parsed out of the way.
-///
-/// The file is moved, never deleted: a configuration the user spent time on is theirs to
-/// recover by hand, and the loader has no way to know what they meant. A stamp that is
-/// already taken -- two corrupt files within the same second -- takes the next `.1`,
-/// `.2`, ... suffix, and if every name is taken the file is left where it is rather than
-/// overwritten.
-fn quarantine(path: &Path, unix_secs: u64, warnings: &mut Warnings) {
-    let mut base = file_name_of(path);
-    base.push(format!(".bad.{unix_secs}"));
-    let base = path.with_file_name(base);
-    for attempt in 0..MAX_BACKUP_ATTEMPTS {
-        let target = if attempt == 0 {
-            base.clone()
-        } else {
-            let mut name = file_name_of(&base);
-            name.push(format!(".{attempt}"));
-            base.with_file_name(name)
-        };
-        if target.exists() {
-            continue;
-        }
-        match fs::rename(path, &target) {
-            Ok(()) => return,
-            Err(error) => {
-                warnings.report(
-                    DOCUMENT_KEY,
-                    format!("cannot move the unreadable configuration aside: {error}"),
-                );
-                return;
-            }
-        }
-    }
-    warnings.report(
-        DOCUMENT_KEY,
-        format!("no free backup name beside {}", base.display()),
-    );
-}
-
-/// Writes the documented default configuration to `path` when nothing is there.
-///
-/// `create_new` is what makes this safe: the file is written only when the path is free,
-/// so a configuration the user has -- including one this loader could not read -- is
-/// never replaced by the template.
-fn write_template(path: &Path, warnings: &mut Warnings) {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            if let Err(error) = fs::create_dir_all(parent) {
-                warnings.report(
-                    DOCUMENT_KEY,
-                    format!("cannot create the configuration directory: {error}"),
-                );
-                return;
-            }
-        }
-    }
-    let written = match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-    {
-        Ok(mut file) => file.write_all(DEFAULT_CONFIG_TOML.as_bytes()),
-        // The path is taken, which is the one case that is not a failure: whatever is
-        // there is the user's and is left alone.
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
-        Err(error) => Err(error),
-    };
-    if let Err(error) = written {
-        warnings.report(
-            DOCUMENT_KEY,
-            format!("cannot write the default configuration: {error}"),
-        );
-    }
-}
-
-/// The current time as seconds since the Unix epoch, or `0` when the clock is set before
-/// it.
-///
-/// `0` is a usable stamp: a backup name only has to be distinct from the ones already in
-/// the directory, not correct.
-fn unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
-}
-
-impl Config {
-    /// Loads the configuration from `path`, stamping a corrupt file's backup name with
-    /// the current system time.
-    ///
-    /// # Errors
-    ///
-    /// None: the diagnostics are the report.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub fn load(path: &Path) -> (Self, Vec<ImeError>) {
-        Self::load_at(path, unix_secs())
-    }
-
-    /// Loads the configuration from `path`, stamping a corrupt file's backup name with
-    /// `unix_secs`.
-    ///
-    /// # Parameters
-    ///
-    /// - `path`: the configuration file.
-    /// - `unix_secs`: the stamp used when a file that cannot be parsed is moved aside. It
-    ///   is a parameter rather than a call to the system clock so that loading is a
-    ///   function of its inputs and its tests are deterministic.
-    ///
-    /// # Returns
-    ///
-    /// The configuration to run with, and the diagnostics raised while reading it. A
-    /// missing file, an unreadable file and a corrupt file all answer the built-in
-    /// defaults with a diagnostic, so a configuration problem never keeps the input
-    /// method from starting. A missing file is written back out as the documented
-    /// default, which is how a user discovers the available keys.
-    ///
-    /// # Errors
-    ///
-    /// None: the diagnostics are the report.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub fn load_at(path: &Path, unix_secs: u64) -> (Self, Vec<ImeError>) {
-        let mut warnings = Warnings::default();
-        match read(path, &mut warnings) {
-            Document::Text(text) => match Self::from_document(&text) {
-                Ok((config, mut parsed)) => {
-                    warnings.entries.append(&mut parsed);
-                    (config, warnings.entries)
-                }
-                Err(error) => {
-                    warnings.report_error(error);
-                    quarantine(path, unix_secs, &mut warnings);
-                    write_template(path, &mut warnings);
-                    (Self::default(), warnings.entries)
-                }
-            },
-            Document::Missing => {
-                write_template(path, &mut warnings);
-                (Self::default(), warnings.entries)
-            }
-            Document::Unusable => (Self::default(), warnings.entries),
-        }
-    }
-}
-
-/// What one reload produced.
-#[derive(Debug)]
-pub enum ReloadOutcome {
-    /// The file parsed to a configuration different from the one in force, which is now
-    /// active.
-    Updated {
-        /// Diagnostics raised while the new document was read.
-        warnings: Vec<ImeError>,
-    },
-    /// The file parsed to exactly the configuration already in force, so nothing changed.
-    /// The diagnostics were reported when that configuration was adopted.
-    Unchanged,
-    /// The file was missing or could not be parsed. The configuration in force is kept
-    /// unchanged, and the diagnostics say why.
-    Kept {
-        /// Diagnostics explaining why the configuration in force was kept.
-        warnings: Vec<ImeError>,
-    },
-}
-
-/// The configuration in force, and the file it was read from.
-///
-/// The store owns the `Arc` the rest of the plugin holds, so a reload replaces one
-/// pointer: a component that took a copy of the previous `Arc` -- a decoder in the middle
-/// of a composition, say -- keeps the configuration it started with and is never
-/// rewritten underneath. That is what makes a reload unable to disturb an input session
-/// that is in progress (0.4 rule 10).
-pub struct ConfigStore {
-    /// The file the configuration is read from and reloaded from.
-    path: PathBuf,
-    /// The configuration in force.
-    current: Arc<Config>,
-}
-
-impl ConfigStore {
-    /// Loads the configuration for the first time.
-    pub fn load(path: &Path) -> (Self, Vec<ImeError>) {
-        Self::load_at(path, unix_secs())
-    }
-
-    /// Loads the configuration for the first time, stamping a corrupt file's backup name
-    /// with `unix_secs`.
-    pub fn load_at(path: &Path, unix_secs: u64) -> (Self, Vec<ImeError>) {
-        let (config, warnings) = Config::load_at(path, unix_secs);
-        let store = Self {
-            path: path.to_path_buf(),
-            current: Arc::new(config),
-        };
-        (store, warnings)
-    }
-
-    /// The configuration in force.
-    ///
-    /// The `Arc` is what a caller hands to another thread; the value behind it is never
-    /// mutated, so a reader always sees one consistent configuration.
-    pub fn current(&self) -> &Arc<Config> {
-        &self.current
-    }
-
-    /// Re-reads the configuration file: the entry point fcitx5's `reloadConfig()` calls.
-    ///
-    /// It is deliberately not the load path. A reload improves the configuration or
-    /// leaves it alone, and never writes to the file or falls back to the defaults.
-    ///
-    /// # Returns
-    ///
-    /// [`ReloadOutcome::Updated`] with the diagnostics of the new document when the file
-    /// parsed to a different configuration, [`ReloadOutcome::Unchanged`] when it parsed to
-    /// the one already in force, and [`ReloadOutcome::Kept`] with the reason when the file
-    /// could not be read or parsed.
-    ///
-    /// # Errors
-    ///
-    /// None: the outcome carries the diagnostics.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub fn reload(&mut self) -> ReloadOutcome {
-        let mut warnings = Vec::new();
-        let text = match fs::read_to_string(&self.path) {
-            Ok(text) => text,
-            Err(error) => {
-                // A file that cannot be read -- gone, or unreadable -- leaves the
-                // configuration in force alone. A missing file is far likelier to be a
-                // save in progress or a mistake than a deliberate reset, and a restart is
-                // the unambiguous way back to the built-in defaults.
-                warnings.push(ImeError::from(document_error(format!(
-                    "cannot read the configuration file: {error}"
-                ))));
-                return ReloadOutcome::Kept { warnings };
-            }
-        };
-        let (config, mut parsed) = match Config::from_document(&text) {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                // The file is left exactly as it is: it may be an edit in progress, and
-                // the configuration in force is known to be good.
-                warnings.push(ImeError::from(error));
-                return ReloadOutcome::Kept { warnings };
-            }
-        };
-        warnings.append(&mut parsed);
-        if config == *self.current {
-            return ReloadOutcome::Unchanged;
-        }
-        self.current = Arc::new(config);
-        ReloadOutcome::Updated { warnings }
-    }
 }
 
 #[cfg(test)]

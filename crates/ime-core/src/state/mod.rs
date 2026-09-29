@@ -17,6 +17,9 @@
 //!
 //! - [`paging`] owns the page, the page size and the highlighted candidate.
 //! - [`machine`] owns the session, its states, its events and the effects.
+//! - `scheme` owns the double-pinyin layout a composition's keystrokes follow, the
+//!   rewrite that turns them into the spelling the segmentation layer reads, and the
+//!   syllable grid that rewrite reports.
 //! - [`SessionConfig`] is the view of the configuration this layer acts on.
 //!
 //! # The configuration view
@@ -34,10 +37,20 @@
 //! the session derives its behaviour from change, and only the ones a frame carries
 //! -- the page size and the layout hint -- are visible at all. A reload that changes
 //! none of them produces no effect, so reloading an unchanged file is idempotent.
+//!
+//! The scheme keys are the one exception to "a reload changes what the session
+//! does": they are adopted while the session is idle and frozen once a composition is
+//! live, because re-reading the input the user has already typed in another layout
+//! would move the candidate list under the caret. The new layout answers the next
+//! composition instead.
 
 mod boundaries;
+pub mod effects;
+pub mod frame;
 pub mod machine;
+pub mod outcome;
 pub mod paging;
+mod scheme;
 mod transitions;
 
 #[cfg(test)]
@@ -54,6 +67,8 @@ pub use crate::state::machine::{
 pub use crate::state::paging::{
     DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MAX_PAGES, MAX_REACHABLE_CANDIDATES, MIN_PAGE_SIZE, Paging,
 };
+
+use ime_types::SchemeId;
 
 /// The configuration values the session state machine acts on.
 ///
@@ -78,6 +93,20 @@ pub struct SessionConfig {
     pub show_annotation: bool,
     /// `ui.max_width_dp`: the widest the candidate window may be, in dp.
     pub max_width_dp: u16,
+    /// `scheme.scheme`: which double-pinyin layout the keystrokes follow.
+    ///
+    /// [`SchemeId::FULL`] is full pinyin, where the input is decoded exactly as
+    /// typed. The layout is adopted when a composition starts and is not re-read
+    /// while one is live, so a reload changes the reading from the next composition
+    /// on rather than under the caret of the one in progress (0.4 rule 10).
+    pub scheme: SchemeId,
+    /// `scheme.keep_full_pinyin`: whether a keystroke the layout cannot read is read
+    /// as full pinyin.
+    ///
+    /// Without it, a user who switched to a double-pinyin layout and then typed a
+    /// full-pinyin syllable gets nothing at all, which reads as "the input method
+    /// broke" rather than as "you are in the wrong mode".
+    pub keep_full_pinyin: bool,
 }
 
 impl Default for SessionConfig {
@@ -89,17 +118,23 @@ impl Default for SessionConfig {
             max_per_row: 5,
             show_annotation: true,
             max_width_dp: 720,
+            scheme: SchemeId::FULL,
+            keep_full_pinyin: true,
         }
     }
 }
 
 impl SessionConfig {
-    /// Builds the view from the four values the session reads.
+    /// Builds the view from the four values that are not a scheme key.
     ///
     /// `max_raw_len` is clamped into the `1..=64` the schema allows, so a caller
     /// that hands over a value from somewhere else cannot leave the session without
     /// a length limit at all. `max_per_row` is clamped when the paging state adopts
     /// it, against the range the schema enforces for that key.
+    ///
+    /// The two scheme keys take their defaults -- full pinyin, and the mixed-input
+    /// reading on -- so a host that has a layout sets [`SessionConfig::scheme`] and
+    /// [`SessionConfig::keep_full_pinyin`] on the value this returns.
     ///
     /// # Panics
     ///
@@ -110,6 +145,7 @@ impl SessionConfig {
             max_per_row,
             show_annotation,
             max_width_dp,
+            ..Self::default()
         }
     }
 }

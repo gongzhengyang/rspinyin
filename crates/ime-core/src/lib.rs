@@ -8,11 +8,14 @@
 //! it to be tested deterministically against in-memory mocks with no filesystem,
 //! clock, or display server involved.
 
+pub mod fuzzy;
 pub mod input;
 pub mod lm;
 pub mod passthrough;
+pub mod phrase;
 pub mod preedit;
 pub mod privacy;
+pub mod script;
 pub mod segment;
 pub mod shuangpin;
 pub mod state;

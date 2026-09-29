@@ -7,7 +7,8 @@
 //! key?* The answer depends on what is live. A `Space` with a composition in flight
 //! commits the highlighted candidate and is the plugin's; the same `Space` with nothing
 //! composing belongs to the application; a `Space` with a panel open belongs to the panel.
-//! [`Dispatcher`] gives that answer, and it is the only place that gives it.
+//! [`Dispatcher`] gives that answer, and the claim decision it rests on is
+//! [`arbitrate`](super::arbitrate)'s alone.
 //!
 //! # The tree
 //!
@@ -25,6 +26,16 @@
 //! declined by the composition layer and again by the session layer, so the walk reaches
 //! the host layer and the key travels on to the application.
 //!
+//! # The claim decision is the arbitrator's
+//!
+//! A layer does not decide on its own whether a key may be kept: it asks
+//! [`arbitrate`](super::arbitrate), which answers from the routing table **and** from what
+//! the session would do with the action the table named. Meaning is not permission — the
+//! table cannot see that a `Space` with nothing composing has no candidate to commit, nor
+//! that a digit names no candidate on the page on show — and the second condition has one
+//! home, so a key cannot be kept by one layer and declared useless by another. The bus adds
+//! the layering, which of the plugin's modes is live, and nothing else.
+//!
 //! # Boundary
 //!
 //! Plain Rust, like the table beside it: no host object, no file, no clock, no global
@@ -37,13 +48,16 @@
 //! all go through [`Host`](super::host::Host), and the session is stepped by the caller
 //! that owns it, with the action [`Dispatcher::action_for`] hands back.
 //!
-//! # The two guards ahead of the walk
+//! # The three rules ahead of the walk
 //!
-//! A key release is never a layer's key: the host delivers both edges of every key, and
-//! taking one would eat the application's key-up. A modifier press is never the plugin's
-//! either, because taking it would take the first half of every capital letter from the
-//! application. Neither is a property of one layer, so both live in
-//! [`Dispatcher::dispatch`], ahead of the walk.
+//! A key release is not a layer's key: the host delivers both edges of every key, and
+//! taking one would eat the application's key-up. The one release the plugin watches is the
+//! edge that ends a held modifier — it is the other half of the gesture
+//! [`ModifierHold`](super::modifier::ModifierHold) tracks — so it is answered by the hold
+//! rather than by a layer, and every other release travels on. A modifier press is not the
+//! plugin's either, because taking it would take the first half of every capital letter
+//! from the application. None of the three is a property of one layer, so all of them live
+//! in [`Dispatcher::dispatch`], ahead of the walk.
 //!
 //! # Temporary English, the one state where the two decisions differ
 //!
@@ -54,13 +68,12 @@
 //! caller steps the session with the action [`Dispatcher::action_for`] gives it even
 //! though the walk declined the key — without that step the mode could never be left.
 
-use ime_core::state::{Session, SessionState};
+use ime_core::state::{Session, SessionConfig, SessionState};
 use ime_types::KeyAction;
 
-use super::{
-    KEY_DOWN, KEY_ESCAPE, KEY_RETURN, KEY_UP, KeyBindings, claims_key, is_shift_press,
-    translate_key,
-};
+use super::arbiter;
+use super::modifier::{HoldOutcome, ModifierHold, ModifierKey};
+use super::{KEY_DOWN, KEY_ESCAPE, KEY_RETURN, KEY_UP, KeyBindings, is_shift_press, translate_key};
 use crate::ffi::FcitxKeyEvent;
 
 #[cfg(test)]
@@ -113,7 +126,10 @@ pub struct KeyEvent {
     pub state: u32,
     /// `true` for the release edge.
     pub is_release: bool,
-    /// Host timestamp in milliseconds. Diagnostics only; no decision reads it.
+    /// Host timestamp in milliseconds. The routing table reads nothing from it — the table
+    /// is a function of the key and the modifiers — and the one decision that does read it
+    /// is the hold machine's long-press test, which has to know how long a modifier was
+    /// down.
     pub time_ms: u32,
 }
 
@@ -167,10 +183,11 @@ pub enum Overlay {
 
 /// What the bus may read about the live session of one input context.
 ///
-/// A view rather than `&Session`: the tree decides from three facts — whether a session
-/// exists, where it is in its life, and whether temporary English is on — and the input
-/// buffer, the candidate list and the paging state are none of its business. Keeping the
-/// read surface this narrow is also what lets the tree be verified without a decoder.
+/// A view rather than `&Session`: a layer asks one question about the session — whether it
+/// would act on the action a key was translated to — and the input buffer, the candidate
+/// list and the paging state are read by [`arbitrate`](super::arbitrate), which needs them
+/// to answer it. The view is how the session reaches a layer, so that the call which hands
+/// the session over is written once here rather than in every layer.
 #[derive(Clone, Copy, Debug)]
 pub struct SessionView<'a> {
     /// The session of the input context, or `None` when the host delivered a key for a
@@ -259,8 +276,10 @@ impl<'a> SessionView<'a> {
     ///
     /// # Returns
     ///
-    /// The length of the candidate list, and zero when there is no session. The claim
-    /// arbitration reads this to answer whether a digit names a candidate that exists.
+    /// The length of the candidate list, and zero when there is no session. A layer that has
+    /// to decide whether a digit names a candidate asks [`SessionView::arbitrate`] rather
+    /// than comparing this against the digit: the paging state is what says which candidate
+    /// a digit names and which page is on show, and a count cannot answer either.
     ///
     /// # Panics
     ///
@@ -269,23 +288,64 @@ impl<'a> SessionView<'a> {
         self.session
             .map_or(0, |session| session.decoded().candidates.len())
     }
+
+    /// Whether the plugin may keep the key this action came from.
+    ///
+    /// The routing table's half of the question is the caller's — it holds the key — and
+    /// this is the session's half and the whole of the answer: the one place in this crate
+    /// that decides whether an action is worth keeping a key for is asked here.
+    ///
+    /// # Arguments
+    ///
+    /// * `action` — what the routing table made of the key, from
+    ///   [`translate_key`](super::translate_key).
+    /// * `cfg` — the configuration in force, which the input length limit a typed character
+    ///   is measured against is read from.
+    ///
+    /// # Returns
+    ///
+    /// [`Consumed::Consumed`] when the table names the action and the session would act on
+    /// it, and [`Consumed::Ignored`] otherwise — a view with no session behind it included.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn arbitrate(&self, action: KeyAction, cfg: &SessionConfig) -> Consumed {
+        arbiter::arbitrate(action, self.session, cfg)
+    }
 }
 
 /// The state the key walk itself needs.
 ///
 /// Small on purpose. The two trackers that run ahead of the walk — the modifier a user
 /// holds and the sequence a key opened — are structures of their own, so that the tree,
-/// the hold and the sequence can each be built and verified without the other two.
+/// the hold and the sequence can each be built and verified without the other two. The
+/// configuration is held rather than handed to every call, because the walk reads it on
+/// every key and a reload adopts it in place.
 #[derive(Debug)]
 pub struct Dispatcher {
     /// The `[keys]` settings the composition and session layers branch on.
     bindings: KeyBindings,
+    /// The session values the arbitration measures a key against: the state the session is
+    /// in, and the input length limit a typed character is compared with. The `[keys]` rows
+    /// say what a key means; these say whether anything can act on it.
+    session: SessionConfig,
     /// The overlay that owns the keyboard, if one is open.
     overlay: Option<Overlay>,
+    /// The modifier the user is holding, if any.
+    hold: ModifierHold,
+    /// What the last modifier release meant, waiting for the caller to take it. The walk
+    /// answers a release with a single [`Consumed`], so what the release *meant* needs a
+    /// place of its own to travel to the layer that can act on it.
+    pending_hold: Option<HoldOutcome>,
 }
 
 impl Dispatcher {
-    /// Builds a dispatcher with no overlay open.
+    /// Builds a dispatcher with no overlay open and no modifier held.
     ///
     /// # Arguments
     ///
@@ -293,15 +353,20 @@ impl Dispatcher {
     ///
     /// # Returns
     ///
-    /// A dispatcher whose walk answers exactly what the configuration in force says.
+    /// A dispatcher whose walk answers exactly what the configuration in force says. The
+    /// session values are the shipped defaults; a caller that has the user's document hands
+    /// them over with [`Dispatcher::set_session_config`].
     ///
     /// # Panics
     ///
     /// Never.
-    pub const fn new(bindings: KeyBindings) -> Self {
+    pub fn new(bindings: KeyBindings) -> Self {
         Self {
             bindings,
+            session: SessionConfig::default(),
             overlay: None,
+            hold: ModifierHold::new(),
+            pending_hold: None,
         }
     }
 
@@ -319,6 +384,24 @@ impl Dispatcher {
     /// Never.
     pub fn set_bindings(&mut self, bindings: KeyBindings) {
         self.bindings = bindings;
+    }
+
+    /// Adopts the session values a reloaded configuration declares.
+    ///
+    /// The arbitration measures a typed character against the input length limit these
+    /// values carry, so a reload that changes it changes which keys the plugin keeps — and
+    /// nothing else about the bus: an open overlay stays open and a composition in flight
+    /// is untouched (0.4 rule 10).
+    ///
+    /// # Arguments
+    ///
+    /// * `session` — the values that replace the ones in force.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn set_session_config(&mut self, session: SessionConfig) {
+        self.session = session;
     }
 
     /// The overlay that owns the keyboard, if one is open.
@@ -360,6 +443,82 @@ impl Dispatcher {
         self.overlay = None;
     }
 
+    /// Records a modifier press, so that its release can be answered.
+    ///
+    /// The caller observes the host's input-method state and passes it in: the bus reads no
+    /// host object, and whether the input method is enabled is a fact about the host rather
+    /// than about the session. Arming changes nothing about the key itself — the press is
+    /// still the application's, and the walk still answers it with [`Consumed::Ignored`].
+    ///
+    /// # Arguments
+    ///
+    /// * `event` — the key as the host delivered it.
+    /// * `was_enabled` — whether the host has the input method enabled for this context.
+    ///
+    /// # Returns
+    ///
+    /// Whether the event was a modifier press and the hold now tracks it. Every other
+    /// event — a release, a letter, any key that names no modifier — answers `false` and
+    /// changes nothing, so a caller may hand every event to this without checking first.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn arm_hold(&mut self, event: &KeyEvent, was_enabled: bool) -> bool {
+        if event.is_release {
+            return false;
+        }
+        let Some(key) = ModifierKey::from_sym(event.sym) else {
+            return false;
+        };
+        self.hold.arm(key, event.time_ms, was_enabled);
+        true
+    }
+
+    /// Takes what the last modifier release meant, if it meant anything.
+    ///
+    /// # Returns
+    ///
+    /// The outcome of the release the walk answered [`Consumed::Consumed`] for, and `None`
+    /// when no such release has happened since the last call. The caller is the layer that
+    /// can act on it — putting the host's input state back, opening the cheat sheet — and
+    /// taking it rather than reading it is what keeps one release from being acted on
+    /// twice.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn take_hold_outcome(&mut self) -> Option<HoldOutcome> {
+        self.pending_hold.take()
+    }
+
+    /// Forgets the modifier hold and anything waiting on it.
+    ///
+    /// For a hold whose release will never arrive, because the input context lost focus or
+    /// the host reset it. The next modifier press then starts a new hold rather than
+    /// continuing one whose other end is gone, and no stale outcome is left for a caller
+    /// that will never see the release it belongs to.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn clear_hold(&mut self) {
+        self.hold.clear();
+        self.pending_hold = None;
+    }
+
     /// Dispatches one key through the context tree, highest priority first.
     ///
     /// # Arguments
@@ -372,7 +531,13 @@ impl Dispatcher {
     ///
     /// [`Consumed::Consumed`] or [`Consumed::ChainPending`] when a layer claimed the key
     /// — the two answers that mean the caller keeps it — and [`Consumed::Ignored`] when
-    /// every layer declined it and the key belongs to the application.
+    /// every layer declined it and the key belongs to the application. One release can be
+    /// claimed as well: the edge that ends a modifier the hold is tracking, whose meaning
+    /// the caller takes from [`Dispatcher::take_hold_outcome`].
+    ///
+    /// A layer that reads the session claims a key only when the arbitration says the
+    /// session would act on the action the table gave the key, so a routed key nothing can
+    /// act on is handed back rather than eaten; see the module documentation.
     ///
     /// # Errors
     ///
@@ -384,11 +549,12 @@ impl Dispatcher {
     /// take. The guarantee matters because the caller is an FFI entry point, which must
     /// not unwind into C++.
     pub fn dispatch(&mut self, event: &KeyEvent, session: &SessionView<'_>) -> Consumed {
-        // A release is never ours: the host delivers both edges of every key, and
-        // consuming one would eat the application's key-up. The table below is a table of
-        // presses.
+        // The host delivers both edges of every key, and taking a release would eat the
+        // application's key-up. The one exception is the release that ends a modifier the
+        // hold is tracking: the gesture is a press and a release, so the machine needs
+        // both, and it answers for every other release with "not mine".
         if event.is_release {
-            return Consumed::Ignored;
+            return self.release_held_modifier(event);
         }
         // A modifier press is not ours either. The table names Shift as the temporary
         // Chinese / English switch, but Fcitx5 delivers the modifier to the application
@@ -400,10 +566,36 @@ impl Dispatcher {
         for context in self.active_contexts() {
             match self.dispatch_in(context, event, session) {
                 Consumed::Ignored => continue,
-                decided => return decided,
+                decided => {
+                    // A key the plugin acted on while a modifier was down is a key the
+                    // user typed with that modifier, not a mode switch it was held for.
+                    // Only a claimed key marks the hold: a key that fell through every
+                    // layer changed nothing and must leave a long press intact.
+                    self.hold.mark_used();
+                    return decided;
+                }
             }
         }
         Consumed::Ignored
+    }
+
+    /// The release edge of the modifier the hold is tracking.
+    ///
+    /// The one release the walk answers, and it is not a layer's key: the hold decides, and
+    /// it answers [`HoldOutcome::Nothing`] for every release but the one that ends its own
+    /// gesture. An outcome worth acting on is kept for the caller, because the walk can
+    /// only report that the key was kept and not what keeping it means.
+    fn release_held_modifier(&mut self, event: &KeyEvent) -> Consumed {
+        match self
+            .hold
+            .release(ModifierKey::from_sym(event.sym), event.time_ms)
+        {
+            HoldOutcome::Nothing => Consumed::Ignored,
+            outcome => {
+                self.pending_hold = Some(outcome);
+                Consumed::Consumed
+            }
+        }
     }
 
     /// The action the routing table gives this event.
@@ -496,77 +688,28 @@ impl Dispatcher {
     ///
     /// The layer is entered by a live composition alone. Temporary English suspends it,
     /// because the mode hands the keyboard to the application. Inside it the answer is the
-    /// table's: a key the table names is the plugin's, and a key it does not name falls
-    /// through to the layers below.
+    /// arbitrator's: a key is the plugin's when the table names it **and** the session would
+    /// act on the action it was translated to, and every other key falls through to the
+    /// layers below. A live composition is therefore not a keyboard grab — a digit past the
+    /// end of the page, a page key with no page to turn to and an arrow pointing off the end
+    /// of the input all reach the application.
     fn dispatch_in_composition(&self, event: &KeyEvent, session: &SessionView<'_>) -> Consumed {
         if session.state() != Some(SessionState::Composing) || session.temp_english() {
             return Consumed::Ignored;
         }
-        claim(self.action_for(event))
+        session.arbitrate(self.action_for(event), &self.session)
     }
 
     /// The session layer: the keys that are the plugin's with nothing composing.
     ///
     /// The layer exists because the table answers what a key *means* and cannot answer
-    /// whether anything is there to act on it. The composing keymap belongs to the layer
-    /// above; what is left here is the small set of keys that do something without a
-    /// composition — the mode chords, which the engine owns, and the two actions an idle
-    /// session acts on. Everything else is the application's, which is the whole point of
-    /// the layer: a `Space`, a digit or a `Backspace` with nothing composing must reach
-    /// it.
+    /// whether anything is there to act on it. Its whole answer is the arbitration, so it
+    /// holds no rule of its own: the mode chords the engine owns, the letter an idle session
+    /// starts a composition with, and the `Space`, digits, `Return`, `BackSpace`, `Escape`
+    /// and arrows an idle session has nothing to do with are rows of that one answer. With
+    /// nothing composing the layer is what the walk reaches for every key of the composing
+    /// keymap, and it is what hands them all back.
     fn dispatch_in_session(&self, event: &KeyEvent, session: &SessionView<'_>) -> Consumed {
-        let Some(state) = session.state() else {
-            // No session at all: nothing here can act on the key.
-            return Consumed::Ignored;
-        };
-        if session.temp_english() {
-            // Temporary English hands every key to the application, the two keys that
-            // leave the mode included: what ends the mode changes no other state and
-            // produces no effect. The caller still steps the session with the action, so
-            // that the mode can end at all.
-            return Consumed::Ignored;
-        }
-        let action = self.action_for(event);
-        // The engine's own mode bits, live whether or not anything is composing.
-        if is_mode_chord(action) {
-            return Consumed::Consumed;
-        }
-        // A letter starts a composition and the chord turns temporary English on: the two
-        // actions an idle session acts on. In any other state the session drops the key,
-        // because a composition belongs to the layer above and a session waiting for the
-        // host to finish a commit or a cancellation acts on nothing at all.
-        if state != SessionState::Idle {
-            return Consumed::Ignored;
-        }
-        match action {
-            KeyAction::InputChar(_) | KeyAction::EnterTempEnglish => Consumed::Consumed,
-            _ => Consumed::Ignored,
-        }
-    }
-}
-
-/// Whether the engine owns this action rather than the session.
-///
-/// The three mode bits are Fcitx5's input-method state and the plugin's own output
-/// choices. They are live whether or not anything is composing, which is why the session
-/// layer answers for them even with no session state to read.
-fn is_mode_chord(action: KeyAction) -> bool {
-    matches!(
-        action,
-        KeyAction::ToggleLang | KeyAction::ToggleFullWidth | KeyAction::TogglePunct
-    )
-}
-
-/// The claim decision: whether an action is one the plugin keeps the key for.
-///
-/// The table answers what a key *means*; this is the second half of the host's question,
-/// and it is a function of the action rather than of the key so that it can be refined in
-/// one place. The arbitration that also requires a session able to execute the action
-/// replaces this call and nothing else.
-fn claim(action: KeyAction) -> Consumed {
-    if claims_key(action) {
-        Consumed::Consumed
-    } else {
-        Consumed::Ignored
+        session.arbitrate(self.action_for(event), &self.session)
     }
 }

@@ -39,8 +39,8 @@ fn write(root: &Path, relative: &str, content: &str) {
     fs::write(&path, content).expect("writing the fixture");
 }
 
-/// A scratch tree holding every artifact the payload table requires, minus the icons and
-/// the licence texts, which are optional by design.
+/// A scratch tree holding every artifact the payload table requires, minus the licence
+/// texts, which are the optional payloads.
 fn fixture(tag: &str) -> PathBuf {
     let root = scratch(tag);
     write(&root, "target/release/librspinyin.so", "library bytes");
@@ -53,6 +53,8 @@ fn fixture(tag: &str) -> PathBuf {
     );
     write(&root, "packaging/fcitx5/rspinyin-im.conf", "input method");
     write(&root, "data/compiled/base.dict", "dictionary");
+    write(&root, "assets/icon-48.png", "png bytes");
+    write(&root, "assets/icon.svg", "svg bytes");
     write(&root, "docs/dev/NOTICE", "notice");
     root
 }
@@ -119,6 +121,28 @@ fn test_payload_table_budgets_the_dictionary() {
 }
 
 #[test]
+fn test_payload_table_ships_the_icons_a_release_must_carry() {
+    // A release is unpacked on a machine that has no checkout, so a file the archive does
+    // not carry is one the user can never install: `assets/` reaching the tarball is the
+    // whole reason the icons are payloads. Both are committed to the repository rather
+    // than produced by the build, which is why neither is optional -- an archive that
+    // quietly left one out would install a plugin Fcitx5 shows with a placeholder.
+    for (name, candidate) in [
+        ("fcitx-rspinyin.png", "assets/icon-48.png"),
+        ("fcitx-rspinyin.svg", "assets/icon.svg"),
+    ] {
+        let icon = payload(name);
+        assert_eq!(icon.role, "icon", "{name}");
+        assert_eq!(icon.candidates.to_vec(), vec![candidate], "{name}");
+        assert!(
+            !icon.optional,
+            "{name} is committed, so a release carries it"
+        );
+        assert_eq!(icon.budget, None, "{name} carries no size budget");
+    }
+}
+
+#[test]
 fn test_plan_release_resolves_every_required_payload_and_reports_the_optional_ones() {
     let root = fixture("plan");
     let tree = root.join("target/package/tree");
@@ -132,20 +156,17 @@ fn test_plan_release_resolves_every_required_payload_and_reports_the_optional_on
         "rspinyin-ui.conf",
         "rspinyin-im.conf",
         "base.dict",
+        "fcitx-rspinyin.png",
+        "fcitx-rspinyin.svg",
         "NOTICE",
     ];
     assert_eq!(
         names, expected,
-        "the icons and the licence texts are not there"
+        "the icons ship with the release; only the licence texts are absent"
     );
 
     let absent: Vec<&str> = plan.absent.iter().map(|(name, _)| *name).collect();
-    let missing = vec![
-        "fcitx-rspinyin.png",
-        "fcitx-rspinyin.svg",
-        "LICENSE-APACHE",
-        "LICENSE-MIT",
-    ];
+    let missing = vec!["LICENSE-APACHE", "LICENSE-MIT"];
     assert_eq!(
         absent, missing,
         "a missing payload is reported, never skipped"

@@ -14,10 +14,13 @@
 //     engine type; this file keeps the sequence and the entry points.
 //
 // The struct definitions below mirror the `#[repr(C)]` declarations in
-// `src/ffi/abi.rs`. There is deliberately no shared header: the glue is compiled as
-// part of this crate, and spelling the contract out at both definition sites is what
-// makes an accidental drift visible. Field order is the ABI — append only, and bump
-// the version constant on both sides when you do.
+// `src/ffi/abi.rs`, and only the engine's own table is mirrored: the two payloads that
+// left it at ABI version 2 -- `FcitxCursorRect` and `UiPanelSnapshot` -- are the
+// user-interface addon's and are mirrored in
+// `crates/ime-ui-addon/src/ffi/cpp/ui_addon_glue.cpp`. There is deliberately no shared
+// header: the glue is compiled as part of this crate, and spelling the contract out at
+// both definition sites is what makes an accidental drift visible. Field order is the
+// ABI — append only, and bump the version constant on both sides when you do.
 
 #include <cstddef>
 #include <cstdint>
@@ -30,32 +33,11 @@
 #include <fcitx/inputcontext.h>
 
 // ── Mirrored C ABI contract ──────────────────────────────────────────────────────
-struct FcitxCursorRect {
-    std::int32_t x;
-    std::int32_t y;
-    std::int32_t w;
-    std::int32_t h;
-    double scale;
-};
-
 struct FcitxKeyEvent {
     std::uint32_t sym;
     std::uint32_t state;
     bool is_release;
     std::uint32_t time_ms;
-};
-
-struct UiPanelSnapshot {
-    const std::uint8_t *preedit_ptr;
-    std::size_t preedit_len;
-    std::uint32_t caret;
-    const std::uint8_t *candidates_ptr;
-    std::size_t candidates_len;
-    std::uint32_t candidate_count;
-    std::int32_t cursor_index;
-    std::uint8_t page;
-    std::uint8_t total_pages;
-    std::uint8_t page_size;
 };
 
 struct RspinyinVtable {
@@ -76,6 +58,14 @@ struct RspinyinVtable {
     void (*on_set_preedit)(void *, std::uint64_t, const char *, std::size_t, std::uint32_t);
     void (*on_clear_preedit)(void *, std::uint64_t);
 };
+
+// The layout is the ABI, so it is asserted rather than described: twelve words are the
+// version field and eleven slots, and a slot added, removed or padded differently here
+// would put every callback behind it at an offset the Rust side does not have. The two
+// copies of this struct cannot share a header (see the file header), so this is what
+// catches a drift between them at compile time instead of at the first key event.
+static_assert(sizeof(RspinyinVtable) == 12 * sizeof(void *),
+              "the engine's callback table is the ABI version plus eleven slots");
 
 // The single symbol the Rust side exports. It runs the ABI handshake and returns the
 // opaque context the host passes back to every callback; a null return means the plugin

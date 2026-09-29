@@ -1,16 +1,18 @@
 //! Criterion benchmark for the passthrough classifier.
 //!
-//! The budget this measures is the 500ns per call the design names. Throughput is
-//! reported in elements, so criterion's `mean` is the cost of one `classify` call
-//! rather than the cost of one sweep over the corpus, which is what the budget
-//! assertion compares against.
+//! The budget this measures is the 500ns **per call** the design names, so one
+//! iteration of this benchmark is exactly one `classify` call: the case is chosen by a
+//! counter that walks the corpus. `xtask budget --check` compares criterion's
+//! per-iteration mean against that per-call budget, so a benchmark that swept the whole
+//! corpus per iteration would be measuring thirteen calls while the budget stayed the
+//! cost of one -- and would report a violation on a build that met it.
 //!
 //! Nothing here touches the filesystem, the clock or the network, and the corpus is
 //! fixed, so a run is reproducible.
 
 use std::hint::black_box;
 
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use ime_core::passthrough::{PassthroughFlags, PunctMode, classify};
 
 /// One benchmark case: the text a key press produced, the flags, and the text
@@ -45,24 +47,21 @@ fn corpus() -> Vec<Case> {
     ]
 }
 
-/// Times one call of [`classify`] over the whole corpus.
+/// Times one call of [`classify`], walking the corpus one case per iteration.
 ///
-/// The consumed-count accumulator keeps the optimizer from discarding the calls
-/// whose result is otherwise unused; it is a few instructions against a function
-/// that allocates on one of its branches.
+/// The counter and the `black_box` around the result keep the optimizer from
+/// discarding the calls; both are a few instructions against a function that allocates
+/// on one of its branches, so neither shows up against the budget they are measured
+/// beside.
 fn bench_classify(criterion: &mut Criterion) {
     let cases = corpus();
     let mut group = criterion.benchmark_group("passthrough");
-    group.throughput(Throughput::Elements(cases.len() as u64));
     group.bench_function("classify", |bencher| {
+        let mut next = 0usize;
         bencher.iter(|| {
-            let mut consumed = 0u32;
-            for (raw, flags, surrounding) in &cases {
-                if classify(black_box(raw), *flags, *surrounding).is_consumed() {
-                    consumed += 1;
-                }
-            }
-            black_box(consumed)
+            let (raw, flags, surrounding) = cases[next % cases.len()];
+            next = next.wrapping_add(1);
+            black_box(classify(black_box(raw), flags, surrounding))
         });
     });
     group.finish();

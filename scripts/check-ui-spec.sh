@@ -1039,7 +1039,7 @@ run_self_test() {
 
     # 5. A length off the 4dp grid of 3.1.4.
     fresh_tree
-    sed -i 's/shadow-inner-spread: 4px/shadow-inner-spread: 6px/' \
+    sed -i 's/shadow-inner-spread: 2px/shadow-inner-spread: 6px/' \
         "$scratch/tree/crates/ime-ui/ui/candidate.slint"
     expect_violation "$scratch/tree" "shadow-inner-spread" "a length off the 4dp grid"
 
@@ -1064,7 +1064,7 @@ run_self_test() {
     # swapped in has to be one the list still defers, or the injected scene would be
     # reported for the token it removed rather than for the one it drew.
     fresh_tree
-    sed -i 's/Theme\.shadow-inner/Theme.accent-on/' \
+    sed -i 's/Theme\.text-secondary/Theme.accent-on/' \
         "$scratch/tree/crates/ime-ui/ui/candidate.slint"
     expect_violation "$scratch/tree" "accent-on" "a deferral that has become live"
 

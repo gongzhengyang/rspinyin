@@ -28,12 +28,27 @@
 //! [`keys`] holds the keysym, modifier and character tables, [`coords`] the coordinate
 //! conversion, [`x11`] the connection and the protocol, and [`input`] the injection policy.
 
+pub mod attribution;
+pub mod budget_gate;
+pub mod capture;
+pub mod commit_readback;
 pub mod coords;
+pub mod dict_inject;
 pub mod engine;
 pub mod env;
+pub mod env_gate;
+pub mod evidence;
+pub mod framerate;
+pub mod guard;
+pub mod heal;
 pub mod input;
 pub mod keys;
+pub mod logs;
+pub mod memory;
+pub mod purity;
+pub mod review;
 pub mod sandbox;
+pub mod ui_metrics;
 pub mod uiframe;
 pub mod x11;
 

@@ -1,5 +1,5 @@
-//! Modifier keys: the bit definitions this build was compiled against, and the check that
-//! the host agrees with them.
+//! Modifier keys: the bits this build was compiled against, the check that the host agrees
+//! with them, and the machine that tracks a modifier the user is holding.
 //!
 //! # Why a run-time check
 //!
@@ -14,11 +14,41 @@
 //! The check is an equality rather than a subset test, because every bit of the mask is
 //! read by the routing table: a host that adds one or drops one changes what each chord
 //! means, and there is no bit of the mask the plugin does not look at.
+//!
+//! # Holding a modifier
+//!
+//! The shortcut table gives the held `Shift` key a behaviour of its own: hold it and the
+//! input mode switches to English for as long as it is down, release it and the mode comes
+//! back. [`KeyAction`](ime_types::KeyAction) is a frozen contract with no variant for a
+//! modifier edge, and the behaviour is a host-layer mode switch rather than something a
+//! session does, so the hold is engine state and it is tracked here.
+//!
+//! [`ModifierHold`] is driven by the events the host delivers and by nothing else. A press
+//! arms it, a release closes it, and the elapsed time is the difference of the two
+//! timestamps the events carry. Nothing here reads a clock and nothing wakes up on its
+//! own: a polling loop is forbidden, and there is nothing to poll for, because a modifier
+//! that goes down and comes up is exactly one event pair and the duration is known the
+//! moment the release is answered. The machine is therefore a pure function of the events
+//! handed to it, which is what makes every case below a deterministic test with no sleep
+//! in it.
+//!
+//! A release means one of three things, and [`ModifierHold::release`] decides which:
+//!
+//! * The modifier was part of a chord or of a typed key — a capital letter, `Shift+Space`.
+//!   [`ModifierHold::mark_used`] records that, and the release is a no-op: a modifier the
+//!   user typed with must not also switch the mode.
+//! * The modifier was held past [`HOLD_THRESHOLD_MS`] with nothing typed. That is a long
+//!   press, which is the gesture the cheat sheet answers to.
+//! * Anything else is a mode switch, and the release carries the enabled state the press
+//!   interrupted so that the caller can put it back.
 
 use ime_types::ImeError;
 
-use super::MODIFIER_MASK;
+use super::{KEY_SHIFT_L, KEY_SHIFT_R, MODIFIER_MASK};
 use crate::ffi::emit_diagnostic;
+
+#[cfg(test)]
+mod tests;
 
 /// The stable diagnostic code for a host whose modifier bits differ from this build's.
 ///
@@ -70,59 +100,238 @@ fn check_modifier_mask_with(host_mask: u32, mut report: impl FnMut(&str)) -> Res
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ── The modifier hold ────────────────────────────────────────────────────────────
 
-    #[test]
-    fn test_check_modifier_mask_accepts_the_compiled_mask_silently() {
-        let mut reported: Vec<String> = Vec::new();
-        let result = check_modifier_mask_with(MODIFIER_MASK, |code| {
-            reported.push(String::from(code));
-        });
-        assert!(result.is_ok(), "the compiled mask is the one the host has");
-        assert!(
-            reported.is_empty(),
-            "a matching host must record nothing: {reported:?}"
-        );
+/// How long a modifier must be held, with nothing typed, to count as a long press.
+///
+/// The threshold is read when the release arrives rather than watched by a timer. A
+/// polling loop is forbidden, and there is nothing to poll for: the hold is one press and
+/// one release, so the elapsed time is already known at the moment the release is
+/// answered.
+pub const HOLD_THRESHOLD_MS: u32 = 250;
+
+/// A modifier key whose hold has a behaviour of its own.
+///
+/// One variant, because the shortcut table gives exactly one modifier a hold: the held
+/// `Shift` is the temporary Chinese / English switch. The type exists rather than a bare
+/// unit so that a second held modifier becomes a variant here rather than a second machine
+/// beside this one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModifierKey {
+    /// `Shift_L` or `Shift_R`. The two keys are one modifier: the shortcut table names them
+    /// as one gesture, and the routing table does not tell them apart either.
+    Shift,
+}
+
+impl ModifierKey {
+    /// The modifier a keysym names, if it names one.
+    ///
+    /// The keysym half of the question [`is_shift_press`](super::is_shift_press) asks of a
+    /// whole event. The two are the same predicate written twice, so the tests pin their
+    /// answers together over a keysym corpus and a row cannot drift from the other.
+    ///
+    /// # Arguments
+    ///
+    /// * `sym` — the XKB keysym of the event, as `FcitxKeyEvent::sym` carries it.
+    ///
+    /// # Returns
+    ///
+    /// The modifier, or `None` for every key that is not one — which is almost every key.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub const fn from_sym(sym: u32) -> Option<Self> {
+        match sym {
+            KEY_SHIFT_L | KEY_SHIFT_R => Some(Self::Shift),
+            _ => None,
+        }
+    }
+}
+
+/// What a modifier release means.
+///
+/// The three answers are what the caller can do about a release, which is why the machine
+/// answers with one of them rather than with a flag: a hold that changed nothing, a hold
+/// that has to be undone, and a hold that was a gesture of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoldOutcome {
+    /// The hold changed nothing and the release is a no-op.
+    Nothing,
+    /// The hold was a mode switch, and the release puts the interrupted state back.
+    Restore {
+        /// Whether the input method was enabled when the modifier went down.
+        was_enabled: bool,
+    },
+    /// The modifier was held with nothing typed: a long press.
+    LongPress {
+        /// How long the modifier was down, in milliseconds.
+        held_ms: u32,
+    },
+}
+
+/// One held modifier and what the press interrupted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HeldModifier {
+    /// The modifier the hold started with.
+    key: ModifierKey,
+    /// The host timestamp of the first press, for the long-press test.
+    pressed_at_ms: u32,
+    /// Whether the input method was enabled when the hold started.
+    was_enabled: bool,
+    /// Whether any key was acted on while the modifier was down.
+    used: bool,
+}
+
+/// The modifier the user is holding, and what happened while it was down.
+///
+/// Empty until a modifier press arms it, and empty again once the release has been
+/// answered. See the module documentation for what the three release answers mean.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModifierHold {
+    /// The modifier currently held, if any.
+    armed: Option<HeldModifier>,
+}
+
+impl ModifierHold {
+    /// An empty hold.
+    ///
+    /// # Returns
+    ///
+    /// A hold that is not tracking any modifier, which is the same value
+    /// [`ModifierHold::default`] produces.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub const fn new() -> Self {
+        Self { armed: None }
     }
 
-    #[test]
-    fn test_check_modifier_mask_reports_a_host_that_added_a_bit() {
-        let mut reported: Vec<String> = Vec::new();
-        let result = check_modifier_mask_with(MODIFIER_MASK | (1 << 1), |code| {
-            reported.push(String::from(code));
+    /// Records a modifier press and the state it interrupted.
+    ///
+    /// A press of the modifier that is already armed leaves the hold as it is rather than
+    /// restarting it. The frontend repeats a press while a key is held down, so a hold that
+    /// restarted would measure the long press from the last repeat — which never stops
+    /// arriving — and would forget that a key was typed in between.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` — the modifier the pressed key names.
+    /// * `at_ms` — the host timestamp of the press.
+    /// * `was_enabled` — whether the input method was enabled at that moment.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn arm(&mut self, key: ModifierKey, at_ms: u32, was_enabled: bool) {
+        if self.armed.is_some_and(|held| held.key == key) {
+            return;
+        }
+        self.armed = Some(HeldModifier {
+            key,
+            pressed_at_ms: at_ms,
+            was_enabled,
+            used: false,
         });
-        assert_eq!(reported, vec![String::from(MODIFIER_MASK_MISMATCH_CODE)]);
-        let error = result.expect_err("a renumbered host is an error");
-        assert!(
-            error
-                .to_string()
-                .starts_with("platform/fcitx5/version-mismatch"),
-            "the error renders as a frozen code: {error}"
-        );
     }
 
-    #[test]
-    fn test_check_modifier_mask_reports_a_host_that_dropped_a_bit() {
-        // Bit 0 is Shift, the bit of the mask the composing keymap reads most often.
-        let mut reported: Vec<String> = Vec::new();
-        let result = check_modifier_mask_with(MODIFIER_MASK & !(1 << 0), |code| {
-            reported.push(String::from(code));
-        });
-        assert_eq!(reported, vec![String::from(MODIFIER_MASK_MISMATCH_CODE)]);
-        assert!(result.is_err(), "a mask without Shift is not this build's");
+    /// Records that a key was acted on while the modifier was down.
+    ///
+    /// This is the whole judgement of "was this `Shift` a mode switch or a typed key": a
+    /// modifier the user typed with is not one they meant to hold. Doing nothing when no
+    /// modifier is down is the correct answer rather than an oversight — the mark is about
+    /// a hold, and there is no hold to mark.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn mark_used(&mut self) {
+        if let Some(held) = self.armed.as_mut() {
+            held.used = true;
+        }
     }
 
-    #[test]
-    fn test_check_modifier_mask_reports_an_empty_host_mask() {
-        // The boundary: a host that reports nothing at all is the furthest a host can be
-        // from this build, and it must be reported rather than read as "no modifiers".
-        let mut reported: Vec<String> = Vec::new();
-        let result = check_modifier_mask_with(0, |code| {
-            reported.push(String::from(code));
-        });
-        assert_eq!(reported, vec![String::from(MODIFIER_MASK_MISMATCH_CODE)]);
-        assert!(result.is_err());
+    /// Ends the hold and answers what the release should do.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` — the modifier the released key names, or `None` for a key that names none.
+    ///   The host delivers a release for every key, so this is asked of every one of them;
+    ///   only the held modifier's own release ends the hold.
+    /// * `at_ms` — the host timestamp of the release.
+    ///
+    /// # Returns
+    ///
+    /// [`HoldOutcome::Restore`] or [`HoldOutcome::LongPress`] for the release that ends a
+    /// hold worth acting on, and [`HoldOutcome::Nothing`] for every other release: one of a
+    /// key that names no modifier, one of a modifier that is not the held one, and one of a
+    /// modifier the user typed with.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// Never: the elapsed time saturates rather than underflowing. The caller is an FFI
+    /// entry point, which must not unwind into C++, and a host whose two timestamps are out
+    /// of order — a machine suspended and resumed between the press and the release — is a
+    /// difference of zero rather than a panic.
+    pub fn release(&mut self, key: Option<ModifierKey>, at_ms: u32) -> HoldOutcome {
+        let Some(held) = self.armed else {
+            return HoldOutcome::Nothing;
+        };
+        if key != Some(held.key) {
+            // Another key's release. The hold stays armed, because the modifier is still
+            // down: the release edge of a letter typed with `Shift` held arrives while
+            // `Shift` is still held.
+            return HoldOutcome::Nothing;
+        }
+        self.armed = None;
+        if held.used {
+            return HoldOutcome::Nothing;
+        }
+        let held_ms = at_ms.saturating_sub(held.pressed_at_ms);
+        if held_ms >= HOLD_THRESHOLD_MS {
+            HoldOutcome::LongPress { held_ms }
+        } else {
+            HoldOutcome::Restore {
+                was_enabled: held.was_enabled,
+            }
+        }
+    }
+
+    /// Forgets the hold without acting on it.
+    ///
+    /// For a hold whose release will never arrive, because the input context lost focus or
+    /// the host reset it. The next modifier press starts a new hold rather than continuing
+    /// one whose other end is gone.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn clear(&mut self) {
+        self.armed = None;
     }
 }

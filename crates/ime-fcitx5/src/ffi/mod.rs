@@ -111,10 +111,21 @@ pub(crate) fn catch_ffi<R>(body: impl FnOnce() -> R) -> Result<R, PanicReport> {
 /// undefined behaviour, so the boundary turns it into an ordinary return value and
 /// records it on the crash channel.
 pub(crate) fn guard_ffi<R>(fallback: R, body: impl FnOnce() -> R) -> R {
+    guard_ffi_with(fallback, write_stderr_line, body)
+}
+
+/// The body of [`guard_ffi`], over a caller-supplied crash channel.
+///
+/// The sink is a parameter for the same reason [`emit_through`]'s is: a test can then
+/// read back the line a contained panic writes, which is the half of the guard's contract
+/// that "it answers with the fallback" does not cover. The production path passes
+/// [`write_stderr_line`] and pays nothing for the indirection — the argument is
+/// monomorphised in place.
+fn guard_ffi_with<R>(fallback: R, write_line: impl FnOnce(&str), body: impl FnOnce() -> R) -> R {
     match catch_ffi(body) {
         Ok(value) => value,
         Err(report) => {
-            write_stderr_line(&report.crash_line());
+            write_line(&report.crash_line());
             fallback
         }
     }

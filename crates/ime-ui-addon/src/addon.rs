@@ -65,8 +65,13 @@ const UI_THREAD_NAME: &str = "rspinyin-ui";
 /// for the flush that has to happen before it.
 const UI_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(200);
 
-/// Recorded when a frame arrives before the candidate window can be drawn.
-const UI_NOT_READY_CODE: &str = "ui/not-ready";
+/// Diagnostic code recorded when a frame arrives before the candidate window can be
+/// drawn.
+///
+/// Public because it is a stable identifier rather than an implementation detail: the
+/// takeover reports the same code when it skips the switch for the same reason, and a
+/// grep for it has to match every line either path produced.
+pub const UI_NOT_READY_CODE: &str = "ui/not-ready";
 
 /// Recorded when the UI thread outlived its shutdown deadline and had to be detached.
 const UI_SHUTDOWN_TIMEOUT_CODE: &str = "ui/shutdown-timeout";
@@ -173,6 +178,13 @@ fn probe_platform() -> Result<(), ImeError> {
 /// [`ui_impl::register_takeover`], which reports which part of the takeover the session
 /// is still waiting on; nothing here is fatal — a window that stays with ClassicUI
 /// costs the user the custom look, not the input.
+///
+/// This step runs on the Fcitx5 host thread, and so must any later attempt: asking the
+/// host is `UserInterfaceManager::updateAvailability()`, which walks every
+/// user-interface addon and calls into each one, so it is neither thread-safe nor
+/// reentrant. A thread that notices a change in the state the takeover reads — the UI
+/// start-up reporting ready, the platform probe answering — has to get back onto the
+/// host loop before re-running it, rather than calling it from where the change happened.
 fn register_ui() -> Result<(), ImeError> {
     let outcome = ui_impl::register_takeover();
     emit_diagnostic(&outcome.diagnostic());

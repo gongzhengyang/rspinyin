@@ -12,6 +12,11 @@ user.redb*
 # SHA256SUMS. Build output, never a source.
 /dist
 
+# The evidence tree the automated test platform writes: screenshots, transcripts,
+# snapshots and traces, one directory per case. It holds what a run observed -- which
+# includes the text a case typed -- so it is an artifact of a run and never a source.
+/results
+
 # Dictionary sources fetched by data/fetch.sh. They are reproducible from the
 # digests pinned in data/sources.toml, so the upstream copies stay out of the
 # repository; only the derived artifacts below are committed.

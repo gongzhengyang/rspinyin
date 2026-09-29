@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  fcitx-rspinyin: the icon Fcitx5 shows for the Rust Pinyin input method.
+
+  It is installed twice from this one drawing: `fcitx-rspinyin.svg` under
+  `<datadir>/icons/hicolor/scalable/apps`, and its raster twin `fcitx-rspinyin.png`
+  at 48x48 under `<datadir>/icons/hicolor/48x48/apps`. The input method descriptor
+  `packaging/fcitx5/rspinyin-im.conf` names the icon as `Icon=fcitx-rspinyin`, which
+  is the name without an extension, so the two files and that key have to agree.
+
+  Why it is drawn this way:
+
+  * No text. `fcitx-rspinyin` is the icon's *name*; a glyph drawn inside the plate
+    would be a second, unlocalised label beside the one Fcitx5 already prints.
+
+  * No external reference. The file ships inside a release archive and the product
+    promises to work with no network at all (BUDGET-NET-01), so there is no linked
+    image, no referenced font, no `@import` and no `use href` reaching outside this
+    document: every shape is a primitive declared here. The `xmlns` attribute below is
+    the SVG namespace identifier, which a standalone SVG has to carry; it is not a
+    location anything is ever fetched from.
+
+  * Legible on a light panel and on a dark one. `features.md` 3.2 fixes the two
+    surfaces a desktop can put behind it, `#FFFFFF` and the dark `surface.base`
+    `#1C1C1E`, and asks for 4.5:1. One flat colour cannot clear 4.5:1 against both:
+    a colour 4.5:1 from white sits at relative luminance 0.1833 or below, while 4.5:1
+    from `#1C1C1E` needs 0.2281 or above, and no colour is in both ranges. The mark
+    therefore carries a pair of elements, and each is measured against what it
+    actually sits on:
+
+      plate, `accent.default` light `#0A6CFF`
+        against a white panel: 4.56:1. This is the pair a light desktop sees, and it
+        is the plate's own edge.
+      marks, `accent.on` `#FFFFFF`
+        against the plate: 4.56:1; against the dark panel `#1C1C1E`: 17.0:1. This is
+        the pair a dark desktop sees, where the plate has become a background and the
+        white marks carry the drawing on their own.
+      plate against the dark panel: 3.73:1, below the floor by itself. That is why
+        the marks are `accent.on` white rather than a tint of the plate, and nothing
+        in the icon relies on that pair.
+
+    `#0A6CFF` rather than the dark scheme's `#4C9AFF` because only the darker of the
+    two accents leaves the white marks at 4.5:1 or better; the lighter one gives
+    2.85:1, and a mark that vanishes inside its own plate is a worse failure than a
+    plate that blends into a dark panel, which the marks still carry.
+
+  The mark itself is a caret with two candidate bars: text being composed, and the
+  candidate list the composition produces. That is the product's own subject drawn in
+  three shapes, and it stays readable at the 16px a panel or a tray will ask for,
+  where anything finer turns to mud.
+
+  The geometry sits on the 4-unit rhythm `features.md` 3.1.4 gives the candidate
+  window, on a 48-unit canvas, and the plate's 12-unit corner radius is the window's
+  own `corner_radius_dp`. The plate is inset 2 units so the drawing keeps a hair of
+  canvas around it at full bleed; the mark occupies the 24-unit square at the centre,
+  so its margins are equal on all four sides.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <!-- accent.default (light): the plate -->
+  <rect x="2" y="2" width="44" height="44" rx="12" fill="#0A6CFF"/>
+  <!-- accent.on: the caret, marking where the composition is being inserted -->
+  <rect x="12" y="12" width="4" height="24" rx="2" fill="#FFFFFF"/>
+  <!-- accent.on: the first candidate, and the second one, shorter -->
+  <rect x="20" y="16" width="16" height="4" rx="2" fill="#FFFFFF"/>
+  <rect x="20" y="28" width="12" height="4" rx="2" fill="#FFFFFF"/>
+</svg>

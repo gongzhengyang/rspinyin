@@ -6,6 +6,7 @@
 //! server.
 
 mod frame;
+mod scheme;
 mod workspace;
 
 use std::sync::Mutex;
@@ -123,6 +124,7 @@ fn kind(effect: &Effect) -> &'static str {
         Effect::Commit(_) => "commit",
         Effect::RecordUserFreq { .. } => "record-user-freq",
         Effect::AddPhrase { .. } => "add-phrase",
+        Effect::ForgetUserWord { .. } => "forget-user-word",
         Effect::Diagnose(_) => "diagnose",
         Effect::SetClientPreedit(_) => "set-client-preedit",
     }

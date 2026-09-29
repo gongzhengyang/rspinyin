@@ -6,6 +6,11 @@
 //! evaluation set, so that the generated corpus carries a word wherever a decode
 //! reaches.
 //!
+//! The table is also checked against the inputs it names before a run measures
+//! anything: a case whose input does not spell the number of syllables its name
+//! claims would measure a shape the budget was not stated for, which reads as a
+//! comfortable margin rather than as a broken fixture.
+//!
 //! Boundaries: this module knows nothing about criterion and nothing about how the
 //! corpus is generated. It reads the case table and the held-out fixture and hands
 //! out strings.
@@ -34,6 +39,13 @@ pub struct Case {
     pub name: &'static str,
     /// The raw input the case decodes.
     pub raw: &'static str,
+    /// Syllables [`Case::raw`] spells, which is the size the case is stated for.
+    ///
+    /// Declared rather than counted from the input at run time, so that the check in
+    /// [`seed_keys`] compares the cut against a number the case states: an input that
+    /// changed under its case would then be a failure instead of a size that silently
+    /// re-declared itself.
+    pub syllables: usize,
 }
 
 /// The cases of the `decode` group.
@@ -49,26 +61,34 @@ pub struct Case {
 /// eight-syllable case carries one more word and the twelve-syllable case three. A
 /// case named `12syl` that decodes nine syllables would understate the budget it
 /// exists to guard.
+///
+/// Every case's declared size is checked against its own cut before the benchmark
+/// measures anything; see [`check_size`] for why the check is not a test.
 pub const CASES: &[Case] = &[
     Case {
         name: "2syl",
         raw: "nihao",
+        syllables: 2,
     },
     Case {
         name: "4syl",
         raw: "zhongguoxiangqi",
+        syllables: 4,
     },
     Case {
         name: "8syl",
         raw: "jintiantianqizhenbucuohao",
+        syllables: 8,
     },
     Case {
         name: "12syl",
         raw: "womenmingtianqugongyuanwanbazhongguoxue",
+        syllables: 12,
     },
     Case {
         name: "64byte",
         raw: MAX_LENGTH_INPUT,
+        syllables: MAX_LENGTH_SYLLABLES,
     },
 ];
 
@@ -78,6 +98,14 @@ pub const CASES: &[Case] = &[
 /// benchmark is compiled; the assertion below fails the build if it drifts.
 pub const MAX_LENGTH_INPUT: &str =
     "nihaonihaonihaonihaonihaonihaonihaonihaonihaonihaonihaonihaoniha";
+
+/// Syllables [`MAX_LENGTH_INPUT`] spells: twelve `nihao` and one `niha`, two each.
+///
+/// The case is named for its byte length rather than for a syllable count, so this
+/// number is not written in its name; it is declared all the same, because the size
+/// the case is measured at has to come from the case table and not from whatever the
+/// input happens to cut into.
+pub const MAX_LENGTH_SYLLABLES: usize = 26;
 
 // The length is the whole point of the case, so it is checked by the compiler
 // rather than by the run: a const block that panics stops the build.
@@ -90,17 +118,24 @@ const _: () = assert!(MAX_LENGTH_INPUT.len() == MAX_RAW_LEN);
 /// a key. Deriving them rather than listing them keeps the seeds from drifting away
 /// from the case table: an input that changes changes its keys with it.
 ///
+/// Every cut is also checked against the size its case declares ([`check_size`]), so
+/// the first thing a benchmark run does is refuse a case table whose inputs are not
+/// the shapes the table says they are.
+///
 /// # Errors
-/// Returns a description of the first input that cannot be cut into syllables.
-/// That cannot happen for the table above, and it is reported rather than assumed
-/// because an input that quietly contributed no keys would leave the benchmark
-/// measuring a lattice the corpus does not populate -- which reads as a fast decode
+/// Returns a description of the first input that cannot be cut into syllables, and
+/// of the first whose cut is not the size its case claims. Neither can happen for
+/// the table above, and both are reported rather than assumed because an input that
+/// quietly contributed no keys, or a different number of syllables than its name
+/// claims, would leave the benchmark measuring a lattice the corpus does not
+/// populate or a shape the budget was not stated for -- which reads as a fast decode
 /// rather than as a broken fixture.
 pub fn seed_keys() -> Result<Vec<String>, String> {
     let mut keys = Vec::new();
     for case in CASES {
         let syllables = cut(case.raw)
             .map_err(|reason| format!("case {} ({}): {reason}", case.name, case.raw))?;
+        check_size(case, &syllables)?;
         for start in 0..syllables.len() {
             for length in 1..=MAX_SEED_SYLLABLES {
                 let Some(window) = syllables.get(start..start + length) else {
@@ -113,6 +148,48 @@ pub fn seed_keys() -> Result<Vec<String>, String> {
     keys.sort();
     keys.dedup();
     Ok(keys)
+}
+
+/// Checks that a case's input is the shape its name and its declared size say it is.
+///
+/// The check runs here rather than in a `#[cfg(test)]` module beside this file because
+/// a benchmark target is built with `harness = false`: libtest never drives it, so a
+/// test written there would never execute and would be invisible to
+/// `cargo clippy --all-targets` as well. Every benchmark run performs the check
+/// instead, before it measures anything, and a case table that disagrees with its
+/// inputs stops the run rather than producing a number for a shape the budget was not
+/// stated for.
+///
+/// # Errors
+/// Returns a description of the first case whose cut is not the syllable count it
+/// declares, and of the first whose name claims a count its declaration disagrees with.
+fn check_size(case: &Case, syllables: &[String]) -> Result<(), String> {
+    let spelled = syllables.len();
+    if spelled != case.syllables {
+        return Err(format!(
+            "case {} declares {} syllables and {} spells {spelled}",
+            case.name, case.syllables, case.raw
+        ));
+    }
+    match claimed_syllables(case.name) {
+        Some(claimed) if claimed != case.syllables => Err(format!(
+            "case {} is named for {claimed} syllables and declares {}",
+            case.name, case.syllables
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// The syllable count a case's name claims, or `None` when the name claims a size in
+/// another unit.
+///
+/// The name is the half of a case that reaches the budget document -- the criterion id
+/// and the threshold binding are both built from it -- so a name and a declaration that
+/// disagree would leave the budget asserting a size nothing measures. The byte-capped
+/// case is named for its length instead, which the assertion beside
+/// [`MAX_LENGTH_INPUT`] pins at compile time.
+fn claimed_syllables(name: &str) -> Option<usize> {
+    name.strip_suffix("syl")?.parse::<usize>().ok()
 }
 
 /// The pinyin keys of the held-out evaluation set, in file order.

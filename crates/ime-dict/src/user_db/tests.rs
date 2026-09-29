@@ -10,7 +10,7 @@ use super::*;
 
 /// The keys the tests type: short, distinct, and never taken from a real dictionary, so
 /// that the store is exercised against literals only.
-const KEYS: [&str; 4] = ["ni'hao", "shi'jie", "zhong'guo", "pin'yin"];
+pub(super) const KEYS: [&str; 4] = ["ni'hao", "shi'jie", "zhong'guo", "pin'yin"];
 
 /// Environment variable that puts a test binary into the crash-child role.
 const CHILD_DB_ENV: &str = "RSPINYIN_TEST_USER_DB_CHILD";
@@ -32,7 +32,7 @@ const CHILD_MIN_SURVIVING: u64 = 60;
 
 /// A clock the test drives, so that no test depends on the wall clock.
 #[derive(Clone, Default)]
-struct TestClock {
+pub(super) struct TestClock {
     ms: Arc<AtomicU64>,
     nanos: Arc<AtomicU64>,
     /// Nanoseconds added by every reading of the monotonic clock. Zero keeps the clock
@@ -43,7 +43,7 @@ struct TestClock {
 
 impl TestClock {
     /// A clock that jumps `step_nanos` on every reading.
-    fn stepping(step_nanos: u64) -> Self {
+    pub(super) fn stepping(step_nanos: u64) -> Self {
         Self {
             step_nanos,
             ..Self::default()
@@ -51,12 +51,12 @@ impl TestClock {
     }
 
     /// Moves the wall clock forward.
-    fn advance_ms(&self, ms: u64) {
+    pub(super) fn advance_ms(&self, ms: u64) {
         self.ms.fetch_add(ms, Ordering::Relaxed);
     }
 
     /// Moves the monotonic clock forward.
-    fn advance_nanos(&self, nanos: u64) {
+    pub(super) fn advance_nanos(&self, nanos: u64) {
         self.nanos.fetch_add(nanos, Ordering::Relaxed);
     }
 }
@@ -75,7 +75,7 @@ impl Clock for TestClock {
 ///
 /// The store takes its path as an argument precisely so that a test can own it: no test
 /// here touches a real XDG directory.
-fn temp_dir(label: &str) -> PathBuf {
+pub(super) fn temp_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("rspinyin-userdb-{}-{label}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("creating the test directory");
@@ -83,12 +83,12 @@ fn temp_dir(label: &str) -> PathBuf {
 }
 
 /// The path of the store inside a test directory.
-fn db_path(dir: &Path) -> PathBuf {
+pub(super) fn db_path(dir: &Path) -> PathBuf {
     dir.join("user.redb")
 }
 
 /// Opens a store in `dir` with a clock the test drives.
-fn open_in(dir: &Path, clock: TestClock) -> UserDb {
+pub(super) fn open_in(dir: &Path, clock: TestClock) -> UserDb {
     UserDb::open_with(db_path(dir), Box::new(clock)).expect("opening the user store")
 }
 

@@ -29,12 +29,7 @@ fn assert_rows(cases: &[(FcitxKeyEvent, KeyAction)], keys: &KeyBindings) {
 /// The default bindings with only the two punctuation keys paging the list.
 fn punctuation_flip_bindings() -> KeyBindings {
     KeyBindings {
-        flip_keys: FlipKeys {
-            minus: true,
-            equal: true,
-            up: false,
-            down: false,
-        },
+        flip_keys: FlipSet::MINUS | FlipSet::EQUAL,
         ..KeyBindings::default()
     }
 }
@@ -45,7 +40,7 @@ fn punctuation_flip_bindings() -> KeyBindings {
 /// a table edit that starts claiming an unrelated key fails here instead of silently
 /// removing that key from the application's input.
 fn is_routed(sym: u32) -> bool {
-    const NAMED: [u32; 15] = [
+    const NAMED: [u32; 17] = [
         KEY_SPACE,
         KEY_PERIOD,
         KEY_MINUS,
@@ -58,6 +53,8 @@ fn is_routed(sym: u32) -> bool {
         KEY_UP,
         KEY_RIGHT,
         KEY_DOWN,
+        KEY_PAGE_UP,
+        KEY_PAGE_DOWN,
         KEY_SHIFT_L,
         KEY_SHIFT_R,
         KEY_E_UPPER,
@@ -80,7 +77,14 @@ fn test_key_bindings_default_matches_the_shipped_configuration() {
     let keys = KeyBindings::default();
     assert_eq!(keys.digit_zero, DigitZero::Passthrough);
     assert!(!keys.enter_commit_raw);
-    assert_eq!(keys.flip_keys, FlipKeys::all());
+    assert_eq!(
+        keys.flip_keys,
+        FlipSet::MINUS | FlipSet::EQUAL | FlipSet::UP | FlipSet::DOWN
+    );
+    assert_eq!(
+        keys.highlight_keys,
+        HighlightSet::TAB | HighlightSet::SHIFT_TAB
+    );
 }
 
 #[test]
@@ -198,6 +202,84 @@ fn test_translate_key_pages_with_the_configured_flip_keys() {
             (press(KEY_DOWN, 0), KeyAction::Ignore),
         ],
         &punctuation_only,
+    );
+}
+
+#[test]
+fn test_translate_key_pages_with_the_page_keys_the_configuration_binds() {
+    // `page_up` and `page_down` are two of the six names `keys.flip_keys` accepts, and the
+    // flag set is what carries them: the four-field struct this used to be read them out of
+    // the configuration and then dropped them in silence.
+    let page_keys = KeyBindings {
+        flip_keys: FlipSet::PAGE_UP | FlipSet::PAGE_DOWN,
+        ..KeyBindings::default()
+    };
+    assert_rows(
+        &[
+            (press(KEY_PAGE_UP, 0), KeyAction::PagePrev),
+            (press(KEY_PAGE_DOWN, 0), KeyAction::PageNext),
+            // The page rows are bare presses, like every other row of the list.
+            (press(KEY_PAGE_UP, SHIFT), KeyAction::Ignore),
+        ],
+        &page_keys,
+    );
+    // The shipped configuration does not bind them, so they stay with the application.
+    let shipped = KeyBindings::default();
+    assert_rows(
+        &[
+            (press(KEY_PAGE_UP, 0), KeyAction::Ignore),
+            (press(KEY_PAGE_DOWN, 0), KeyAction::Ignore),
+        ],
+        &shipped,
+    );
+}
+
+#[test]
+fn test_translate_key_moves_the_highlight_with_the_configured_highlight_keys() {
+    // Tab and Shift+Tab are two bindings rather than one key, so a document that binds only
+    // the shifted shape hands the bare Tab to the application.
+    let shifted_only = KeyBindings {
+        highlight_keys: HighlightSet::SHIFT_TAB,
+        ..KeyBindings::default()
+    };
+    assert_rows(
+        &[
+            (press(KEY_TAB, 0), KeyAction::Ignore),
+            (press(KEY_TAB, SHIFT), KeyAction::MoveHighlight(-1)),
+        ],
+        &shifted_only,
+    );
+
+    // The four arrows are the other half of the whitelist. Bound as highlight keys they move
+    // the highlight, and the page and caret rows they would otherwise answer give way.
+    let arrows = KeyBindings {
+        flip_keys: FlipSet::empty(),
+        highlight_keys: HighlightSet::UP
+            | HighlightSet::DOWN
+            | HighlightSet::LEFT
+            | HighlightSet::RIGHT,
+        ..KeyBindings::default()
+    };
+    assert_rows(
+        &[
+            (press(KEY_UP, 0), KeyAction::MoveHighlight(-1)),
+            (press(KEY_DOWN, 0), KeyAction::MoveHighlight(1)),
+            (press(KEY_LEFT, 0), KeyAction::MoveHighlight(-1)),
+            (press(KEY_RIGHT, 0), KeyAction::MoveHighlight(1)),
+        ],
+        &arrows,
+    );
+
+    // With the shipped bindings the four are what they always were: pages and a caret.
+    let shipped = KeyBindings::default();
+    assert_rows(
+        &[
+            (press(KEY_UP, 0), KeyAction::PagePrev),
+            (press(KEY_DOWN, 0), KeyAction::PageNext),
+            (press(KEY_LEFT, 0), KeyAction::MoveCaret(-1)),
+            (press(KEY_RIGHT, 0), KeyAction::MoveCaret(1)),
+        ],
+        &shipped,
     );
 }
 

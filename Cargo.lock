@@ -2104,6 +2104,7 @@ checksum = "edcd27d72f2f071c64249075f42e205ff93c9a4c5f6c6da53e79ed9f9832c285"
 name = "ime-config"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.2",
  "ime-types",
  "serde",
  "toml 0.9.12+spec-1.1.0",
@@ -5697,6 +5698,7 @@ dependencies = [
  "ime-diag",
  "ime-dict",
  "ime-types",
+ "png 0.18.1",
  "serde",
  "serde_json",
  "sha2",

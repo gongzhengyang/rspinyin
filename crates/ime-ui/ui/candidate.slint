@@ -73,17 +73,33 @@ export global CandidateMetrics {
     out property <length> cursor-arrow-height: 6px;
 
     // -- material (3.1.2) ---------------------------------------------------
+    // L3's `0 8dp 28dp`: the blur radius the bands tile outward from the panel edge, and the
+    // distance down they are shifted by.
     out property <length> shadow-blur: 28px;
     out property <length> shadow-offset-y: 8px;
-    // 3.1.2 asks for `0 1dp 2dp`; the spread is the blur rounded up to the 4dp grid so
-    // that the layer can be a plain border band.
-    out property <length> shadow-inner-spread: 4px;
+    // L2's `0 1dp 2dp`: two bands spreading 2dp past the panel edge. The spread is the
+    // specification's 2dp and not the blur rounded up to the 4dp grid, because a wider ring
+    // reads as an outline drawn around the panel rather than as the panel's own edge
+    // darkening, which is the one thing this layer exists to avoid.
+    out property <length> shadow-inner-spread: 2px;
     out property <length> shadow-inner-offset-y: 1px;
-    // Four bands: enough that the falloff reads as a gradient rather than as steps, few
-    // enough that the layer stays cheap on the software rasterizer.
-    out property <int> shadow-band-count: 4;
+    // Eight bands of 3.5dp tile the 28dp blur. Four left the steps visible at the 1.0 scale
+    // factor this window has to support; eight is the fewest that reads as a gradient, and
+    // the cost follows the panel's perimeter rather than its area because each band paints a
+    // ring and not a filled rectangle.
+    out property <int> shadow-band-count: 8;
+    // The peak of L3's falloff: the alpha of the band that hugs the panel. The bands outside
+    // it carry the square of their position in the ramp, which is the tail a Gaussian blur of
+    // a straight edge leaves behind, and the ramp itself is painted from
+    // `Theme.shadow-outer-bands` -- this file draws it but does not compute it, because the
+    // renderer this project ships draws no element opacity.
     out property <float> shadow-band-opacity: 0.18;
-    out property <float> shadow-inner-opacity: 1.0;
+    // How many bands L2 is drawn as, and the share of `shadow-inner`'s own alpha the band
+    // against the panel carries. Two 1dp rings rather than one 2dp ring: a single thick ring
+    // has a visible inner boundary where it meets the panel, which is the outline the layer
+    // is meant to avoid. The bands themselves are `Theme.shadow-inner-bands`.
+    out property <int> shadow-inner-band-count: 2;
+    out property <float> shadow-inner-opacity: 0.75;
 
     // -- truncation and paging (3.1.3) --------------------------------------
     out property <length> max-text-width: 120px;
@@ -104,15 +120,33 @@ export global CandidateMetrics {
     out property <length> font-size-small: 11px;
 }
 
-// The two material layers behind the panel (3.1.2): L3, the soft outer shadow that gives
-// the window its height, and L2, the tight inner shadow that keeps the acrylic surface
-// from blurring into whatever sits behind it.
+// The two material layers behind the panel (3.1.2): L3, the soft outer shadow that gives the
+// window its height, and L2, the tight inner shadow that keeps the acrylic surface from
+// blurring into whatever sits behind it.
 //
-// Slint's `drop-shadow-*` is deliberately unused: the software renderer's
-// `draw_box_shadow` is a stub, so a `drop-shadow-blur` rectangle would draw no shadow at
-// all under the renderer this project ships. The layers are built from concentric
-// rounded borders instead, and each band paints only its own ring, so the cost follows
-// the panel's perimeter rather than its area.
+// Slint's `drop-shadow-*` is deliberately unused: the software renderer's `draw_box_shadow`
+// is a stub, so a `drop-shadow-blur` rectangle would draw no shadow at all under the renderer
+// this project ships. The layers are built from concentric rounded rings instead, and each
+// ring paints only its own band, so the cost follows the panel's perimeter rather than its
+// area.
+//
+// Two properties make the rings read as a blur rather than as a halo, and both are load
+// bearing:
+//
+//  * the rings tile outward without overlapping, so the composite alpha at any point is
+//    exactly the alpha of the single ring covering it. The falloff therefore has to live in
+//    the per-band colour; stacking more bands at one alpha produces a flat wash with a hard
+//    outer edge, which is what an earlier revision of this file did.
+//  * the alpha follows the square of the band's position, which is the tail a Gaussian blur
+//    of a straight edge leaves behind. A linear ramp reads visibly too bright in the middle
+//    of the falloff.
+//
+// The ramp is carried by `Theme.shadow-outer-bands` and `Theme.shadow-inner-bands` rather
+// than by an `opacity` here. An element opacity is not merely ignored by the renderer this
+// project ships: a *bound* one takes the subtree down a compositing path that draws nothing
+// at all, so a ramp written as an opacity would not draw. The two tables are the per-band
+// colours themselves, in the order these loops walk them, and `src/theme/slint_palette.rs`
+// and `src/theme/tests.rs` hold them to the falloff and the peak that 3.1.2 describes.
 export component CandidateShadow inherits Rectangle {
     in property <length> container-width: CandidateMetrics.min-width;
     in property <length> container-height: 0px;
@@ -120,11 +154,19 @@ export component CandidateShadow inherits Rectangle {
 
     background: transparent;
 
+    // The width of one outer band: the 28dp blur divided into as many steps as the layer
+    // counts. The rings are only gapless while this divides the blur exactly.
     private property <length> band-step:
         CandidateMetrics.shadow-blur / CandidateMetrics.shadow-band-count;
+    // The width of one inner band, which is the 2dp spread over two 1dp bands.
+    private property <length> inner-band-step:
+        CandidateMetrics.shadow-inner-spread / CandidateMetrics.shadow-inner-band-count;
 
-    // L3: the bands tile the blur radius, widest and faintest first, so the falloff
-    // accumulates towards the panel edge.
+    // L3: the soft layer. Band 0 is the outermost and faintest; the last band hugs the panel
+    // and carries the peak alpha, so the ramp accumulates towards the edge. Each band is a
+    // ring `band-step` wide, inflated so that its outer edge sits at the band's own distance
+    // from the panel -- which is what makes the rings tile the blur exactly instead of
+    // overlapping into a flat wash.
     for band in CandidateMetrics.shadow-band-count: Rectangle {
         private property <length> spread:
             (CandidateMetrics.shadow-band-count - band) * root.band-step;
@@ -135,21 +177,23 @@ export component CandidateShadow inherits Rectangle {
         border-radius: root.container-radius + self.spread;
         background: transparent;
         border-width: root.band-step;
-        border-color: Theme.shadow-outer;
-        opacity: CandidateMetrics.shadow-band-opacity;
+        border-color: Theme.shadow-outer-bands[band];
     }
 
-    // L2: the hard edge, declared last so it stays closest to the panel.
-    Rectangle {
-        x: 0px - CandidateMetrics.shadow-inner-spread;
-        y: CandidateMetrics.shadow-inner-offset-y - CandidateMetrics.shadow-inner-spread;
-        width: root.container-width + 2 * CandidateMetrics.shadow-inner-spread;
-        height: root.container-height + 2 * CandidateMetrics.shadow-inner-spread;
-        border-radius: root.container-radius + CandidateMetrics.shadow-inner-spread;
+    // L2: the hard edge, declared last so it stays closest to the panel. Two 1dp rings rather
+    // than one 2dp ring: a single thick ring has a visible inner boundary where it meets the
+    // panel, which is the outline this layer exists to avoid.
+    for band in CandidateMetrics.shadow-inner-band-count: Rectangle {
+        private property <length> spread:
+            (CandidateMetrics.shadow-inner-band-count - band) * root.inner-band-step;
+        x: 0px - self.spread;
+        y: CandidateMetrics.shadow-inner-offset-y - self.spread;
+        width: root.container-width + 2 * self.spread;
+        height: root.container-height + 2 * self.spread;
+        border-radius: root.container-radius + self.spread;
         background: transparent;
-        border-width: CandidateMetrics.shadow-inner-spread;
-        border-color: Theme.shadow-inner;
-        opacity: CandidateMetrics.shadow-inner-opacity;
+        border-width: root.inner-band-step;
+        border-color: Theme.shadow-inner-bands[band];
     }
 }
 
@@ -203,14 +247,20 @@ export component StatusCluster inherits HorizontalLayout {
 
     // Read-only lock, drawn only in the degraded mode of 3.6. It takes the annotation token
     // because a read-only store is information rather than an alert.
+    //
+    // Gated by its colour rather than by an `opacity`, which is the rule this file follows
+    // throughout: on the renderer this project ships a *bound* opacity does not merely go
+    // ignored, it takes the subtree down a compositing path that draws nothing at all, so a
+    // marker "faded out" that way is a marker that would never appear when it is on either.
+    // The disc keeps its slot in the cluster whichever way the flag reads, which is what
+    // holds the four markers at one width.
     Rectangle {
         width: CandidateMetrics.header-icon-size;
         height: CandidateMetrics.header-icon-size;
-        border-radius: 3px;
+        border-radius: 4px;
         border-width: 1px;
-        border-color: Theme.text-annotation;
+        border-color: root.readonly ? Theme.text-annotation : transparent;
         background: transparent;
-        opacity: root.readonly ? 1.0 : 0.0;
     }
 }
 
@@ -228,7 +278,21 @@ export component Header inherits Rectangle {
     height: root.strip-height;
 
     HorizontalLayout {
-        padding-left: CandidateMetrics.header-padding-h;
+        // The strip's text starts half a pixel lower than the layout would place it, which is
+        // the window's optical nudge (`Theme.optical-nudge`) and the same shift the candidate
+        // cells take: the two lines then share one optical baseline. The shift belongs to the
+        // layout and not to a text element, because Slint gives an element *inside* a layout
+        // its position from the layout and rejects a binding of its own.
+        y: Theme.optical-nudge;
+        // The preedit starts on the candidate grid's left axis: 3.1.1's sketch draws
+        // `ni'hao'a` and the first cell's edge in one column, and the strip spans the panel's
+        // full width, so the strip's own left inset is the padding the grid insets its cells
+        // by. `header-padding-h` is not that number -- 3.1.1 gives the strip 10dp and the
+        // candidate area 8dp, and taking the strip's own padding here would put the first
+        // glyph 2dp to the right of the first cell's edge.
+        padding-left: CandidateMetrics.container-padding;
+        // The right side keeps the strip's own 10dp: the mode label is the last thing on the
+        // line and must not sit against the container edge.
         padding-right: CandidateMetrics.header-padding-h;
         spacing: CandidateMetrics.header-text-gap;
 
@@ -237,6 +301,7 @@ export component Header inherits Rectangle {
         // that is already truncated on the left; this binding is the last-resort guard.
         Text {
             text: root.preedit-text;
+            font-family: Theme.font-family;
             font-size: CandidateMetrics.font-size-header;
             font-weight: 500;
             color: Theme.text-primary;
@@ -248,6 +313,7 @@ export component Header inherits Rectangle {
 
         Text {
             text: root.mode-label;
+            font-family: Theme.font-family;
             font-size: CandidateMetrics.font-size-small;
             font-weight: 500;
             color: Theme.text-secondary;
@@ -293,6 +359,83 @@ export component CandidateWindow inherits Window {
     out property <length> window-width: root.container-width + 2 * CandidateMetrics.shadow-margin;
     out property <length> window-height: root.container-height + 2 * CandidateMetrics.shadow-margin;
 
+    // -- motion (3.3) -------------------------------------------------------
+    // Every motion property below is written once per frame by `src/adapter.rs` from the
+    // spring integrator in `src/spring/`, which is fed the delta the UI thread measured.
+    // Slint's own property-transition feature is deliberately unused in this file: its
+    // internal clock would keep a timer alive while the window is at rest, which is exactly
+    // what the idle CPU budget forbids, and it would make a rendered frame depend on how
+    // many frames came before it, which the visual regression screenshots cannot tolerate.
+    // Keeping the word out of the source entirely is also what makes a grep for it a
+    // meaningful check: it can only ever match a declaration, never a comment about one.
+    //
+    // The four highlight values are relative to the candidate grid's own origin -- the space
+    // the springs integrate in -- and the window adds the container padding and the header
+    // block when it draws the box, which is the only place the two spaces meet.
+    in property <length> highlight-x: 0px;
+    in property <length> highlight-y: 0px;
+    in property <length> highlight-w: 0px;
+    in property <length> highlight-h: 0px;
+    // Whether the engine has a candidate highlighted. This gates the box with `visible`
+    // rather than with an opacity of zero, because the software renderer this project ships
+    // ignores element opacity: a box faded to 0.0 would still be drawn.
+    in property <bool> highlight-visible: false;
+
+    // 3.3.2's appear and disappear motion, in `0.0..=1.0` and `0.96..=1.0`. The scale is the
+    // half of it the user sees, because element opacity does not reach this renderer's
+    // output -- a run of text at 0.1 and one at 1.0 measure as the same pixels. The property
+    // is wired anyway: it is what the design names, and it lands the day the renderer
+    // honours it.
+    in property <float> window-opacity: 1.0;
+    in property <float> window-scale: 1.0;
+    // Which edge the appear motion is anchored on. 3.3.2 anchors it on the cursor side: a
+    // panel placed below the caret grows downward from its top edge, one placed above grows
+    // upward from its bottom edge. Growing from the centre instead would slide the panel away
+    // from the caret while it appeared. Written from the placement the geometry pass chose,
+    // which is not always the side the anchor asked for.
+    in property <bool> grows-upward: false;
+
+    // 3.3.2's page-content slide: the candidate grid enters displaced by up to 12dp and
+    // springs home. The header does not move -- the preedit did not change page.
+    in property <length> page-offset-dp: 0px;
+
+    // The panel as the appear motion scales it, in container coordinates. Slint 1.13 has no
+    // scale transform -- `Rectangle` carries no transform property at all -- so the scale is
+    // drawn as geometry: the panel's own rectangle shrinks about the cursor-side edge and its
+    // content is clipped to it.
+    private property <length> panel-width: root.container-width * root.window-scale;
+    private property <length> panel-height: root.container-height * root.window-scale;
+    private property <length> panel-x: (root.container-width - root.panel-width) / 2;
+    private property <length> panel-y: root.grows-upward
+        ? root.container-height - root.panel-height
+        : 0px;
+
+    // The candidate cell's corner radius, and the highlight box's: one declaration for the
+    // two, because a box rounder than the cell it covers reads as a border drawn in the
+    // wrong place.
+    //
+    // 3.1.1 states the derivation and not only the number: the grid sits `container-padding`
+    // inside the container, so the radius that reads as the same curve is the container's
+    // minus that padding, which is the 4dp `CandidateMetrics.cell-radius` declares for the
+    // 12dp default. Written as the difference, the relation survives `corner_radius_dp`
+    // moving the container radius (3.1.1 allows 8..20); the table's value is the floor, so a
+    // container shallower than its own padding still draws the rounded cell the table fixes
+    // rather than a square one.
+    private property <length> cell-radius: max(CandidateMetrics.cell-radius,
+        root.container-radius - CandidateMetrics.container-padding);
+
+    // Height of the candidate area: what the panel leaves below the header and its rule.
+    //
+    // A subtraction rather than the grid's own arithmetic, and that is the point. The rows,
+    // the gaps between them and the padding around them belong to `src/layout.rs`, whose
+    // `container_size` is what sized this panel; restating them here would be a second
+    // definition of the one quantity the two sides have to agree on exactly, and the copy
+    // that drifted would be the one that draws. Subtracting makes the panel's contents fill
+    // it by construction instead: a frame whose rows and panel height disagreed would leave
+    // a short candidate area rather than cells drawn past the panel.
+    private property <length> grid-height: max(0px,
+        root.container-height - root.header-height - CandidateMetrics.separator-height);
+
     // An overlay panel: no decorations, and a transparent surface so the shadow reserve
     // really is transparent (3.1.1) and can stay out of the input region.
     no-frame: true;
@@ -300,25 +443,36 @@ export component CandidateWindow inherits Window {
     width: root.window-width;
     height: root.window-height;
 
+    // The material behind the panel. It carries the same scaled rectangle as the panel, so
+    // the shadow shrinks with the panel rather than hanging in the reserve on its own.
     CandidateShadow {
-        x: CandidateMetrics.shadow-margin;
-        y: CandidateMetrics.shadow-margin;
-        width: root.container-width;
-        height: root.container-height;
+        x: CandidateMetrics.shadow-margin + root.panel-x;
+        y: CandidateMetrics.shadow-margin + root.panel-y;
+        width: root.panel-width;
+        height: root.panel-height;
         container-radius: root.container-radius;
     }
 
     // L0 base and L4 stroke: the stroke is drawn inside the border, so it never changes
     // the container's outer size.
     Rectangle {
-        x: CandidateMetrics.shadow-margin;
-        y: CandidateMetrics.shadow-margin;
-        width: root.container-width;
-        height: root.container-height;
+        x: CandidateMetrics.shadow-margin + root.panel-x;
+        y: CandidateMetrics.shadow-margin + root.panel-y;
+        width: root.panel-width;
+        height: root.panel-height;
         border-radius: root.container-radius;
         background: Theme.surface-fill;
         border-width: CandidateMetrics.stroke-width;
         border-color: Theme.surface-stroke;
+        // The appear motion shrinks the panel and there is no transform to shrink its content
+        // with, so the content keeps its own size and is cut at the panel's edge. Clipping is
+        // what keeps a shrunk panel from drawing its cells out into the transparent reserve.
+        clip: true;
+        // No `opacity` binding here, deliberately. The software renderer this project ships
+        // does not merely ignore it: a *bound* opacity takes the subtree down a compositing
+        // path that draws nothing at all, so the window came out fully transparent. The
+        // appear and disappear motion is the geometry above -- the panel growing out of the
+        // caret -- which is what a fade would have accompanied anyway.
 
         VerticalLayout {
             spacing: 0;
@@ -334,26 +488,63 @@ export component CandidateWindow inherits Window {
                 background: Theme.separator;
             }
 
-            // Every geometry constant the grid draws with is bound here, from the global
-            // that declares it: the grid itself cannot import this file.
-            CandidateGrid {
-                items: root.items;
-                item-count: root.item-count;
-                max-per-row: root.max-per-row;
-                rows: root.grid-rows;
-                show-annotation: root.show-annotation;
-                cell-width: root.cell-width;
-                cell-height: CandidateMetrics.cell-height;
-                cell-radius: CandidateMetrics.cell-radius;
-                cell-padding-h: CandidateMetrics.cell-padding-h;
-                cell-padding-v: CandidateMetrics.cell-padding-v;
-                number-gap: CandidateMetrics.number-gap;
-                annotation-gap: CandidateMetrics.annotation-gap;
-                grid-gap: CandidateMetrics.grid-gap;
-                text-font-size: CandidateMetrics.font-size-cell;
-                small-font-size: CandidateMetrics.font-size-small;
-                area-padding: CandidateMetrics.container-padding;
+            // The candidate area slides as one during a page turn. The offset cannot be
+            // written on `CandidateGrid` itself: a child of a layout takes its position from
+            // the layout and rejects a binding of its own, which is why the grid sits in a
+            // plain rectangle that carries the offset and owns the clip. The rectangle is
+            // exactly as tall as the grid, so nothing below it moves.
+            Rectangle {
+                background: transparent;
+                clip: true;
+                height: root.grid-height;
+
+                // Every geometry constant the grid draws with is bound here, from the global
+                // that declares it: the grid itself cannot import this file.
+                CandidateGrid {
+                    x: root.page-offset-dp;
+                    items: root.items;
+                    item-count: root.item-count;
+                    max-per-row: root.max-per-row;
+                    rows: root.grid-rows;
+                    show-annotation: root.show-annotation;
+                    cell-width: root.cell-width;
+                    cell-height: CandidateMetrics.cell-height;
+                    cell-radius: root.cell-radius;
+                    cell-padding-h: CandidateMetrics.cell-padding-h;
+                    cell-padding-v: CandidateMetrics.cell-padding-v;
+                    number-gap: CandidateMetrics.number-gap;
+                    annotation-gap: CandidateMetrics.annotation-gap;
+                    grid-gap: CandidateMetrics.grid-gap;
+                    text-font-size: CandidateMetrics.font-size-cell;
+                    small-font-size: CandidateMetrics.font-size-small;
+                    area-padding: CandidateMetrics.container-padding;
+                }
             }
+        }
+
+        // The highlight box (3.3.1): four springs move x, y, w and h independently, so a
+        // cross-row move flies and reshapes instead of sliding, and mid-flight the box
+        // overlaps two cells -- which is what the motion is meant to look like.
+        //
+        // Declared after the layout so it paints on top: a cell that painted over it would
+        // clip the box the moment it left its own cell. Its coordinates are the grid's, so
+        // the container padding and the header block are added here.
+        //
+        // The box is gated with `visible` and not with an opacity of zero. On the software
+        // renderer this project ships a *bound* opacity takes the subtree down a compositing
+        // path that draws nothing at all, so a box "faded out" that way would be a box that
+        // never appeared; the same reason the window's own opacity is written but unbound.
+        Rectangle {
+            x: CandidateMetrics.container-padding + root.highlight-x;
+            y: root.header-height + CandidateMetrics.separator-height
+                + CandidateMetrics.container-padding + root.highlight-y;
+            width: root.highlight-w;
+            height: root.highlight-h;
+            border-radius: root.cell-radius;
+            background: Theme.state-selected-bg;
+            border-width: 1px;
+            border-color: Theme.state-selected-stroke;
+            visible: root.highlight-visible;
         }
     }
 }

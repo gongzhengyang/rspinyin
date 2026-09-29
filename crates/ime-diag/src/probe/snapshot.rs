@@ -75,6 +75,8 @@ pub struct Metrics {
     pub wakeup: HistSnapshot,
     /// One `on_key_event`.
     pub event_loop_key: HistSnapshot,
+    /// One command handed to the UI thread, from the host thread's side.
+    pub post_ui: HistSnapshot,
 }
 
 /// One probe's numbers at one moment.

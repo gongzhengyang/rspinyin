@@ -472,6 +472,17 @@ mod tests {
         assert_eq!(first.strpool, second.strpool);
         assert_eq!(first.unigram, second.unigram);
         assert_eq!(first.wordlist, second.wordlist);
+        // The container is what a build ships and what a release records the digest of, so
+        // the determinism claim is about its bytes rather than about the payloads alone:
+        // the header, the section table and the alignment padding are part of what two
+        // runs over the same inputs have to agree on.
+        let image = image_of(&first);
+        assert_eq!(
+            image,
+            image_of(&second),
+            "two runs over one input must produce one container"
+        );
+        assert_eq!(&image[0..4], b"RSPD", "the image is a container");
     }
 
     #[test]
@@ -552,6 +563,179 @@ mod tests {
         ];
         assert_eq!(expand_keys(&both, 4), vec!["a'c", "a'd", "b'c", "b'd"]);
         assert_eq!(expand_keys(&both, 2), vec!["a'c", "a'd"]);
+    }
+
+    /// The readings of the ten characters the expansion fixture gives two readings to.
+    ///
+    /// Every one is a syllable of the real table, which the test asserts: an invented
+    /// reading would make the fixture measure an expansion no source could produce.
+    const POLYPHONE_READINGS: [(&str, &str); 10] = [
+        ("xing", "hang"),
+        ("chang", "zhang"),
+        ("zhong", "chong"),
+        ("huan", "hai"),
+        ("dou", "du"),
+        ("le", "yue"),
+        ("jue", "jiao"),
+        ("shuo", "shui"),
+        ("shu", "cu"),
+        ("qiang", "jiang"),
+    ];
+
+    /// The reading of each of the ten characters that only ever start an unexpanded word.
+    const MONOPHONE_FIRST: [&str; 10] = [
+        "tian", "guo", "xin", "hao", "yin", "shan", "feng", "yun", "mao", "lin",
+    ];
+
+    /// The reading of each character that ends an expanded word.
+    const SECOND_IN_BAND: [&str; 2] = ["ban", "cai"];
+
+    /// The reading of each character that ends an unexpanded word.
+    const SECOND_OUT_OF_BAND: [&str; 8] = ["da", "er", "fa", "ge", "he", "ji", "ke", "la"];
+
+    /// Returns the `offset`-th character the expansion fixture uses.
+    ///
+    /// The characters are drawn from the CJK unified block one per fixture slot, so every
+    /// character the fixture names is distinct and no two of its words can share one by
+    /// accident.
+    fn fixture_character(offset: usize) -> char {
+        let codepoint = 0x4E00 + u32::try_from(offset).expect("the fixture is small");
+        char::from_u32(codepoint).expect("a CJK code point")
+    }
+
+    /// The fixture the two expansion tests share.
+    ///
+    /// A hundred two-character words with a hundred distinct baseline keys, of which the
+    /// twenty weighted into the band each carry a first character with two readings, so
+    /// the expansion has a second key to generate, and the eighty weighted below it carry
+    /// one reading each. That shape is what turns the key growth into a number rather than
+    /// an accident -- twenty extra keys over a hundred baseline keys is twenty percent --
+    /// and it is the shape the release build's word list has, in miniature.
+    ///
+    /// Returns the words, and for each in-band word its text and both of its keys: the
+    /// baseline first, then the reading the expansion generates from it.
+    fn expansion_fixture() -> (Vec<Word>, Vec<(String, String, String)>) {
+        let mut l1: BTreeMap<char, Vec<String>> = BTreeMap::new();
+        let polyphone: Vec<char> = POLYPHONE_READINGS
+            .iter()
+            .enumerate()
+            .map(|(index, (heavy, light))| {
+                let character = fixture_character(index);
+                l1.insert(character, vec![heavy.to_string(), light.to_string()]);
+                character
+            })
+            .collect();
+        let monophone: Vec<char> = MONOPHONE_FIRST
+            .iter()
+            .enumerate()
+            .map(|(index, reading)| {
+                let character = fixture_character(POLYPHONE_READINGS.len() + index);
+                l1.insert(character, vec![reading.to_string()]);
+                character
+            })
+            .collect();
+        let in_band_tail: Vec<char> = SECOND_IN_BAND
+            .iter()
+            .enumerate()
+            .map(|(index, reading)| {
+                let offset = POLYPHONE_READINGS.len() + MONOPHONE_FIRST.len() + index;
+                let character = fixture_character(offset);
+                l1.insert(character, vec![reading.to_string()]);
+                character
+            })
+            .collect();
+        let out_of_band_tail: Vec<char> = SECOND_OUT_OF_BAND
+            .iter()
+            .enumerate()
+            .map(|(index, reading)| {
+                let offset =
+                    POLYPHONE_READINGS.len() + MONOPHONE_FIRST.len() + SECOND_IN_BAND.len() + index;
+                let character = fixture_character(offset);
+                l1.insert(character, vec![reading.to_string()]);
+                character
+            })
+            .collect();
+
+        let mut words = Vec::new();
+        let mut in_band = Vec::new();
+        for (index, first) in polyphone.iter().enumerate() {
+            let (heavy, light) = POLYPHONE_READINGS[index];
+            for (slot, second) in in_band_tail.iter().enumerate() {
+                let text = format!("{first}{second}");
+                let key = format!("{heavy}'{}", SECOND_IN_BAND[slot]);
+                let alternate = format!("{light}'{}", SECOND_IN_BAND[slot]);
+                words.push(word(&text, &key, 5_000, &l1));
+                in_band.push((text, key, alternate));
+            }
+        }
+        for (index, first) in monophone.iter().enumerate() {
+            for (slot, second) in out_of_band_tail.iter().enumerate() {
+                let text = format!("{first}{second}");
+                let key = format!("{}'{}", MONOPHONE_FIRST[index], SECOND_OUT_OF_BAND[slot]);
+                words.push(word(&text, &key, 100, &l1));
+            }
+        }
+        (words, in_band)
+    }
+
+    /// The band the expansion fixture is measured against: the twenty words weighted 5000
+    /// are inside it, the eighty weighted 100 are not.
+    fn expansion_band() -> Band {
+        Band {
+            threshold: 1_000,
+            requested: 50_000,
+        }
+    }
+
+    #[test]
+    fn test_compile_expands_every_polyphone_word_of_the_band() {
+        let (words, in_band) = expansion_fixture();
+        assert_eq!(words.len(), 100);
+        assert_eq!(in_band.len(), 20);
+        for (text, key, alternate) in &in_band {
+            assert_ne!(key, alternate, "{text} must have a second reading");
+            for syllable in key.split('\'').chain(alternate.split('\'')) {
+                assert!(
+                    ime_core::segment::lookup(syllable).is_some(),
+                    "{syllable} is not a syllable of the table"
+                );
+            }
+        }
+
+        let compiled = compile(&words, expansion_band(), 4, &[]).expect("compiling");
+        assert_eq!(compiled.stats.words, 100);
+        // The twenty heavy words are the band, every one of them carries a character with a
+        // second reading, and every one of them therefore generates a second key.
+        assert_eq!(compiled.stats.band_words, 20);
+        assert_eq!(compiled.stats.polyphone_risk, 20);
+        assert_eq!(compiled.stats.expanded_words, 20);
+        assert_eq!(compiled.stats.expanded_keys, 20);
+
+        let reader = Reader::parse(image_of(&compiled), Verify::Full).expect("parsing");
+        for (text, key, alternate) in &in_band {
+            for candidate in [key.as_str(), alternate.as_str()] {
+                let served = reader.key_words(candidate).expect("lookup");
+                assert_eq!(served, vec![text.as_str()], "{candidate} serves {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_compile_keeps_the_key_growth_inside_the_target_band() {
+        let (words, _) = expansion_fixture();
+        let compiled = compile(&words, expansion_band(), 4, &[]).expect("compiling");
+        let baseline = compiled.stats.baseline_keys();
+        assert_eq!(baseline, 100, "one baseline key per word");
+        // Twenty words gained one key each, over a hundred baseline keys.
+        assert_eq!(compiled.stats.keys, 120);
+        // The band is the one ADR-0000 measured the expansion at: a growth below it means
+        // the expansion is not reaching the words people type, and the ceiling is what
+        // `--max-key-growth` refuses a build for.
+        let growth = crate::dictc::growth_percent(compiled.stats.keys, baseline);
+        assert!(
+            (15.0..=30.0).contains(&growth),
+            "the expansion grew the key count by {growth:.1}%, outside the 15%..30% band"
+        );
     }
 
     #[test]

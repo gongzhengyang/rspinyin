@@ -196,6 +196,11 @@ pub struct BigramRow {
 /// scenario is reported as a divergence rather than ignored, because a step that asserted
 /// nothing would look like a passing one.
 ///
+/// The machine itself is reachable -- `ime_core::state` exports it -- so what keeps these
+/// actions out is the expectation model, not a missing interface: no variant of
+/// [`Expectation`] describes a commit, a selection or a page flip, so a step that drove
+/// one of them would have nothing to assert against.
+///
 /// # Panics
 ///
 /// Never panics.

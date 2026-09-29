@@ -84,9 +84,9 @@ impl Session {
             // Chinese / English, full-width, punctuation and script bits, and writes
             // them into the frame context itself.
             //
-            // The three user-word actions have no highlight to act on here for the
-            // same reason `CommitHighlighted` does not: there is no candidate list
-            // and no session to change.
+            // The user-word actions have no highlight to act on here for the same reason
+            // `CommitHighlighted` does not: there is no candidate list and no session to
+            // change.
             KeyAction::Backspace
             | KeyAction::CommitHighlighted
             | KeyAction::CommitRaw
@@ -139,14 +139,14 @@ impl Session {
                 // revision so the window knows the older one is stale.
                 self.emit_frame(ctx.cfg, ctx);
             }
-            // The pin set and a writable user store do not exist yet, and reporting
-            // that through `dict/unsupported` is what the contract reserves that code
-            // for; the cards that build those subsystems replace these arms. A silent
-            // no-op here would look to the user like a key that does nothing, with no
-            // diagnostic to explain it.
-            KeyAction::ForgetHighlighted | KeyAction::PinHighlighted => {
+            // The pin set does not exist yet, and reporting that through
+            // `dict/unsupported` is what the contract reserves that code for; the work that
+            // adds the pin set replaces this arm. A silent no-op here would look to the
+            // user like a key that does nothing, with no diagnostic to explain it.
+            KeyAction::PinHighlighted => {
                 ctx.push(Effect::Diagnose(ImeError::Unsupported));
             }
+            KeyAction::ForgetHighlighted => self.forget_highlighted(ctx),
             KeyAction::AddPhrase => self.add_phrase(ctx),
             // The host decides what `Ignore` means, and the session agrees: nothing.
             KeyAction::Ignore => {}
@@ -241,6 +241,31 @@ impl Session {
         self.set_pending(None);
         self.state = SessionState::Committing;
         ctx.push(Effect::Commit(text));
+    }
+
+    /// Drops the highlighted word from the user's learned frequencies.
+    ///
+    /// The word leaves the candidate list here, and the store is told to forget it through an
+    /// effect: the session touches no file (0.4 rule 4), and the store's write path belongs to
+    /// the layer that owns it. The composition is left exactly as it is -- the input the user
+    /// typed is still what they typed, and the session stays [`SessionState::Composing`] -- so
+    /// only the frame is re-sent, under a new revision, which is what takes the word off the
+    /// screen.
+    ///
+    /// A highlight on a candidate the store never learned is still worth asking about: the
+    /// store answers whether anything was there, and the host reports `dict/user-word-not-found`
+    /// from that answer. Nothing here can tell, because the session does not read the user
+    /// database directly.
+    fn forget_highlighted(&mut self, ctx: &mut Ctx<'_>) {
+        let Some(candidate) = self.highlighted_candidate() else {
+            return;
+        };
+        let key = String::from(candidate.text.as_str());
+        if self.drop_candidate_at(self.paging.highlight).is_none() {
+            return;
+        }
+        ctx.push(Effect::ForgetUserWord { key });
+        self.emit_frame(ctx.cfg, ctx);
     }
 
     /// Saves the highlighted candidate as a phrase the user defined.
@@ -511,6 +536,118 @@ mod tests {
             .highlighted_candidate()
             .map(|held| held.text.clone())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn test_forget_highlighted_preserves_highlight() {
+        let (mut session, fixture) = composing("ni");
+        let cfg = SessionConfig::default();
+        // Off the first candidate, so that "the highlight followed the words" and "the
+        // highlight was reset" are different outcomes rather than the same one.
+        session.handle_key(KeyAction::MoveHighlight(2), &cfg, &fixture.env());
+        assert_eq!(
+            session.paging.highlight, 2,
+            "the fixture pages enough to move"
+        );
+        let dropped = highlighted(&session);
+        let next = session
+            .decoded()
+            .candidates
+            .get(3)
+            .map(|held| held.text.clone())
+            .expect("a candidate behind the highlighted one");
+
+        let effects = session.handle_key(KeyAction::ForgetHighlighted, &cfg, &fixture.env());
+
+        assert_eq!(
+            session.state,
+            SessionState::Composing,
+            "the composition survives the removal"
+        );
+        assert_eq!(session.buf.raw(), "ni", "and so does the input");
+        assert_eq!(
+            effects.len(),
+            2,
+            "the store is told and the window is re-sent"
+        );
+        match effects.first() {
+            Some(Effect::ForgetUserWord { key }) => {
+                assert_eq!(key.as_str(), dropped.as_str());
+            }
+            other => panic!("expected a forget effect first, got {other:?}"),
+        }
+        assert!(
+            matches!(effects.last(), Some(Effect::SendFrame(_))),
+            "the window draws the list without the word"
+        );
+        assert!(
+            !session
+                .decoded()
+                .candidates
+                .iter()
+                .any(|held| held.text == dropped),
+            "the word is gone from the candidate list"
+        );
+        assert_eq!(
+            session.paging.highlight, 2,
+            "the highlight stayed where the user was looking"
+        );
+        assert_eq!(
+            highlighted(&session),
+            next,
+            "on the word that took the removed one's place"
+        );
+        for (position, candidate) in session.decoded().candidates.iter().enumerate() {
+            assert_eq!(
+                usize::from(candidate.index),
+                position + 1,
+                "the display numbers still match the positions"
+            );
+        }
+    }
+
+    #[test]
+    fn test_forget_highlighted_at_the_end_keeps_a_neighbour() {
+        let (mut session, fixture) = composing("ni");
+        let cfg = SessionConfig::default();
+        let last = session.candidate_count().saturating_sub(1);
+        assert!(last > 1, "the fixture offers a list to stand at the end of");
+        session.paging.highlight = last;
+        let before = session
+            .decoded()
+            .candidates
+            .get(usize::from(last) - 1)
+            .map(|held| held.text.clone())
+            .expect("a candidate in front of the last one");
+
+        let effects = session.handle_key(KeyAction::ForgetHighlighted, &cfg, &fixture.env());
+
+        assert!(matches!(
+            effects.first(),
+            Some(Effect::ForgetUserWord { .. })
+        ));
+        assert_eq!(
+            highlighted(&session),
+            before,
+            "the highlight falls back onto the word in front of the one removed"
+        );
+        assert!(
+            session.paging.highlight > 0,
+            "and not back to the top of the list"
+        );
+    }
+
+    #[test]
+    fn test_forget_highlighted_arm_does_nothing_without_a_composition() {
+        let fixture = Fixture::new();
+        let mut session = Session::new();
+        let effects = session.handle_key(
+            KeyAction::ForgetHighlighted,
+            &SessionConfig::default(),
+            &fixture.env(),
+        );
+        assert!(effects.is_empty(), "there is no highlight to forget");
+        assert_eq!(session.state, SessionState::Idle);
     }
 
     #[test]

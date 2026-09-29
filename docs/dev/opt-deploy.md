@@ -734,7 +734,7 @@ ci-host: ci check-host
   - 关键路径：**CP: 是**
   - 并行通道：Track A（编译与产物瘦身）
   - 代码落地锚点 (Code Anchor)：`.cargo/config.toml`、`.github/workflows/ci.yml`、`docs/dev/features.md:117`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：`aarch64-unknown-linux-gnu` 上的 `librspinyin.so` 能被构建出来并导出 `fcitx_addon_factory_instance`；`features.md:117` 的"aarch64 待评估"从"无入口"变为"有结论"。
   - 目标产物格式：`aarch64` 的 `.so` 与 `.deb` / `.rpm` / `PKGBUILD`（后三者由 `BUILD-P1.03.05` 消费本卡的产物）。
@@ -745,6 +745,18 @@ ci-host: ci check-host
   新建 `.cargo/config.toml`（**仅保留交叉编译所需的 runner 与 linker 声明；硬化与可复现设置由 `BUILD-P0.01.03` 追加**）：
 
 ```toml
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`.github/workflows/ci.yml` 的 `cross-arch` 作业（原生 arm64 runner）、`justfile` 的 `check-arm64` / `cross-arm64` 两个配方、`packaging/cross/aarch64-unknown-linux-gnu.toml`（交叉编译配置片段）。
+  - **验证命令与结果**：`just ci` 退出 0（fmt、clippy `-D warnings`、nextest 1992 个用例、doctest、10 个审计脚本全部通过）。**aarch64 构建本身在本机不可验证**——没有交叉工具链、没有 arm64 的 Fcitx5 开发包、没有 arm64 机器；作业与配方已落地但**未执行**。
+  - **一条必须记录的修正**：卡片的 `[target.aarch64-unknown-linux-gnu]` 若写在仓库级 `.cargo/config.toml`，会让**原生 aarch64 构建直接失败**——Cargo 的 `target-applies-to-host` 默认为 `true`，`--target` 不传时 `linker` 对宿主同样生效，而 arm64 机器既没有也不需要交叉链接器。因此这两行搬进 `packaging/cross/`，由调用方用 `--config` 显式启用，原生路径与交叉路径就此分离。
+  - **门禁内容**：`check-arm64` 先断言 `uname -m = aarch64`（runner 被换标签时响亮失败，而不是用 x86_64 二进制冒充），再对两个 cdylib 断言 ELF 机器为 `AArch64`、`.dynsym` 导出 `fcitx_addon_factory_instance`（rustc 的 version script 只导出 Rust 标记的符号，C++ 工厂会无声消失），最后跑 `just check-host` 全量。
+  - **已知限制**：
+    1. **本机不可验证**：aarch64 构建、qemu 路径、CI 作业本身。
+    2. `ubuntu-24.04-arm` runner 的可用性无法在本机确认；若仓库计划不支持，作业会**排队而不是失败**。
+    3. **arm64 上真实运行 fcitx5 加载 addon**（`ASM-11` 语境）既不在本机也不在 CI 覆盖范围内——runner 没有 display server 也没有合成器。
+    4. 作业的 `timeout-minutes: 45` 与卡片给的 30 不一致：`check-arm64` 先做 release（LTO + 单 codegen unit）再做测试 profile，比 x86_64 的 `host-abi` 多一整轮构建。
+  - **环境**：Rust 1.98.0、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
 # Cross-compilation configuration.
 #
 # Only the target-side plumbing lives here. Linker hardening and reproducible-build
@@ -1265,7 +1277,7 @@ pub use ime_ui as ui;
   - 关键路径：CP: 否
   - 并行通道：Track B（签名·打包·描述符）
   - 代码落地锚点 (Code Anchor)：`assets/icon.svg`、`assets/icon-48.png`、`xtask/src/install.rs:191-204`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：`fcitx5-configtool` 的输入法列表中显示 rspinyin 图标而非占位图；`assets/` 进入发布 tarball。
   - 目标产物格式：`assets/icon.svg`（可缩放）与 `assets/icon-48.png`（48×48 位图）。
@@ -1291,6 +1303,16 @@ pub use ime_ui as ui;
   - [ ] `assets/icon.svg` 与 `assets/icon-48.png` 存在且被 `xtask install` 安装到正确目录；
   - [ ] `fcitx5-configtool` 中 rspinyin 显示图标（本机 X11 档可验证）；
   - [ ] `PAYLOADS` 中两项的 `optional` 已改为 `false`，且 `xtask/src/install/tests.rs` 相应更新。
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`assets/icon.svg` 与 `assets/icon-48.png`（48×48、深度 8、颜色类型 6、302 字节）；`xtask/src/install.rs` 与 `xtask/src/package.rs` 的载荷表；`xtask/src/install/tests.rs`（新增 6 个用例）与 `xtask/src/package/tests.rs`（新增 1 个）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **图标从此是不可缺的载荷**：安装侧与打包侧的两个 `optional` 都由 `true` 改为 `false`——原注释称「图标是美术资源、可以缺」，与卡片「`assets/` 进入发布 tarball」的核心指标相矛盾。`plan_install` 与 `plan_release` 现在走 `Err(error) => return Err(error)` 分支而非「跳过」分支，缺图标直接失败而不是记进 `Plan::absent`；改后只有两份许可证文本仍为可选。附带修正了两处已失实的文档注释与一个失实的测试名。
+  - **自包含与可读性由测试钉住**：`test_icon_asset_is_a_48_pixel_rgba_png`（PNG 签名 + IHDR 宽高 48×48 + 深度 8 + 颜色类型 6——圆角需要 alpha，故类型 6 是硬性要求）；`test_icon_source_is_self_contained_and_carries_no_text`（去注释后断言无 `href=`/`<image`/`<use`/`<script`/`<style`/`<text`，并含 `viewBox="0 0 48 48"`）；对比度断言（浅色面板 4.563:1、白标记对色板 4.563:1、对深色面板 `#1C1C1E` 17.04:1，均 ≥ 4.5:1）。
+  - **三处一致性此前无人守**：新增 `test_input_method_descriptor_names_the_icons_the_payload_table_installs` 读 `packaging/fcitx5/rspinyin-im.conf` 的 `Icon=` 值，断言 `{icon}.png` 与 `{icon}.svg` 都在载荷表里。
+  - **不需要多尺寸 PNG，也不需要 `.desktop`**：卡片只要求 `icon.svg`（可缩放）+ `icon-48.png`（48×48），没有 16/22/24/32/64/128/256 的清单；标准 `hicolor-icon-theme` 的 `index.theme` 本身就列有 `48x48` 与 `scalable` 两个目录，`QIcon::fromTheme` 用 SVG 覆盖其余尺寸。Fcitx5 的输入法发现不走 `.desktop`，图标由输入法描述符的 `Icon=` 经 hicolor 主题按名解析。
+  - **已知限制**：① **DoD 2「`fcitx5-configtool` 中显示图标」是实验室项**——真正目视确认需要 `sudo` 安装 + 真实 X11 会话；前置条件已静态闭环（描述符 `Icon=` 与两个安装文件名一致、安装器会刷新图标主题缓存、`DESTDIR` 暂存树下正确跳过）；② 对比度断言用的是 WCAG 公式重算，它验证的是「颜色对是否达标」而不是「人眼观感」；③ `rspinyin.conf` / `rspinyin-ui.conf`（addon 描述符）没有 `Icon=` 键，因此 `fcitx5-configtool` 的**插件列表**（非输入法列表）仍会显示占位图——卡片指标只要求输入法列表；④ `Payload::optional` 机制现在无任何使用者（全部为 `false`），按卡片要求保留字段而非删除，仅修正注释；⑤ `.github/workflows/ci.yml` 的 `size` 作业已由主 agent 加一条「归档里必须有这两个图标」的断言（双保险，打包表本身已保证）。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
 
 ---
 
@@ -1499,7 +1521,7 @@ fi
   - 关键路径：**CP: 是**
   - 并行通道：Track C（CI/CD·发布）
   - 代码落地锚点 (Code Anchor)：`.github/workflows/ci.yml`、`justfile`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：CI 执行的命令集与 `just ci` **逐条一致**；`check-licenses` 与 `check-versions` 进入门禁；新增 `check-advisories`。
   - 目标产物格式：无产物；交付物是一条唯一的门禁命令。
@@ -1510,6 +1532,17 @@ fi
   `justfile` 的 `ci` 配方在 `BUILD-P0.01.01` 中已更新为含 `check-advisories` 与 `check-self-tests`。本卡的 `ci.yml` 全文：
 
 ```yaml
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`justfile`（`check-host` 改为「先探测再决定」、新增 `audits` 配方、`ci: check audits check-host`、`ci-host` 改为强制要求）、`.github/workflows/ci.yml`（`audit` 作业删掉手写配方清单这一第二份定义，只保留 `just ci` 无法包含的 `check-advisories`；`size` 作业改调 `just check-size`）。
+  - **验证命令与结果**：`just ci` 退出 0（fmt、clippy `-D warnings`、nextest 1992 个用例、doctest、10 个审计脚本及其自检全部通过）。**管道退出码**：逐条核对了两个文件的每个 `run:` 与配方体——GitHub Actions 的 `run:` 默认是 `bash -e -o pipefail`，新增配方体首行均为 `set -euo pipefail`，全文件无 `| head` / `| tail`。
+  - **宿主 ABI 门禁**：`check-host` 用 `pkg-config --exists Fcitx5Core Fcitx5Utils Fcitx5Config`（与 `build.rs` 的 `REQUIRED_LIBS` 逐项对齐）在调 cargo **之前**探测；缺失时打印带 `platform/fcitx5/dev-missing` 码的 skip 报告并 exit 0，`RSPINYIN_REQUIRE_HOST_ABI=1` 把 skip 变成失败。跳过是**显式标记**的，不是静默的。
+  - **已知限制**：
+    1. **`AGENTS.md` §2 的 host-ABI 段落与 `features.md` 0.3 的门禁代码块尚未回写**——前者「修改需用户确认」，后者仍写 `--all-features`（该开关会打开两个 addon crate 的 `fcitx5-host` 并让 `build.rs` panic）。两处待用户确认后同步。
+    2. `check-advisories`（`cargo audit` + `cargo deny`）**刻意不在** `just ci`：`cargo audit` 需联网，放进套件会让无网机器整体失败。
+    3. `reproducible` / `dictionary` / `size` 三个发布作业的构建与断言步骤仍是内联 shell：它们是「构建并校验产物」而非「审计代码树」，且都需要 release 构建。
+    4. DoD 第 3 条（人为注入版本漂移与许可证缺失，两者都被 CI 拦住）需要推 PR 才能验证，未执行。
+  - **环境**：Rust 1.98.0、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
 # rspinyin CI baseline.
 #
 # Every job that asserts something about the tree runs a `just` recipe rather
@@ -1634,7 +1667,7 @@ jobs:
   - 关键路径：CP: 否
   - 并行通道：Track C（CI/CD·发布）
   - 代码落地锚点 (Code Anchor)：`.github/workflows/ci.yml`、`xtask/src/install/tests.rs`、`packaging/install.sh`、`packaging/uninstall.sh`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：`install` → 断言 → `uninstall` → 断言"文件树与安装前逐字节相同"的闭环在 CI 中自动执行；`librspinyin.so` 与 `librspinyin-ui.so` 的工厂符号在**安装到目标目录之后**被复检。
   - 目标产物格式：无产物；交付物是一个可重复执行的安装验证作业。
@@ -1735,6 +1768,19 @@ jobs:
   - [ ] 真实 fcitx5 会话中出现 `rspinyin: addon loaded`（本机可验证档）；
   - [ ] Wayland 三档的加载验证标注"本机不可验证"并指向 `BUILD-P2.05.02`（`ASM-11`）。
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`xtask/src/install/reversible.rs`（约 460 行，`#[cfg(test)]` 挂载）+ `reversible/tests.rs`（约 425 行，9 个用例）；`xtask/src/install/uninstall.rs` 的 5 处可见性放宽（无行为变更），使往返验证能驱动**真实卸载**而非重写一份卸载逻辑。
+  - **验证命令与结果**：`just ci` 退出 0（fmt、clippy `-D warnings`、nextest 1992 个用例、doctest、10 个审计脚本全部通过）。
+  - **三点快照**：`before` → `installed` → `after`。只用两点比较会**空转通过**——「什么都没拷、什么都没删」的往返与「什么都没发生」的树完全相等。`landed()` 强制证明安装确实落了盘，`differences()` 才因此有意义。
+  - **主 Agent 修掉的两处**：
+    1. **被顶掉文件的权限位原本不会还原**：`prepare_entry` 用 `FILE_MODE`(0644) 把原文件拷成备份，`remove_entry` 又用 `FILE_MODE` 拷回去——发行版装在 `/usr/lib/…/fcitx5/` 下的 `.so` 通常是 0755，卸载后会变成 0644，**内容逐字节可逆而模式不可逆**。现在备份以**被顶掉文件自己的模式**落盘（`manifest::mode_of`），卸载按备份的模式还原；模式取自文件本身而非记进 manifest，schema 因此不必升版。
+    2. `test_round_trip_restores_the_destination_tree_byte_for_byte` 的期望集合把**被替换**的 `rspinyin.conf` 当成了新增文件：它在安装前就存在，快照把它报为内容变化而非「出现」，所以它不在 `added_files` 里。
+  - **已知限制**：
+    1. 卡片正文给的 CI 步骤（`find /tmp/stage -printf '%P\t%s\n'`）**照抄会失败**：它包含目录，而安装会创建 Fcitx5 布局命名的共享目录、卸载刻意保留它们。需要改成 `find … -type f`。该残留已被 `test_round_trip_leaves_only_the_directories_it_had_to_create` **断言成事实**，不会被误修。
+    2. `packaging/{install,uninstall}.sh` 的 shell 级往返要求 `pkg-config --exists Fcitx5Core` 与可用 `cargo`，未执行。
+    3. Wayland 三档的加载验证按 `ASM-11` 仍属 `BUILD-P2.05.02`。
+  - **环境**：Rust 1.98.0、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 ## 6. 续写指令
@@ -1767,7 +1813,9 @@ jobs:
 
 ### 6.5 维护清单
 
-- [ ] 每次代码演进后回写第 2 节问题清单的状态（已修复的行标记并保留编号，便于追溯）；
-- [ ] 交付矩阵第 3.1 节的 `状态` 列随 aarch64 评估结论更新；
-- [ ] 第 4.3 节的 CP 与工时在任务实际完成后回填实测值；
-- [ ] 本文件与 `docs/dev/features.md` 出现冲突时，**技术问题以 `features.md` 为准**并修正本文件（`AGENTS.md` 开篇约定）。
+以下四条是**长期约定**，不是可勾选的任务——它们没有"做完"的那一刻，所以不写成复选框：
+
+1. 每次代码演进后回写第 2 节问题清单的状态（已修复的行标记并保留编号，便于追溯）；
+2. 交付矩阵第 3.1 节的 `状态` 列随 aarch64 评估结论更新。**当前状态：未回填**——本机是 x86_64，`just check-arm64` 在非 arm64 上拒绝运行，该列要等一台 arm64 机器；
+3. 第 4.3 节的 CP 与工时在任务实际完成后回填实测值。**当前状态：未回填**——本轮的工时没有按卡记录，回填需要一次专门的统计；
+4. 本文件与 `docs/dev/features.md` 出现冲突时，**技术问题以 `features.md` 为准**并修正本文件（`AGENTS.md` 开篇约定）。

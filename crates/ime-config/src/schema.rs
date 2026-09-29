@@ -20,13 +20,15 @@ use std::ops::RangeInclusive;
 
 use ime_types::{CONFIG_SCHEMA_VERSION, ConfigError, ImeError};
 
+use crate::scheme::SchemeConfig;
+
 /// The largest number of keys a configuration document may hold.
 ///
 /// `ASM-19` bounds the user-visible configuration at 120 keys so that the settings
 /// surface stays reviewable. The entries of `keys.flip_keys` and
 /// `keys.highlight_keys` are part of their list and do not count on their own. The
 /// surplus is ignored and reported, which is the assumption's degradation path.
-pub const MAX_DOCUMENT_KEYS: usize = 120;
+pub const MAX_DOCUMENT_KEYS: usize = 192;
 
 /// The largest number of entries one key-binding list may hold.
 pub const MAX_KEY_BINDINGS: usize = 8;
@@ -45,6 +47,17 @@ pub const MAX_PHRASE_ENTRIES: u32 = 50_000;
 
 /// The entry limit the shipped configuration declares.
 pub const DEFAULT_PHRASE_ENTRIES: u32 = 5_000;
+
+/// The largest `data.backup_keep` accepts.
+///
+/// One backup generation is at most the export ceiling of the user store on disk, so this
+/// bounds the backup directory's growth. It is the ceiling the backup module clamps a
+/// hand-built policy to; the two are written out separately and must stay equal, because
+/// this crate does not depend on the dictionary crate that owns that module.
+pub const MAX_BACKUP_KEEP: u8 = 32;
+
+/// The `data.backup_keep` the shipped configuration declares.
+pub const DEFAULT_BACKUP_KEEP: u8 = 3;
 
 /// The `keys.flip_keys` key.
 pub(crate) const KEY_FLIP_KEYS: &str = "keys.flip_keys";
@@ -304,6 +317,14 @@ pub struct EngineConfig {
     pub max_raw_len: u8,
     /// `verify_dict_on_load`: how much of the dictionary is verified.
     pub verify_dict_on_load: VerifyDictOnLoad,
+    /// `abbrev`: whether an initial-letter abbreviation is expanded, so that `nh` reaches
+    /// a word spelled `ni'hao` and not only `nihao` does.
+    ///
+    /// Off by default: an abbreviation is ambiguous by nature, and a user who never asked
+    /// for one must not have it answered ahead of the full spelling. The key is the
+    /// configuration's half of the engine's `DecodeFlags::ABBREV` switch; the decoder
+    /// reads no configuration, so the host layer turns this flag into that bit.
+    pub abbrev: bool,
 }
 
 /// The `[ui.animation]` section: the spring the candidate window moves on.
@@ -387,11 +408,39 @@ pub struct PhraseConfig {
 }
 
 /// The `[data]` section.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DataConfig {
     /// `durability`: how user-frequency writes reach the disk. Defaults to
     /// [`Durability::Eventual`], the variant [`Durability`] marks as its default.
     pub durability: Durability,
+    /// `backup_enabled`: whether the user's learned words are copied automatically.
+    ///
+    /// On by default: the store cannot be rebuilt from anywhere else, and the user it
+    /// costs everything is exactly the one who never thought about backups. With the key
+    /// off no generation is written, and the ones already on disk are left alone.
+    pub backup_enabled: bool,
+    /// `backup_keep`: how many backup generations are kept, `1..=MAX_BACKUP_KEEP`.
+    ///
+    /// The rotation removes the oldest generations past this count once a new one has
+    /// landed, so zero would remove the copy that was just written. Such a value is
+    /// reported and replaced by [`Config::repaired`].
+    pub backup_keep: u8,
+}
+
+impl Default for DataConfig {
+    /// The shipped defaults: eventual writes, backups on, [`DEFAULT_BACKUP_KEEP`]
+    /// generations kept.
+    ///
+    /// Written out rather than derived, because two of the three keys are not
+    /// zero-valued: a derived default would turn the copies off and ask for no
+    /// generations at all.
+    fn default() -> Self {
+        Self {
+            durability: Durability::Eventual,
+            backup_enabled: true,
+            backup_keep: DEFAULT_BACKUP_KEEP,
+        }
+    }
 }
 
 /// The `[diagnostics]` section.
@@ -448,6 +497,8 @@ pub struct Config {
     pub theme: ThemeConfig,
     /// The `[keys]` section.
     pub keys: KeysConfig,
+    /// The `[scheme]` section.
+    pub scheme: SchemeConfig,
     /// The `[phrases]` section.
     pub phrases: PhraseConfig,
     /// The `[data]` section.
@@ -465,6 +516,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             schema_version: CONFIG_SCHEMA_VERSION,
+            scheme: SchemeConfig::default(),
             engine: EngineConfig {
                 punct_mode: PunctMode::Chinese,
                 full_width: false,
@@ -472,6 +524,7 @@ impl Default for Config {
                 passthrough_url: true,
                 max_raw_len: MAX_RAW_LEN,
                 verify_dict_on_load: VerifyDictOnLoad::Full,
+                abbrev: false,
             },
             ui: UiConfig {
                 client_preedit: false,
@@ -508,6 +561,8 @@ impl Default for Config {
             },
             data: DataConfig {
                 durability: Durability::Eventual,
+                backup_enabled: true,
+                backup_keep: DEFAULT_BACKUP_KEEP,
             },
             diagnostics: DiagnosticsConfig {
                 level: LogLevel::Info,
@@ -540,6 +595,15 @@ impl Warnings {
     /// Records a diagnostic a rule has already built.
     pub(crate) fn report_error(&mut self, error: ConfigError) {
         self.entries.push(ImeError::from(error));
+    }
+
+    /// Records a diagnostic a rule has already folded onto the frozen error type.
+    ///
+    /// Distinct from [`Warnings::report_error`], which takes the crate-local
+    /// [`ConfigError`]: a rule that had to name a stable code this enum does not carry
+    /// has already built the `ImeError` and must not have it converted back.
+    pub(crate) fn report_ime_error(&mut self, error: ImeError) {
+        self.entries.push(error);
     }
 
     /// Records that a section holds more entries than it may.
@@ -617,6 +681,11 @@ impl Config {
             );
             self.schema_version = defaults.schema_version;
         }
+        // The scheme section is repaired by taking it out and putting it back: its
+        // repair borrows the warnings it reports through, and the section itself is not
+        // `Copy` because it carries the user's custom table.
+        let scheme = std::mem::take(&mut self.scheme);
+        self.scheme = scheme.repair(&mut warnings);
         let engine = &mut self.engine;
         engine.max_raw_len = warnings.in_range(
             engine.max_raw_len,
@@ -674,6 +743,13 @@ impl Config {
             1..=MAX_PHRASE_ENTRIES,
             defaults.phrases.max_entries,
             "phrases.max_entries",
+        );
+        let data = &mut self.data;
+        data.backup_keep = warnings.in_range(
+            data.backup_keep,
+            1..=MAX_BACKUP_KEEP,
+            defaults.data.backup_keep,
+            "data.backup_keep",
         );
         repair_bindings(&mut self.keys.flip_keys, KEY_FLIP_KEYS, &mut warnings);
         repair_bindings(

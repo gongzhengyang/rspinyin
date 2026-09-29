@@ -152,6 +152,50 @@ mod tests {
     }
 
     #[test]
+    fn test_guard_returns_the_documented_fallback_for_every_entry_point_shape() {
+        // The four shapes an `extern "C"` entry point returns each get their documented
+        // fallback when the body panics, and their own value when it does not. A raw
+        // pointer has no `Default`, which is why the fallback is a parameter rather than
+        // a trait call.
+        //
+        // A unit-returning entry point: the annotation is the assertion, since `()` has
+        // no value to compare and a panic that escaped the guard would fail the test
+        // instead.
+        let _: () = crash::guard("entry_unit", (), || {
+            let zero = 0usize;
+            assert!(zero > 0, "deliberate failure");
+        });
+
+        let flag = crash::guard("entry_flag", false, || {
+            let zero = 0usize;
+            assert!(zero > 0, "deliberate failure");
+            true
+        });
+        assert!(!flag, "a flag-returning entry point reports no consumption");
+
+        let code = crash::guard("entry_code", 0u32, || {
+            let zero = 0usize;
+            assert!(zero > 0, "deliberate failure");
+            7
+        });
+        assert_eq!(code, 0, "a code-returning entry point returns zero");
+
+        let pointer = crash::guard("entry_pointer", std::ptr::null_mut::<u8>(), || {
+            let zero = 0usize;
+            assert!(zero > 0, "deliberate failure");
+            std::ptr::null_mut::<u8>()
+        });
+        assert!(
+            pointer.is_null(),
+            "a pointer-returning entry point returns null rather than a dangling value"
+        );
+
+        // And a body that does not panic keeps its own value, so the guard costs an entry
+        // point nothing but the catch.
+        assert_eq!(crash::guard("entry_ok", 0u32, || 7), 7);
+    }
+
+    #[test]
     #[ignore = "installs a process-wide hook, which would hide other tests' panics"]
     fn test_install_panic_hook_keeps_the_process_alive_after_a_panic() {
         // End-to-end check: install the hook, panic inside a caught scope, and assert

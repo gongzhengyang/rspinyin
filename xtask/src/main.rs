@@ -35,6 +35,11 @@ enum Command {
     /// enum is built once at startup — the indirection costs nothing and keeps the
     /// unboxed size from being paid by every other subcommand.
     Dictc(Box<dictc::DictcArgs>),
+    /// Measure candidate quality on the held-out set and audit the correction table.
+    ///
+    /// Boxed for the same reason as `Dictc`: the argument struct is much larger than the
+    /// other variants and the enum is built once at startup.
+    Quality(Box<dictc::quality::QualityArgs>),
     /// Tune the language-model weights, or derive the held-out evaluation set.
     ///
     /// Boxed for the same reason as `Dictc`: the argument struct is much larger than the
@@ -80,6 +85,10 @@ enum Command {
     ///
     /// Boxed for the same reason as `Dictc`.
     Testd(Box<testd::TestdArgs>),
+    /// Start the client under test and read back the text the host committed into it.
+    ///
+    /// Boxed for the same reason as `Dictc`.
+    TestdClient(Box<testd::commit_readback::ClientArgs>),
     /// Replay decode scenarios against the in-memory engine, without fcitx5.
     ///
     /// Boxed for the same reason as `Dictc`.
@@ -90,6 +99,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Dictc(args) => dictc::run(*args),
+        Command::Quality(args) => dictc::quality::run(*args),
         Command::Tune(args) => tune::run(*args),
         Command::Install(args) => install::run(*args),
         Command::Package(args) => package::run(*args),
@@ -109,6 +119,7 @@ fn main() -> anyhow::Result<()> {
         Command::CheckVersions => versions::run(),
         Command::Report(args) => report::run(args),
         Command::Testd(args) => testd::run(*args),
+        Command::TestdClient(args) => testd::commit_readback::run(*args),
         Command::TestdEngine(args) => testd::engine::run(*args),
     }
 }

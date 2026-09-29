@@ -128,11 +128,11 @@ impl Variables {
     /// the packages that clear it -- and when its output is not UTF-8.
     pub fn probe() -> Result<Self> {
         Ok(Self {
-            prefix: variable("prefix")?,
-            libdir: variable("libdir")?,
-            datadir: variable("datadir")?,
-            addondir: variable("addondir")?,
-            icondir: variable("icondir")?,
+            prefix: variable(PC_MODULE, "prefix")?,
+            libdir: variable(PC_MODULE, "libdir")?,
+            datadir: variable(PC_MODULE, "datadir")?,
+            addondir: variable(PC_MODULE, "addondir")?,
+            icondir: variable(PC_MODULE, "icondir")?,
         })
     }
 }
@@ -270,7 +270,10 @@ impl Sources {
     }
 }
 
-/// Reads one variable of the Fcitx5 `pkg-config` module.
+/// Reads one variable of a `pkg-config` module.
+///
+/// `module` is a parameter rather than the constant, so that the answer a machine without
+/// the Fcitx5 development package gets can be asserted without that package being absent.
 ///
 /// # Errors
 ///
@@ -279,10 +282,10 @@ impl Sources {
 /// package surfaces -- or when its output is not UTF-8. A variable that is undefined or
 /// defined but empty is `Ok(None)`: `pkg-config` prints nothing for both, and the
 /// caller derives the path instead.
-fn variable(name: &str) -> Result<Option<String>> {
+fn variable(module: &str, name: &str) -> Result<Option<String>> {
     let output = Command::new("pkg-config")
         .arg(format!("--variable={name}"))
-        .arg(PC_MODULE)
+        .arg(module)
         .output()
         .with_context(|| format!("{DEV_MISSING}\n(`pkg-config` could not be run)"))?;
     ensure!(output.status.success(), "{DEV_MISSING}");
@@ -566,5 +569,45 @@ mod tests {
             .expect_err("no candidate exists");
         assert!(failure.to_string().contains("third/base.dict"), "{failure}");
         std::fs::remove_dir_all(&root).expect("cleaning up");
+    }
+
+    #[test]
+    fn test_variable_reports_the_dev_missing_diagnostic_for_a_module_that_is_not_there() {
+        // The diagnostic is the one thing that turns "cannot find Fcitx5Core" into an
+        // installable prerequisite, so it has to survive both ways `pkg-config` can fail:
+        // a module it cannot find, and a machine that has no `pkg-config` at all.
+        let failure = variable("RspinyinNoSuchPkgConfigModule", "prefix")
+            .expect_err("no such pkg-config module exists");
+        assert!(
+            failure.to_string().contains("platform/fcitx5/dev-missing"),
+            "{failure}"
+        );
+        assert!(
+            failure.to_string().contains("libfcitx5core-dev"),
+            "the message names the package that clears it: {failure}"
+        );
+    }
+
+    #[test]
+    fn test_variables_probe_reports_an_absolute_prefix_or_the_missing_package() {
+        // This is the call that asks the target system where its Fcitx5 lives, and the
+        // answer decides where the plugin lands. Either the development package is here,
+        // in which case the probe reports the installation it describes, or it is not,
+        // in which case the answer has to be the diagnostic rather than a layout derived
+        // from nothing.
+        match Variables::probe() {
+            Ok(variables) => assert!(
+                variables
+                    .prefix
+                    .as_deref()
+                    .is_some_and(|prefix| prefix.starts_with('/')),
+                "a probed installation prefix is absolute: {:?}",
+                variables.prefix
+            ),
+            Err(error) => assert!(
+                error.to_string().contains("platform/fcitx5/dev-missing"),
+                "{error}"
+            ),
+        }
     }
 }

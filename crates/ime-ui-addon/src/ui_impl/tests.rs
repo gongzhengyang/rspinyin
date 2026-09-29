@@ -4,14 +4,17 @@
 //! stay independent of the order the suite runs in and of nextest's one-process-per-test
 //! scheduling. The rest drive the pure policy functions and the mirror directly.
 
+use std::sync::atomic::Ordering;
 use std::sync::{Mutex, MutexGuard};
 
-use crate::addon::candidate_window_ready;
+use crate::addon::{UI_NOT_READY_CODE, candidate_window_ready};
 use crate::ffi::FcitxCursorRect;
 
 use super::availability::plan_availability;
 use super::panel::count_fields;
-use super::takeover::{TakeoverPlan, apply_takeover, plan_takeover};
+use super::takeover::{
+    TAKEOVER_DECLINED, TakeoverPlan, apply_takeover, plan_takeover, record_refusal,
+};
 use super::*;
 
 /// An input-context id no other test uses, so the process-wide slots stay
@@ -277,32 +280,117 @@ fn test_count_fields_counts_an_empty_buffer_as_none() {
 }
 
 #[test]
+fn test_takeover_codes_keep_their_frozen_spellings() {
+    // Diagnostics and operators match on these strings, so a reworded code is a broken
+    // contract rather than a cosmetic change.
+    assert_eq!(TAKEOVER_ACTIVE_CODE, "ui/takeover/active");
+    assert_eq!(TAKEOVER_NOT_REGISTERED_CODE, "ui/takeover/not-registered");
+    assert_eq!(TAKEOVER_DECLINED_CODE, "ui/takeover/declined");
+    assert_eq!(NO_BACKEND_CODE, "platform/compositor/unsupported");
+    assert_eq!(NO_HOST_CODE, "ffi/host-not-linked");
+    assert_eq!(
+        UI_NOT_READY_CODE, "ui/not-ready",
+        "the takeover reuses the lifecycle's code rather than spelling its own"
+    );
+}
+
+#[test]
 fn test_takeover_outcome_diagnostics_carry_the_documented_codes() {
     let active = TakeoverOutcome::Active {
         previous_ui: Some(String::from("classicui")),
     };
     assert!(active.is_active());
     let line = active.diagnostic();
-    assert!(line.starts_with("ui/takeover/active: previous=classicui"));
+    assert!(line.starts_with(TAKEOVER_ACTIVE_CODE), "{line}");
+    assert!(line.ends_with("previous=classicui"), "{line}");
     let no_previous = TakeoverOutcome::Active { previous_ui: None };
     assert!(no_previous.diagnostic().ends_with("previous=none"));
+
     let not_ready = TakeoverOutcome::NotReady.diagnostic();
-    assert_eq!(
-        not_ready,
-        "ui/not-ready: the takeover waits for the candidate window"
+    assert!(not_ready.starts_with(UI_NOT_READY_CODE), "{not_ready}");
+    assert!(
+        not_ready.contains("waits for the candidate window"),
+        "the line has to say what the takeover is waiting on: {not_ready}"
     );
+
     let unsupported = TakeoverOutcome::Unsupported.diagnostic();
-    assert!(unsupported.starts_with("platform/compositor/unsupported"));
+    assert!(unsupported.starts_with(NO_BACKEND_CODE), "{unsupported}");
+    assert!(
+        unsupported.contains("ClassicUI keeps drawing"),
+        "the fallback tier has to say that candidates still work: {unsupported}"
+    );
+    assert!(
+        unsupported.contains("layer-shell"),
+        "and has to name the recovery an operator can act on: {unsupported}"
+    );
+
     let not_registered = TakeoverOutcome::NotRegistered.diagnostic();
-    assert!(not_registered.starts_with("ui/takeover/not-registered"));
+    assert!(
+        not_registered.starts_with(TAKEOVER_NOT_REGISTERED_CODE),
+        "{not_registered}"
+    );
     let unavailable = TakeoverOutcome::Unavailable.diagnostic();
-    assert!(unavailable.starts_with("ffi/host-not-linked"));
+    assert!(unavailable.starts_with(NO_HOST_CODE), "{unavailable}");
+
     let declined = TakeoverOutcome::Declined {
         active_ui: Some(String::from("classicui")),
     };
     assert!(!declined.is_active());
     let line = declined.diagnostic();
-    assert!(line.starts_with("ui/takeover/declined: classicui"));
+    assert!(line.starts_with(TAKEOVER_DECLINED_CODE), "{line}");
+    assert!(line.contains("classicui stays active"), "{line}");
+    assert!(
+        line.contains("not retried"),
+        "the line has to say the plugin will not fight the user's choice: {line}"
+    );
+    let anonymous = TakeoverOutcome::Declined { active_ui: None };
+    assert!(
+        anonymous.diagnostic().contains("another user interface"),
+        "a host that names none must still produce a readable line"
+    );
+}
+
+#[test]
+fn test_record_refusal_latches_so_the_host_is_not_asked_again() {
+    let _slots = lock_slots();
+    TAKEOVER_DECLINED.store(false, Ordering::Release);
+    let outcome = record_refusal(Some(String::from("kimpanel")));
+    assert_eq!(
+        outcome,
+        TakeoverOutcome::Declined {
+            active_ui: Some(String::from("kimpanel")),
+        },
+        "the refusal is reported with the user interface that stayed active"
+    );
+    assert!(
+        TAKEOVER_DECLINED.load(Ordering::Acquire),
+        "a refusal has to be remembered, or the plugin would ask again on every \
+         lifecycle event and fight the user's own choice of user interface"
+    );
+    assert_eq!(
+        plan_takeover(true, true, TAKEOVER_DECLINED.load(Ordering::Acquire)),
+        TakeoverPlan::Declined,
+        "and the remembered refusal has to reach the policy that decides whether to ask"
+    );
+    TAKEOVER_DECLINED.store(false, Ordering::Release);
+}
+
+#[test]
+fn test_on_host_resume_clears_a_recorded_refusal() {
+    let _slots = lock_slots();
+    record_refusal(Some(String::from("classicui")));
+    assert!(TAKEOVER_DECLINED.load(Ordering::Acquire));
+    on_host_resume();
+    assert!(
+        !TAKEOVER_DECLINED.load(Ordering::Acquire),
+        "a resume means the host just made this plugin active, so a refusal recorded \
+         earlier no longer describes the host's state"
+    );
+    assert_eq!(
+        plan_takeover(true, true, TAKEOVER_DECLINED.load(Ordering::Acquire)),
+        TakeoverPlan::Ask,
+        "and the takeover may ask again once the host has resumed it"
+    );
 }
 
 #[cfg(not(fcitx5_host))]

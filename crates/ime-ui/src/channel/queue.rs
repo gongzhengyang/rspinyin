@@ -5,7 +5,7 @@
 //! complete snapshot rather than a delta, so overwriting an unread one loses no
 //! information. A [`RingQueue`] is the bounded FIFO that keeps `Show` and `Hide`
 //! in order, and [`CollapsingQueue`] adds the sender-side staging that the
-//! contract's "spin, then collapse to the newest" overflow rule needs.
+//! contract's "try, then stage the newest" overflow rule needs.
 //!
 //! The shapes are not interchangeable, and the contract is explicit about which
 //! channel gets which: collapsing a `Show`/`Hide` pair would leave the candidate
@@ -18,9 +18,13 @@
 //! policy denies, or an exercise in atomic subtlety that the standard library
 //! has already solved. Both queues are therefore built on `std::sync::Mutex`,
 //! which is sound here because the lock is never held across a blocking call:
-//! the critical sections are a `VecDeque` push or pop and nothing else. Neither
-//! queue allocates after construction -- the deque is reserved to its capacity
-//! up front -- so a post allocates only the value the caller brought.
+//! the critical sections are a `VecDeque` push or pop and nothing else. The
+//! collapsing queue's staging slot follows the same rule -- it is taken and
+//! released before the queue itself is touched, and a producer that finds the
+//! queue full stages its value and returns instead of waiting for room, so no
+//! lock is ever held by a producer that is waiting. Neither queue allocates after
+//! construction -- the deque is reserved to its capacity up front -- so a post
+//! allocates only the value the caller brought.
 
 use std::collections::VecDeque;
 use std::hint::spin_loop;
@@ -35,6 +39,17 @@ use std::time::{Duration, Instant};
 /// yielding alone would spend the whole budget in syscalls; alternating keeps
 /// the common multi-core wait short and still lets the other thread run.
 const YIELD_EVERY: u32 = 32;
+
+/// How long a producer may spend before it stages the value instead of waiting for room.
+///
+/// The producer runs on the Fcitx5 host thread, whose callback budget is two orders of
+/// magnitude below a frame interval: a queue that is full means the UI thread is behind,
+/// and the correct response is to hand the value to the staging slot and return rather
+/// than to hold the main loop while the consumer catches up. [`CollapsingQueue::push`]
+/// therefore spends none of this budget -- it tries the queue and stages what does not
+/// fit -- and the constant is the bound such a push is asserted against, with the channel
+/// configuration's own budget as a ceiling above it.
+pub const STAGE_BUDGET: Duration = Duration::from_micros(100);
 
 /// A single slot that keeps the newest value and counts what it replaced.
 ///
@@ -267,19 +282,26 @@ impl<T> RingQueue<T> {
 /// A bounded FIFO that collapses to the newest value instead of refusing it.
 ///
 /// This is the overflow behaviour the contract fixes for the ordered control
-/// channels: the sender spins for its budget, and when the queue is still full
-/// it keeps the newest value in a staging slot rather than losing it. The
-/// staging slot is flushed ahead of anything newer on the next push, so the
-/// order the consumer observes is always the order of the values that survived
-/// -- dropping the older ones is what keeps a `Show`/`Hide` pair meaningful,
-/// because collapsing a pair would leave the window in the wrong state.
+/// channels: the sender tries the queue, and when it is full it keeps the newest
+/// value in a staging slot rather than losing it. The staging slot is flushed
+/// ahead of anything newer on the next push, so the order the consumer observes
+/// is always the order of the values that survived -- dropping the older ones is
+/// what keeps a `Show`/`Hide` pair meaningful, because collapsing a pair would
+/// leave the window in the wrong state.
+///
+/// The sender never waits for room. The host thread is what produces into these
+/// channels, and a full queue means the consumer is behind: handing the value to
+/// the staging slot and returning keeps a key callback from being held up by the
+/// UI thread, which is what [`STAGE_BUDGET`] bounds and what the producer's
+/// budget in [`ChannelConfig`](super::ChannelConfig) is a ceiling for rather than
+/// a wait it spends.
 ///
 /// # Concurrency
 ///
-/// `Send` and `Sync` whenever `T` is `Send`. [`CollapsingQueue::push`] may wait
-/// for the queue's budget, and the lock on the staging slot is held across that
-/// wait; the queue's own lock is not, so the consumer is never blocked by a
-/// sender that is spinning.
+/// `Send` and `Sync` whenever `T` is `Send`. [`CollapsingQueue::push`] takes the
+/// staging slot, releases it, and only then touches the queue: no lock is held
+/// across a wait, because there is no wait, so a consumer is never blocked by a
+/// producer and the two cannot be deadlocked against each other.
 #[derive(Debug)]
 pub struct CollapsingQueue<T> {
     queue: RingQueue<T>,
@@ -289,8 +311,14 @@ pub struct CollapsingQueue<T> {
 }
 
 impl<T> CollapsingQueue<T> {
-    /// Creates a queue holding at most `capacity` values that waits `budget` for
-    /// room before it starts collapsing.
+    /// Creates a queue holding at most `capacity` values that stages the newest
+    /// value once the queue is full.
+    ///
+    /// `budget` is the wait the boundary contract names for this channel. The queue does
+    /// not spend it: a producer on the Fcitx5 host thread must not be held up at all, so a
+    /// value that does not fit is staged and the call returns. The number stays readable
+    /// through [`CollapsingQueue::budget`], because the channel configuration carries it
+    /// and a caller may lower it for a test.
     ///
     /// # Panics
     ///
@@ -304,27 +332,48 @@ impl<T> CollapsingQueue<T> {
         }
     }
 
+    /// The wait the boundary contract names for this queue.
+    ///
+    /// A ceiling rather than a wait the producer spends: [`CollapsingQueue::push`] stages a
+    /// value that does not fit and returns, so the host thread is never held up by this
+    /// channel. The configured number is kept and readable so that a test can show a
+    /// full-queue push staying inside [`STAGE_BUDGET`] while the configuration names a
+    /// budget orders of magnitude larger.
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic.
+    pub fn budget(&self) -> Duration {
+        self.budget
+    }
+
     /// Enqueues `value`, or stages it as the newest value to send next.
+    ///
+    /// The staging slot is taken first and released immediately, before the queue is
+    /// touched: holding it across a wait was what let a producer that was looking for room
+    /// block the consumer's own `pop`, which needs that same lock once the queue itself is
+    /// empty. The queue is then tried twice -- the staged value first, so that a value
+    /// accepted earlier is delivered before this one -- and a queue that is still full
+    /// stages the newest value instead of waiting for it.
     ///
     /// # Panics
     ///
     /// This function does not panic.
     pub fn push(&self, value: T) {
-        let mut staged = self.lock();
-        if let Some(previous) = staged.take() {
-            if self.queue.push_within(previous, self.budget).is_err() {
-                // Both the staged value and this one are stuck. The contract
-                // keeps the newest, so the staged one is the value that
-                // disappears and the one that gets counted.
-                *staged = Some(value);
+        let staged = self.lock().take();
+        if let Some(previous) = staged {
+            if self.queue.try_push(previous).is_err() {
+                // The queue is still full. The contract keeps the newest value, so the
+                // staged one is what disappears and the one that gets counted.
+                *self.lock() = Some(value);
                 self.collapsed.fetch_add(1, Ordering::Relaxed);
                 return;
             }
         }
-        if let Err(value) = self.queue.push_within(value, self.budget) {
-            // Staging is not a drop: the value is still on its way, and the
-            // counter records that it had to take the slow path.
-            *staged = Some(value);
+        if let Err(value) = self.queue.try_push(value) {
+            // Staging is not a drop: the value is still on its way, and the counter records
+            // that it had to take the slow path.
+            *self.lock() = Some(value);
             self.collapsed.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -499,5 +548,49 @@ mod tests {
         assert_eq!(queue.pop(), Some(4));
         assert_eq!(queue.pop(), Some(5));
         assert_eq!(queue.pop(), None);
+    }
+
+    /// How many pushes the budget assertion samples.
+    ///
+    /// The bound is on the work rather than on the scheduler: a test thread that is
+    /// descheduled in the middle of a push measures the scheduler, so the fastest sample is
+    /// the one asserted. A push that spent the queue's budget cannot pass at any sample
+    /// count, because every one of its samples costs the budget.
+    const SAMPLES: u32 = 16;
+
+    /// The value that occupies the single slot of the budget test's queue.
+    const SEED: u32 = 0;
+
+    #[test]
+    fn test_collapsing_queue_push_when_full_spends_none_of_its_budget() {
+        // The producer is the Fcitx5 host thread, so a queue that is full must not hold it
+        // up. The budget configured here is five hundred times the staging bound, so a push
+        // that waited for room would miss both assertions by orders of magnitude.
+        let budget = Duration::from_millis(50);
+        let queue: CollapsingQueue<u32> = CollapsingQueue::new(1, budget);
+        assert_eq!(queue.budget(), budget, "the configured ceiling is kept");
+
+        let mut fastest = Duration::MAX;
+        let mut total = Duration::ZERO;
+        for value in 1..=SAMPLES {
+            queue.push(SEED);
+            let start = Instant::now();
+            queue.push(value);
+            let elapsed = start.elapsed();
+            fastest = fastest.min(elapsed);
+            total = total.saturating_add(elapsed);
+            assert_eq!(queue.pop(), Some(SEED), "the queued value is still first");
+            assert_eq!(queue.pop(), Some(value), "the staged value is the one kept");
+        }
+
+        assert_eq!(queue.collapsed(), u64::from(SAMPLES));
+        assert!(
+            fastest <= STAGE_BUDGET,
+            "the fastest push into a full queue took {fastest:?}, past the {STAGE_BUDGET:?} bound"
+        );
+        assert!(
+            total < budget,
+            "{SAMPLES} pushes into a full queue cost {total:?} together, more than one {budget:?} budget"
+        );
     }
 }

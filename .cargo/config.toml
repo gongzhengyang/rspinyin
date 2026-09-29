@@ -1,23 +1,23 @@
-# Cargo configuration: cross-compilation and link-time hardening.
+# Cargo configuration: link-time hardening.
 #
-# Two concerns live here because both are properties of the link, and keeping them in one
-# file means a change to either invalidates the build cache exactly once rather than
-# twice. Neither is a per-crate setting: `[profile.release]` in the workspace manifest
-# cannot express linker arguments, and a `RUSTFLAGS` environment variable would have to be
-# repeated by every caller -- the developer's shell, the CI job, the release script --
-# which is exactly how two of them end up building different binaries.
-
-# Running an aarch64 test binary needs an emulator on an x86_64 host. The native arm64 CI
-# runner does not use this entry, but a developer cross-checking locally does, and without
-# it `cargo nextest` reports "exec format error" rather than a test result.
+# The hardening flags are stated here rather than in `[profile.release]`, which cannot
+# express linker arguments, and rather than in a `RUSTFLAGS` environment variable, which
+# would have to be repeated by every caller -- the developer's shell, the CI job, the
+# release script -- which is exactly how two of them end up building different binaries.
+# Every build reads this file, so no caller can forget the flags, and a change to them
+# invalidates the build cache exactly once.
 #
-# `aarch64-linux-gnu-gcc` is the cross linker the distribution's `gcc-aarch64-linux-gnu`
-# package installs. Linking an addon is not a freestanding build: it needs the arm64
-# `libFcitx5Core.so.7` and `libFcitx5Utils.so.2` to link against, which is why the local
-# path also needs an arm64 sysroot or an arm64 root, and why CI prefers the native runner.
-[target.aarch64-unknown-linux-gnu]
-linker = "aarch64-linux-gnu-gcc"
-runner = ["qemu-aarch64-static", "-L", "/usr/aarch64-linux-gnu"]
+# The aarch64 cross-compilation settings are deliberately not here. Cargo applies
+# `[target.<triple>]` to host artifacts whenever the host triple is the key
+# (`target-applies-to-host` defaults to true), so a `linker` entry for
+# `aarch64-unknown-linux-gnu` would also be picked up by a plain `cargo build` on an arm64
+# machine -- where the build is native, the cross linker is not installed and is not
+# needed, and the build would fail for a reason that has nothing to do with the machine.
+# The cross linker and its emulator runner live in
+# `packaging/cross/aarch64-unknown-linux-gnu.toml`, which a caller opts into with
+# `--config`; the justfile's `cross-arm64` recipe does exactly that. Keeping the two paths
+# apart is what lets an arm64 developer machine and the arm64 CI runner build without
+# installing a cross toolchain they will never use.
 
 # Linker hardening.
 #

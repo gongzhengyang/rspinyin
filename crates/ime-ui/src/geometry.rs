@@ -38,6 +38,11 @@
 //! because that is the space the layout pass works in; they go through the same dp-to-pixel
 //! helper the platform layer uses, so every layer rounds alike.
 //!
+//! The hit map is the one thing accumulated *before* it is converted: the cell strides are
+//! summed in logical pixels and rounded once, because that is the order the component's own
+//! layout works in. Rounding each stride first would drift away from the cells it draws; see
+//! `Grid::rect` for the arithmetic.
+//!
 //! # Determinism
 //!
 //! Every placement decision is an integer comparison, so the same request yields the same
@@ -54,6 +59,9 @@
 //! nothing here can fail, and nothing here touches a display server.
 
 mod placement;
+
+#[cfg(test)]
+mod conformance;
 
 #[cfg(test)]
 mod tests;
@@ -348,15 +356,17 @@ pub fn compute(request: &PlacementRequest<'_>) -> Geometry {
     let window_h = container_h + 2 * px.shadow;
     let (x, clamped_x) = pass.horizontal(window_w);
     let (y, clamped_y) = pass.vertical_pos(placement, window_h);
-    let window = Window::of(x, y, window_w);
+    let window = Window::of(x, y);
 
     let grid = Grid {
-        x: px.padding,
-        y: px.top_block(),
+        // Logical pixels rather than the physical forms above, so the cell strides are
+        // accumulated in the space the component lays out in; see `Grid::rect`.
+        x_dp: request.metrics.container_padding,
+        y_dp: top_block_dp(request.metrics),
         columns,
-        cell_w: px.cell_w,
-        cell_h: px.cell_h,
-        gap: px.gap,
+        cell_dp: (request.panel.cell_width, request.metrics.cell_height),
+        gap_dp: request.metrics.grid_gap,
+        scale: scale.value,
     };
     let capacity = rows.saturating_mul(columns).max(0);
     let visible = usize::try_from(capacity)
@@ -372,7 +382,7 @@ pub fn compute(request: &PlacementRequest<'_>) -> Geometry {
         clamped_x,
         clamped_y,
         hit_map: grid.hit_map(visible, first_index(request.frame)),
-        arrow: pass.arrow(placement, window, clamped_x, clamped_y),
+        arrow: pass.arrow(placement, window, container_w, clamped_x, clamped_y),
         scale,
         screen: screen.map_or(request.anchor.screen, |output| output.id),
     }
@@ -471,29 +481,68 @@ fn to_u32(value: i64) -> u32 {
     value.clamp(0, i64::from(u32::MAX)) as u32
 }
 
+/// Converts a container-relative logical coordinate into physical pixels.
+///
+/// One rounding, on the accumulated coordinate, which is the order the component's own
+/// layout works in: Slint places an element in logical pixels and maps that coordinate onto
+/// the device grid afterwards. See [`Grid::rect`] for why the order matters.
+///
+/// A float-to-integer cast saturates in Rust, so a non-finite or absurd product lands on the
+/// end of the range rather than wrapping.
+fn to_px(dp: f32, scale: f32) -> i64 {
+    (dp * scale).round() as i64
+}
+
+/// Height of the container block above the grid, in logical pixels.
+///
+/// These are the same three constants the placement pass sums in physical pixels for its row
+/// capacity estimate, but summed before the conversion rather than after it. The hit map
+/// needs this form because it is the one the component adds them in.
+fn top_block_dp(metrics: &Metrics) -> f32 {
+    metrics.container_padding + metrics.header_height + metrics.separator_height
+}
+
 /// Where the candidate cells sit inside the container.
+///
+/// Every field is a logical pixel except `scale`, and that is deliberate: the cells are laid
+/// out in the space the component works in, and each coordinate is converted once, at the
+/// end.
 #[derive(Clone, Copy, Debug)]
 struct Grid {
     /// Left edge of the grid area, from the container's left edge.
-    x: i64,
+    x_dp: f32,
     /// Top edge of the grid area, from the container's top edge.
-    y: i64,
+    y_dp: f32,
+    /// Cells on a full row; at least one.
     columns: i64,
-    cell_w: i64,
-    cell_h: i64,
-    gap: i64,
+    /// Width and height of one cell.
+    cell_dp: (f32, f32),
+    /// Gap between two cells and between two rows.
+    gap_dp: f32,
+    /// The ratio the accumulated coordinates are converted with.
+    scale: f32,
 }
 
 impl Grid {
-    /// The rectangle of the `index`-th visible cell, container-relative.
+    /// The rectangle of the `index`-th visible cell, container-relative physical pixels.
+    ///
+    /// The strides are accumulated in logical pixels and converted once, at the end, because
+    /// that is the order the component's own layout works in: cell `k` sits at
+    /// `padding + k * (cell + gap)` logical pixels, and the rasteriser maps that coordinate
+    /// onto the device grid afterwards. Accumulating already-rounded physical strides instead
+    /// drifts by half a pixel per column at a 1.25 ratio -- two pixels by the fifth column --
+    /// and a hit rectangle that far from the cell the user sees is a click that lands on the
+    /// neighbouring candidate or on nothing at all.
     fn rect(&self, index: i64) -> RectI {
         let column = index % self.columns;
         let row = index / self.columns;
+        let x = self.x_dp + column as f32 * (self.cell_dp.0 + self.gap_dp);
+        let y = self.y_dp + row as f32 * (self.cell_dp.1 + self.gap_dp);
         RectI {
-            x: to_i32(self.x + column * (self.cell_w + self.gap)),
-            y: to_i32(self.y + row * (self.cell_h + self.gap)),
-            w: to_u32(self.cell_w),
-            h: to_u32(self.cell_h),
+            x: to_i32(to_px(x, self.scale)),
+            y: to_i32(to_px(y, self.scale)),
+            w: to_u32(to_px(self.cell_dp.0, self.scale)),
+            h: to_u32(to_px(self.cell_dp.1, self.scale)),
         }
     }
 

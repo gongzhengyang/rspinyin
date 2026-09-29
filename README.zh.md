@@ -55,8 +55,11 @@ bash packaging/install.sh
 `/usr/lib/fcitx5`；硬编码路径会把插件装到 Fcitx5 根本不会查找的位置。
 
 常用选项：`--dry-run` 只打印计划不做改动，`--skip-build` 直接安装 `target/` 中已有的
-产物，`--prefix PATH` 与 `--destdir PATH` 改变安装位置，`--no-sudo` 从不提权。
-`just install` 等价。
+产物，`--dict PATH` 安装别处编译好的 `base.dict` 而不自行编译，`--prefix PATH` 与
+`--destdir PATH` 改变安装位置，`--no-sudo` 从不提权。`just install` 等价。
+
+`--dict` 是发行包在没有 Rust 工具链的机器上安装的路径：发行包里带一份编译好的
+`base.dict`，而安装器会先读一遍它再复制，而不是信任调用者给的路径。
 
 安装的文件：
 

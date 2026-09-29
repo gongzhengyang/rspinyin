@@ -17,7 +17,7 @@ use ime_types::WordFlags;
 use crate::format::{
     DictEntry, FLAG_TERM, PROB_Q12_MAX, hash_word, pack_fst_value,
     reader::{Reader, Verify},
-    writer,
+    unpack_fst_value, writer,
 };
 
 use super::*;
@@ -58,6 +58,9 @@ const FIXTURE_KEYS: [(&str, &[&str]); 7] = [
 enum Broken {
     /// `ni`'s packed value points past the end of the word list.
     ListRange,
+    /// `ni`'s packed range starts inside the word list and its count runs past the end,
+    /// which is the case a start-only check would let through.
+    ListOverrun,
     /// `ni`'s word-list entry names a word id that does not exist.
     WordId,
     /// The record reached by `zhong` points past the end of the string pool.
@@ -148,6 +151,14 @@ fn index_sections(words: &[FixtureWord], broken: Option<Broken>) -> [Vec<u8>; 2]
                 let beyond = total_ids + 3;
                 let beyond = u64::try_from(beyond).expect("small fixture");
                 pack_fst_value(beyond, count).expect("packing")
+            }
+            Some(Broken::ListOverrun) if key == "ni" => {
+                // The last id the word list holds, with a count one past what is left
+                // after it: every id the range names but the first is outside the
+                // section.
+                let inside = total_ids.saturating_sub(1);
+                let inside = u64::try_from(inside).expect("small fixture");
+                pack_fst_value(inside, count + 1).expect("packing")
             }
             Some(Broken::WordId) if key == "ni" => {
                 word_ids = vec![entry_count + 7];
@@ -314,7 +325,9 @@ fn test_lookup_returns_nothing_for_a_key_that_is_not_in_the_index() {
 
 #[test]
 fn test_lookup_finds_one_word_under_every_key_of_a_polyphone_word() {
-    let lexicon = fixture("polyphone");
+    let scratch = ScratchDict::new(&fixture_image(None), "polyphone");
+    let loaded = FstLexicon::load(scratch.path());
+    let lexicon = loaded.expect("loading the fixture");
     let hang: Vec<WordRef<'_>> = lexicon.lookup("yin'hang").expect("hang").collect();
     let xing: Vec<WordRef<'_>> = lexicon.lookup("yin'xing").expect("xing").collect();
     assert_eq!(hang.len(), 1);
@@ -323,6 +336,27 @@ fn test_lookup_finds_one_word_under_every_key_of_a_polyphone_word() {
     assert_eq!(hang[0].weight, xing[0].weight);
     assert_eq!(hang[0].syl_count, xing[0].syl_count);
     assert_eq!(hang[0].weight, 5_500);
+
+    // Both keys must reach the *same* record, not two records that happen to agree: the
+    // word list is the indirection that lets one entry answer to several keys, and a
+    // compiler that emitted a second entry per key would double the entry table. The
+    // identity is read back from the container rather than inferred from the words,
+    // because two words agreeing on every visible field is exactly what a duplicate
+    // record would look like.
+    let image = fs::read(scratch.path()).expect("reading the fixture");
+    let reader = Reader::parse(image, Verify::Full).expect("parsing the fixture");
+    let map = reader.fst_map().expect("the fixture has an index");
+    let id_of = |key: &str| {
+        let packed = map.get(key.as_bytes()).expect("the fixture holds this key");
+        let (start, _) = unpack_fst_value(packed);
+        reader
+            .word_list_id(usize::try_from(start).expect("a small fixture"))
+            .expect("the word list holds this id")
+    };
+    assert_eq!(id_of("yin'hang"), id_of("yin'xing"));
+    let record = reader.entry(id_of("yin'hang")).expect("the record");
+    assert_eq!(reader.word(&record).expect("the text"), "银行");
+    assert_eq!(record.weight, 5_500);
 }
 
 #[test]
@@ -368,8 +402,14 @@ fn test_prefix_reports_the_capability_as_not_yet_available() {
 
 #[test]
 fn test_lookup_reports_a_value_that_leaves_its_section() {
+    // Three levels, three ways to leave the section: the packed word-list range, the word
+    // id inside it, and the record's text range. The range case comes in both shapes --
+    // a start past the section, and a start inside it whose count runs past the end --
+    // because a check that only compared the start against the length would accept the
+    // second one.
     let cases = [
         (Broken::ListRange, "ni", "wordlist_start"),
+        (Broken::ListOverrun, "ni", "wordlist_start"),
         (Broken::WordId, "ni", "entry_index"),
         (Broken::Text, "zhong", "word_off"),
     ];

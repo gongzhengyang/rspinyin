@@ -30,9 +30,9 @@ use ime_types::{
     UserFreqSource,
 };
 
-use crate::segment::SyllableDag;
+use crate::segment::{Readings, SyllableDag, abbrev::is_enabled};
 use crate::viterbi::decoder::{Decoder, Silent};
-use crate::viterbi::lattice::{Lattice, build_lattice_into};
+use crate::viterbi::lattice::{Lattice, LatticeOptions, build_lattice_into};
 use crate::viterbi::sweep::{Draft, Sources, Sweep, SweepStorage, finish, result_of_into};
 
 /// Everything one decode allocates, kept across decodes.
@@ -50,9 +50,40 @@ pub struct DecodeScratch {
     drafts: Vec<Draft>,
     /// The result the decode writes into, capacities reused.
     out: DecodeResult,
+    /// The abbreviation walk's enumeration buffer, reused by every node of a build and
+    /// handed to the next one.
+    readings: Readings,
+    /// Whether the last decode's abbreviation walk left readings out of the lattice.
+    abbrev_truncated: bool,
 }
 
 impl DecodeScratch {
+    /// Returns the segmentation graph of the input the last decode read.
+    ///
+    /// The graph belongs to the workspace rather than to the caller: a decode segments the
+    /// request itself, and handing the same graph back is what lets a session read the
+    /// syllable grid without segmenting the input a second time.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn dag(&self) -> &SyllableDag {
+        &self.dag
+    }
+
+    /// Empties the graph, keeping its buffers.
+    ///
+    /// A session that has finished a composition holds no input and therefore no graph;
+    /// this is the call that makes the workspace agree, without giving up the capacity the
+    /// next composition's first decode would otherwise have to allocate.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn clear_dag(&mut self) {
+        let _ = self.dag.build("");
+    }
+
     /// Creates an empty workspace; the first decode allocates.
     ///
     /// # Panics
@@ -64,7 +95,29 @@ impl DecodeScratch {
             sweep: SweepStorage::new(),
             drafts: Vec::new(),
             out: empty_result(),
+            readings: Readings::new(),
+            abbrev_truncated: false,
         }
+    }
+
+    /// Returns whether the last decode's abbreviation walk left readings of the input out
+    /// of the lattice.
+    ///
+    /// The signal behind the [`ABBREV_TRUNCATED_CODE`] diagnostic: an input with more
+    /// readings than the enumeration cap holds is still decoded, from the most specific
+    /// readings the cap left room for, and this is what tells a caller the answer is built
+    /// from a subset. It is a fact about the input rather than about the flag set, so a
+    /// caller that logs it once has to remember that it already did. Always `false` for a
+    /// request that clears [`DecodeFlags::ABBREV`](ime_types::DecodeFlags::ABBREV), and
+    /// for a request that is answered without a lattice at all.
+    ///
+    /// [`ABBREV_TRUNCATED_CODE`]: crate::segment::abbrev::ABBREV_TRUNCATED_CODE
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn abbrev_truncated(&self) -> bool {
+        self.abbrev_truncated
     }
 
     /// Returns the result of the last decode, which a decode that has not run leaves empty.
@@ -150,7 +203,11 @@ impl Decoder {
     /// `req.raw`, so a caller that also needs the segmentation -- the session does, for the
     /// preedit -- reads it from the workspace instead of building a second graph. With
     /// [`DecodeFlags::USER_DICT`](ime_types::DecodeFlags::USER_DICT) clear, the user's own
-    /// words and counts take no part in the ranking or in the labels.
+    /// words and counts take no part in the ranking or in the labels; with
+    /// [`DecodeFlags::ABBREV`](ime_types::DecodeFlags::ABBREV) set, the lattice is widened
+    /// by the initial-letter readings of the input, and
+    /// [`DecodeScratch::abbrev_truncated`] reports whether the enumeration cap left any of
+    /// them out.
     ///
     /// # Errors
     ///
@@ -169,12 +226,26 @@ impl Decoder {
         uf: &dyn UserFreqSource,
         lm: &dyn LanguageModel,
     ) {
+        // The flag describes an answer, so it is cleared before anything can set it: a
+        // request answered without a lattice at all reports no truncation, whatever the
+        // decode before it found.
+        scratch.abbrev_truncated = false;
         // Every way the input can be refused -- empty, past the length limit, or impossible
         // to cut into syllables -- leaves the graph without a path, and that is the condition
         // the degraded answer keys on. The error is not propagated because the contract
         // answers a request it cannot decode with a candidate rather than with an error the
         // caller has to handle.
-        if scratch.dag.build(&req.raw).is_err() || !scratch.dag.has_path() {
+        //
+        // The abbreviation switch is the one thing that changes which requests those are: the
+        // walk reads the letters of the input rather than the syllables of the graph, so `nh`
+        // and `bjdx` reach a word although no cut of them spells one, and the lattice is left
+        // to find it -- its own answer to a lattice with no edge is the pass-through below, so
+        // nothing is lost by asking. A request that carries no input at all stays out of that
+        // path: there is nothing to read, and the empty root path the sweep would find at
+        // node 0 is not a candidate.
+        let built = scratch.dag.build(&req.raw);
+        let abbrev_readable = is_enabled(req.flags) && !scratch.dag.is_empty();
+        if built.is_err() && !abbrev_readable {
             passthrough_into(&mut scratch.out, &req.raw);
             return;
         }
@@ -193,7 +264,18 @@ impl Decoder {
         // fallbacks, and `node_count` nodes exist.
         let mut lattice =
             Lattice::with_capacity(usize::from(scratch.dag.len()) + 1, cfg.fallback_single);
-        build_lattice_into(&mut lattice, &scratch.dag, lx, user, cfg.fallback_single);
+        build_lattice_into(
+            &mut lattice,
+            &scratch.dag,
+            lx,
+            user,
+            LatticeOptions {
+                fallback_single: cfg.fallback_single,
+                flags: req.flags,
+                readings: &mut scratch.readings,
+            },
+        );
+        scratch.abbrev_truncated = lattice.abbrev_truncated();
         let nodes = lattice.node_count();
         scratch.sweep.prepare(nodes, usize::from(cfg.beam_k));
         let sources = Sources::new(&lattice, self.scorer(), lm, user);
@@ -502,5 +584,85 @@ mod tests {
         assert_eq!(result.candidates[0].text, "zzz");
         assert_eq!(result.candidates[0].source, CandidateSource::Passthrough);
         assert!(result.segments.is_empty(), "there is no cut to describe");
+    }
+
+    #[test]
+    fn test_decode_into_reads_an_abbreviated_input_through_the_prefix_query() {
+        // `nh` spells no syllable, so no cut of it is a reading at all -- the graph has no
+        // path -- and the only way the input can be decoded is the abbreviation walk. The
+        // query it makes is `n'h`, which is what a dictionary that indexes initials
+        // answers, and the word it returns is the one the user meant.
+        let lexicon = MockLexicon::with(&[("n'h", "你好")]);
+        let lm = InMemoryLm::new();
+        let decoder = Decoder::default();
+        let mut scratch = DecodeScratch::new();
+        let request =
+            DecodeRequest::new("nh").with_flags(DecodeFlags::USER_DICT | DecodeFlags::ABBREV);
+        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm);
+        let result = scratch.result();
+        assert!(
+            !result.degraded,
+            "an abbreviation is a reading of the input"
+        );
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].text, "你好");
+        assert_eq!(result.candidates[0].consumed_syllables, 2);
+        assert_eq!(result.candidates[0].source, CandidateSource::Dict);
+        assert!(!scratch.abbrev_truncated());
+        // The cut of the winning path describes the abbreviated reading: one word of two
+        // syllables, covering the whole input.
+        assert_eq!(result.segments.len(), 1);
+        assert_eq!((result.segments[0].start, result.segments[0].end), (0, 2));
+    }
+
+    #[test]
+    fn test_decode_into_answers_an_abbreviated_input_with_the_pass_through_without_the_flag() {
+        // The same input with the switch clear has no cut of its own, so the answer is the
+        // input itself -- what the decoder answered before abbreviation existed -- and the
+        // prefix query is not made either, which the dictionary reports by refusing every
+        // one of them.
+        let lexicon = MockLexicon::with(&[("n'h", "你好")]).refusing_prefix();
+        let lm = InMemoryLm::new();
+        let decoder = Decoder::default();
+        let mut scratch = DecodeScratch::new();
+        let request = DecodeRequest::new("nh");
+        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm);
+        let result = scratch.result();
+        assert!(result.degraded);
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].text, "nh");
+        assert_eq!(result.candidates[0].source, CandidateSource::Passthrough);
+
+        // With the switch set the query is made and refused, so the lattice is empty and
+        // the answer degrades the same way: a dictionary that cannot enumerate prefixes
+        // leaves abbreviation with nothing to offer rather than with a wrong candidate.
+        let asked = DecodeRequest::new("nh").with_flags(DecodeFlags::ABBREV);
+        decoder.decode_into(&mut scratch, &asked, &lexicon, &NoUser, &lm);
+        let result = scratch.result();
+        assert!(result.degraded);
+        assert_eq!(result.candidates[0].text, "nh");
+        assert_eq!(result.candidates[0].source, CandidateSource::Passthrough);
+    }
+
+    #[test]
+    fn test_decode_into_reports_a_truncated_abbreviation_enumeration() {
+        // An input whose readings multiply past the enumeration cap still decodes, and the
+        // workspace says the answer was built from a subset of them. The same input with
+        // the switch clear reports nothing, because nothing was enumerated.
+        let lexicon = MockLexicon::with(&[("ai", "爱")]);
+        let lm = InMemoryLm::new();
+        let decoder = Decoder::default();
+        let mut scratch = DecodeScratch::new();
+        let long = "ai".repeat(32);
+        let request = DecodeRequest::new(long.as_str())
+            .with_flags(DecodeFlags::USER_DICT | DecodeFlags::ABBREV);
+        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm);
+        assert!(scratch.abbrev_truncated(), "the cap left readings out");
+        let plain = DecodeRequest::new(long.as_str());
+        decoder.decode_into(&mut scratch, &plain, &lexicon, &NoUser, &lm);
+        assert!(
+            !scratch.abbrev_truncated(),
+            "a decode that does not walk abbreviations clears the previous report"
+        );
     }
 }

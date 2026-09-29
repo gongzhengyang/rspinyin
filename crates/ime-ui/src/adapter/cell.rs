@@ -431,7 +431,7 @@ fn annotation_of(candidate: &Candidate, geometry: CellGeometry) -> &str {
 /// than a pixel width: one entry serves both the cell font and the smaller annotation font.
 /// The candidate set of one reading repeats heavily across keystrokes, so the cache is what
 /// keeps a keystroke from walking every candidate's text again. It holds
-/// [`MEASURE_CACHE_CAPACITY`] entries; a text that arrives at a full cache evicts the least
+/// `MEASURE_CACHE_CAPACITY` entries; a text that arrives at a full cache evicts the least
 /// recently used one.
 ///
 /// # Concurrency

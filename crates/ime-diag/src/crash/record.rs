@@ -18,7 +18,9 @@
 //! static template by the same rule that governs log messages -- never a value -- and
 //! the backtrace holds symbol names and addresses. Both are bounded and stripped of
 //! control characters by [`CrashRecord::render`], so nothing in them can forge a line
-//! of the record or push it past its size cap.
+//! of the record or push it past its size cap. The message is put through the log
+//! layer's denylist as well: a template that quotes a value -- `assert_eq!` reports
+//! the two sides it compared -- cannot carry one past the field rules that way.
 //!
 //! # Modes
 //!
@@ -91,7 +93,10 @@ impl CrashRecord {
     /// Every value is written on one line with its newlines escaped, so a value can
     /// never forge a second line of the record. The result is at most
     /// [`MAX_RECORD_BYTES`] bytes and the backtrace at most [`MAX_BACKTRACE_FRAMES`]
-    /// frames; a record that would be longer is cut at a character boundary.
+    /// frames; a record that would be longer is cut at a character boundary. The panic
+    /// message is the one free-text field that could carry a value, and it is put
+    /// through the log layer's denylist before it is written; see
+    /// [`crate::redact::scrub_denied_values`].
     ///
     /// # Returns
     ///
@@ -119,7 +124,10 @@ impl CrashRecord {
         let _ = writeln!(
             text,
             "payload={}",
-            escape_line(&self.payload, MAX_PAYLOAD_CHARS)
+            escape_line(
+                &crate::redact::scrub_denied_values(&self.payload),
+                MAX_PAYLOAD_CHARS
+            )
         );
         for (key, value) in self.context.iter() {
             let _ = writeln!(
@@ -409,6 +417,17 @@ mod tests {
         }
     }
 
+    /// Whether a backtrace line has the `N: symbol` shape a rendered frame carries.
+    ///
+    /// The default rendering ends with a note about `RUST_BACKTRACE=full`, and that note
+    /// is not a frame: counting lines would make the depth assertion below measure the
+    /// wrong thing.
+    fn is_frame_line(line: &str) -> bool {
+        let trimmed = line.trim_start();
+        let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
+        digits > 0 && trimmed[digits..].starts_with(':')
+    }
+
     #[test]
     fn test_crash_record_render_writes_the_documented_lines() {
         let mut context = CrashContext::new();
@@ -458,6 +477,64 @@ mod tests {
         record.payload = String::from("bell\u{7}and\u{1b}[31mred");
         let text = record.render();
         assert!(text.contains("payload=belland[31mred"), "{text}");
+    }
+
+    #[test]
+    fn test_crash_record_render_scrubs_a_denied_value_from_the_payload() {
+        // A message that quotes a value is the one way free text could carry one -- an
+        // `assert_eq!` reports the two sides it compared -- so the payload goes through
+        // the log layer's denylist before it is written.
+        let planted = "fixture-token-7f";
+        // A structural name that merely starts with a denied one is not a value, so it
+        // survives the scrub exactly as it survives the field rules. Taken before the
+        // binding below shadows the builder.
+        let mut structural = record();
+        structural.payload = String::from("raw_len=16 candidate_count=3");
+        assert!(
+            structural
+                .render()
+                .contains("payload=raw_len=16 candidate_count=3"),
+            "a structural fact must stay readable"
+        );
+
+        let mut record = record();
+        record.payload = format!("assertion failed: raw={planted} end");
+
+        let text = record.render();
+
+        assert!(
+            !text.contains(planted),
+            "{planted} reached the record:\n{text}"
+        );
+        assert!(
+            text.contains("payload=assertion failed: raw=<redacted:len=16> end"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn test_crash_record_render_carries_a_backtrace_of_at_least_eight_frames() {
+        // The acceptance criterion asks for a diagnosable trace, so the depth a real
+        // capture produces is asserted rather than assumed: eight frames is the floor,
+        // and the cap is what keeps the record inside its size budget.
+        const REQUIRED_FRAMES: usize = 8;
+
+        let mut record = record();
+        record.backtrace = std::backtrace::Backtrace::force_capture().to_string();
+
+        let text = record.render();
+        let frames = text
+            .lines()
+            .skip_while(|line| *line != "backtrace:")
+            .skip(1)
+            .filter(|line| is_frame_line(line))
+            .count();
+
+        assert!(
+            frames >= REQUIRED_FRAMES,
+            "a captured trace must carry at least {REQUIRED_FRAMES} frames, got {frames}:\n{text}"
+        );
+        assert!(frames <= MAX_BACKTRACE_FRAMES, "{frames} frames:\n{text}");
     }
 
     #[test]

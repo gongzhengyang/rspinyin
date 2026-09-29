@@ -65,6 +65,7 @@ criterion = "0.8"                                                      # 解码/
 proptest = "1"                                                         # 输入缓冲与切分的不变量属性测试
 serde_json = "1"                                                       # budgets.json 读写
 toml = "0.9"                                                           # data/sources.toml 白名单解析
+png = "0.18"                                                       # 截图通道的 PNG 编解码
 sha2 = "0.10"                                                          # 词源 SHA256 校验
 pkg-config = "0.3"                                                     # ime-fcitx5 / ime-ui-addon 的 build.rs 探测 Fcitx5（仅 fcitx5-host feature 下）
 cc = "1"                                                               # ime-fcitx5 / ime-ui-addon 的 build.rs 编译 C++ 胶水

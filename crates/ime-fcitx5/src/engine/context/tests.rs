@@ -10,8 +10,17 @@
 //! a modifier press is never ours — so the per-layer tests assert what the layer says
 //! about such a key while the walk tests assert what `dispatch` answers. The two are
 //! different on purpose, and the difference is asserted rather than assumed.
+//!
+//! The layers that read the session answer through the arbitrator, so the sessions they are
+//! asked about are real ones: a composition built by typing through the state machine, with
+//! the candidates, the page and the highlight a live composition actually holds.
 
-use ime_core::state::{Session, SessionState};
+use ime_core::lm::InMemoryLm;
+use ime_core::state::{Session, SessionConfig, SessionEnv, SessionState};
+use ime_core::viterbi::Decoder;
+use ime_types::{
+    ImeError, KeyAction, Lexicon, SyllableId, UserFreqSource, WordFlags, WordIter, WordRef,
+};
 
 use crate::engine::*;
 
@@ -82,6 +91,105 @@ fn walk_order() -> [KeyContext; 4] {
     ]
 }
 
+// ── The doubles ──────────────────────────────────────────────────────────────────
+//
+// Everything is in memory: a dictionary of eight rows, a language model, and a
+// user-frequency source that answers nothing. No test here touches a dictionary file, the
+// clock, the environment or a display server, and none of them sleeps.
+
+/// The dictionary the composing setups decode against.
+///
+/// Eight readings of `ni`, in ranking order: more than one page of five, so the page keys,
+/// the highlight moves and the digit row have something to act on — and so that a digit past
+/// the end of the page and a page key with no page to turn to are reachable, which are the
+/// keys the arbitration hands back while a composition is live.
+struct TestLexicon;
+
+impl TestLexicon {
+    /// Every entry, as `(key, word, weight)`, in the order the ranking reads them.
+    const WORDS: [(&'static str, &'static str, u32); 8] = [
+        ("ni", "你", 900_000),
+        ("ni", "尼", 800_000),
+        ("ni", "泥", 700_000),
+        ("ni", "拟", 600_000),
+        ("ni", "逆", 500_000),
+        ("ni", "腻", 400_000),
+        ("ni", "妮", 300_000),
+        ("ni", "霓", 200_000),
+    ];
+}
+
+impl Lexicon for TestLexicon {
+    fn lookup(&self, key: &str) -> Result<WordIter<'_>, ImeError> {
+        let words = Self::WORDS
+            .iter()
+            .filter(|(row, _, _)| *row == key)
+            .map(|&(_, text, weight)| WordRef {
+                text,
+                weight,
+                syl_count: 1,
+                flags: WordFlags::empty(),
+            })
+            .collect();
+        Ok(WordIter::from_vec(words))
+    }
+
+    fn prefix(&self, _prefix: &str, _limit: usize) -> Result<WordIter<'_>, ImeError> {
+        Err(ImeError::Unsupported)
+    }
+
+    fn fallback_single(&self, _syl: SyllableId, _limit: usize) -> Result<WordIter<'_>, ImeError> {
+        Ok(WordIter::from_vec(Vec::new()))
+    }
+}
+
+/// A user-frequency source that answers nothing.
+///
+/// Nothing the walk asks reaches the user's frequencies: the question is what a session
+/// *would* do, and no step is taken.
+struct SilentUser;
+
+impl UserFreqSource for SilentUser {
+    fn freq(&self, _key: &str) -> u32 {
+        0
+    }
+
+    fn record(&self, _key: &str, _weight_hint: u16) {}
+
+    fn is_user_word(&self, _key: &str) -> bool {
+        false
+    }
+}
+
+/// A live composition of `ni`, built the way a user builds one.
+///
+/// Driven through the state machine one character at a time rather than written together by
+/// hand, so that the candidates, the page, the highlight and the caret are the ones a real
+/// composition holds — which is exactly what the arbitration reads. The session owns
+/// everything it decoded, so it outlives the sources it was built from.
+fn composing_session() -> Session {
+    let lexicon = TestLexicon;
+    let user = SilentUser;
+    let lm = InMemoryLm::new();
+    let decoder = Decoder::default();
+    let env = SessionEnv {
+        decoder: &decoder,
+        lexicon: &lexicon,
+        user_freq: &user,
+        lm: &lm,
+    };
+    let cfg = SessionConfig::default();
+    let mut session = Session::new();
+    for ch in "ni".chars() {
+        let effects = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+        assert!(!effects.is_empty(), "typing {ch:?} composes");
+    }
+    assert_eq!(session.state, SessionState::Composing);
+    session
+}
+
+// ── The setups ───────────────────────────────────────────────────────────────────
+
 /// The state the walk is driven in, as the session and the overlay behind it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Setup {
@@ -106,29 +214,28 @@ impl Setup {
         Setup::TempEnglish,
         Setup::Absent,
     ];
-}
 
-/// The session a setup runs against, with its state set directly.
-///
-/// The walk reads the session's state and its temporary-English flag and nothing else, so
-/// the states are set on a fresh session rather than reached through the machine: a
-/// composition built by stepping would need a decoder and a dictionary for facts no layer
-/// looks at.
-fn session_of(setup: Setup) -> Option<Session> {
-    let state = match setup {
-        Setup::OverlayOverComposition | Setup::Composing | Setup::TempEnglish => {
-            SessionState::Composing
+    /// The session a setup runs against.
+    ///
+    /// The composing setups are real compositions decoded from the doubles, because the
+    /// arbitration reads the candidate list and the paging state and a session written
+    /// together by hand would hold neither. The other two are the states the walk reaches
+    /// without one, and the arbitration answers them from the state alone.
+    fn session(self) -> Option<Session> {
+        match self {
+            Setup::OverlayOverComposition | Setup::Composing => Some(composing_session()),
+            Setup::TempEnglish => {
+                let mut session = composing_session();
+                session.temp_english = true;
+                Some(session)
+            }
+            Setup::Idle => Some(Session::new()),
+            Setup::Absent => None,
         }
-        Setup::Idle => SessionState::Idle,
-        Setup::Absent => return None,
-    };
-    let mut session = Session::new();
-    session.state = state;
-    session.temp_english = setup == Setup::TempEnglish;
-    Some(session)
+    }
 }
 
-/// A dispatcher in the state a setup describes, with the shipped bindings.
+/// A dispatcher in the state a setup describes, with the shipped configuration.
 fn dispatcher_in(setup: Setup) -> Dispatcher {
     let mut dispatcher = Dispatcher::new(KeyBindings::default());
     if setup == Setup::OverlayOverComposition {
@@ -145,23 +252,27 @@ fn view_of(session: Option<&Session>) -> SessionView<'_> {
     }
 }
 
-/// Runs one key through the walk in `setup`.
-fn dispatch_in_setup(setup: Setup, event: &KeyEvent) -> Consumed {
+/// Runs one key through the walk in `setup`, against `session`.
+fn dispatch_in_setup(setup: Setup, session: Option<&Session>, event: &KeyEvent) -> Consumed {
     let mut dispatcher = dispatcher_in(setup);
-    let session = session_of(setup);
-    let view = view_of(session.as_ref());
-    dispatcher.dispatch(event, &view)
+    dispatcher.dispatch(event, &view_of(session))
 }
 
-/// What the routing table alone says about one key.
+/// Asserts that one layer hands every key of the corpus back, in every modifier state.
 ///
-/// This is the composition layer's answer, without the modifier-press rule that `dispatch`
-/// applies ahead of the walk.
-fn table_verdict(event: &KeyEvent, bindings: &KeyBindings) -> Consumed {
-    if claims_key(translate_key(&event.as_host_event(), bindings)) {
-        Consumed::Consumed
-    } else {
-        Consumed::Ignored
+/// The three layers that defer outside their own key domain are swept here rather than in a
+/// copy of the loop each: a key a layer starts claiming is then visible in one place.
+fn assert_layer_defers(setup: Setup, context: KeyContext, session: Option<&Session>) {
+    let view = view_of(session);
+    let mut dispatcher = dispatcher_in(setup);
+    for sym in corpus() {
+        for state in STATES {
+            assert_eq!(
+                dispatcher.dispatch_in(context, &press(sym, state), &view),
+                Consumed::Ignored,
+                "{setup:?} layer {context:?} sym {sym:#06x} state {state:#x}"
+            );
+        }
     }
 }
 
@@ -231,7 +342,7 @@ fn test_dispatcher_overlay_tracks_what_is_open() {
 
 #[test]
 fn test_dispatcher_set_bindings_changes_what_the_walk_claims() {
-    let composing = session_of(Setup::Composing);
+    let composing = Setup::Composing.session();
     let view = view_of(composing.as_ref());
     let zero = press(KEY_0, 0);
 
@@ -245,6 +356,27 @@ fn test_dispatcher_set_bindings_changes_what_the_walk_claims() {
     let mut reloaded = Dispatcher::new(KeyBindings::default());
     reloaded.set_bindings(flipping);
     assert_eq!(reloaded.dispatch(&zero, &view), Consumed::Consumed);
+}
+
+#[test]
+fn test_dispatcher_set_session_config_changes_what_the_walk_keeps() {
+    // The arbitration measures a typed character against the length limit the session
+    // configuration declares, so a reload that lowers it changes which keys the plugin
+    // keeps. The composition holds two bytes and the limit below leaves room for neither.
+    let composing = Setup::Composing.session();
+    let view = view_of(composing.as_ref());
+    let letter = press(KEY_A, 0);
+
+    let mut shipped = Dispatcher::new(KeyBindings::default());
+    assert_eq!(shipped.dispatch(&letter, &view), Consumed::Consumed);
+
+    let mut limited = Dispatcher::new(KeyBindings::default());
+    limited.set_session_config(SessionConfig::new(2, 5, true, 720));
+    assert_eq!(
+        limited.dispatch(&letter, &view),
+        Consumed::Ignored,
+        "a full input hands the character to the application"
+    );
 }
 
 #[test]
@@ -267,42 +399,75 @@ fn test_session_view_reports_the_session_it_wraps() {
     let loaded = SessionView::new(&session);
     assert!(loaded.temp_english());
     assert_eq!(loaded.state(), Some(SessionState::Idle));
-    // `candidate_count` delegates to the session's own decode result. A fresh session
-    // holds no candidates and there is no public way to seed one -- the buffers belong to
-    // the decode workspace and `Session::decoded` hands them out read-only -- so the
-    // assertion is on the delegation rather than on a number. The non-empty case is
-    // covered where the decoder actually runs, in `ime-core`'s state tests.
-    assert_eq!(loaded.candidate_count(), session.decoded().candidates.len());
+
+    // The count is the decode's own answer, and a live composition has candidates in it.
+    let composing = composing_session();
+    let view = SessionView::new(&composing);
+    assert_eq!(view.state(), Some(SessionState::Composing));
+    assert!(view.candidate_count() > 0, "the fixture composes something");
+}
+
+#[test]
+fn test_session_view_arbitrate_keeps_only_what_the_session_can_act_on() {
+    let cfg = SessionConfig::default();
+    let composing = composing_session();
+    let view = SessionView::new(&composing);
+    // The first three are keys the composition acts on — the highlight, the digit that names
+    // a candidate, and the engine's own mode bit. The last three it does not, though the
+    // routing table names every one of them: that half of the decision is what the table
+    // cannot see, and keeping such a key is the swallowed-key defect.
+    let rows = [
+        (KeyAction::CommitHighlighted, Consumed::Consumed),
+        (KeyAction::SelectIndex(1), Consumed::Consumed),
+        (KeyAction::ToggleLang, Consumed::Consumed),
+        (KeyAction::SelectIndex(9), Consumed::Ignored),
+        (KeyAction::PagePrev, Consumed::Ignored),
+        (KeyAction::Ignore, Consumed::Ignored),
+    ];
+    for (action, expected) in rows {
+        assert_eq!(view.arbitrate(action, &cfg), expected, "{action:?}");
+    }
+
+    // A view with no session behind it keeps nothing at all.
+    let absent = SessionView::absent();
+    for action in [
+        KeyAction::CommitHighlighted,
+        KeyAction::ToggleLang,
+        KeyAction::InputChar('a'),
+    ] {
+        assert_eq!(
+            absent.arbitrate(action, &cfg),
+            Consumed::Ignored,
+            "{action:?} has nowhere to go without a session"
+        );
+    }
 }
 
 #[test]
 fn test_dispatch_in_host_layer_never_consumes_a_key() {
-    let session = session_of(Setup::Composing);
-    let view = view_of(session.as_ref());
-    let mut dispatcher = Dispatcher::new(KeyBindings::default());
-    for sym in corpus() {
-        for state in STATES {
-            assert_eq!(
-                dispatcher.dispatch_in(KeyContext::Host, &press(sym, state), &view),
-                Consumed::Ignored,
-                "sym {sym:#06x} state {state:#x}"
-            );
-        }
-    }
+    // The host layer is the answer the walk falls through to, and it is written as a layer
+    // so that the tree has a row for the case rather than an implicit branch.
+    let session = Setup::Composing.session();
+    assert_layer_defers(Setup::Composing, KeyContext::Host, session.as_ref());
 }
 
 #[test]
-fn test_dispatch_in_composition_layer_follows_the_routing_table() {
-    let bindings = KeyBindings::default();
-    let mut dispatcher = Dispatcher::new(bindings);
-    let session = session_of(Setup::Composing);
+fn test_dispatch_in_composition_layer_answers_through_the_arbitrator() {
+    // Inside a live composition the layer's answer is the arbitrator's: the table's meaning
+    // of the key, and whether the session would act on the action it named. A routed key
+    // nothing can act on is handed back, which is the half of the decision the table cannot
+    // see and the reason this layer is not a keyboard grab.
+    let cfg = SessionConfig::default();
+    let session = Setup::Composing.session();
     let view = view_of(session.as_ref());
+    let mut dispatcher = Dispatcher::new(KeyBindings::default());
     for sym in corpus() {
         for state in STATES {
             let event = press(sym, state);
+            let action = dispatcher.action_for(&event);
             assert_eq!(
                 dispatcher.dispatch_in(KeyContext::Composition, &event, &view),
-                table_verdict(&event, &bindings),
+                arbitrate(action, session.as_ref(), &cfg),
                 "sym {sym:#06x} state {state:#x}"
             );
         }
@@ -310,55 +475,48 @@ fn test_dispatch_in_composition_layer_follows_the_routing_table() {
 }
 
 #[test]
-fn test_dispatch_in_composition_layer_defers_when_nothing_is_composing() {
-    let session = session_of(Setup::Idle);
+fn test_dispatch_in_composition_layer_hands_back_a_key_the_session_cannot_act_on() {
+    // The other half of the same rule, and the defect the arbitration closes: every key
+    // below is one the table names, and the composition has nothing to do with any of them.
+    let session = Setup::Composing.session();
     let view = view_of(session.as_ref());
     let mut dispatcher = Dispatcher::new(KeyBindings::default());
-    for sym in corpus() {
-        for state in STATES {
-            assert_eq!(
-                dispatcher.dispatch_in(KeyContext::Composition, &press(sym, state), &view),
-                Consumed::Ignored,
-                "sym {sym:#06x} state {state:#x}"
-            );
-        }
+    let cases = [
+        (KEY_9, 0, "a digit past the end of the page"),
+        (KEY_UP, 0, "the first page has nothing before it"),
+        (KEY_MINUS, 0, "and no page to turn back to"),
+        (KEY_TAB, SHIFT, "the highlight is on the first candidate"),
+        (KEY_RIGHT, 0, "the caret is already at the end of the input"),
+    ];
+    for (sym, state, why) in cases {
+        let event = press(sym, state);
+        assert_ne!(
+            dispatcher.action_for(&event),
+            KeyAction::Ignore,
+            "the table names {sym:#06x}"
+        );
+        assert_eq!(
+            dispatcher.dispatch_in(KeyContext::Composition, &event, &view),
+            Consumed::Ignored,
+            "{why}: sym {sym:#06x} state {state:#x}"
+        );
     }
 }
 
 #[test]
-fn test_dispatch_in_composition_layer_defers_in_temporary_english() {
-    let session = session_of(Setup::TempEnglish);
-    let view = view_of(session.as_ref());
-    let mut dispatcher = Dispatcher::new(KeyBindings::default());
-    for sym in corpus() {
-        for state in STATES {
-            assert_eq!(
-                dispatcher.dispatch_in(KeyContext::Composition, &press(sym, state), &view),
-                Consumed::Ignored,
-                "sym {sym:#06x} state {state:#x}"
-            );
-        }
-    }
-}
-
-#[test]
-fn test_dispatch_in_composition_layer_defers_without_a_session() {
-    let view = SessionView::absent();
-    let mut dispatcher = Dispatcher::new(KeyBindings::default());
-    for sym in corpus() {
-        for state in STATES {
-            assert_eq!(
-                dispatcher.dispatch_in(KeyContext::Composition, &press(sym, state), &view),
-                Consumed::Ignored,
-                "sym {sym:#06x} state {state:#x}"
-            );
-        }
+fn test_dispatch_in_composition_layer_is_entered_by_a_live_composition_alone() {
+    // The layer's entry condition, and the reason a composition is not a keyboard grab: a
+    // session that is composing and is not in temporary English. Every other state, and a
+    // context with no session at all, falls through to the layers below.
+    for setup in [Setup::Idle, Setup::TempEnglish, Setup::Absent] {
+        let session = setup.session();
+        assert_layer_defers(setup, KeyContext::Composition, session.as_ref());
     }
 }
 
 #[test]
 fn test_dispatch_in_session_layer_takes_only_the_keys_an_idle_session_owns() {
-    let session = session_of(Setup::Idle);
+    let session = Setup::Idle.session();
     let view = view_of(session.as_ref());
     let mut dispatcher = Dispatcher::new(KeyBindings::default());
     let cases = [
@@ -371,7 +529,7 @@ fn test_dispatch_in_session_layer_takes_only_the_keys_an_idle_session_owns() {
         (KEY_SPACE, SHIFT, Consumed::Consumed),
         (KEY_PERIOD, CTRL, Consumed::Consumed),
         // Everything else is the application's: the keys the table names and the ones it
-        // does not.
+        // does not. These are the keys the plugin used to eat with nothing composing.
         (KEY_SPACE, 0, Consumed::Ignored),
         (KEY_0 + 3, 0, Consumed::Ignored),
         (KEY_RETURN, 0, Consumed::Ignored),
@@ -391,78 +549,6 @@ fn test_dispatch_in_session_layer_takes_only_the_keys_an_idle_session_owns() {
             expected,
             "sym {sym:#06x} state {state:#x}"
         );
-    }
-}
-
-#[test]
-fn test_dispatch_in_session_layer_defers_without_a_session() {
-    let view = SessionView::absent();
-    let mut dispatcher = Dispatcher::new(KeyBindings::default());
-    for sym in corpus() {
-        for state in STATES {
-            let event = press(sym, state);
-            if is_engine_owned(&dispatcher, &event) {
-                continue;
-            }
-            assert_eq!(
-                dispatcher.dispatch_in(KeyContext::Session, &event, &view),
-                Consumed::Ignored,
-                "sym {sym:#06x} state {state:#x}"
-            );
-        }
-    }
-}
-
-#[test]
-fn test_dispatch_in_session_layer_defers_in_temporary_english() {
-    // The mode hands every key to the application, the two keys that leave it included:
-    // what ends the mode changes no other state and produces no effect.
-    let session = session_of(Setup::TempEnglish);
-    let view = view_of(session.as_ref());
-    let mut dispatcher = Dispatcher::new(KeyBindings::default());
-    for sym in corpus() {
-        for state in STATES {
-            let event = press(sym, state);
-            if is_engine_owned(&dispatcher, &event) {
-                continue;
-            }
-            assert_eq!(
-                dispatcher.dispatch_in(KeyContext::Session, &event, &view),
-                Consumed::Ignored,
-                "sym {sym:#06x} state {state:#x}"
-            );
-        }
-    }
-}
-
-/// Whether the engine owns this key outright, in every session state.
-///
-/// The three mode bits are Fcitx5's input-method state and the plugin's own output choices,
-/// so the session layer answers for them whether or not anything is composing -- that is
-/// the design, not an exception to it. The "defers" tests below are about every other key.
-fn is_engine_owned(dispatcher: &Dispatcher, event: &KeyEvent) -> bool {
-    super::is_mode_chord(dispatcher.action_for(event))
-}
-
-#[test]
-fn test_dispatch_in_session_layer_defers_while_composing() {
-    // A live composition is the layer above's; reaching this one means the walk already
-    // gave the key up there.
-    let session = session_of(Setup::Composing);
-    let view = view_of(session.as_ref());
-    let mut dispatcher = Dispatcher::new(KeyBindings::default());
-    for sym in corpus() {
-        for state in STATES {
-            let event = press(sym, state);
-            if is_engine_owned(&dispatcher, &event) {
-                continue;
-            }
-            assert_eq!(
-                dispatcher.dispatch_in(KeyContext::Session, &event, &view),
-                Consumed::Ignored,
-                "sym {sym:#06x} state {state:#x}"
-            );
-        }
     }
 }
 
@@ -489,9 +575,18 @@ fn test_dispatch_in_session_layer_defers_while_the_host_finishes_a_commit() {
     }
 }
 
+/// Whether the engine owns this key outright, in every session state.
+///
+/// The three mode bits are Fcitx5's input-method state and the plugin's own output choices,
+/// so a layer answers for them whether or not anything is composing — that is the design,
+/// not an exception to it. The sweep below is about every other key.
+fn is_engine_owned(dispatcher: &Dispatcher, event: &KeyEvent) -> bool {
+    is_mode_chord(dispatcher.action_for(event))
+}
+
 #[test]
 fn test_dispatch_in_overlay_layer_takes_the_panel_keys_and_defers_the_rest() {
-    let session = session_of(Setup::OverlayOverComposition);
+    let session = Setup::OverlayOverComposition.session();
     let view = view_of(session.as_ref());
     // A fresh dispatcher per key: `Escape` closes the panel, and the layer below an open
     // panel is a different layer.
@@ -517,23 +612,13 @@ fn test_dispatch_in_overlay_layer_takes_the_panel_keys_and_defers_the_rest() {
 
 #[test]
 fn test_dispatch_in_overlay_layer_defers_when_no_overlay_is_open() {
-    let session = session_of(Setup::Composing);
-    let view = view_of(session.as_ref());
-    let mut dispatcher = Dispatcher::new(KeyBindings::default());
-    for sym in corpus() {
-        for state in STATES {
-            assert_eq!(
-                dispatcher.dispatch_in(KeyContext::ModalOverlay, &press(sym, state), &view),
-                Consumed::Ignored,
-                "sym {sym:#06x} state {state:#x}"
-            );
-        }
-    }
+    let session = Setup::Composing.session();
+    assert_layer_defers(Setup::Composing, KeyContext::ModalOverlay, session.as_ref());
 }
 
 #[test]
 fn test_dispatch_closes_the_overlay_on_escape() {
-    let session = session_of(Setup::OverlayOverComposition);
+    let session = Setup::OverlayOverComposition.session();
     let view = view_of(session.as_ref());
     let mut dispatcher = dispatcher_in(Setup::OverlayOverComposition);
     let escape = press(KEY_ESCAPE, 0);
@@ -548,7 +633,7 @@ fn test_dispatch_closes_the_overlay_on_escape() {
 #[test]
 fn test_dispatch_returns_the_first_layer_that_claims_the_key() {
     for setup in Setup::ALL {
-        let session = session_of(setup);
+        let session = setup.session();
         let view = view_of(session.as_ref());
         for sym in corpus() {
             for state in STATES {
@@ -565,7 +650,7 @@ fn test_dispatch_returns_the_first_layer_that_claims_the_key() {
                     .find(|answer| *answer != Consumed::Ignored)
                     .unwrap_or(Consumed::Ignored);
                 assert_eq!(
-                    dispatch_in_setup(setup, &event),
+                    dispatch_in_setup(setup, session.as_ref(), &event),
                     expected,
                     "setup {setup:?} sym {sym:#06x} state {state:#x}"
                 );
@@ -578,7 +663,7 @@ fn test_dispatch_returns_the_first_layer_that_claims_the_key() {
 fn test_dispatch_hands_a_key_back_only_after_every_layer_declined_it() {
     let event = press(KEY_F35, 0);
     for setup in Setup::ALL {
-        let session = session_of(setup);
+        let session = setup.session();
         let view = view_of(session.as_ref());
         let mut probe = dispatcher_in(setup);
         for context in walk_order() {
@@ -589,7 +674,7 @@ fn test_dispatch_hands_a_key_back_only_after_every_layer_declined_it() {
             );
         }
         assert_eq!(
-            dispatch_in_setup(setup, &event),
+            dispatch_in_setup(setup, session.as_ref(), &event),
             Consumed::Ignored,
             "setup {setup:?}"
         );
@@ -597,45 +682,60 @@ fn test_dispatch_hands_a_key_back_only_after_every_layer_declined_it() {
 }
 
 #[test]
-fn test_dispatch_without_an_overlay_matches_the_routing_table_key_by_key() {
-    // The acceptance criterion: with no panel open the walk answers exactly what the
-    // routing table answered before the layers existed, for every key of the corpus, plus
-    // the one rule the walk adds ahead of the table — a modifier press is the
-    // application's.
-    let bindings = KeyBindings::default();
-    for sym in corpus() {
-        for state in STATES {
-            let event = press(sym, state);
-            let expected = if is_shift_press(&event.as_host_event()) {
-                Consumed::Ignored
-            } else {
-                table_verdict(&event, &bindings)
-            };
-            assert_eq!(
-                dispatch_in_setup(Setup::Composing, &event),
-                expected,
-                "sym {sym:#06x} state {state:#x}"
-            );
+fn test_dispatch_without_an_overlay_matches_the_arbitrator_key_by_key() {
+    // The walk adds two rules ahead of the arbitration — a release and a modifier press are
+    // never the plugin's — and no decision of its own: for every other key it answers what
+    // the arbitrator answers about the action the table gave that key. The walk and the
+    // arbitration are therefore one answer, which is what keeps a second copy of the claim
+    // decision from growing inside a layer.
+    let cfg = SessionConfig::default();
+    for setup in [
+        Setup::Composing,
+        Setup::Idle,
+        Setup::TempEnglish,
+        Setup::Absent,
+    ] {
+        let session = setup.session();
+        let view = view_of(session.as_ref());
+        let mut dispatcher = dispatcher_in(setup);
+        for sym in corpus() {
+            for state in STATES {
+                let event = press(sym, state);
+                let expected = if is_shift_press(&event.as_host_event()) {
+                    Consumed::Ignored
+                } else {
+                    arbitrate(dispatcher.action_for(&event), session.as_ref(), &cfg)
+                };
+                assert_eq!(
+                    dispatcher.dispatch(&event, &view),
+                    expected,
+                    "setup {setup:?} sym {sym:#06x} state {state:#x}"
+                );
+            }
         }
     }
 }
 
 #[test]
 fn test_dispatch_with_an_overlay_open_is_transparent_outside_the_panel_keys() {
+    // A panel is an overlay and not a keyboard grab: outside its four keys the walk with a
+    // panel open answers exactly what the walk without one answers.
+    let open = Setup::OverlayOverComposition.session();
+    let bare = Setup::Composing.session();
     for sym in corpus() {
         for state in STATES {
             let event = press(sym, state);
-            let open = dispatch_in_setup(Setup::OverlayOverComposition, &event);
+            let answer = dispatch_in_setup(Setup::OverlayOverComposition, open.as_ref(), &event);
             if is_panel_key(sym) {
                 assert_eq!(
-                    open,
+                    answer,
                     Consumed::Consumed,
                     "sym {sym:#06x} is the panel's while it is open"
                 );
             } else {
                 assert_eq!(
-                    open,
-                    dispatch_in_setup(Setup::Composing, &event),
+                    answer,
+                    dispatch_in_setup(Setup::Composing, bare.as_ref(), &event),
                     "sym {sym:#06x} state {state:#x} must reach the composition"
                 );
             }
@@ -644,29 +744,26 @@ fn test_dispatch_with_an_overlay_open_is_transparent_outside_the_panel_keys() {
 }
 
 #[test]
-fn test_dispatch_never_claims_a_key_release() {
+fn test_dispatch_never_claims_a_release_or_a_modifier_press() {
+    // The two rules ahead of the walk, which are properties of the key rather than of a
+    // layer: the host delivers both edges of every key, and the held `Shift` is the host's
+    // own temporary switch. Taking either would take half of a gesture from the
+    // application.
     for setup in Setup::ALL {
-        for sym in corpus() {
-            for state in STATES {
+        let session = setup.session();
+        for state in STATES {
+            for sym in corpus() {
                 assert_eq!(
-                    dispatch_in_setup(setup, &release(sym, state)),
+                    dispatch_in_setup(setup, session.as_ref(), &release(sym, state)),
                     Consumed::Ignored,
-                    "setup {setup:?} sym {sym:#06x} state {state:#x}"
+                    "setup {setup:?} release of {sym:#06x} state {state:#x}"
                 );
             }
-        }
-    }
-}
-
-#[test]
-fn test_dispatch_never_claims_a_modifier_press() {
-    for setup in Setup::ALL {
-        for sym in [KEY_SHIFT_L, KEY_SHIFT_R] {
-            for state in STATES {
+            for sym in [KEY_SHIFT_L, KEY_SHIFT_R] {
                 assert_eq!(
-                    dispatch_in_setup(setup, &press(sym, state)),
+                    dispatch_in_setup(setup, session.as_ref(), &press(sym, state)),
                     Consumed::Ignored,
-                    "setup {setup:?} sym {sym:#06x} state {state:#x}"
+                    "setup {setup:?} modifier press {sym:#06x} state {state:#x}"
                 );
             }
         }
@@ -678,13 +775,12 @@ fn test_dispatch_answers_every_context_and_every_key() {
     // The totality of the walk: no combination of layer and key is left without an
     // answer, and the sweep is counted so that an empty run cannot pass.
     let keys = corpus();
-    let mut claimed = 0usize;
-    let mut handed_back = 0usize;
-    let mut chained = 0usize;
+    let (mut claimed, mut handed_back, mut chained) = (0usize, 0usize, 0usize);
     for setup in Setup::ALL {
+        let session = setup.session();
         for sym in &keys {
             for state in STATES {
-                match dispatch_in_setup(setup, &press(*sym, state)) {
+                match dispatch_in_setup(setup, session.as_ref(), &press(*sym, state)) {
                     Consumed::Consumed => claimed += 1,
                     Consumed::Ignored => handed_back += 1,
                     Consumed::ChainPending => chained += 1,

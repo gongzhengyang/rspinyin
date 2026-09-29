@@ -9,7 +9,7 @@
 //! | Channel | Shape | Capacity | Overflow behaviour |
 //! |---|---|---|---|
 //! | `UiCommand::Frame` | latest-wins slot | 1 | older frame replaced, counted as `ui.frame.coalesced` |
-//! | `UiCommand::Show` / `Hide` | ordered collapsing queue | 8 | sender waits its budget, then the newest value is staged and counted as `ui.control.dropped` |
+//! | `UiCommand::Show` / `Hide` | ordered collapsing queue | 8 | a full queue stages the newest value, counted as `ui.control.dropped`; the sender never waits |
 //! | `UiCommand::Theme` | latest-wins slot | 1 | older value replaced |
 //! | `UiCommand::Shutdown` | flag | 1 | terminal, and deliberately not shared with any other channel |
 //! | `UiEvent::Select` | bounded ring | 64 | never dropped: the UI thread waits its budget, then abandons the click and reports `ui/select/timeout` |
@@ -44,21 +44,27 @@ use std::time::Duration;
 
 pub use self::command::{CommandChannels, UiCommandSender};
 pub use self::event::UiEventQueue;
-pub use self::queue::{CollapsingQueue, LatestSlot, RingQueue};
+pub use self::queue::{CollapsingQueue, LatestSlot, RingQueue, STAGE_BUDGET};
 pub use self::wakeup::Wakeup;
 
 /// Capacities and wait budgets of the command and event channels.
 ///
 /// Every field is a contractual number rather than a tuning knob: the capacities
-/// come from the boundary-contract table, and the budgets are the upper bound on
-/// how long the host thread may be held up by a full channel. Changing one
-/// changes the delivery semantics, so a caller may only lower a budget for a
-/// test that needs a deterministic overflow path.
+/// come from the boundary-contract table, and the budgets are the ceiling on how
+/// long a producer may be held up by a full channel. The ordered collapsing
+/// queues stage a value that does not fit instead of waiting for room (see
+/// [`STAGE_BUDGET`]), so a test that needs a deterministic overflow path gets one
+/// from the capacity alone; a caller may lower a budget for a test, never raise
+/// one past the contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChannelConfig {
     /// Capacity of the ordered `Show` / `Hide` queue.
     pub control_capacity: usize,
-    /// How long the host thread waits for room in that queue.
+    /// The budget the boundary contract names for that queue.
+    ///
+    /// A ceiling rather than a wait the producer spends: a full `Show` / `Hide`
+    /// queue stages the newest value and returns, so the host thread is never
+    /// held up by this channel.
     pub control_spin: Duration,
     /// Capacity of the never-dropped `Select` queue.
     pub select_capacity: usize,
@@ -66,7 +72,12 @@ pub struct ChannelConfig {
     pub select_spin: Duration,
     /// Capacity of the ordered `Page` / `Dismiss` queue.
     pub page_capacity: usize,
-    /// How long the UI thread waits for room in that queue.
+    /// The budget the boundary contract names for that queue.
+    ///
+    /// A ceiling rather than a wait the producer spends, exactly as
+    /// [`ChannelConfig::control_spin`] documents it: the producer of these events
+    /// is the UI thread, which must stay responsive to the pointer and the
+    /// keyboard rather than waiting for the host to drain.
     pub page_spin: Duration,
     /// Minimum spacing between two hover notifications.
     pub hover_throttle: Duration,
@@ -110,6 +121,8 @@ pub struct ChannelStats {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
 
     #[test]
@@ -133,5 +146,44 @@ mod tests {
         assert!(!stats.thread_dead);
         assert!(!stats.thread_panicked);
         assert_eq!(stats.shutdown_timeouts, 0);
+    }
+
+    /// How many pushes the staging assertion samples.
+    ///
+    /// The bound is on the work rather than on the scheduler, so the fastest sample is the
+    /// one asserted; a push that waited for room cannot pass at any sample count, because
+    /// every one of its samples costs the wait.
+    const PUSH_SAMPLES: u32 = 16;
+
+    /// The value that occupies the single slot of the staging test's queue.
+    const SEED: u32 = 0;
+
+    #[test]
+    fn test_collapsing_queue_push_when_full_stays_inside_the_stage_budget() {
+        // The producer is the Fcitx5 host thread, so a queue that is full must not hold it
+        // up. The queue carries the channel's own budget, which is above the staging bound,
+        // so a push that waited for room would miss the assertion by the bound itself.
+        let budget = ChannelConfig::default().control_spin;
+        let queue: CollapsingQueue<u32> = CollapsingQueue::new(1, budget);
+        assert_eq!(queue.budget(), budget);
+
+        let mut fastest = Duration::MAX;
+        for value in 1..=PUSH_SAMPLES {
+            queue.push(SEED);
+            let start = Instant::now();
+            queue.push(value);
+            fastest = fastest.min(start.elapsed());
+            assert_eq!(queue.pop(), Some(SEED), "the queued value is still first");
+            assert_eq!(queue.pop(), Some(value), "the staged value is the one kept");
+        }
+        assert_eq!(
+            queue.collapsed(),
+            u64::from(PUSH_SAMPLES),
+            "every push that had to be staged is counted as a collapsed one"
+        );
+        assert!(
+            fastest <= STAGE_BUDGET,
+            "the fastest push into a full queue took {fastest:?}, past the {STAGE_BUDGET:?} bound"
+        );
     }
 }

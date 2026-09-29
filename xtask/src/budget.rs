@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, ensure};
 
 use self::SpecCell::{MetricAfter, ThresholdAfter, ThresholdFirst, ThresholdZero};
+pub(crate) use self::bench::{SIGMAS, owner};
 pub(crate) use self::spec::{Spec, compare};
 
 #[cfg(test)]
@@ -415,13 +416,14 @@ pub fn run(actions: Actions<'_>) -> Result<()> {
 ///
 /// `group` narrows the assertion to one criterion group (`decode`, `input`,
 /// `passthrough`, ...); `None` asserts every case that has a binding. The command
-/// fails when a bound case has no criterion output at all, and when a measured case
-/// is past its threshold.
+/// fails when a bound case has no criterion output at all, when a measured case is past
+/// its threshold, and when `group` names a group no case is bound to -- a gate that
+/// asserted nothing because nothing matched must not pass.
 ///
 /// # Errors
 /// Returns an error when the budget document is invalid, when the criterion output
-/// cannot be read, when a bound case is missing from it, or when any measured case
-/// is past its threshold.
+/// cannot be read, when `group` names a group no case is bound to, when a bound case is
+/// missing from the output, or when any measured case is past its threshold.
 pub fn run_check(group: Option<&str>) -> Result<()> {
     let root = repo_root()?;
     let dir = bench::criterion_dir(&root);

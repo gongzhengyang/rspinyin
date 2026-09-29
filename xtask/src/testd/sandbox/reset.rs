@@ -7,7 +7,7 @@
 //!
 //! Boundaries: it never starts a process and never reads a session's state -- that is
 //! [`super::session`]. It does not decide what a case is allowed to do, and it never
-//! touches a path outside the root: every write goes through `Sandbox::inside`, which is
+//! touches a path outside the root: every write goes through [`Sandbox::resolve`], which is
 //! also what refuses a symbolic link.
 //!
 //! # Why a reset renames instead of deleting
@@ -18,6 +18,10 @@
 //! posture under a marker of its own, `<name>.reset.<n>`: a case that reset away the very
 //! evidence of its own failure can still be diagnosed, and the counter rather than a
 //! timestamp keeps the names deterministic, because a test may not read the clock.
+//!
+//! A reservation whose rename did not happen is taken back, so a reset that fails leaves no
+//! empty `.reset.<n>` beside a file it never moved: an artifact that was never written would
+//! read as evidence of a reset that did not take place.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -36,7 +40,10 @@ pub const RESET_MARK: &str = ".reset.";
 ///
 /// A hundred resets of one file inside one case directory is not a case worth more code,
 /// and running out is reported rather than resolved by overwriting anything.
-const MAX_RESET_SUFFIX: u32 = 99;
+///
+/// Visible to the parent module so that the test which fills the name space fills exactly
+/// the names this bound covers, and the two cannot drift apart.
+pub(super) const MAX_RESET_SUFFIX: u32 = 99;
 
 /// Mode the momentary name reservation carries, before the rename replaces it.
 const CLAIM_MODE: u32 = 0o600;
@@ -144,10 +151,17 @@ impl Sandbox {
             let candidate = target.with_file_name(aside);
             match claim(&candidate, is_dir) {
                 Ok(()) => {
-                    fs::rename(&target, &candidate).map_err(|source| SandboxError::Io {
-                        path: target,
-                        source,
-                    })?;
+                    if let Err(source) = fs::rename(&target, &candidate) {
+                        // The name was reserved for a rename that did not happen. Leaving the
+                        // reservation behind would put an empty `.reset.<n>` beside a file that
+                        // was never moved, which reads as an artifact of a reset that did not
+                        // take place; the next reset would count it and skip that name.
+                        let _ = discard(&candidate, is_dir);
+                        return Err(SandboxError::Io {
+                            path: target,
+                            source,
+                        });
+                    }
                     return Ok(Some(candidate));
                 }
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
@@ -368,6 +382,18 @@ fn claim(path: &Path, is_dir: bool) -> std::io::Result<()> {
     // otherwise be open across the rename that replaces this very file.
     drop(reservation);
     Ok(())
+}
+
+/// Takes back a reservation whose rename did not happen.
+///
+/// Best effort: the rename's own failure is the one worth reporting, and a reservation that
+/// cannot be removed is left where it is rather than turned into a second error a caller has
+/// to choose between.
+fn discard(path: &Path, is_dir: bool) -> std::io::Result<()> {
+    if is_dir {
+        return fs::remove_dir(path);
+    }
+    fs::remove_file(path)
 }
 
 /// Copies `source` onto `target`, creating the parent directory when it is missing.

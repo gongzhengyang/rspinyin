@@ -100,13 +100,21 @@ impl Manifest {
 
     /// Writes the manifest, replacing any previous one in one step.
     ///
+    /// Written through the elevation the files it describes are written through: the
+    /// manifest lives in the plugin's data directory beside them, so on a system-wide
+    /// install it belongs to root as much as they do, and a run that escalates its copies
+    /// has to escalate this write as well or it stops here instead.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the document cannot be serialized, or when the temporary
-    /// file cannot be written or renamed into place.
-    pub fn write(&self, path: &Path) -> Result<()> {
+    /// Returns an error when the document cannot be serialized, and when it cannot be
+    /// written to its destination.
+    pub fn write(&self, elevation: Elevation, path: &Path) -> Result<()> {
         let text =
             serde_json::to_string_pretty(self).context("serializing the install manifest")?;
+        if elevation.is_sudo() {
+            return write_through_sudo(&text, path);
+        }
         let parent = path
             .parent()
             .with_context(|| format!("{} has no parent directory", path.display()))?;
@@ -122,6 +130,48 @@ impl Manifest {
     pub fn entry(&self, path: &Path) -> Option<&Entry> {
         self.entries.iter().find(|entry| entry.path == path)
     }
+}
+
+/// Writes a document to a destination this account cannot write.
+///
+/// The document is serialized to a file this account *can* write first, because the
+/// directory the destination lives in belongs to another account -- which is the whole
+/// reason this branch exists -- and then handed to `install(1)` through `sudo`. The
+/// staged file carries nothing but the manifest and is removed again either way.
+///
+/// # Errors
+///
+/// Returns an error when the staged file cannot be written, and when `sudo install`
+/// cannot place it.
+fn write_through_sudo(text: &str, path: &Path) -> Result<()> {
+    let staged = staging_path(path)?;
+    fs::write(&staged, text.as_bytes()).with_context(|| format!("writing {}", staged.display()))?;
+    let outcome = place_file(Elevation::Sudo, &staged, path, FILE_MODE);
+    // Best effort: a leftover staging file must not make the next run fail.
+    let _ = fs::remove_file(&staged);
+    outcome
+}
+
+/// A path this account can write, where a document is serialized before it is placed.
+///
+/// Under the system temporary directory rather than beside the destination: with an
+/// escalated install the destination directory belongs to another account, and a run that
+/// cannot create a file there must still be able to hand the document to `sudo`. The name
+/// carries the destination's file name and the process id, so two runs of the installer
+/// cannot collide in it.
+///
+/// # Errors
+///
+/// Returns an error when the destination has no file name to derive one from.
+fn staging_path(path: &Path) -> Result<PathBuf> {
+    let name = path
+        .file_name()
+        .with_context(|| format!("{} has no file name", path.display()))?;
+    Ok(std::env::temp_dir().join(format!(
+        ".{}-{}.rspinyin-staged",
+        name.to_string_lossy(),
+        std::process::id()
+    )))
 }
 
 /// How a filesystem operation reaches a destination the caller cannot write.
@@ -298,6 +348,25 @@ fn copy_directly(source: &Path, destination: &Path, mode: u32) -> Result<()> {
     })
 }
 
+/// The permission bits of `path`, or [`FILE_MODE`] when they cannot be read.
+///
+/// This is what makes a backup a faithful copy: a distribution that shipped
+/// `librspinyin.so` at `0755` gets `0755` back from an uninstall, rather than the `0644`
+/// a fresh install writes. The mode is taken from the file itself instead of being
+/// recorded in the manifest, so the backup stays the single record of what was displaced
+/// and the manifest schema does not have to carry it.
+///
+/// # Errors
+///
+/// Never. A path that cannot be stat'd has no mode to preserve, and the mode this
+/// installer writes for its own files is the one to fall back to.
+pub fn mode_of(path: &Path) -> u32 {
+    match fs::metadata(path) {
+        Ok(metadata) => metadata.permissions().mode() & 0o777,
+        Err(_) => FILE_MODE,
+    }
+}
+
 /// The name a copy is staged under before it replaces its destination.
 fn temporary_path(destination: &Path) -> Result<PathBuf> {
     let name = destination
@@ -309,6 +378,15 @@ fn temporary_path(destination: &Path) -> Result<PathBuf> {
 /// Creates and removes a probe file in the nearest existing ancestor of `directory`.
 fn probe_writable(directory: &Path) -> Result<()> {
     let existing = nearest_existing(directory)?;
+    // A regular file where one of the directories belongs stops the install just as
+    // surely as an unwritable parent does, and it stops it later and less clearly: the
+    // first copy fails with `Not a directory` naming a path the user never chose.
+    ensure!(
+        existing.is_dir(),
+        "{} is not a directory, so {} cannot be created there",
+        existing.display(),
+        directory.display()
+    );
     let probe = existing.join(format!(".rspinyin-probe-{}", std::process::id()));
     match fs::write(&probe, []) {
         Ok(()) => {
@@ -345,13 +423,16 @@ fn nearest_existing(path: &Path) -> Result<PathBuf> {
 
 /// Runs one privileged command through `sudo`.
 ///
-/// The child inherits the terminal, so `sudo` can prompt for a password.
+/// The child inherits the terminal, so `sudo` can prompt for a password. Visible to the
+/// installer's other submodules because every operation that reaches a root-owned
+/// directory goes through it -- the copies, the removals, and the icon-theme tool that
+/// writes its index into the shared theme directory.
 ///
 /// # Errors
 ///
 /// Returns an error when `sudo` cannot be started or exits non-zero; the message names
 /// the command, so it can be run by hand to see the underlying failure.
-fn run_sudo(program: &str, arguments: &[String]) -> Result<()> {
+pub(super) fn run_sudo(program: &str, arguments: &[String]) -> Result<()> {
     let status = Command::new("sudo")
         .arg(program)
         .args(arguments)
@@ -407,257 +488,4 @@ fn is_permission_denied(error: &anyhow::Error) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A scratch directory unique to this test process and tag.
-    fn scratch(tag: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("rspinyin-install-{tag}-{}", std::process::id()));
-        fs::create_dir_all(&dir).expect("creating the scratch directory");
-        dir
-    }
-
-    /// One entry, for the manifest fixtures.
-    fn entry(path: &Path, state: EntryState, backup: Option<PathBuf>) -> Entry {
-        Entry {
-            path: path.to_path_buf(),
-            state,
-            backup,
-        }
-    }
-
-    #[test]
-    fn test_place_file_writes_the_content_and_the_mode() {
-        let dir = scratch("place");
-        let source = dir.join("source");
-        fs::write(&source, b"payload").expect("writing the fixture");
-        let destination = dir.join("nested/deeper/target");
-
-        place_file(Elevation::Direct, &source, &destination, FILE_MODE).expect("placing the file");
-        assert_eq!(
-            fs::read(&destination).expect("reading back"),
-            b"payload".to_vec()
-        );
-        let mode = fs::metadata(&destination)
-            .expect("stat")
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, FILE_MODE);
-        assert!(
-            !temporary_path(&destination)
-                .expect("a temporary name")
-                .exists(),
-            "the staged copy is renamed away"
-        );
-        fs::remove_dir_all(&dir).expect("cleaning up");
-    }
-
-    #[test]
-    fn test_place_file_replaces_an_existing_file_and_leaves_no_temporary_behind() {
-        let dir = scratch("replace");
-        let source = dir.join("source");
-        let destination = dir.join("target");
-        fs::write(&source, b"new").expect("writing the fixture");
-        fs::write(&destination, b"old").expect("writing the fixture");
-
-        place_file(Elevation::Direct, &source, &destination, FILE_MODE).expect("placing the file");
-        assert_eq!(
-            fs::read(&destination).expect("reading back"),
-            b"new".to_vec()
-        );
-        let leftovers: Vec<_> = fs::read_dir(&dir)
-            .expect("listing the scratch directory")
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.contains("rspinyin-tmp"))
-            .collect();
-        assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
-        fs::remove_dir_all(&dir).expect("cleaning up");
-    }
-
-    #[test]
-    fn test_place_file_reports_a_missing_source() {
-        let dir = scratch("missing");
-        let failure = place_file(
-            Elevation::Direct,
-            &dir.join("absent"),
-            &dir.join("target"),
-            FILE_MODE,
-        )
-        .expect_err("a missing source must fail");
-        assert!(failure.to_string().contains("target"), "{failure}");
-        assert!(
-            !dir.join("target").exists(),
-            "nothing is installed from a failed copy"
-        );
-        fs::remove_dir_all(&dir).expect("cleaning up");
-    }
-
-    #[test]
-    fn test_remove_file_and_remove_directory_treat_absence_as_done() {
-        let dir = scratch("remove");
-        let file = dir.join("file");
-        let nested = dir.join("nested");
-        fs::create_dir_all(&nested).expect("creating the fixture");
-        fs::write(&file, b"x").expect("writing the fixture");
-
-        remove_file(Elevation::Direct, &file).expect("removing a file that is there");
-        remove_file(Elevation::Direct, &file).expect("removing a file that is not");
-        remove_directory(Elevation::Direct, &nested).expect("removing an empty directory");
-        remove_directory(Elevation::Direct, &nested).expect("removing a directory that is not");
-        assert!(!file.exists() && !nested.exists());
-        fs::remove_dir_all(&dir).expect("cleaning up");
-    }
-
-    #[test]
-    fn test_remove_directory_leaves_a_directory_that_is_not_empty() {
-        let dir = scratch("nonempty");
-        let nested = dir.join("nested");
-        fs::create_dir_all(&nested).expect("creating the fixture");
-        fs::write(nested.join("someone-elses-file"), b"x").expect("writing the fixture");
-
-        remove_directory(Elevation::Direct, &nested)
-            .expect("a non-empty directory is not an error");
-        assert!(
-            nested.join("someone-elses-file").exists(),
-            "the other file must survive"
-        );
-        fs::remove_dir_all(&dir).expect("cleaning up");
-    }
-
-    #[test]
-    fn test_backup_path_sits_next_to_the_file_it_copies() {
-        assert_eq!(
-            backup_path(Path::new("/usr/share/fcitx5/addon/rspinyin.conf")),
-            PathBuf::from("/usr/share/fcitx5/addon/rspinyin.conf.rspinyin-bak")
-        );
-    }
-
-    #[test]
-    fn test_manifest_round_trips_through_json() {
-        let dir = scratch("manifest");
-        let path = dir.join("nested/install-manifest.json");
-        let manifest = Manifest {
-            version: MANIFEST_VERSION,
-            package_version: "0.1.0".to_owned(),
-            entries: vec![
-                entry(
-                    Path::new("/usr/lib/fcitx5/librspinyin.so"),
-                    EntryState::Created,
-                    None,
-                ),
-                entry(
-                    Path::new("/usr/share/fcitx5/addon/rspinyin.conf"),
-                    EntryState::Replaced,
-                    Some(PathBuf::from(
-                        "/usr/share/fcitx5/addon/rspinyin.conf.rspinyin-bak",
-                    )),
-                ),
-            ],
-        };
-
-        manifest.write(&path).expect("writing the manifest");
-        let read = Manifest::read(&path)
-            .expect("reading the manifest")
-            .expect("the manifest exists");
-        assert_eq!(read, manifest);
-        assert_eq!(
-            read.entry(Path::new("/usr/lib/fcitx5/librspinyin.so"))
-                .expect("the entry is found")
-                .state,
-            EntryState::Created
-        );
-        assert!(read.entry(Path::new("/nowhere")).is_none());
-        fs::remove_dir_all(&dir).expect("cleaning up");
-    }
-
-    #[test]
-    fn test_manifest_read_reports_absence_and_refuses_a_newer_schema() {
-        let dir = scratch("schema");
-        let path = dir.join("install-manifest.json");
-        assert!(
-            Manifest::read(&path)
-                .expect("absence is not an error")
-                .is_none()
-        );
-
-        fs::write(
-            &path,
-            r#"{"version":99,"package_version":"0.1.0","entries":[]}"#,
-        )
-        .expect("writing the fixture");
-        let failure = Manifest::read(&path).expect_err("a newer schema is refused");
-        assert!(failure.to_string().contains("99"), "{failure}");
-        fs::remove_dir_all(&dir).expect("cleaning up");
-    }
-
-    #[test]
-    fn test_check_writable_accepts_a_scratch_directory_and_reports_a_missing_ancestor() {
-        let dir = scratch("writable");
-        check_writable(&[dir.join("not-created-yet"), dir.clone()])
-            .expect("a scratch directory is writable");
-
-        let failure = check_writable(&[PathBuf::from("rspinyin-nowhere/nowhere")])
-            .expect_err("a relative path has no ancestor to probe");
-        assert!(failure.to_string().contains("ancestor"), "{failure}");
-
-        let leftovers: Vec<_> = fs::read_dir(&dir)
-            .expect("listing the scratch directory")
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.contains("rspinyin-probe"))
-            .collect();
-        assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
-        fs::remove_dir_all(&dir).expect("cleaning up");
-    }
-
-    #[test]
-    fn test_nearest_existing_walks_up_to_the_first_directory_that_is_there() {
-        let dir = scratch("nearest");
-        assert_eq!(
-            nearest_existing(&dir.join("a/b/c")).expect("the scratch directory exists"),
-            dir
-        );
-        assert_eq!(
-            nearest_existing(&dir).expect("the scratch directory exists"),
-            dir
-        );
-        fs::remove_dir_all(&dir).expect("cleaning up");
-    }
-
-    #[test]
-    fn test_elevation_detect_honours_the_no_sudo_flag() {
-        // The flag has to win regardless of which user runs the tests, which is the
-        // property a `DESTDIR` staging step depends on.
-        assert_eq!(
-            Elevation::detect(true).expect("the effective user id is readable"),
-            Elevation::Direct
-        );
-        assert!(!Elevation::Direct.is_sudo());
-        assert!(Elevation::Sudo.is_sudo());
-    }
-
-    #[test]
-    fn test_effective_uid_from_reads_the_effective_field() {
-        // The `Uid:` line is `real effective saved filesystem`; reading the wrong field
-        // would escalate on a setuid invocation that needs no escalation.
-        assert_eq!(
-            effective_uid_from("Name:\tcat\nUid:\t1000\t1001\t1002\t1003\n").expect("a full line"),
-            1001
-        );
-    }
-
-    #[test]
-    fn test_effective_uid_from_rejects_text_it_cannot_read() {
-        assert!(effective_uid_from("Name:\tcat\n").is_err(), "no Uid: line");
-        assert!(
-            effective_uid_from("Uid:\t1000\n").is_err(),
-            "too few fields"
-        );
-        assert!(
-            effective_uid_from("Uid:\t1000\troot\t1000\t1000\n").is_err(),
-            "the effective field is not a number"
-        );
-    }
-}
+mod tests;

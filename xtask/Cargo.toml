@@ -21,6 +21,7 @@ fst.workspace = true
 smallvec.workspace = true                                             # testd 的引擎驱动器：音节网格回写用 SyllableDag::best_segmentation_hint 的入参类型
 x11rb.workspace = true                                                # testd 的 XTEST 键鼠注入与窗口几何读取
 crc32fast.workspace = true
+png.workspace = true                                                    # testd 的截图通道：PNG 编解码
 ime-types.workspace = true
 ime-core.workspace = true
 ime-dict.workspace = true

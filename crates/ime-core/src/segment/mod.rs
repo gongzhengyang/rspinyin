@@ -23,9 +23,13 @@
 //! - [`lookup`] and [`normalize`] expose the syllable alphabet on its own; the
 //!   dictionary compiler uses them to validate the keys it writes.
 
+pub mod abbrev;
 pub mod dag;
 pub mod syllable;
 
+pub use crate::segment::abbrev::{
+    AbbrevReading, AbbrevSyllable, Readings, readings, readings_into,
+};
 pub use crate::segment::dag::{DagEdge, EdgeKind, SyllableDag};
 pub use crate::segment::syllable::{
     DROPPED_CAP, DroppedChars, MAX_NODES, MAX_NORMALIZED_LEN, MAX_RAW_LEN, MAX_SYLLABLE_LEN,

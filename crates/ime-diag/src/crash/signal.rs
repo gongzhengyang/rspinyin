@@ -618,17 +618,47 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "the handler calls _exit, which would end the test binary"]
-    fn test_signal_handler_exits_with_the_crash_code_on_a_real_fault() {
-        // Manual procedure: arm the channel through the addon's registrar, raise SIGBUS
-        // on a memory mapping whose file was truncated under it, and check that the
-        // process ends with status 70 and that the armed record file holds a record.
-        // What can be asserted without taking the fault is what the handler relies on.
+    fn test_crash_exit_code_is_ex_software_and_covers_both_signals() {
+        // The two facts a recorded fault rests on, asserted by a test that runs: the
+        // status the process ends with -- `EX_SOFTWARE`, deliberately not a signal death,
+        // so a supervisor can tell a recorded fault from an unhandled one -- and the
+        // signals the channel arms, `SIGBUS` for the truncated memory mapping and
+        // `SIGSEGV` for the general case.
         assert_eq!(CRASH_EXIT_CODE, 70, "the documented EX_SOFTWARE status");
         assert_eq!(
             HANDLED_SIGNALS,
             [(SIGBUS, "SIGBUS"), (SIGSEGV, "SIGSEGV")],
             "the dictionary fault and the general fault are both covered"
         );
+    }
+
+    #[test]
+    fn test_render_signal_record_stays_within_the_record_size_cap() {
+        // The signal path writes from a fixed stack buffer, so it is bounded twice over;
+        // this is the assertion that the bound it writes under is the one the crash
+        // directory's budget is stated in.
+        let text = render(SignalInfo {
+            cause: SignalCause::Fault,
+            address: Some(0x7f3a_2c1d_0000),
+        });
+
+        assert!(
+            text.len() <= record::MAX_RECORD_BYTES,
+            "{} bytes",
+            text.len()
+        );
+        assert!(text.len() <= SIGNAL_RECORD_CAPACITY, "{} bytes", text.len());
+    }
+
+    #[test]
+    #[ignore = "the handler calls _exit, which would end the test binary"]
+    fn test_signal_handler_exits_with_the_crash_code_on_a_real_fault() {
+        // Manual procedure, and the only way to exercise the exit itself: arm the channel
+        // through the addon's registrar, raise `SIGBUS` on a memory mapping whose file was
+        // truncated under it, and check that the process ends with status 70 and that the
+        // armed record file holds a record naming the signal and the fault address. What
+        // the handler relies on without taking the fault is asserted by
+        // `test_crash_exit_code_is_ex_software_and_covers_both_signals` and by the
+        // record-rendering tests above.
     }
 }

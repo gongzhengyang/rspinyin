@@ -9,6 +9,7 @@ repository.workspace = true
 description = "rspinyin configuration layer: TOML loading, validation, and hot reload"
 
 [dependencies]
+bitflags.workspace = true                                              # 键位位标志集合（FlipSet / HighlightSet）
 ime-types = { workspace = true, features = ["serde"] }                 # 契约类型的序列化
 serde.workspace = true                                                 # 配置结构体派生
 toml.workspace = true                                                  # 配置文档解析

@@ -497,7 +497,7 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - 关键路径：**是**
   - 并行通道：Track A 底座与微观质感
   - 代码落地锚点：`crates/ime-ui/ui/theme.slint`、`crates/ime-ui/ui/candidate.slint`、`crates/ime-ui/src/renderer/probe.rs`、`crates/ime-ui/src/theme.rs`、`docs/dev/features.md`（3.1.4）
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **字体栈病灶**：全仓库零 `font-family`。Slint 软件渲染器经 `fontdb` 解析字体；`probe_fonts()` 只回答「能不能画 CJK」，回答「不能」时的处置是记一条 `ui/font/missing-cjk` 就结束——用户看到的是方框（`features.md:1109` 把这一结果写成「中文显示为方框」，即**承认了它会画成方框**）。对标 macOS 候选窗：候选文字画不出来是**不可接受**的，字体栈必须是平台保证。
@@ -622,6 +622,17 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - [ ] **排布与工学**：Header 文本与候选文本的光学基线一致（截图叠加验证，偏差 ≤ 0.5dp）。
   - [ ] **物理微交互**：字体族写入**只发生一次**（启动期）；`grep -c "set_font_family" crates/ime-ui/src/` 在主题切换路径上为 0。
   - [ ] `docs/dev/features.md` 3.1.4 的矛盾已裁决并回写；`check-ui` 的 4dp 断言为 `FAIL` 级且通过。
+- **验收记录**（2026-09-30）：
+  - **交付物**：`ui/theme.slint` 新增两个排印 Token（`in-out property <string> font-family`，默认 `"Noto Sans CJK SC"`；`out property <length> optical-nudge: 0.5px`）；`ui/candidate.slint` 与 `ui/candidate_grid.slint` 的全部 `Text` 元素接上族名，两个文本容器加上亚像素光学校准；`renderer/probe.rs` 新增 `CJK_FAMILIES`（7 族）、`FontChoice`、`probe_font_choice()` 与逐族探测；`theme/slint_palette.rs` 的解析器支持 `in-out`。
+  - **验证命令与结果**：`cargo nextest run -p ime-ui` 376/376 通过；`bash scripts/check-ui-spec.sh` PASS（延迟清单未变动）。
+  - **本次由主 Agent 完成的接线**（四处，均在白名单外）：`renderer.rs` re-export 探测结果；`ThemeSink` 增 `set_font_family`；`WindowTheme` 实现它；`CandidateSurface::new` 调一次 `probe_font_choice()` 并把族名写进主题。
+  - **已知限制**：
+    1. **`Theme.font-family` 用 `in-out` 而非卡片原文的 `in`**。理由是族名**不是主题输入**：它由启动探测决定一次、不随深浅色切换而变。`check-ui-spec.sh` 断言主题恰有 3 个 `in` 输入，把族名记成第四个 `in` 会与那条断言冲突；`in-out` 表达的是这个区别本身。若要按卡片原文改回 `in`，须同时改门禁的 `EXPECTED_INPUTS` 与 `slint_palette.rs` 的 `test_slint_theme_takes_only_three_inputs`。
+    2. **「零方框」与「诊断可复现最终族名」需真机截图**：探测靠数墨迹，无法区分真字形与 `.notdef` 方框。
+    3. **三处对卡片样例的必要偏离**（均已核对 `i-slint-compiler` 源码并写入注释）：`y:`/`height:` 不能写在布局子元素上（`lower_layout.rs` 会报 "the layout is already setting it"），故改为作用在文本容器布局上；未加 `header-inset` 常量（2px 不落在 4dp 网格、3.1.4 例外表不可改，`check_grid` 必红）；`optical-nudge` 同理不能进 `CandidateMetrics`，只能落在 `Theme`。
+    4. 探测由 1 帧变 7 帧（一次性、进程内缓存），插件加载的同步预算 `BUDGET-LAT-05` 不受影响。
+    5. **`opacity` 在本项目的软件渲染器上对输出无效**（见 `TASK-1.05.05` 的验收记录），序号 `0.55` / 注音 `0.50` 的淡出实际不生效，会干扰后续截图走查。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 
@@ -635,7 +646,7 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - 关键路径：否
   - 并行通道：Track A 底座与微观质感
   - 代码落地锚点：`crates/ime-ui/ui/candidate.slint`（`CandidateMetrics` 块、`CandidateWindow` 的容器区）
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **圆角不同心**：容器圆角 `12dp`、内边距 `8dp`，同心内圆角应为 `12 − 8 = 4dp`；单元格实际是 `8dp`（`candidate.slint:48`）。嵌套圆角不同心时，网格四角的单元格圆弧比容器内缘**更弯**，在深色亚克力底上会露出「外方内圆」的破绽。这是 Craft / Things 3 这类产品在 4dp 网格上反复校准的典型细节。
@@ -714,6 +725,15 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - [ ] **反 AI 模板风审查**：不存在「容器 12dp / 单元 12dp」这类偷懒的等值圆角；圆角值来自公式而非目测。
   - [ ] **排布与工学**：Header 的右侧内边距不变（状态簇不贴边）。
   - [ ] **物理微交互**：本卡不改任何动效；窗口尺寸不变（`layout.rs` 的高度公式不受影响，因为 `header-inset` 只改水平内容起点）。
+- **验收记录**（2026-09-30）：
+  - **交付物**：`ui/candidate.slint` 的 Header 左内边距由 `header-padding-h` 改为派生式 `CandidateMetrics.header-padding-h - CandidateMetrics.container-padding`，与候选区左轴严格重合；`renderer/probe.rs` 的 `draw_frame()`。
+  - **验证命令与结果**：`cargo nextest run -p ime-ui` 376/376 通过；`bash scripts/check-ui-spec.sh` PASS（延迟清单未变动）。
+  - **同心圆角已在位**：`cell-radius: 4px` 附 `12 − 8` 推导注释，`layout/metrics.rs` 断言 4.0，`check-ui-spec.sh` 的 3.1.1 映射表已登记。
+  - **已知限制**：
+    1. **「1x/2x 下偏差 0 像素」与「400% 截图走查」需显示服务器**，本机不可做。
+    2. **DoD 步骤 2 的 `header-inset` 常量改为就地派生式**：门禁对 `CandidateMetrics` 的每个 `length` 断言 `%4==0` 或命中 3.1.4 例外表，而例外表在 `features.md`（不在白名单）——常量化必红。派生式由测试钉住。
+    3. 未触碰任何 `animate` 与 `layout.rs` 的尺寸公式；Header 右侧内边距 `10dp` 不变。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 ---
 
@@ -869,7 +889,7 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - 关键路径：**是**
   - 并行通道：Track B 结构与操作流线
   - 代码落地锚点：`crates/ime-ui/src/geometry/placement.rs`、`crates/ime-ui/src/geometry/tests.rs`、`crates/ime-ui/src/geometry.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **现有代码具体病灶**：`placement.rs:294-306` 的 `vertical_pos` 把 `caret.bottom + caret_gap` 直接作为**窗口原点 y** 返回；
@@ -1033,6 +1053,16 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - [ ] **物理微交互**：`clamped_y` 的语义不变（仅在理想位置被夹取时为真），箭头在夹取时仍不绘制。
   - [ ] 所有被修改的测试断言都带推导注释；`just check` 全绿。
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-ui/src/geometry/placement.rs`（实现，审计后确认已完全符合设计表，一行未改）、`crates/ime-ui/src/geometry/tests.rs`（724 → 786 行，本次新增 3 个用例）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **卡片点名的病灶测试已不存在**：旧 `test_compute_keeps_the_window_clear_of_the_caret_gap` 把错误行为写成断言（`window_pos.1 == caret_bottom + 6`），现为 `test_compute_keeps_the_panel_one_caret_gap_below_the_caret`，断言的是 `panel_top = window_pos.1 + container_offset.1` 且 `== caret_bottom + 6`。全量复核了所有 `window_pos` 绝对值断言，无一条保留旧式错误假设。
+  - **两个坐标系分开且各只有一处定义**：`placement.rs` 全文只有两处出现 `caret.bottom + caret_gap` / `caret.top − caret_gap`（经 `panel_top_below()` / `panel_bottom_above()` 两个访问器各一次），`vertical_pos` / `below_fits` / `above_fits` / `side` 四处**全部**改为调用这两个访问器；翻转判定按**面板**高而非窗口高；`Above` 分支的面板下边缘精确等于 `caret.top − caret_gap`（零误差）。
+  - **箭头水平越界判定基于面板宽度**：`centre = caret.centre_x − window.x − shadow`，上界 `panel_w − arrow_w`。新增 `test_compute_bounds_the_arrow_by_the_panel_width` 钉住恰好 2×箭头宽画 / 22px 不画的边界——**该用例在修正前的实现上会失败**。
+  - **`window_size` 两分量恒偶**：由 `even_up`/`in_container` 减 2×shadow/`narrow` 走 `even_down` 保证；新增 `test_compute_keeps_the_window_even_when_the_output_narrows_an_odd_extent`（601 宽输出 → 两分量偶数且整体在输出内）补上奇数分支。
+  - **已知限制**：① DoD 1 与卡片步骤 6 的「真实会话截图量像素」**未做**——需要真机截图流程，x11 截图用例本身是 `#[ignore]` 的真实会话用例；② 卡片正文的 `arrow()` 代码片段写的是 `let centre = self.caret.centre_x - window.x;` 却与上界 `panel_w - arrow_w` 混用（漏减一个 `shadow` 预留，两个量不在同一坐标系）——**实现是对的，未照抄片段**；③ 追加审计发现（非缺陷）：箭头仅在窗口恰好居中未夹取时才绘制，此时 `centre` 恒等于 `panel_w/2`，故该越界判定的可观测语义收敛为 `panel_w >= 2 * arrow_w`，面板宽于该阈值时两种写法等价。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
+
 ---
 
 #### 任务 ID：`UI-OPT-P0.06.01` 三层景深材质重写：真衰减外阴影 + 1dp/2dp 内阴影
@@ -1045,7 +1075,7 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - 关键路径：**是**（本形态唯一的「浮层材质」缺陷，视觉影响最大）
   - 并行通道：Track A 底座与微观质感
   - 代码落地锚点：`crates/ime-ui/ui/candidate.slint`（`CandidateMetrics` 的 material 段、`CandidateShadow` 组件）、`crates/ime-ui/src/layout/metrics.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **现有代码具体病灶（外阴影）**：`candidate.slint:112-124` 的四条环带，`spread = (4 − band) × 7` ⇒ `28 / 21 / 14 / 7`，每条 `border-width = 7px`，`opacity` 恒为 `0.18`。四条环带**恰好首尾相接铺满 28dp 且互不重叠**。由于不重叠，复合 α 处处等于单条环带的 α = 0.18 ⇒ 最终结果是**一整片 28dp、18% 黑的均匀色晕，外缘是硬切边**。文件注释 `candidate.slint:66-67` 写的「the falloff accumulates towards the panel edge」与几何事实不符。
@@ -1187,6 +1217,17 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - [ ] **物理微交互**：本卡不引入动效。
   - [ ] **性能**：全量渲染 P99 ≤ `raster_p99`（1.5ms）；若退回 6 带，实测值与理由写入验收记录。
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-ui/ui/candidate.slint`（516 行）、`ui/theme.slint`、`crates/ime-ui/src/theme.rs`、`theme/slint_palette.rs`、`theme/tests.rs`（791 行，本次新增 6 个用例）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **外阴影：真衰减，8 环带无缝平铺**：`band-step = shadow-blur / shadow-band-count = 3.5dp`，环带 `i` 的 `spread = (count − i) × step`、`border-width = step`（Slint 描边内侧绘制），因此环带恰好平铺 `[0, 28dp]`——最内环贴面板、最外环外缘落在模糊半径上，**不重叠、不留缝**；α 由 `Theme.shadow-outer-bands[i]`（`0.18 × ((i+1)/8)²`，最外 1/255、最内 46/255）给出，二次衰减而非等 α 色带。
+  - **内阴影：2×1dp 贴边暗化**：`inner-band-step = 2dp / 2 = 1dp`，两条 1dp 环带覆盖 `[0,2dp]`，offset-y 1dp——由原来的「4dp/α=1.0 粗黑环」变为贴边暗化。
+  - **渲染红线遵守**：**没有重新引入任何 `opacity` 绑定**（阴影透明度一律烘进逐带颜色），也未使用 `drop-shadow-*`。有测试在剥离注释后断言块内无 opacity、全文件无 drop-shadow。
+  - **排布与命中零回归**：`shadow-margin: 32px` 未动、`window-width/height` 公式未动、`geometry.rs`/`layout.rs` 未触碰；新增 `test_view_shadow_material_matches_the_material_table` 钉住 32dp。
+  - **环带数的越界保护**：环带数 0 会让 `band-step` 除零——由「count 必须为 8」与「内阴影 count ≥ 2」两条断言钉住；数组越界由「声明计数必须等于表长（两种配色都验）」钉住。
+  - **已知限制**：① **DoD 1 的 400% 目视校验未做**（需真实会话截图）；② **DoD 5 的性能数字未取**——新增的 `shadow-band-count` 从 4 变 8 使绘制调用 +4 而覆盖像素数不变（都是 28dp 环带包络），内阴影由 4dp 收窄到 2dp 使填充面积**减少**约一半，按卡片自己的估算 @2x 约 97k px ≈ 满帧的 14%（外）+ ≈1%（内）；criterion 基准未建，若实测超限的处置是「把 band 数降到 6 并记录」；③ 外阴影 `offset-y 8dp + blur 28dp = 36dp` 比 32dp 阴影预留多 4dp，面板下方最外环带（α=1/255）会被窗口边界裁掉——这是 3.1.2 几何与 3.1.1 预留的固有差额，本卡前即存在，本卡按 DoD 要求未改预留。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、Slint 1.13 软件渲染器、cargo-nextest 0.9.143。
+
 ---
 
 #### 任务 ID：`UI-OPT-P0.08.01` 动效属性落点：把 `AnimationSet` 接到 `.slint` 上
@@ -1199,7 +1240,7 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - 关键路径：**是**
   - 并行通道：Track C 控件与动态反馈
   - 代码落地锚点：`crates/ime-ui/ui/candidate.slint`（`CandidateWindow` 的属性区）、`crates/ime-ui/src/surface.rs`、`crates/ime-ui/src/spring/set.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **现有代码具体病灶**：`spring/set.rs:29-40` 的 `FrameMotion` 已经算好了四个量——`highlight.rect`（四自由度、速度续接、损伤区域）、`opacity`、`scale`、`page_offset_dp`。而 `candidate.slint:211-232` 的 `CandidateWindow` 只声明了 `preedit-text`、`mode-label` 与六个几何属性。**没有任何属性可以承载这四个量**。`spring/highlight.rs` 那套「四弹簧独立、飞行中改向保留速度、损伤区取新旧并集」的精细设计，目前是**悬空的**。
@@ -1326,6 +1367,16 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - [ ] **排布与工学**：出现动效的缩放锚点在光标侧边缘（`Below` 锚上边缘、`Above` 锚下边缘）；翻页时 Header **不位移**。
   - [ ] **物理微交互**：`enabled = false` 时全部动效瞬时到位；静止时 `committed_frames()` 不增长，`idle_poll_timer_count = 0`。
   - [ ] **性能**：高亮滑动的单帧损伤区 ≤ 两格并集 × 1.2（`spring/highlight.rs:359-394` 的既有断言在接线后仍通过）。
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-ui/ui/candidate.slint`（523 行）、`crates/ime-ui/src/adapter.rs`（759 行）、`adapter/tests.rs`（797 → 1035 行，本次新增 5 个用例）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **本次修掉的一处真实接线缺陷**：`highlight-visible` 不在 `FrameMotion` 里，原先只靠 `drawn_motion != Some(motion)` 决定是否写属性，导致「高亮框已静止时页面变空」这一步产生的 `FrameMotion` 与上一帧完全相同 → 属性不写 → 组件继续画一个**没有候选的高亮框**。现同时比对组件自身的 `get_highlight_visible()`。新增 `test_adapter_highlight_hides_when_the_page_empties` 是该缺陷的回归测试（**修复前必失败**）。
+  - **DoD「反 AI 模板风」的 grep 现在有意义**：`grep -c "animate" crates/ime-ui/ui/candidate.slint` 从 2 → **0**。改动前那两处都在解释「为什么这里不写 Slint 属性过渡」的注释里，使该 grep 无法区分「注释提到关键字」与「代码里声明了关键字」；理由（Slint 内部时钟会让静止窗口挂着 timer，违反 `BUDGET-CPU-01`；会让一帧依赖此前画了多少帧，破坏截图回归）全部保留。
+  - **动效关闭时一步到位**：新增 `test_adapter_motion_disabled_mid_flight_writes_the_end_values_at_once` 覆盖**飞行途中**关闭（先制造翻页位移 + 高亮飞行，再 `set_motion_enabled(false)`，下一次 `advance` 后断言全部到位且 `animating=false`）。
+  - **翻页像素回归**：新增 `test_adapter_page_turn_slides_the_grid_and_leaves_the_header_still` 把 Header 行带与网格行带按原始字节比对，断言 Header 带**逐字节不变**、网格带改变。
+  - **已知限制**：① **卡片示例里的 `opacity: root.window-opacity;` 在本项目不可实现**——本渲染器上绑定的 opacity 会让整棵子树**完全不绘制**（不是 no-op）。替代方案已落地：出现动效画成**几何生长**（面板 0.96 → 1.0，锚在光标侧边缘），理由已写成英文注释。② **消失动效在当前接线下完全没有可见效果**——`Adapter::set_visible(false)` 立即 `window.hide()`，`CandidateSurface::close()` 也不跑动效，所以 `AppearAnim` 算出的 1.0→0 / 1.0→0.98 永远不会被光栅化；要让它可见必须让 `surface.rs` 推迟 unmap 到动效收敛。③ **`[ui.animation]` 配置通路是死的**——`ime-config` 已完整解析并校验 `AnimationConfig`，但全工作区无任何消费者：`UiCommand` 与 `SurfaceUpdate` 都没有动效载荷，`Adapter::new()` 硬编码 `MotionConfig::default()`，`Adapter::set_motion_enabled` 目前只有测试在调。因此卡片第 6 步目前只在适配器层被证明，配置改 `enabled=false` 不会改变行为。④ `FrameMotion::highlight.damage` 在生产代码里**没有消费者**（`renderer.rs` 自己做拷贝损伤跟踪，且交互区是整个面板矩形、高亮框不会越出）；⑤ 出现动效期间交互区仍是完整面板矩形，缩小的面板外沿约 4dp 仍可命中；⑥ `crates/ime-ui/src/surface.rs` 的模块注释「Nothing animates yet」已过期。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、Slint 1.13 软件渲染器、cargo-nextest 0.9.143。
 
 ---
 

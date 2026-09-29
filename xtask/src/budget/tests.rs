@@ -8,8 +8,10 @@
 
 use serde_json::{Map, Value};
 
-use super::bench::{BenchUnit, Measurement, check, parse_estimates};
-use super::meta::{RunMeta, cpu_model_from, governor_from};
+use super::bench::{
+    BenchUnit, DESIGN_CASES, Measurement, check, criterion_dir, parse_estimates, threshold,
+};
+use super::meta::{META_FILE, RunMeta, cpu_model_from, governor_from};
 use super::spec::{first_number_after, parse_spec_table};
 use super::*;
 
@@ -296,28 +298,29 @@ fn test_every_binding_names_a_real_spec_cell() -> Result<()> {
 
 #[test]
 fn test_case_thresholds_are_the_numbers_their_cards_state() -> Result<()> {
+    // The numbers are read from the document rather than written down here: a literal would be a
+    // second copy of a threshold, and the comparison below is what holds the document against the
+    // card that owns each value.
     let spec = real_spec()?;
     let budgets = real_budgets()?;
     let cases = [
-        (
-            "TASK-1.02.06#2",
-            budgets.bench.passthrough_classify_ns,
-            500.0,
-        ),
-        ("TASK-1.02.02#4", budgets.bench.buffer_ops_us, 1.0),
-        ("TASK-1.02.03#7", budgets.bench.decode_holdout_s, 3.0),
+        ("TASK-1.02.06#2", "bench.passthrough_classify_ns"),
+        ("TASK-1.02.02#4", "bench.input_buffer_ops_us"),
+        ("TASK-1.02.03#7", "bench.decode_holdout_s"),
     ];
-    for (owner, value, expected) in cases {
+    for (owner, key) in cases {
         let Some((id, text)) = spec.locate(owner, false) else {
             anyhow::bail!("{owner} is not a spec cell");
         };
         assert_eq!(id, owner);
+        let Some(value) = threshold(&budgets, key) else {
+            anyhow::bail!("{BUDGETS_FILE} carries no `{key}`");
+        };
         assert_eq!(
             first_number_after(text, ""),
-            Some(expected),
-            "{owner}: the budget document and the card disagree on \"{text}\""
+            Some(value),
+            "{owner}: the card and {BUDGETS_FILE} disagree on \"{text}\""
         );
-        assert_eq!(value, expected, "{owner}: {BUDGETS_FILE} carries {value}");
     }
     Ok(())
 }
@@ -417,6 +420,43 @@ fn test_check_fails_a_case_whose_budget_was_lowered() -> Result<()> {
 }
 
 #[test]
+fn test_read_budgets_reads_a_lowered_copy_of_the_document() -> Result<()> {
+    // The reverse verification the design asks for, driven over a copy of the file
+    // rather than over a value built in memory: a gate that read a constant, or that
+    // skipped the document's own parsing, would pass a run whose budget was lowered on
+    // disk and never notice. The copy lives under the test's own directory, so the
+    // repository's document is never edited.
+    let scratch = Scratch::new("lowered-copy")?;
+    let copy = scratch.path.join(BUDGETS_FILE);
+    fs::create_dir_all(copy.parent().context("the copy has a parent directory")?)?;
+    let text = edited("latency_ms", |section| {
+        section.insert("decode_p99".to_owned(), Value::from(0.001));
+    })?;
+    fs::write(&copy, text)?;
+
+    let budgets = read_budgets(&scratch.path)?;
+    assert_eq!(
+        budgets.latency_ms.decode_p99, 0.001,
+        "the copy is what the gate read"
+    );
+
+    // The estimates directory is the same scratch root: the document sits under `docs/`,
+    // which carries no `new/estimates.json` and is therefore not a case.
+    scratch.write_estimates("decode", "12syl", 1_000_000.0, 100_000.0)?;
+    let report = check(&budgets, &scratch.path, Some("decode"))?;
+    assert_eq!(report.violations.len(), 1, "{:?}", report);
+    let message = &report.violations[0];
+    assert!(message.contains("BUDGET-LAT-02 VIOLATED"), "{message}");
+    assert!(message.contains("decode/12syl"), "{message}");
+    assert!(message.contains("p99_est=1.3ms"), "{message}");
+    assert!(
+        message.contains("budget=0.001ms"),
+        "the message prints the budget the document now states: {message}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_check_reports_a_bound_case_without_output() -> Result<()> {
     let scratch = Scratch::new("missing")?;
     scratch.write_estimates("decode", "2syl", 1_000.0, 0.0)?;
@@ -445,6 +485,88 @@ fn test_check_narrows_the_comparison_to_one_group() -> Result<()> {
     assert!(
         !narrowed.missing.contains(&String::from("decode/12syl")),
         "a case outside the requested group is not missing"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_check_refuses_a_group_no_case_is_bound_to() -> Result<()> {
+    // A group nothing is bound to would leave the gate comparing nothing and exiting
+    // successfully -- the "nothing was measured, therefore nothing is wrong" reading this gate
+    // exists to refuse. The refusal names the groups that do have bindings.
+    let scratch = Scratch::new("unknown-group")?;
+    let failure = check(&real_budgets()?, &scratch.path, Some("no-such-group"))
+        .expect_err("no benchmark case belongs to that group");
+    let message = failure.to_string();
+    assert!(message.contains("no-such-group"), "{message}");
+    assert!(
+        message.contains("decode") && message.contains("passthrough"),
+        "the refusal names a group that does exist: {message}"
+    );
+    Ok(())
+}
+
+/// Writes one case's statistics, under the group and function its criterion id names.
+///
+/// The value is inside every threshold in the document, so a bound case passes: a test
+/// that asks which cases are required is not a test about how fast any of them ran.
+fn write_design_case(scratch: &Scratch, case: &str) -> Result<()> {
+    let (group, function) = case
+        .split_once('/')
+        .with_context(|| format!("{case} is not a <group>/<function> criterion id"))?;
+    scratch.write_estimates(group, function, 100.0, 0.0)
+}
+
+#[test]
+fn test_check_requires_every_case_the_design_names() -> Result<()> {
+    // The acceptance criterion is that a run produced all nine cases the design names,
+    // and three of them have no threshold bound to them. Requiring them here is what
+    // makes that criterion something the gate checks: a case that stopped being
+    // registered would otherwise leave the report without a word.
+    let budgets = real_budgets()?;
+
+    let complete = Scratch::new("design-cases")?;
+    for case in DESIGN_CASES {
+        write_design_case(&complete, case)?;
+    }
+    let report = check(&budgets, &complete.path, None)?;
+    assert!(report.missing.is_empty(), "{:?}", report.missing);
+    assert!(report.violations.is_empty(), "{:?}", report.violations);
+
+    let incomplete = Scratch::new("design-cases-incomplete")?;
+    for case in DESIGN_CASES {
+        if *case == "lm/edge_score" {
+            continue;
+        }
+        write_design_case(&incomplete, case)?;
+    }
+    let report = check(&budgets, &incomplete.path, None)?;
+    assert_eq!(report.missing, vec![String::from("lm/edge_score")]);
+    Ok(())
+}
+
+#[test]
+fn test_criterion_dir_resolves_inside_the_target_directory() -> Result<()> {
+    // The criterion output directory is the only path a benchmark run writes to, so where
+    // it resolves is what decides whether a run needs a writable `$HOME` at all. The
+    // default is inside the repository's target directory, which the run already has; the
+    // two overrides cargo itself honours are honoured here, so a run whose output went
+    // elsewhere is reported as carrying no case rather than read from the wrong place.
+    let root = repo_root()?;
+    let dir = criterion_dir(&root);
+    if let Some(overridden) = std::env::var_os("CRITERION_HOME") {
+        assert_eq!(dir, PathBuf::from(overridden), "an override is honoured");
+        return Ok(());
+    }
+    if let Some(build_dir) = std::env::var_os("CARGO_TARGET_DIR") {
+        assert_eq!(dir, PathBuf::from(build_dir).join("criterion"));
+        return Ok(());
+    }
+    assert_eq!(dir, root.join("target").join("criterion"));
+    assert!(
+        dir.starts_with(&root),
+        "with neither override set the output directory is inside the repository: {}",
+        dir.display()
     );
     Ok(())
 }
@@ -482,6 +604,43 @@ fn test_run_meta_renders_null_for_an_absent_value() {
     assert_eq!(document["cpu_model"], Value::from("Sample CPU"));
     assert_eq!(document["scaling_governor"], Value::Null);
     assert_eq!(document["rustflags"], Value::from("-C target-cpu=native"));
+}
+
+#[test]
+fn test_meta_write_records_the_run_environment() -> Result<()> {
+    // A latency number without the machine it was taken on cannot be compared with a later
+    // run: a governor that switched to a lower frequency moves every case by the same
+    // factor, and the difference reads as a regression. The values belong to the machine,
+    // so what is asserted is that all three fields are written -- a platform with no
+    // cpufreq interface records null rather than dropping the field -- and that the record
+    // is this run's environment rather than a constant.
+    let scratch = Scratch::new("meta")?;
+    let path = meta::write(&scratch.path)?;
+    assert_eq!(
+        path,
+        scratch.path.join(META_FILE),
+        "the record lands in the directory the gate reads"
+    );
+
+    let text = fs::read_to_string(&path)?;
+    let document: Value = serde_json::from_str(&text)?;
+    let object = document.as_object().context("the record is an object")?;
+    let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["cpu_model", "rustflags", "scaling_governor"],
+        "the record names the CPU, the governor and the compile flags: {text}"
+    );
+
+    let captured = RunMeta::capture();
+    assert_eq!(document["cpu_model"], serde_json::json!(captured.cpu_model));
+    assert_eq!(
+        document["scaling_governor"],
+        serde_json::json!(captured.scaling_governor)
+    );
+    assert_eq!(document["rustflags"], serde_json::json!(captured.rustflags));
+    Ok(())
 }
 
 /// Writes a release directory holding the three artifacts the size gate measures.

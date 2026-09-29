@@ -1,9 +1,14 @@
 //! `xtask tune` -- the offline language-model weight tuner and holdout generator.
 //!
 //! It derives `tests/fixtures/lm_holdout.tsv` from the corpus and grid-searches the
-//! scoring weights on the golden fixture, so a change to the dictionary or to the
-//! weights can be measured against a set the golden fixture is not part of. A
-//! build-time tool: never part of the IME runtime, and never in CI.
+//! scoring weights on the tuning set, so a change to the dictionary or to the weights can
+//! be measured against a set the tuning set is not part of. A build-time tool: never part
+//! of the IME runtime, and never in CI.
+//!
+//! The two sets are kept apart on purpose, and `run` refuses to be handed the same file
+//! for both. A weight tuple tuned on the set it is then measured on always looks better
+//! than it is: the tuner searches for the tuple that wins on the tuning set, and only a
+//! set it never saw can say whether the win was the weights or the search.
 //!
 //! The ranking walks a lattice rather than one key, because a key such as `ke'yi`
 //! also offers the words under `ke` followed by the words under `yi` -- a legal
@@ -31,6 +36,7 @@ use anyhow::{Context, Result, ensure};
 use clap::Args;
 use ime_core::lm::Scorer;
 
+use crate::dictc::DEFAULT_POLYPHONE;
 use crate::tune::eval::{evaluate, report};
 use crate::tune::grid::grid_search;
 use crate::tune::holdout::generate_holdout;
@@ -50,6 +56,9 @@ pub const DEFAULT_HOLDOUT: &str = "crates/ime-core/tests/fixtures/lm_holdout.tsv
 /// Candidate-list width the reachability metric looks at: one page of nine.
 pub const REPORT_CANDIDATES: usize = 9;
 /// Rows a generated holdout set must reach before it is written.
+///
+/// The generator reaches it by filling every one of its frequency bands, so a set that is
+/// this large and still unstratified cannot be produced by accident.
 pub const MIN_HOLDOUT_ROWS: usize = 5000;
 
 // The grid walks the three weights the tuner's data can identify; the default
@@ -80,11 +89,19 @@ pub struct TuneArgs {
     /// Holdout set; written by `--gen-holdout` and read by nothing else here.
     #[arg(long, default_value = DEFAULT_HOLDOUT)]
     holdout: PathBuf,
+    /// L3c correction table, read by `--gen-holdout` to attribute a row to the layer
+    /// that has to serve it.
+    #[arg(long, default_value = DEFAULT_POLYPHONE)]
+    polyphone: PathBuf,
     /// Derive the holdout set from the corpus, write it out, and stop.
     #[arg(long)]
     gen_holdout: bool,
-    /// Rows a generated holdout set keeps, most frequent first.
-    #[arg(long, default_value_t = 6000)]
+    /// Rows a generated holdout set keeps in total, split evenly across the four
+    /// frequency bands it is stratified by. A band contributes its quota or every word
+    /// it holds, whichever is fewer, so the top band of a frequency list caps the set:
+    /// the default asks for more than [`MIN_HOLDOUT_ROWS`] so that the cap still leaves
+    /// the set above the floor.
+    #[arg(long, default_value_t = 8000)]
     holdout_rows: usize,
     /// Grid-search the weights on the evaluation set instead of scoring them.
     #[arg(long)]
@@ -96,8 +113,16 @@ pub struct TuneArgs {
 /// # Errors
 ///
 /// Returns an error when an input file cannot be read, when a row does not carry the
-/// columns its format promises, or when the corpus cannot supply [`MIN_HOLDOUT_ROWS`].
+/// columns its format promises, when the tuning set and the holdout set are the same file,
+/// or when the corpus cannot contribute to every band of the holdout set or reach its
+/// floor.
 pub fn run(args: TuneArgs) -> Result<()> {
+    ensure!(
+        args.eval != args.holdout,
+        "tune: --eval and --holdout are both {}; a weight tuple tuned on the set it is \
+         measured on always looks better than it is",
+        args.eval.display()
+    );
     let root = resolve_root(args.root.as_deref())?;
     if args.gen_holdout {
         return generate_holdout(&root, &args);

@@ -459,6 +459,34 @@ mod tests {
     }
 
     #[test]
+    fn test_container_size_leaves_the_candidate_area_exactly_the_grid_it_needs() {
+        // `candidate.slint` sizes the candidate area as `container-height - header-height -
+        // separator-height`, so the panel's height has to be the header, the rule and the grid
+        // and nothing else. A padding or a margin added here would shorten the area the cells
+        // are drawn in, and the grid would be clipped rather than the panel growing to hold
+        // it -- which is the failure the component's subtraction cannot report on its own.
+        let metrics = parsed();
+        for (count, per_row) in [(0usize, 5u8), (1, 5), (5, 5), (9, 5), (20, 9)] {
+            let grid = grid(count, 1, per_row, &metrics);
+            let cell = cell_width(&uniform_widths(count, 80.0), per_row, 720.0, &metrics);
+            let container = container_size(&grid, cell.width, metrics.max_width, &metrics);
+            let header = if grid.rows == 0 {
+                metrics.header_height_compact
+            } else {
+                metrics.header_height
+            };
+            let rows = f32::from(grid.rows);
+            let gaps = (rows - 1.0).max(0.0) * metrics.grid_gap;
+            let area = container.height - header - metrics.separator_height;
+            let expected = 2.0 * metrics.container_padding + rows * metrics.cell_height + gaps;
+            assert_eq!(
+                area, expected,
+                "{count} candidates in rows of {per_row} leave the grid its own height"
+            );
+        }
+    }
+
+    #[test]
     fn test_window_size_includes_the_shadow_reserve() {
         let metrics = parsed();
         assert_eq!(window_size(220.0, 87.0, 1.0, &metrics), (284, 151));

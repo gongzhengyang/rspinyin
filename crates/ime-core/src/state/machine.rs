@@ -49,29 +49,22 @@
 //! to be.
 
 use ime_types::{
-    Anchor, Candidate, DecodeRequest, DecodeResult, ImeError, KeyAction, LanguageModel, LayoutHint,
-    Lexicon, Placement, Preedit, RectI, Revision, ScreenId, SessionId, StatusStrip, UiEvent,
-    UiFrame, UserFreqSource,
+    Anchor, Candidate, DecodeFlags, DecodeRequest, DecodeResult, ImeError, KeyAction,
+    LanguageModel, LayoutHint, Lexicon, Placement, Preedit, Revision, SchemeId, SessionId,
+    StatusStrip, UiEvent, UiFrame, UserFreqSource,
 };
-use smallvec::SmallVec;
 
 use crate::input::InputBuffer;
 use crate::preedit::build_preedit_into;
-use crate::segment::{HINT_INLINE_BOUNDARIES, SyllableDag};
+use crate::segment::SyllableDag;
 use crate::state::SessionConfig;
-use crate::state::boundaries::map_to_raw;
+use crate::state::outcome::{clear_result, empty_preedit, renumber, write_boundaries};
 use crate::state::paging::Paging;
+use crate::state::scheme::SchemeSession;
 use crate::viterbi::{DecodeScratch, Decoder};
 
-/// Most effects one [`step`] produces.
-///
-/// The returned `SmallVec` holds this many inline, so a step never allocates for its
-/// effects. A step that puts a session on screen emits three -- the preedit, the
-/// show and the frame -- and no path in this module emits a fourth.
-pub const MAX_EFFECTS: usize = 4;
-
-/// The set of effects one step produces.
-pub type Effects = SmallVec<[Effect; MAX_EFFECTS]>;
+pub use crate::state::effects::{AnchorHint, Effect, Effects, MAX_EFFECTS};
+pub use crate::state::frame::FrameContext;
 
 /// Where a session is in its life.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,9 +97,6 @@ pub struct Session {
     pub state: SessionState,
     /// What the user has typed, and where the caret sits in it.
     pub buf: InputBuffer,
-    /// Segmentation graph of the input in [`Session::buf`]. It describes the input
-    /// the last refresh segmented, and is emptied when a session ends.
-    dag: SyllableDag,
     /// The decode workspace of this session: the graph a decode builds, its beams and
     /// drafts, and the candidate list it answers with, all kept across keystrokes.
     ///
@@ -127,6 +117,17 @@ pub struct Session {
     /// The request the last decode was built from, refilled per keystroke rather than
     /// built again, which is what keeps a keystroke from allocating the input string.
     request: DecodeRequest,
+    /// The scheme side of the session: the layout the keystrokes follow, the rewrite
+    /// that turns them into the spelling the segmentation layer reads, and the
+    /// syllable grid that rewrite reports in the keystrokes' own offsets.
+    scheme: SchemeSession,
+    /// A diagnostic a rewrite raised, waiting for the step that reports it.
+    ///
+    /// The rewrite runs inside [`Session::refresh`], which the transitions call with
+    /// the environment alone -- there is no context there to push an effect onto --
+    /// so the error is parked and [`step`], the one entry point every event goes
+    /// through, flushes it into that step's effect list.
+    scheme_error: Option<ImeError>,
     /// Which page is shown and which candidate is highlighted.
     pub paging: Paging,
     /// Revision of the frame the window holds. It advances with every frame, and
@@ -146,42 +147,6 @@ pub struct Session {
     pending: Option<PendingCommit>,
     /// Id the next composition will take.
     next_session_id: u64,
-}
-
-/// The parts of a frame the session cannot derive from its own state.
-///
-/// The cursor rectangle and the mode bits belong to the host, not to the session, so
-/// the engine copies them here before stepping and the session writes them into
-/// every frame it emits. They are held rather than passed to [`step`] because the
-/// anchor has to survive between steps: a frame emitted on a keystroke the host did
-/// not tell us about must still place the window where the caret is.
-#[derive(Clone, Debug, PartialEq)]
-pub struct FrameContext {
-    /// Where the window should appear, as far as the host has reported it.
-    pub anchor: Anchor,
-    /// Mode label, full-width and punctuation flags, and the read-only marker.
-    pub status: StatusStrip,
-}
-
-impl Default for FrameContext {
-    /// The context of a session that has not been told anything: an empty cursor
-    /// rectangle on the first screen, and a blank status strip.
-    fn default() -> Self {
-        Self {
-            anchor: Anchor {
-                cursor: RectI {
-                    x: 0,
-                    y: 0,
-                    w: 0,
-                    h: 0,
-                },
-                screen: ScreenId::new(0),
-                scale: 1.0,
-                placement: Placement::Auto,
-            },
-            status: StatusStrip::default(),
-        }
-    }
 }
 
 /// A commit that has been handed to the host but has not landed yet.
@@ -236,72 +201,6 @@ pub enum SessionEvent {
     CommitDone,
 }
 
-/// What the host must do after a step.
-///
-/// The machine never does any of this itself: it describes the work so that the
-/// caller can execute it on the thread that owns the channel, and so that a test can
-/// assert on it without a host.
-#[derive(Debug)]
-pub enum Effect {
-    /// Replace the composing text. The executor applies the client-preedit policy:
-    /// with it on, the text goes to the application's preedit area, and with it off
-    /// the area is cleared.
-    UpdatePreedit(Preedit),
-    /// Show the window with a new frame.
-    SendFrame(Box<UiFrame>),
-    /// Show the window, with the anchor the host resolves from [`AnchorHint`].
-    Show(AnchorHint),
-    /// Hide the window and say why.
-    Hide(ime_types::HideReason),
-    /// Commit this text to the application.
-    Commit(String),
-    /// Record one commit in the user's frequencies.
-    RecordUserFreq {
-        /// The word the user chose.
-        key: String,
-        /// How strongly to weigh it.
-        weight_hint: u16,
-    },
-    /// Save the highlighted candidate as a phrase the user defined on purpose.
-    ///
-    /// The session holds no phrase table and writes no file, so the pair leaves as an
-    /// effect and the host layer appends it to the user's phrase document, where the
-    /// next load of that document picks it up. The composition is not touched: the
-    /// candidate list and the preedit stay exactly as they were, and nothing is
-    /// re-sent to the window.
-    AddPhrase {
-        /// The input the user typed, folded to the lower-case key alphabet of a phrase.
-        key: String,
-        /// The text of the candidate the highlight was on, which becomes the phrase.
-        text: String,
-    },
-    /// Report a diagnostic.
-    ///
-    /// The payload is built from the stable `domain/action/reason` codes and from
-    /// lengths and counts; it never carries the characters the user typed, which is
-    /// what keeps a diagnostic log out of the user's input.
-    Diagnose(ImeError),
-    /// Set or clear the application's preedit area directly.
-    ///
-    /// This module emits it only to clear the area when a composition ends; the
-    /// engine also uses it when a mode change outside a composition invalidates what
-    /// the area shows.
-    SetClientPreedit(Option<(String, u32)>),
-}
-
-/// Where the window should appear, as far as the session can say.
-///
-/// The session does not know where the caret is -- that is the host's -- so it asks
-/// for a side of the cursor and leaves the rectangle to the engine.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AnchorHint {
-    /// Revision of the frame this window shows, so that a show and the frame it
-    /// belongs to can be matched up.
-    pub revision: Revision,
-    /// Requested side of the cursor.
-    pub placement: Placement,
-}
-
 impl Default for Session {
     /// An idle session with no composition, no candidates and no revision.
     fn default() -> Self {
@@ -333,10 +232,11 @@ impl Session {
             id: SessionId::new(0),
             state: SessionState::Idle,
             buf: InputBuffer::new(),
-            dag: SyllableDag::new(),
             scratch: DecodeScratch::new(),
             previous: empty_result(),
             request: DecodeRequest::new(""),
+            scheme: SchemeSession::default(),
+            scheme_error: None,
             paging: Paging::new(),
             revision: Revision::new(0),
             temp_english: false,
@@ -378,6 +278,21 @@ impl Session {
         &self.preedit
     }
 
+    /// Returns the request the last decode was built from.
+    ///
+    /// The engine reads it to see which switches, and which double-pinyin layout, the
+    /// answer it is about to show was produced under -- without re-deriving them from
+    /// a configuration the session may have adopted later than the caller read it.
+    /// `raw` is the spelling the decode actually read: for a scheme session that is
+    /// the layout's full-pinyin spelling, not the keystrokes in [`Session::buf`].
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn request(&self) -> &DecodeRequest {
+        &self.request
+    }
+
     /// Returns the segmentation graph of the input in [`Session::buf`].
     ///
     /// The graph describes the input the last refresh segmented, and is empty while the
@@ -387,7 +302,7 @@ impl Session {
     ///
     /// Never panics.
     pub fn dag(&self) -> &SyllableDag {
-        &self.dag
+        self.scratch.dag()
     }
 
     /// Returns the candidate list and the cut of the winning path, as the last decode
@@ -471,7 +386,7 @@ impl Session {
         // An empty input has no graph, which is exactly what the session should hold
         // between compositions; the buffers keep their capacity, so the next build
         // does not reallocate.
-        let _ = self.dag.build("");
+        self.scratch.clear_dag();
     }
 
     /// Returns how strongly a commit of `candidate` should weigh in the user's
@@ -506,17 +421,35 @@ impl Session {
     /// [`Session::highlighted_candidate`], because that accessor borrows the whole
     /// session and the mutable borrow `reconcile` takes of the paging state would
     /// collide with it.
+    ///
+    /// A double-pinyin layout is applied here, before segmentation: the request carries
+    /// the layout's full-pinyin spelling of the keystrokes rather than the keystrokes
+    /// themselves, which is what leaves the graph, the lattice, the Viterbi pass and
+    /// the preedit builder untouched. The buffer keeps what the user typed, and its
+    /// syllable grid is written from the rewrite's own alignment, so Backspace and the
+    /// caret stay on the units the user pressed.
     pub(super) fn refresh(&mut self, env: &SessionEnv<'_>) {
-        self.resegment();
         let parked = core::mem::replace(&mut self.previous, self.scratch.take_result());
         self.scratch.recycle(parked);
+        self.request.raw.clear();
+        self.request.raw.push_str(self.buf.raw());
+        let rewritten = self.rewrite_input();
+        // Read after the rewrite rather than before: `rewrite_input` takes the whole
+        // session mutably, so a borrow of the previous candidate taken first would have to
+        // be released before it runs. The rewrite touches the request and the scheme and
+        // neither the previous result nor the paging state, so the word the highlight was
+        // on is the same either way.
         let prev = self
             .previous
             .candidates
             .get(usize::from(self.paging.highlight))
             .map(|held| held.text.as_str());
-        self.request.raw.clear();
-        self.request.raw.push_str(self.buf.raw());
+        self.request.scheme = if rewritten {
+            self.scheme.id()
+        } else {
+            SchemeId::FULL
+        };
+        self.request.flags.set(DecodeFlags::SHUANGPIN, rewritten);
         env.decoder.decode_into(
             &mut self.scratch,
             &self.request,
@@ -526,20 +459,64 @@ impl Session {
         );
         self.paging
             .reconcile(prev, &self.scratch.result().candidates);
-        build_preedit_into(&self.buf, &self.dag, &mut self.preedit);
+        if rewritten {
+            // The rewrite walked the keystrokes in order, so it is the only pass that
+            // can say where a scheme syllable started; the graph describes the
+            // rewritten spelling and its boundaries are the layout's, not the user's.
+            self.buf.set_boundaries(self.scheme.grid());
+        } else {
+            // The graph comes out of the workspace the decode just wrote, so the input
+            // is segmented once per keystroke rather than twice: `decode_into` builds
+            // it, and this only maps its syllable boundaries back onto the raw input.
+            write_boundaries(&mut self.buf, self.scratch.dag());
+        }
+        build_preedit_into(&self.buf, self.scratch.dag(), &mut self.preedit);
     }
 
-    /// Rebuilds the segmentation graph and writes its syllable grid into the buffer.
-    fn resegment(&mut self) {
-        if self.dag.build(self.buf.raw()).is_err() {
-            return;
+    /// Rewrites the request's input through the active layout.
+    ///
+    /// # Returns
+    ///
+    /// `true` when [`Session::request`] now carries the layout's full-pinyin spelling
+    /// of the keystrokes. `false` when the input is decoded exactly as typed, which is
+    /// full pinyin and a layout this build does not implement.
+    fn rewrite_input(&mut self) -> bool {
+        if !self.scheme.is_active() {
+            return false;
         }
-        write_boundaries(&mut self.buf, &self.dag);
+        // The scheme key alphabet is lower case while the buffer keeps what the user
+        // pressed, so the copy the rewrite reads is folded here. Folding rewrites byte
+        // values and moves no offset, so the grid that comes back still names
+        // positions in the keystrokes in `Session::buf`.
+        self.request.raw.make_ascii_lowercase();
+        if let Err(err) = self.scheme.rewrite(self.request.raw.as_str()) {
+            // A layout a newer build wrote. The input is read as typed and the host is
+            // told why, which is what the contract asks of a scheme number this build
+            // cannot honour: the user keeps typing rather than losing the composition
+            // to a configuration key.
+            self.scheme_error = Some(err);
+            self.request.raw.clear();
+            self.request.raw.push_str(self.buf.raw());
+            return false;
+        }
+        self.request.raw.clear();
+        self.request.raw.push_str(self.scheme.text());
+        if self.request.raw.is_empty() {
+            // A stream the layout has nothing to say about rewrites to nothing: a lone
+            // `v` -- the key every `zh` syllable starts on -- is dropped rather than
+            // carried, because the normalizer would fold it onto `ü`. Reading the
+            // keystrokes as typed instead keeps the window from showing a candidate
+            // with no text, which looks to the user like an input method that has
+            // stopped answering.
+            self.request.raw.push_str(self.buf.raw());
+            return false;
+        }
+        true
     }
 
     /// Rebuilds the preedit from the current input and graph.
     pub(super) fn rebuild_preedit(&mut self) {
-        build_preedit_into(&self.buf, &self.dag, &mut self.preedit);
+        build_preedit_into(&self.buf, self.scratch.dag(), &mut self.preedit);
     }
 
     /// Adopts a new page size and puts the highlight back on the word it was on.
@@ -560,6 +537,56 @@ impl Session {
         self.paging.set_page_size(size);
         self.paging
             .reconcile(prev, &self.scratch.result().candidates);
+    }
+
+    /// Drops the candidate at `index` and moves the highlight onto the word that takes its
+    /// place, returning the text of the word that was dropped.
+    ///
+    /// The list is the session's own: the store cannot answer until the effect that forgets
+    /// the word has run, and the user has to see the candidate go on the keystroke, so the
+    /// removal happens here as well as there. Renumbering keeps the invariant every decode
+    /// establishes -- a candidate's display number is its position plus one -- because the
+    /// number keys and the click indices are read against it.
+    ///
+    /// [`Paging::reconcile`] is reused rather than the highlight being moved by hand: it
+    /// already looks a word up by its text and turns to the page that holds it, which is
+    /// what keeps the highlight on a word the user was looking at instead of sending it back
+    /// to the first candidate. The anchor is the word that took the removed one's place, or
+    /// the word before it when the last candidate went -- there is no list position left to
+    /// stand on at the end.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub(super) fn drop_candidate_at(&mut self, index: u16) -> Option<String> {
+        let mut result = self.scratch.take_result();
+        let position = usize::from(index);
+        let dropped = result
+            .candidates
+            .get(position)
+            .map(|held| held.text.clone());
+        let anchor = match dropped {
+            Some(_) => {
+                result.candidates.remove(position);
+                renumber(&mut result.candidates);
+                result
+                    .candidates
+                    .get(position)
+                    .or_else(|| {
+                        position
+                            .checked_sub(1)
+                            .and_then(|before| result.candidates.get(before))
+                    })
+                    .map(|held| held.text.clone())
+            }
+            None => None,
+        };
+        self.scratch.recycle(result);
+        if dropped.is_some() {
+            self.paging
+                .reconcile(anchor.as_deref(), &self.scratch.result().candidates);
+        }
+        dropped
     }
 
     /// Builds the frame the window draws from the session's current state.
@@ -677,6 +704,12 @@ impl<'a> Ctx<'a> {
 /// the current configuration on every step, because the engine reads it from a
 /// shared slot rather than holding a copy.
 ///
+/// The scheme keys of `cfg` are adopted while the session is idle and frozen for as
+/// long as a composition is live. A reload that switches the layout, or turns the
+/// mixed-input reading on or off, therefore changes nothing about the input the user
+/// has already typed -- re-reading it would move the candidate list under the caret
+/// -- and answers the next composition instead (0.4 rule 10).
+///
 /// # Errors
 ///
 /// None. Anything the session cannot use -- a stale click, a key with nothing to act
@@ -694,9 +727,19 @@ pub fn step(
     cfg: &SessionConfig,
     env: &SessionEnv<'_>,
 ) -> Effects {
+    if sess.state == SessionState::Idle {
+        sess.scheme.latch(cfg.scheme, cfg.keep_full_pinyin);
+    }
     let mut ctx = Ctx::new(cfg, env);
     sess.on_event(ev, &mut ctx);
-    let out = ctx.into_effects();
+    let mut out = ctx.into_effects();
+    // A rewrite that raised a diagnostic ran inside `Session::refresh`, which the
+    // transitions call with the environment alone; it is reported here, with the
+    // effects of the same step, so that a configuration the session cannot honour is
+    // never silent.
+    if let Some(err) = sess.scheme_error.take() {
+        out.push(Effect::Diagnose(err));
+    }
     debug_assert!(
         out.len() <= MAX_EFFECTS,
         "one step produced more effects than the frame budget allows"
@@ -710,47 +753,5 @@ pub(super) fn empty_result() -> DecodeResult {
         candidates: Vec::new(),
         segments: Vec::new(),
         degraded: false,
-    }
-}
-
-/// Empties a result in place, keeping the buffers it holds.
-///
-/// The same value [`empty_result`] builds from nothing, for a caller that already has a
-/// result: the lists lose their entries, and the capacity they were sized to stays for
-/// the next decode to write into.
-fn clear_result(result: &mut DecodeResult) {
-    result.candidates.clear();
-    result.segments.clear();
-    result.degraded = false;
-}
-
-/// Writes the syllable grid of `dag` into `buf`, so that a Backspace removes a syllable.
-///
-/// The grid is written back only when the graph has a segmentation at all. A graph
-/// without one reports the whole input as a single pass-through range, and adopting that
-/// would make one Backspace delete everything the user typed; the buffer keeps the grid
-/// it already had instead.
-///
-/// The buffer and the graph are separate arguments rather than two fields of a session, so
-/// that the caller decides which graph the grid is derived from.
-fn write_boundaries(buf: &mut InputBuffer, dag: &SyllableDag) {
-    let mut hint = SmallVec::<[u16; HINT_INLINE_BOUNDARIES]>::new();
-    if !dag.best_segmentation_hint(&mut hint) {
-        return;
-    }
-    let raw = buf.raw();
-    let mut grid = SmallVec::<[u16; HINT_INLINE_BOUNDARIES]>::new();
-    if !map_to_raw(raw, &hint, &mut grid) {
-        return;
-    }
-    buf.set_boundaries(&grid);
-}
-
-/// Returns the preedit of a session that has composed nothing.
-pub(super) fn empty_preedit() -> Preedit {
-    Preedit {
-        text: String::new(),
-        caret: 0,
-        spans: Vec::new(),
     }
 }

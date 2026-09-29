@@ -16,7 +16,7 @@ use std::ptr;
 
 use crate::ffi::{emit_diagnostic, guard_ffi};
 
-use super::{RSPINYIN_VTABLE, RspinyinHandshake};
+use super::{RSPINYIN_VTABLE, RspinyinHandshake, RspinyinVtable};
 
 /// Plugin state behind the opaque context pointer handed to the host.
 ///
@@ -62,14 +62,48 @@ static PLUGIN_CONTEXT: PluginContext = PluginContext::new();
 #[unsafe(no_mangle)]
 pub extern "C" fn rspinyin_plugin_init() -> *mut c_void {
     guard_ffi(ptr::null_mut(), || {
-        if let Err(err) = PLUGIN_CONTEXT.handshake.accept(&RSPINYIN_VTABLE) {
-            // Rejected: no registration, no `on_addon_init`, pure-engine mode.
-            emit_diagnostic(&err.to_string());
-            return ptr::null_mut();
+        match register(&PLUGIN_CONTEXT, &RSPINYIN_VTABLE) {
+            Registration::Accepted(context) => context,
+            Registration::Refused(line) => {
+                // Rejected: no registration, no `on_addon_init`, pure-engine mode.
+                emit_diagnostic(&line);
+                ptr::null_mut()
+            }
         }
-        register_with_host();
-        ptr::from_ref(&PLUGIN_CONTEXT).cast_mut().cast::<c_void>()
     })
+}
+
+/// What one registration attempt decided.
+///
+/// A value rather than a pair of side effects, so that the refusal is reachable from a
+/// test: the production context accepts the production table on the first call and could
+/// never take the other branch.
+#[derive(Debug)]
+pub(super) enum Registration {
+    /// The host may use the plugin; this is the context to hand it.
+    Accepted(*mut c_void),
+    /// The table was refused, and this is the line the refusal is reported with.
+    ///
+    /// The line carries the stable `platform/fcitx5/version-mismatch` code, which
+    /// diagnostics and tests match on, and it is reported by the caller rather than here:
+    /// the entry point is the only place that owns the crash channel.
+    Refused(String),
+}
+
+/// Validates `vt` and, when it passes, registers it with the host.
+///
+/// The body of [`rspinyin_plugin_init`], over the context and the table it is given. The
+/// returned context points at `plugin`, which the caller must therefore keep alive for as
+/// long as the host holds it — the production entry point passes the process-wide static,
+/// whose address outlives everything.
+pub(super) fn register(plugin: &PluginContext, vt: &RspinyinVtable) -> Registration {
+    match plugin.handshake.accept(vt) {
+        Ok(()) => {
+            register_with_host();
+            Registration::Accepted(ptr::from_ref(plugin).cast_mut().cast::<c_void>())
+        }
+        Err(err) => Registration::Refused(err.to_string()),
+    }
 }
 
 /// Hands the table to the C++ glue, which validates the ABI version again.

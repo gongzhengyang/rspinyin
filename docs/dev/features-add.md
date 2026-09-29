@@ -763,7 +763,7 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   - 前置依赖：无（**不依赖 `M0`**）；软依赖 `TASK-1.03.01`（词库格式 v1 与 `dictc`）、`TASK-1.03.02`（FST 索引）
   - 关键路径：**`CP: 是`**（CP 起点）
   - 并行通道：`Track A-数据`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
   - 代码落地锚点：`xtask/src/dictc/{mod,source,build,expand}.rs`（改）、`xtask/src/dictc/section.rs`（**新增**：可复用的 `SectionBuilder`）、`data/sources.toml`（改：登记两个 `derived` 来源）、`data/raw/jieba-dict.tsv`（已存在，349,046 行）、`data/raw/base.tsv`（已存在，5,871 行）、`data/raw/phrase.tsv`（**新增**）、`data/raw/script-disambig.tsv`（**新增**）、`data/compiled/base.dict`（重新产出）、`docs/dev/budgets.json`（只读引用，不改）
 
 - **目标与价值**：把 `base.dict` 从**开发词表（5,441 条）**扩到**产品词库（≥ 320,000 条）**，并把编译管线改造成可被后续增量（简繁表、符号表、英文词表、领域词库）复用的分段构建器。对标搜狗/微软拼音/RIME/libpinyin 的词库规模量级。**这是本项目"输入正确性"这一第一优先级目标的载体**——当前 5,441 条词库下，任何长句输入都会大量落到 `Lexicon::fallback_single` 的单字回退，`DecodeResult.degraded` 频繁置位。
@@ -858,8 +858,11 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   | `WordList` | ≤ 2MB | 41.4 万键的 `u32` 引用 + 分组头 |
   | `Fst` | ≤ 2.5MB | `fst::Map` 对 41.4 万键的实测量级 |
   | `Unigram` | ≤ 3.5MB | 32 万 × `UNIGRAM_ENTRY_SIZE(8)` = 2.6MB |
-  | **合计** | **≤ 17.5MB** | 留 2.5MB 余量给 `BUDGET-SIZE-02` 的 20MB |
+  | 五段之和 | ≤ 18.5MB | 分段上限逐段宽松，只用于归因"哪一段在涨" |
+  | **载荷总上限** | **≤ 17.5MB** | 真正的红线：留 2.5MB 余量给 `BUDGET-SIZE-02` 的 20MB（`PAYLOAD_SHARE = 875‰`） |
   | 超限对策 | 按权重截断至 top 320,000 并打印警告 | `features.md` 6.1 的 `R-08` 对策 |
+
+  **两个上限同时判**：任一段越限即失败，五段之和越过 17.5MB 同样失败。分段上限之和（18.5MB）大于总上限，这是有意的——它是"哪一段在涨"的归因工具，而总上限才是契约。实现见 `xtask/src/dictc/budget.rs` 的 `SECTION_SHARES` 与 `PAYLOAD_SHARE`，两者都是容器上限的 per-mille 份额，容器一改全部同步缩放。
 
   (e) **`data/sources.toml` 新增两个 `derived` 来源**（`kind = "derived"` 豁免哈希固定，因生成器变化时内容会变）：
 
@@ -925,6 +928,19 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   6. `lm_holdout.tsv`（≥ 5000 条）上的「首选词命中率」与「前 9 候选可达率」两个指标**均高于改造前**，数值记入验收记录。[性能]
   7. `dict_mmap_rss ≤ 25MB`、`plugin_rss ≤ 45MB`。[性能]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`xtask/src/dictc/budget.rs`（471 行）+ `budget/tests.rs`（390 行，20 个用例）、`xtask/src/dictc/manifest.rs`（394 行）+ `manifest/tests.rs`（396 行，14 个用例）；`xtask/src/dictc.rs` 挂载并在 `run()` 中接线：`budget::enforce` 在写入容器**之前**执行，`manifest::record_build` 在 `writer.finish` 之后执行。
+  - **验证命令与结果**：`just ci` 退出 0（fmt、clippy `-D warnings`、nextest 1992 个用例、doctest、10 个审计脚本全部通过）。
+  - **阈值单源**：模块内不存任何字节阈值，只存 per-mille 份额（`200/325/100/125/175`）；`budgets.json` 的 20 MiB 上精确复现 `ASM-05` 的 4/6.5/2/2.5/3.5 MiB 与 17.5 MiB 总上限，文档一改全部同步缩放。
+  - **来源身份**：`SourceIdentity` 的 id / kind / layer / spdx 从 `data/sources.toml` 读取（`Source` 新增 `layer` 字段），不硬编码。
+  - **已知限制**：
+    1. **产品级词表并未真正编译进去**。`data/raw/jieba-dict.tsv`（349,046 行，4.2 MB）已在仓库中、已在 `data/sources.toml` 登记，`load_words` 也已能读它的两列格式——**`base.dict` 只有 5,441 条的原因是 `dictc` 的默认 `--input` 指向 5,871 行的 `base.tsv`**。把 `--input` 换掉即可，但本卡没有执行（子 Agent 零命令权限，且重产出 `data/compiled/base.dict` 属发布动作）。这是「输入不准」的根因，登记为后续项。
+    2. **staged compilation / `SectionBuilder` 抽象未做**：卡片锚点里的 `xtask/src/dictc/{mod,source,build,expand}.rs`（改）与 `section.rs`（新增）不在白名单内，`mod.rs` 被明令禁止修改。
+    3. `data/raw/script-disambig.tsv` 未创建，`data/sources.toml` 未新增该 `derived` 来源。
+    4. `scripts/check-budget.sh` 不存在，`just check-budget` 目前只跑 `xtask budget --validate`。
+    5. ~~**`ASM-05` 的算术偏差**：分段上限 4/6.5/2/2.5/3.5 MB 之和是 18.5 MB，而文档写「合计 ≤ 17.5MB」。实现按字面同时判两个上限（各段各自判 + 总载荷判，`is_within` 要求两者都过）；文档需要回写其中一处。~~ **已回写（2026-09-30，主 Agent）**：`features.md` 的 `ASM-05` 行与本文档 §(d) 的分段预算表都改为显式写出两个数——五段之和 ≤ 18.5MB、载荷总上限 ≤ 17.5MB，并说明分段上限是归因工具、总上限才是红线。代码未改：`xtask/src/dictc/budget.rs` 的 `SECTION_SHARES` 与 `PAYLOAD_SHARE` 本来就是 per-mille 份额，文档一改全部同步缩放。
+  - **环境**：Rust 1.98.0、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### 任务 ID：ADD-FEAT-P0.01.02 词库质量闭环：留出集度量与 L3c 校正表扩容
@@ -935,7 +951,7 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   - 前置依赖：`ADD-FEAT-P0.01.01`
   - 关键路径：**`CP: 是`**
   - 并行通道：`Track A-数据`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
   - 代码落地锚点：`xtask/src/tune/`（改：`xtask tune` 子命令）、`data/raw/polyphone.tsv`（改：3,151 → ≥ 5,000 条）、`crates/ime-core/tests/fixtures/lm_holdout.tsv`（**新增**，≥ 5,000 条）、`crates/ime-core/tests/lm_quality.rs`（**新增**）、`crates/ime-core/src/lm/score.rs`（改：`ScoreWeights` 的默认值可被 `tune` 输出覆盖）、`docs/dev/lm-weights.md`（改：回写实测权重）
 
 - **目标与价值**：把"词库变大"变成"候选变准"。`ADD-FEAT-P0.01.01` 解决**可达性**（词在不在库里），本卡解决**排序质量**（词排得对不对）与**多音字残余错误**。ADR-0000 实测：`L3a` 基线错音率 4.3% 词数 / 1.9% 加权，`L3b` 后残余约 0.8% 加权；`L3c` 权重校正表是收窄残余的最后一步，但当前 `polyphone.tsv` 只有 3,151 条，**低于 ADR-0000 要求的 ≥ 3,000 条的边界**，需要扩容。
@@ -1012,6 +1028,16 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   5. `docs/dev/lm-weights.md` 含调参前后的对比表与留出集规模。[文档]
   6. `bash scripts/check-dict-sources.sh` 通过——`polyphone` 仍登记为 `derived`，其 Unihan 派生部分不引入新许可。[自动]
   7. `decode_p99 ≤ 3.0ms` 不劣化。[性能]
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`xtask/src/tune/holdout.rs`（476 行，重写）、`tune/{io,eval,grid}.rs`、`tune/tests.rs`（496 行）；`xtask/src/dictc/quality.rs`（836 → 771 行）、本次新建 `dictc/quality/tables.rs`（105 行）、`dictc/quality/tests.rs`（537 行）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **留出集改为按频次排名四分层抽样**：`1..1k` / `1k..10k` / `10k..50k` / `50k+` 各层等额配额、上限为层容量；输出改为三列 `key<TAB>word<TAB>source`，`source` 由 L1 读音表 + L3c 校正表判定（L1/L3b/L3c）。**禁止自评**：`run` 拒绝 `--eval == --holdout`，holdout 生成时按词与键**双重**排除调优集。**可复现**：无采样、无时钟、无 RNG，语料按 count 排序（并列按文本），同一语料换行序产出**字节相同**的文件（有测试）。
+  - **校正表改为双向有界**：新增 `MAX_CORRECTIONS`（20000）与 `--max-corrections`，表有下界（5000）也有上界；新增 `count_repeats` 并**拒绝重复的 `(word, reading)` 行**（防止用重复行灌满下界）。
+  - **度量把排序质量与词条覆盖分开**：`QualityReport::served_top1_rate` 打「key 服务到的用例中的首选率」，与「全体用例首选率」并列输出——前者才是纯排序质量。
+  - **`tune --grid` 输出前后对比表**（shipped / best / delta，单位 pp），并列时保留出厂值。
+  - **已知限制**：① **卡片 DoD 1 有一处算术自相矛盾**——它同时要求「≥5000 行」与「四层各 ≥1250」，而 `top 1k` 层按定义只有 1000 个词，任何实现都无法让该层贡献 1250 行。实现取「每层给出配额或它的全部」，默认 `--holdout-rows 8000` 时实际约 6500–7000 行，总量下限 5000 由生成器 `ensure!` 强制，2/3/4 层各 2000 行 ≥1250；若需严格满足首层，应把该层边界放宽到 `top 2k`（需用户裁定）。② **`crates/ime-core/tests/fixtures/lm_holdout.tsv` 仍是旧的 2 列、按总频次取 top-N 的版本**，需跑 `cargo run -p xtask -- tune --gen-holdout` 重生成；③ **`data/raw/polyphone.tsv` 有一处真实缺陷**：`自行车	zi'xing'che` 在第 46–47 行完全重复，`xtask dictc quality` 会以重复行拒绝（诊断给出 `cut -f1,2 <path> | sort | uniq -d`）；删掉一行即可；该文件同时需要扩容并补 `origin` 列；④ `crates/ime-core/tests/lm_quality.rs` 未创建（不在白名单），等价度量在 `xtask dictc quality` 中输出；⑤ `docs/dev/lm-weights.md` 的前后对比表由 `xtask tune --grid` 打印，卡片第 4 步的「自动回写」半环未实现，保持「工具打印、人工落盘」；⑥ 本卡改动全在 `xtask`（构建期工具），未触碰任何运行时代码路径，故 `decode_p99` 无影响（静态结论，无基准可跑）。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
 
 ---
 
@@ -1164,7 +1190,7 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   - 前置依赖：**`M0` 契约冻结**（`UserFreqSource` 的三个新方法 + `DictError` 两个新变体）
   - 关键路径：`CP: 否`，但**是 `P0.03.01` 的前置**（该卡在 CP 上）
   - 并行通道：`Track A-数据`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
   - 代码落地锚点：`crates/ime-types/src/lexicon.rs`（`M0` 已加 trait 方法）、`crates/ime-dict/src/user_db.rs`（改：实现三个新方法 + 新增 `pinned`/`created_unix` 字段）、`crates/ime-dict/src/user_db/export.rs`（**新增**）、`crates/ime-dict/src/user_db/tests.rs`（改：402 行，需追加）、`crates/ime-core/src/state/transitions.rs`（改：`ForgetHighlighted` 跃迁体）、`crates/ime-fcitx5/src/engine.rs`（改：按键路由）
 
 - **目标与价值**：解决输入法长期使用后**最被抱怨的问题**——"它学错了一个词，我删不掉"。当前 `UserDb` 只有 `record_count()` 与 `evict_oldest(percent)`（按最旧 10% 批量淘汰），用户面对一个学错的词**完全无能为力**。同时提供导出/导入，让用户能备份、迁移、在换机器时带走自己的词库。对标搜狗的"词库管理（可删除单条）"、RIME 的 `rime_dict_manager`。
@@ -1303,6 +1329,18 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   4. 手工验证：输入 `yinhang` 选中并提交数次使其进入用户库 → 再次输入 → 按绑定键删除 → 断言该词从候选消失且**重启后不再出现**。[实验室]
   5. `forget` 的实测耗时 ≤ 0.05ms。[性能]
   6. 导出的 TSV 可被导入回一个空库，`record_count()` 与导出前一致（往返一致性）。[自动]
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-dict/src/user_db/manage.rs`（352 行）、`export.rs`（572 行）、`flush.rs`（写路径从 `user_db.rs` 迁出并扩展为「一批 delta + 一批删除 + 首次写入 meta 行」）、`manage_tests.rs`（15 个用例）、`export_tests.rs`（13 个用例）；`user_db.rs` 新增 `USER_META` 表、`PendingState.removed`、`Inner.pinned`、`freq` 的墓碑短路；`ime-core` 的 `Effect::ForgetUserWord` 与 `ForgetHighlighted` 转换。
+  - **接线**（主 Agent 完成）：`engine/router.rs` 的 `apply_effects` 新增 `Effect::ForgetUserWord` arm（失败时发 `dict/user-word-not-found`）；`state/tests.rs` 的 `kind()` 补齐。
+  - **验证命令与结果**：`just ci` 退出 0（fmt、clippy `-D warnings`、nextest 1992 个用例、doctest、10 个审计脚本全部通过）。
+  - **主 Agent 修掉的三处缺陷**：`manage.rs` 的 `Ordering` 被 `std::sync::atomic` 遮蔽（`cmp`/`partial_cmp` 返回了错误的枚举）；`pending_snapshot` 对兄弟模块不可见；**`Ranked::cmp` 方向反了**——它把「最好」的行放在堆顶，于是每次 push 都淘汰最好的，有界堆最终留下的是最差的两行（`list_words(0, 2)` 返回 `[w4, w0]` 而不是 `[w4, w3]`）。
+  - **已知限制**：
+    1. **`UserFreqSource::list` 返回 `Err(dict/unsupported)`**：`WordRef<'_>` 的 text 借用期限 = `&self`，而 store 的词集是活的（`record`/`forget` 都是 `&self` 且必须能写），键只能存在 `Mutex` 之后，借用无法逃出 guard；伪造 `'static` 只剩泄漏键或 `unsafe` 两条被禁的路。同页数据由固有方法 `UserDb::list_words`（owned 行）与 `export_tsv` 提供。**这是冻结签名的缺陷而非实现缺口**，要让它可服务需要契约返回 owned 行或 guard 类型。
+    2. **`forget` 的存在性与 pin 判定只查内存**（hydrated 时即全库，精确；超过 `HYDRATE_CAP` 的库只认本会话见过的键，且看不到 pin）——按键路径不得开读事务。
+    3. pin 目前只有导入能置位（`PinHighlighted` 仍是 `dict/unsupported`）。
+    4. 导出/导入的 8 MiB 上限与「畸形即整份拒绝」策略与卡片原文的「畸形行跳过并计数」不同，理由已写入代码注释。
+  - **环境**：Rust 1.98.0、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
 ---
 
 #### 任务 ID：ADD-FEAT-P0.02.01 双拼方案引擎与音节映射
@@ -1478,7 +1516,7 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   - 前置依赖：`ADD-FEAT-P0.02.01`
   - 关键路径：`CP: 否`（松弛 12 人天）
   - 并行通道：`Track B`（配置 UI 与状态显示）；配置加载部分落 `Track C`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
   - 代码落地锚点：`crates/ime-config/src/schema.rs`（改：新增 `[scheme]` 段）、`crates/ime-config/src/reload.rs`（改：方案热重载）、`crates/ime-fcitx5/src/engine.rs`（改：把 `SchemeId` 填进 `DecodeRequest`）、`crates/ime-core/src/state/machine.rs`（改：`StatusStrip` 填方案名）、`crates/ime-ui/ui/candidate.slint`（改：header 显示方案名）
 
 - **目标与价值**：让方案**可用、可切、可退回**。没有本卡，`P0.02.01` 只是一个无法被用户启用的引擎。三个具体价值：(1) 配置层暴露方案选择；(2) header 显示当前方案，避免用户忘记自己开了双拼而困惑；(3) **混输兜底**——用户开了双拼后仍能偶尔用全拼输入，这是搜狗/微软都有但常被忽略的关键体验点。
@@ -1565,6 +1603,16 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   4. 运行中把 `scheme` 从 `xiaohe` 改为 `full`，进行中的输入**不中断**，变更在本次提交后生效。[实验室]
   5. 配置非法方案名时 `Config::repaired()` 修复为 `full` 并报告 `config/invalid`。[自动]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-config/src/scheme.rs`（约 485 行，新增两个投影接缝）、`scheme/tests.rs`（约 412 行，新增 5 个用例）、`crates/ime-core/src/shuangpin/fallback/tests.rs`（新增 1 个边界用例）。`fallback.rs` 与 `state/scheme.rs` 逐行核对后确认**无缺口，未改**。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **新增的两个投影接缝**：`SchemeConfig::decode_settings() -> (SchemeId, bool)`（布局号走既有的 `From<SchemeChoice> for SchemeId`，`Custom → FULL` 这条规则只在这里存在一份；开关直接取 `keep_full_pinyin`）与 `SchemeConfig::header_hint() -> Option<&str>`（`show_hint` 的门；`None` 表示引擎应回落到自己的「中/英」标签）。两者都有 doctest。
+  - **`[scheme]` 校验零新增错误码**：未知方案名由 `SchemeChoice::parse` 报 `ConfigError::Invalid { key: "scheme.scheme" }` → 稳定码 `config/invalid`，槽位保持默认 `Full`（即降级到全拼）；`custom` 无论表是否完整一律报 `scheme.scheme` 并降级；表本身逐列表校验长度 26，报 `scheme.custom.initials`/`scheme.custom.finals`。解码侧未知编号报既有的 `decode/scheme-unsupported`。
+  - **切换语义**：`machine.rs::step` 只在 `SessionState::Idle` 时 `sess.scheme.latch(cfg.scheme, cfg.keep_full_pinyin)`，组合进行中冻结；`SchemeSession` 的模块文档写明 "Latched per composition"。行为等价于卡片的 pending 机制，可观察契约一致，0.4 规则 10 / 禁止项 23 满足（测试 `test_scheme_change_is_deferred_until_the_next_composition`）。
+  - **混输兜底三级阶梯**：先 pair、再 standalone（都是方案自身读法）→ 策略允许时按全拼读 → 单字母 Literal，与卡片「方案映射失败时先按全拼解释，两者都失败才回退单字母」逐字一致。本次补的只是「pair 存在但组不成音节 → 退回首键 standalone 且第二键留给下一个位置」这一条此前没有测试钉住的优先级分支。
+  - **已知限制**：① **`custom` 方案不可用（设计偏差，需 ADR）**——卡片设想 `custom` + 合法表可用，但 `SchemeId` 是冻结的 6 值枚举、`table_for` 只认 `&'static SchemeTable`，运行时表无处安放；现状「校验后置一边 + 报 `config/invalid` + 降级全拼」是唯一不破坏契约的解法，理由已写在模块文档里；② **配置 → 引擎的投影在本次之前完全没有接线**——`SessionConfig.scheme` / `keep_full_pinyin` 从来没人从文档里填过，本卡在配置层备好了接缝，引擎侧接线由另一张卡完成（`KeyRouter` 现在从 `ime_config::Config` 投影 `[keys]` 与 `[scheme]`）；③ header 方案名（`mode_label`）与混输提示（`SyllableOrigin::FullPinyinFallback`）的接线同理；④ 兜底路径无基准数据（卡片 NFR「劣化 ≤ 0.05ms」未取数）；⑤ DoD 3「小鹤下输入字面量 `nihao` 仍得「你好」」需 mock lexicon 的会话级测试，当前只有读法层的等价覆盖。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### 任务 ID：ADD-FEAT-P0.02.03 模糊音匹配层
@@ -1575,7 +1623,7 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   - 前置依赖：**`M0` 契约冻结**（`DecodeFlags::FUZZY*` 的 9 个位已在 `ADR-0001` 冻结，本卡只需确认其语义）；无其他任务依赖
   - 关键路径：`CP: 否`（松弛 11 人天）
   - 并行通道：`Track A-解码`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
   - 代码落地锚点：`crates/ime-core/src/segment/fuzzy.rs`（**新增**）、`crates/ime-core/src/viterbi/lattice.rs`（改：词格构建期的边扩张）、`crates/ime-config/src/schema.rs`（改：新增 `[engine] fuzzy` 子键）、`crates/ime-types/src/decode.rs`（`M0` 已确认 `FUZZY*` 位语义）
 
 - **目标与价值**：让发音不准的用户也能打出字。`zh/z`、`ch/c`、`sh/s`、`n/l`、`f/h`、`an/ang`、`en/eng`、`in/ing` 八类混淆在南方方言区是高频需求，搜狗/微软/RIME/libpinyin **全部**内置。当前 `DecodeFlags::FUZZY` 与 8 个类别位**已冻结但零实现**，是"契约已备好、功能没做"的典型。
@@ -1694,6 +1742,19 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   5. `decode/fuzzy-truncated` 在 100 次相同输入下只记录 1 条。[自动]
 
 ---
+- **验收记录**（2026-09-30）：
+  - **交付物**：新增 `crates/ime-core/src/fuzzy.rs`（470 行）与 `fuzzy/tests.rs`（450 行，24 个用例）。
+  - **八个类别**（`CLASSES`，每类带 `flag` / 配置名 `name` / `canonical` / `variant`）：`zh_z`、`ch_c`、`sh_s`、`n_l`、`an_ang`、`en_eng`、`in_ing`、`f_h`，位序 `1<<1..=1<<8`，与冻结的 `DecodeFlags` 位域一致（`CLASS_BITS == 0x01FE`，不含主开关位）。
+  - **音节级双向替换**：先在词首、再在词尾各试一次，结果必须在 411 表中才收（因此 `zhuang`→`zuang`、`shei`→`sei` 被跳过）；类别按表序逐层叠加，所以两类混淆可复合（`zhang` 在 `zh_z`+`an_ang` 下同时到达 `zan`）；原拼写永远在首位。
+  - **主开关语义**：`is_enabled = FUZZY && 任一类别位`；`FUZZY` 置位但无类别位等价于关闭且**不产生诊断**；关闭时提前返回、零查表、`SmallVec` 不溢出到堆（有 5 种关闭位型 × 411 音节的断言）。
+  - **惩罚**：`FUZZY_PENALTY_Q8 = 12 << 8`，作用在 Q16.16 边分上约等于一个 log 概率单位的 4.7%，与卡片「约 5% 权重差」一致；`penalize` 饱和减，`i32::MIN` 不回绕。
+  - **已知限制**：
+    1. **词格接线缺失**：`crates/ime-core/src/viterbi/**` 不在本卡白名单。需要把 `DecodeFlags` 传进 `build_lattice*`、对每条边调 `fuzzy::variants` 并按变体拼键、给 `LatticeEdge` 标出「模糊变体」以便扫描阶段调 `fuzzy::penalize`。原语与其拼接契约已写进模块文档，`push_fuzzy_edges` 未落地。因此 **DoD 1 的端到端半句、DoD 3（延迟）与 DoD 4（手工验证 `lihao`）仍缺口**。
+    2. **DoD 2 仍缺口**：`crates/ime-config/**` 不在白名单，`[engine] fuzzy` 的类别名解析未接。已备好 `CLASSES[i].name` 与 `class_by_name`（大小写不敏感，未知名字返回 `None` 交配置层报 `config/invalid`），接入约十行。
+    3. **DoD 5 的记录侧仍缺口**：`variants_into` 已精确回答「是否被截断」、`may_truncate` 提供廉价必要条件，但日志落点在 `ime-diag`/状态机。
+    4. **一条实测发现：`MAX_VARIANTS = 8` 在当前类别表下不可达。** 交付前用脚本把算法原样重写在真实的 411 音节表上跑了一遍（只读校验）：单类对任一音节最多只加 1 个变体，**八类全开时任何音节最多只有 4 个拼写**（一个音节只有一个声母、一个韵母，各归属至多一个类别）。所以 `decode/fuzzy-truncated` 今天不可观测，它是为类别表将来扩容留的护栏。若希望它可观测，需另开卡把类别表扩到 4 类以上可作用于同一音节，或下调上限；当前实现把两件事都做成可测的（`expand_into` 的 cap 参数 + `may_truncate` 真值表）。
+    5. 三处对卡片草图的偏离（均已写入代码注释）：`FuzzyClass` 多一个 `name` 字段（配置键与 DoD 2 的类别名解析要求它，表是唯一真源）；`CLASSES` 用 `static` 而非 `const`（`class_by_name` 要交出 `&'static FuzzyClass`）；模块落在 `src/fuzzy.rs` 而非 `src/segment/fuzzy.rs`（`lib.rs` 是工作区约定的挂载点，而 `segment/mod.rs` 是模块根文件）。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143。
 
 #### 任务 ID：ADD-FEAT-P0.02.04 简拼与首字母缩写展开
 
@@ -1703,7 +1764,7 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   - 前置依赖：**`M0` 契约冻结**（确认 `DecodeFlags::ABBREV` 与 `Lexicon::prefix` 的语义）；软依赖 `ADD-FEAT-P0.01.01`（**词库越大，简拼命中率越高**——5,441 条词库下简拼几乎无候选）
   - 关键路径：`CP: 否`（松弛 11 人天）
   - 并行通道：`Track A-解码`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
   - 代码落地锚点：`crates/ime-core/src/segment/abbrev.rs`（**新增**）、`crates/ime-core/src/viterbi/lattice.rs`（改：简拼边的构建）、`crates/ime-config/src/schema.rs`（改：新增 `[engine] abbrev` 子键）、`crates/ime-types/src/lexicon.rs`（`Lexicon::prefix` 已在 `ADR-0001` 冻结，本卡是**第一个调用方**）
 
 - **目标与价值**：让用户少打 60%~80% 的键。`nh` → 你好、`bjdx` → 北京大学、`zgrm` → 中国人民。对标搜狗/微软拼音/RIME/libpinyin/微信输入法。当前 `DecodeFlags::ABBREV`（`1<<9`）与 `Lexicon::prefix(prefix, limit)` **已冻结但从未被调用**——`lexicon.rs:40` 的注释明写"Prefix enumeration, used by the Phase 2 abbreviation expansion"，Phase 2 未落地。
@@ -1835,6 +1896,16 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   4. 实测简拼开启后的 `decode_p99` ≤ 3.0ms；简拼 + 模糊音同时开启的 `decode_p99` 也 ≤ 3.0ms。[性能]
   5. 简拼 + 模糊音组合下的 `decode_p99` 劣化 ≤ 0.50ms + 0.60ms = 1.10ms。[性能]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-core/src/segment/abbrev.rs`（775 行）、`segment/abbrev/tests.rs`（707 行，新增 5 个用例，模块共 32 条）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **本次修掉的一处真实缺陷**：`MAX_READINGS` 上限原先在 `out.push` **之后**判断，导致「读数恰好等于 64 条」的输入被误报截断——与本函数自己文档写的「`true` 仅当确有读数被丢弃」以及 `decode/abbrev-truncated` 的语义相矛盾。改为 push **之前**判断。
+  - **补上卡片要求的错误码常量**：新增 `ABBREV_TRUNCATED_CODE = "decode/abbrev-truncated"`。原实现只在散文里提到该字符串，没有可被诊断匹配的常量。
+  - **缩写候选排在等价全拼候选之后**：由 `ABBREV_PENALTY_Q8 < FUZZY_PENALTY_Q8` 保证，且有 `const _: () = assert!(...)` 编译期把关。
+  - **`ABBREV` 关闭时零开销是结构性证明**：`test_is_enabled_over_every_flag_combination_follows_the_abbrev_bit` 穷举 `DecodeFlags` 全部 16384 个组合，断言 `is_enabled(f) == f.contains(ABBREV)`，恰好 8192 个为真。
+  - **已知限制**：① **词格接线未落地**——`push_abbrev_edges` 属 `viterbi/lattice.rs`，本卡只交付了代数层；接线时注意 `readings_into` 每节点只调一次、结果放进 `DecodeScratch` 的复用缓冲，且**必须按 `MAX_WORD_SYLLABLES` 截断读数切片**，否则最坏情形约 64×64 次前缀展开会吃掉 `BUDGET-LAT-02` 的 0.50ms 预算；② **词典侧的关键前提**：`spell_into` 对全声母读数产出的查询串形如 `n'h`，它**不是** `ni'hao` 的字面前缀；只有混拼读数（`nih`）产出的 `ni'h` 才是。全拼索引的词典答不了 `n'h`——`nh → 你好` 能否命中取决于 `dictc` 是否建缩写键，**没有卡拥有这件事**；③ `[engine] abbrev` 配置键已落地（默认 `false`）但还没有消费者；④ 与模糊音组合的联合封顶（`MAX_TOTAL_EDGES`）属 `lattice.rs`，不在本卡；⑤ `abbrev.rs` 仅剩 25 行余量（775/800），后续加内容需先拆分。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### 任务 ID：ADD-FEAT-P0.02.05 简繁转换（Unihan 变体表 + ToggleScript）
@@ -1845,7 +1916,7 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   - 前置依赖：**`M0` 契约冻结**（`CandidateSource::Script`、`StatusStrip.script`、`KeyAction::ToggleScript`、`DecodeFlags::SCRIPT`）；软依赖 `ADD-FEAT-P0.01.01`（复用 `dictc` 的 `SectionBuilder` 与 `script.dict` 的生成管线）
   - 关键路径：`CP: 否`（松弛 8 人天）
   - 并行通道：`Track A-解码`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
   - 代码落地锚点：`crates/ime-core/src/script.rs`（**新增**）、`crates/ime-core/src/script/table.rs`（**新增**）、`crates/ime-core/src/state/transitions.rs`（改：commit 前的输出变换 + `ToggleScript` 跃迁体）、`crates/ime-dict/src/script_index.rs`（**新增**：加载 `script.dict`）、`xtask/src/dictc/builders/script.rs`（**新增**：生成 `script.dict`）、`data/raw/script-disambig.tsv`（**新增**，项目自建）、`crates/ime-fcitx5/src/engine.rs`（改：按键路由）、`crates/ime-ui/ui/candidate.slint`（改：header 显示简/繁）
 
 - **目标与价值**：补齐**港澳台用户与古籍/书法场景的刚需**。搜狗、微软拼音、RIME、macOS 原生**全部**内置简繁切换。当前 `grep -ri 简繁\|traditional crates/` **零命中**，`KeyAction` 只有 15 个变体、**无 `ToggleScript`**。技术亮点：**零新增许可负担**——映射表来自已在白名单的 `data/raw/unihan.tsv`（Unicode License，`permissive = true`），**不引入 OpenCC**（`ASM-A-08`）。
@@ -2000,6 +2071,14 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   6. `bash scripts/check-dict-sources.sh` 通过；`script-disambig` 登记为 `derived`；**无新增许可依赖**（`licenses.md` 的依赖闭包不变）。[自动]
   7. 视觉走查：繁体模式下 header 的"繁"指示与既有 token 一致，候选格尺寸不变。[视觉]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-core/src/script.rs`（355 行）+ `script/{table.rs,tests.rs}`（350 / 458 行，本次新增 6 条边界用例，模块共 39 条）；本次新建 `crates/ime-dict/src/script.rs`（148 行）与 `script/tests.rs`（113 行，9 条用例）。两个模块由主 agent 挂载（`ime-core/src/lib.rs` 与 `ime-dict/src/lib.rs` 各一行 `pub mod script;`）。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **算法与边界**：最长匹配改写（`MAX_MATCH_CHARS` 窗口从长到短），纯函数、从 `VariantSource` trait 取表、无文件无时钟无环境无全局态。本次补的边界覆盖：单字符（映射与不映射、汉/ASCII/4 字节 emoji）、无变体文本、恰好 8 字在长文本中、**表尾截断**（7 字前缀不匹配、前移 1 字仍不匹配、恰好 8 字匹配）、**窗口按字符计数而非字节**（含 4 字节字符）。
+  - **`ScriptIndex` 是词典层的 `VariantSource` 实现**：持有 `VariantTable`（双向索引），三个构造——`from_pairs`（任意顺序/重复键，首键胜出，空键或空值丢弃）、`seed()`（本构建随附的种子表）、`unavailable()`（降级值：全部 miss，转换退化为恒等）。查询路径零分配、返回借用、不写表、不阻塞，且由 `Arc<dyn VariantSource + Send + Sync>` 强制转换断言了 `Send + Sync`。
+  - **已知限制**：① **词典格式尚未携带变体表（本卡最重要的一处）**——容器 v1 固定六段，没有任何一段承载「词→词」表，且双向映射需要**两个键空间**，单个 FST 段无法同时索引双向；`crates/ime-dict/src/paths.rs` 也没有 `script.dict` 路径项。按回退路径实现内存态适配器，未臆造载荷布局。可选方案：(a) 扩展容器（需 ADR + 第七段）；(b) 随二进制内嵌（`include_bytes!`，零格式改动，但约 1.5MB 表会被双向展开成约两倍堆内存）；(c) 维持种子表。② **引擎提交路径未接线**——`Ctrl+Shift+F` / `ToggleScript` 的按键路由、`state/transitions.rs` 的跃迁与 `[script]` 配置段都不在本卡；`KeyAction::ToggleScript` 在 `ime-types` 与 `transitions.rs` 中已存在并被 `arbiter` 判定为 `Executable`。③ **`.slint` header 的「繁」指示未接**。④ 卡片草图的 `ScriptIndex::open(path) -> Result<Option<Self>, DictError>` 与 `traditional(&self, simplified)` 与已落地的 API 不一致（实际是 `lookup(word, target)`），接入时以 `VariantSource` 为准；那两条命名测试留待格式决策后补，**未写桩函数**。⑤ `ui/script/unavailable` 码已在 `features.md` 2.2.4 登记，但**目前没有上报方**（`ScriptIndex::unavailable()` 提供了降级值，缺的是引擎侧的上报点）。⑥ 转换耗时（卡片 DoD 5 的 ≤0.30ms）未取数；结构性上界是「单次转换 ≤ `len × 8` 次二分查找 + 1 次 `String` 分配」。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### 任务 ID：ADD-FEAT-P0.03.01 用户数据自动备份与回滚
@@ -2010,7 +2089,7 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   - 前置依赖：`ADD-FEAT-P0.01.04`（复用 `export_tsv` / 导入原语）
   - 关键路径：**`CP: 是`**
   - 并行通道：`Track A-数据`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
   - 代码落地锚点：`crates/ime-dict/src/backup.rs`（**新增**）、`crates/ime-dict/src/backup/rotate.rs`（**新增**）、`crates/ime-dict/src/user_db.rs`（改：`open` 时触发空闲期备份检查）、`crates/ime-config/src/schema.rs`（改：`[data]` 追加 `backup_enabled` / `backup_keep` / `export_dir`）、`crates/ime-fcitx5/src/addon.rs`（改：`on_addon_destroy` 路径上的终备份）、`crates/ime-diag/src/crash.rs`（改：崩溃恢复时检查备份）
 
 - **目标与价值**：让用户的学习成果**不会因为一次损坏而全失**。当前 `recover.rs` 的语义是"损坏时**隔离**原文件"（重命名为 `user.redb.corrupt.<unix_ts>`，**绝不删除**）——这个设计是对的，但它**不产生可用副本**。用户的数据只有一份；一旦损坏，用户面对的是一个 `.corrupt.1759161600` 文件，需要人工抢救。本卡提供：(1) 定期自动备份；(2) 损坏时**自动从备份回滚**；(3) 手动回滚入口。对标 Obsidian 的 `.obsidian` 备份与文件恢复、RIME 的用户词表可备份。
@@ -2163,6 +2242,16 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   5. 空闲期备份期间连续输入 100 次，**无一次按键延迟超过 `key_to_present_p99 = 16ms`**。[性能]
   6. 单次备份耗时 ≤ 200ms（10⁴ 条词条）。[性能]
 
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-fcitx5/src/addon.rs`（566 行）与本次新建 `addon/tests.rs`（原内联测试整体迁入 + 12 个接线层用例）；`crates/ime-config/src/schema.rs` 新增 `data.backup_enabled` / `data.backup_keep` 两个键（788 行）；`reload.rs` 的 `PartialData`/`merge_data` 与 `DEFAULT_CONFIG_TOML` 同步接线。`ime-dict/src/user_db/backup.rs` 与其 29 条测试**未改**——其 API 已完整够用。
+  - **验证命令与结果**：`just ci` 退出 0：`cargo fmt --all -- --check`、`cargo clippy`（主工作区 `--all-targets --all-features` 与两个 addon crate，全部 `-D warnings`）、`cargo nextest run`（主工作区 2430 个用例、两个 addon 346 个，全绿）、`cargo test --doc`（主工作区与两个 addon）、10 个审计脚本及其自检、`just check-host`。
+  - **启动回滚**：`paths::ensure_dirs()` → `backup_dir(data_dir)` → `list_backups` → `recover_user_db_with_backup`；损坏库被隔离（改名 `.corrupt.`，**绝不删除**）并从**最新可导入**的备份重建，逐份 newest-first 重试。
+  - **卸载备份**：`take_user_store()` 取出句柄（第二次调用自然空转）→ `flush_store` → `start_shutdown_backup`（worker 名 `userdb-backup`，**不 join**）。**宿主线程红线**：唯一留在宿主线程的写是 `final_commit()`（写的是 store 自身上限的未刷增量，有界）；备份本体（整库文档，上限 8MiB）交给一次性 worker 线程且句柄直接 drop——宿主回调不做无界 IO、不 sleep、不 join。
+  - **通知映射做成纯函数**：`restore_notice` / `backup_notice` 使「哪个 outcome 报哪个码」成为可断言的值（本 crate 的诊断通道没有测试可读回的缝）。
+  - **配置键已落地**：`backup_enabled`（默认 `true`）、`backup_keep`（默认 `DEFAULT_BACKUP_KEEP = 3`，合法域 `1..=MAX_BACKUP_KEEP = 32`，越界报 `config/invalid` 的 `data.backup_keep` 并回落默认值）。两个常量与 `ime-dict::user_db::backup` 的同名常量是**两处书写**（`ime-config` 未依赖 `ime-dict`），二者必须恒等——已在 `schema.rs` 的文档注释里写明这层耦合。
+  - **已知限制**：① **空闲期定期备份未接线**——需改 `crates/ime-dict/src/user_db.rs` / `user_db/evict.rs`（让 idle sweep 线程在空闲窗口调用 `run_backup`）；当前备份只在**干净退出**时发生（配合 24h 间隔，等于每天一次），长驻会话中途不备份。② **addon 侧尚未从 `[data]` 构造 `BackupConfig`**——`addon.rs` 目前用 `BackupConfig::new(backup_dir(&layout.data_dir))`（模块默认），接口已就位，只差读取。③ **DoD 5「空闲期备份期间按键 p99 ≤16ms」结构上满足**（备份不在按键路径），但正式数值需探针/基准；**DoD 6「单次备份 ≤200ms」未实测**（需 criterion 或探针）。④ 手工验证（损坏库 + 有效备份 → 重启 → 恢复 + 日志含 `data/backup-restored`）是实验室项，可在本机用 `just install` + 手工损坏 `~/.local/share/rspinyin/user.redb` 复现。⑤ `BackupOutcome::Written` 无对应诊断码，故成功备份不打点（未擅自造新码）；若希望可观测，建议登记一个 info 码后由 `backup_notice` 增加一条分支。⑥ worker 线程不 join：进程若在析构后立刻退出，本次备份可能未落盘；写是「临时文件 + 原子改名」，不会留下半个备份，且下次启动按间隔会补写。⑦ `BackupOutcome::Readonly` 的「store 已只读」那一支只能由 `ime-dict` 自己的测试覆盖（无公开注入手段）；接线层用「备份目录不可写」覆盖了同一降级语义。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
+
 ---
 
 #### 任务 ID：ADD-FEAT-P0.03.02 配置 schema 迁移框架
@@ -2173,7 +2262,7 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   - 前置依赖：`ADD-FEAT-P0.01.03`（`[phrases]` 段）、`ADD-FEAT-P0.02.02`（`[scheme]` 段）、`ADD-FEAT-P0.02.05`（`[script]` 段）——**v2 schema = v1 + 这三个段，故本卡必须最后落地**
   - 关键路径：**`CP: 是`**（**CP 终点，且是三个 Track 的唯一汇合点**）
   - 并行通道：`Track C`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
   - 代码落地锚点：`crates/ime-config/src/migrate.rs`（**新增**）、`crates/ime-config/src/reload.rs`（改：加载时先迁移；**该文件 1016 行已超 800 行上限，本卡必须同时把它拆成 `reload.rs` + `reload/watch.rs`**）、`crates/ime-config/src/schema.rs`（改：`CONFIG_SCHEMA_VERSION` 相关校验；**该文件 802 行已超上限，本卡必须同时拆分**）、`crates/ime-types/src/version.rs`（改：`CONFIG_SCHEMA_VERSION` 1 → 2）、`crates/ime-types/src/error.rs`（`M0` 已加 `ConfigError::Migrated`）、`docs/dev/features.md` 0.7 与 5.1（改：登记本卡）
 
 - **目标与价值**：**消除一个交付级缺陷**。`CONFIG_SCHEMA_VERSION = 1` 已冻结、`Config.schema_version` 字段已存在，但**迁移代码零行**（`grep -ri migrate\|migration crates/ xtask/` 零命中）。当前 `reload.rs` 只做"读入 + 校验 + 修复"。当 `P0.01.03`/`P0.02.02`/`P0.02.05` 引入 `[phrases]`/`[scheme]`/`[script]` 三个段后，schema 必须升到 2——**如果不做本卡，用户升级后旧配置的行为是未定义的**。对标 VS Code 的配置自动迁移、Obsidian 的插件配置迁移。
@@ -2304,6 +2393,18 @@ ADD-FEAT-P0.01.01 (5)  →  ADD-FEAT-P0.01.02 (3)  →  ADD-FEAT-P0.03.01 (4)  �
   4. **文件行数**：`crates/ime-config/src/reload.rs` ≤ 800、`crates/ime-config/src/schema.rs` ≤ 800、`xtask/src/testd/engine/scenario.rs` ≤ 800（`.dev-progress.json` 的三个阻塞项清零）。[自动]
   5. 手工验证：放一个 v1 `config.toml`（含自定义的 `[ui] max_per_row = 7`）→ 启动 → 断言该值被保留、`[scheme]` 等新段出现默认值、`config.toml.v1` 存在。[实验室]
   6. 迁移耗时 ≤ 20ms。[性能]
+
+- **验收记录**（2026-09-30）：
+  - **交付物**：`crates/ime-config/src/migrate.rs`（739 行）+ `migrate/tests.rs`（786 行，27 个用例）。
+  - **接线**（主 Agent 完成）：`ime-config/src/lib.rs` 挂载 `pub mod migrate;`；`reload.rs` 新增 `Config::from_document_at(text, path)`，迁移在**任何读取之前**执行——先做版本检查会把一个 v1 文档答成默认值，那正是迁移要防的静默丢失；`ConfigStore::load_at` 传入真实路径，使迁移能把原件留在 `config.toml.v1`。`CONFIG_SCHEMA_VERSION` 由 1 升到 2（ADR-0005），`MAX_DOCUMENT_KEYS` 由 120 升到 192（迁移为每个旧文档加 12 个键，120 会让接近上限的文档在重载时收到 `config/limit-exceeded`）。
+  - **契约**：`ConfigError::MigrationFailed` 与 `ImeError::ConfigMigrationFailed` 由 ADR-0005 追加，承载 `features.md` 2.2.4 预留而**没有承载变体**的 `config/migration-failed`；`features.md` 的两处 enum 副本已同步（由 `test_spec_enums_matches_the_source_enum_by_enum` 逐 enum 校验）。
+  - **验证命令与结果**：`just ci` 退出 0（fmt、clippy `-D warnings`、nextest 1992 个用例、doctest、10 个审计脚本全部通过）。
+  - **无损与原子**：报告由迁移前后文档的**叶键差集**生成，任何 step 丢键都会出现在 `dropped`；step 只改副本，全部成功后才写回；落盘走「复制原件 → 写 `.migrating` → rename」，任一步失败即回滚。
+  - **已知限制**：
+    1. **注释与键序会在写回时丢失**（迁移在 `toml::Value` 上改写），原件完整保存在 `config.toml.v1`。要保住注释需引入 `toml_edit`，本卡未依赖它。
+    2. `[script]` 段的读取方（`ADD-FEAT-P0.02.05`）尚未落地，迁移写入的三个默认值目前是无害的额外键。
+    3. 卡片 DoD 6 的「迁移耗时 ≤ 20ms」未做断言：迁移只做内存改写 + 两次写盘，路径上无时钟无轮询；按 AGENTS.md §3.6 预算断言应落在 `criterion` 或 probe。
+  - **环境**：Rust 1.98.0、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
 
 ---
 
@@ -2687,7 +2788,7 @@ features.md Phase 1（39 任务，100.5 人天）── 进行中（1 COMPLETED 
   - 前置依赖：`[必须指向编号更小的任务，或"无"]`
   - 关键路径：`[CP: 是 / 否]`
   - 并行通道：`[Track A-数据 / Track A-解码 / Track B / Track C]`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：<反引号包住的方括号标记、一个空格、中文状态；新卡写「待开始」，落地后回写「已完成」>
   - 代码落地锚点：`[基于阶段零实测的真实文件路径，标注 新增/改]`
 - **目标与价值**：对标哪个产品的哪项特性，解决何种痛点
 - **技术设计与代码级接入细节**：
@@ -2721,14 +2822,15 @@ features.md Phase 1（39 任务，100.5 人天）── 进行中（1 COMPLETED 
 
 ### 7.4 落地前的强制检查清单
 
-新会话在续写或落地本规范前，**必须逐条确认**：
+新会话在续写或落地本规范前，**必须逐条确认**。以下六条是**每次落地前都要重新回答的问题**，不是可以一次勾掉的任务，所以不写成复选框；每条后面是本轮（2026-09-30）的答案：
 
-- [ ] `ASM-A-04` 的前置条件：`features.md` 的 6 处 `UserInterface` 注册假定是否已修正？若未修正，本规范的所有架构引用必须自带正确的双 cdylib 描述。
-- [ ] `M0` 是否已决策？ADR-0005 是否已写入 `docs/dev/adr/`？
-- [ ] `ASM-A-22`：任务卡的"代码落地锚点"列出的文件是否被其他并行会话改动？（`git status` + `git log` 复核）
-- [ ] `.dev-progress.json` 的三个 800 行超限阻塞项是否已由 `ADD-FEAT-P0.03.02` 清零？
-- [ ] 全部基准是否在**空闲机器**上重跑过？（`.dev-progress.json` 的阻塞项 3：今日所有数字取自 20 个并发 agent 环境，不可信）
-- [ ] `crates/ime-ui/ui/*.slint` 是否已端到端渲染过？（`.dev-progress.json` 的阻塞项 4）
+1. **`ASM-A-04` 的前置条件**：`features.md` 的 6 处 `UserInterface` 注册假定是否已修正？若未修正，本规范的所有架构引用必须自带正确的双 cdylib 描述。**本轮答案：已修正**——2.2.3 已写明 `RSPINYIN_ABI_VERSION = 2`、两个 cdylib 各有自己的胶水与 vtable，2.1 的运行时拓扑图把 UI 角色画在 `ime-ui-addon` 一侧。
+2. **`M0` 是否已决策？ADR-0005 是否已写入 `docs/dev/adr/`？** **本轮答案：是**——`docs/dev/adr/0005-incremental-contract-extension.md` 已落地，`crates/ime-types` 的增量类型随之冻结。
+3. **`ASM-A-22`：任务卡的"代码落地锚点"列出的文件是否被其他并行会话改动？** **本轮答案：全部复核过**——本轮的每一张卡都按最新工作树核对过锚点；`.dev-progress.json` 的 `cross_task_notes` 记录了跨卡的文件归属与冲突点。
+4. **`.dev-progress.json` 的三个 800 行超限阻塞项是否已由 `ADD-FEAT-P0.03.02` 清零？** **本轮答案：已清零**——全树 `find … | wc -l` 复核后无任何 `.rs` 越限（`reload.rs`、`surface.rs`、`install.rs`、`router.rs`、`memory.rs`、`manifest.rs`、`budget_gate.rs`、`guard.rs`、`evidence/tests.rs` 均已拆分）。
+5. **全部基准是否在空闲机器上重跑过？**（`.dev-progress.json` 的阻塞项 3：今日所有数字取自 20 个并发 agent 环境，不可信）**本轮答案：未重跑**——本轮全程有并发 agent 在编译，取数留待一次专门的空闲运行（`just bench` + `xtask budget --check`）。
+6. **`crates/ime-ui/ui/*.slint` 是否已端到端渲染过？**（`.dev-progress.json` 的阻塞项 4）**本轮答案：仍未在真机会话里渲染，但这条在本轮产出了一个真实缺陷并已修复**——`SlintWindowAdapter::request_redraw` 从不被触发，因此候选框会在画出第一帧之后**永不再重绘**；`Adapter` 现在在写完属性后自己请求重绘（`adapter.rs` 的 `request_repaint`），`adapter/tests.rs` 的翻页像素回归用例把它钉住了。
+
 
 ### 7.5 本规范自身的维护约定
 

@@ -141,7 +141,11 @@ fn test_compute_window_that_fits_sits_below_the_caret() {
     let geometry = place(&anchor, &screen, row_panel(), &frame);
 
     assert_eq!(geometry.placement, Placement::Below);
-    assert_eq!(geometry.window_pos, (749, 226));
+    // x: the caret's centre is 961 and the window is 424 wide, so the centred origin is
+    // 961 - 212 = 749, which clears the 8px edge margin on both sides.
+    // y: the panel's top edge goes one caret gap below the caret, and the surface is one
+    // 32px shadow reserve above the panel: 220 + 6 - 32 = 194.
+    assert_eq!(geometry.window_pos, (749, 194));
     assert_eq!(geometry.window_size, (424, 152));
     assert_eq!(geometry.container_offset, (32, 32));
     assert_eq!(geometry.container_size, (360, 88));
@@ -161,7 +165,18 @@ fn test_compute_caret_at_the_bottom_flips_above_and_drops_the_arrow() {
     let geometry = place(&anchor, &screen, row_panel(), &frame);
 
     assert_eq!(geometry.placement, Placement::Above);
-    assert_eq!(geometry.window_pos, (749, 842));
+    // x: unchanged, the window is still centred on the caret at 749.
+    // y: the panel's bottom edge goes one caret gap above the caret's top edge, so the
+    // surface's origin is that edge minus the window height plus the reserve:
+    // 1000 - 6 - 152 + 32 = 874. The panel then ends at 874 + 152 - 32 = 994.
+    assert_eq!(geometry.window_pos, (749, 874));
+    let panel_bottom =
+        geometry.window_pos.1 + geometry.window_size.1 as i32 - geometry.container_offset.1;
+    assert_eq!(
+        panel_bottom,
+        1000 - 6,
+        "the gap is measured to the panel too"
+    );
     assert!(!geometry.clamped_y, "the flip is a decision, not a clamp");
     assert_eq!(geometry.arrow, None, "an arrow would point the wrong way");
     assert!(inside(&geometry, &screen));
@@ -219,6 +234,8 @@ fn test_compute_pins_a_window_taller_than_the_screen_to_the_output() {
     let frame = frame_with(5, 5);
     let geometry = place(&anchor, &screen, row_panel(), &frame);
 
+    // Both clamps collapse to the edge margin: the window is 184x152 on a 200x100 output,
+    // so `high` falls back to `low` and the origin is (8, 8).
     assert_eq!(geometry.window_pos, (8, 8));
     assert!(geometry.clamped_x);
     assert!(geometry.clamped_y);
@@ -241,7 +258,11 @@ fn test_compute_keeps_the_window_on_the_output_the_caret_is_on() {
     let request = PlacementRequest::new(&anchor, desktop, row_panel(), &frame, constants);
     let geometry = compute(&request);
     assert_eq!(geometry.screen, ScreenId::new(1));
-    assert_eq!(geometry.window_pos, (2669, 226));
+    // x: centred on the caret within the second output: 2881 - 212 = 2669, which is past
+    // that output's 1928 edge margin.
+    // y: the same panel edge as the single-output case, 220 + 6 - 32 = 194; the second
+    // output's top edge is also 0, so the clamp does not touch it.
+    assert_eq!(geometry.window_pos, (2669, 194));
     assert!(!geometry.clamped_x, "centred on its own output");
     assert!(inside(&geometry, &screens[1]));
 
@@ -297,7 +318,9 @@ fn test_compute_without_any_output_places_below_and_clamps_nothing() {
     let geometry = compute(&request);
 
     assert_eq!(geometry.placement, Placement::Below);
-    assert_eq!(geometry.window_pos, (749, 226));
+    // Without an output there is nothing to clamp to, so the origin is the ideal one:
+    // x = 961 - 212 = 749, y = 220 + 6 - 32 = 194.
+    assert_eq!(geometry.window_pos, (749, 194));
     assert!(!geometry.clamped_x);
     assert!(!geometry.clamped_y);
     assert_eq!(geometry.screen, ScreenId::new(0));
@@ -305,17 +328,30 @@ fn test_compute_without_any_output_places_below_and_clamps_nothing() {
 }
 
 #[test]
-fn test_compute_reduces_the_rows_until_the_window_fits_the_output() {
+fn test_compute_reduces_the_rows_until_the_panel_fits_the_output() {
     let screen = output(0, (0, 0), (1920, 400));
     let anchor = anchor_at(960, 200);
     let frame = frame_with(9, 5);
     let tall = panel((360.0, 500.0), 64.0, 5);
     let geometry = place(&anchor, &screen, tall, &frame);
 
-    assert_eq!(geometry.placement, Placement::Below);
-    assert_eq!(geometry.container_size.1, 88, "one row is all it holds");
-    assert_eq!(geometry.window_size, (424, 152));
-    assert_eq!(geometry.hit_map.len(), 5, "one row of five candidates");
+    assert_eq!(geometry.placement, Placement::Below, "{geometry:?}");
+    // The output is 400 tall with an 8px edge margin, so the panel's bottom edge may reach
+    // 392. The panel starts at the caret gap, 220 + 6 = 226, which leaves 166. Three rows
+    // need 172 and end at 398, two rows need 130 and end at 356, so two is the row count the
+    // panel test settles on -- the surface around them, 194 tall, still clears 392.
+    assert_eq!(geometry.container_size.1, 130, "two rows are what fits");
+    assert_eq!(geometry.window_size, (424, 194));
+    assert_eq!(geometry.window_pos.1 + geometry.container_offset.1, 226);
+    assert!(
+        !geometry.clamped_y,
+        "the surface fits as well, so nothing is pulled in"
+    );
+    assert_eq!(
+        geometry.hit_map.len(),
+        9,
+        "two rows of five, and nine candidates"
+    );
     assert!(inside(&geometry, &screen));
 }
 
@@ -329,6 +365,24 @@ fn test_compute_narrows_a_container_wider_than_the_output() {
 
     assert_eq!(geometry.container_size.0, 520, "narrowed to the output");
     assert_eq!(geometry.window_size.0, 584);
+    assert!(inside(&geometry, &screen));
+}
+
+#[test]
+fn test_compute_keeps_the_window_even_when_the_output_narrows_an_odd_extent() {
+    // An output of odd width leaves the narrowing limit odd: 601 - 2x8 = 585, which rounds
+    // down to 584 before the two 32px reserves come off, so the container is 520 and the
+    // surface 584. Both components stay even, which is what the compositor is handed.
+    let screen = output(0, (0, 0), (601, 800));
+    let anchor = anchor_at(300, 200);
+    let frame = frame_with(9, 5);
+    let geometry = place(&anchor, &screen, panel((720.0, 87.0), 64.0, 5), &frame);
+
+    let (width, height) = geometry.window_size;
+    assert_eq!(geometry.container_size, (520, 88));
+    assert_eq!((width, height), (584, 152));
+    assert_eq!(width % 2, 0, "an odd limit keeps both even");
+    assert_eq!(height % 2, 0);
     assert!(inside(&geometry, &screen));
 }
 
@@ -458,9 +512,36 @@ fn test_compute_honours_a_pinned_placement() {
     pinned_above.placement = Placement::Above;
     let above = place(&pinned_above, &screen, row_panel(), &frame);
     assert_eq!(above.placement, Placement::Above);
-    assert_eq!(above.window_pos.1, 42);
+    // The panel's bottom edge sits one caret gap above the caret's top edge, 200 - 6 = 194,
+    // and the surface is one 32px reserve below that edge: 194 - 152 + 32 = 74.
+    assert_eq!(above.window_pos.1, 74);
     assert!(!above.clamped_y);
     assert_eq!(above.arrow, None, "the arrow belongs below the caret");
+}
+
+#[test]
+fn test_compute_places_a_pinned_above_window_without_any_output() {
+    // No output means nothing to clamp against and nothing to shorten the rows for, so a
+    // pinned side is kept as it stands. The panel's bottom edge goes one caret gap above the
+    // caret's top edge, 200 - 6 = 194, and the surface is one 32px reserve below that edge:
+    // 194 - 152 + 32 = 74.
+    let desktop = Desktop {
+        screens: &[],
+        primary: ScreenId::new(0),
+    };
+    let frame = frame_with(5, 5);
+    let mut anchor = anchor_at(960, 200);
+    anchor.placement = Placement::Above;
+    let request = PlacementRequest::new(&anchor, desktop, row_panel(), &frame, constants());
+    let geometry = compute(&request);
+
+    assert_eq!(geometry.placement, Placement::Above, "the pin is kept");
+    assert_eq!(geometry.window_pos, (749, 74));
+    assert!(!geometry.clamped_y, "there is no output to clamp to");
+    assert_eq!(geometry.arrow, None, "the arrow belongs below the caret");
+    let panel_bottom =
+        geometry.window_pos.1 + geometry.window_size.1 as i32 - geometry.container_offset.1;
+    assert_eq!(panel_bottom, 200 - 6, "the gap is measured to the panel");
 }
 
 #[test]
@@ -473,9 +554,22 @@ fn test_compute_scales_every_physical_number() {
 
     assert_eq!(geometry.window_size, (848, 302));
     assert_eq!(geometry.container_offset, (64, 64));
-    assert_eq!(geometry.window_pos, (537, 232));
+    // x: the caret's centre is still 961, in physical pixels, and the window is 848 wide:
+    // 961 - 424 = 537.
+    // y: every dp doubles, so the panel's top edge is 220 + 12 = 232 -- twelve physical
+    // pixels below the caret, which is the 6dp of the design at this ratio -- and the
+    // surface is the 64px reserve above it: 232 - 64 = 168.
+    assert_eq!(geometry.window_pos, (537, 168));
+    let panel_top = geometry.window_pos.1 + geometry.container_offset.1;
+    assert_eq!(
+        panel_top,
+        220 + 12,
+        "the design's 6dp gap is 12 pixels here"
+    );
     let arrow = geometry.arrow.expect("a clean placement draws the arrow");
-    assert_eq!((arrow.x, arrow.y, arrow.w, arrow.h), (949, 232, 24, 12));
+    // The arrow is one caret gap tall and fills that gap: its tip is the caret's bottom edge
+    // at 220 and its base is the panel's top edge at 232.
+    assert_eq!((arrow.x, arrow.y, arrow.w, arrow.h), (949, 220, 24, 12));
     let first = geometry.hit_map[0].0;
     assert_eq!((first.x, first.y, first.w, first.h), (16, 86, 128, 72));
 }
@@ -616,18 +710,107 @@ fn test_compute_survives_an_output_that_overflows_i32() {
 }
 
 #[test]
-fn test_compute_keeps_the_window_clear_of_the_caret_gap() {
+fn test_compute_keeps_the_panel_one_caret_gap_below_the_caret() {
     let screen = output(0, (0, 0), FULL_HD);
     let anchor = anchor_at(960, 200);
     let frame = frame_with(5, 5);
     let geometry = place(&anchor, &screen, row_panel(), &frame);
 
     let caret_bottom = anchor.cursor.y + anchor.cursor.h as i32;
-    assert_eq!(geometry.window_pos.1, caret_bottom + 6);
+    let panel_top = geometry.window_pos.1 + geometry.container_offset.1;
+    assert_eq!(
+        panel_top,
+        caret_bottom + 6,
+        "the gap is measured to the panel"
+    );
 
     let arrow = geometry.arrow.expect("a clean placement draws the arrow");
-    assert_eq!(arrow.y, geometry.window_pos.1, "the arrow fills the gap");
+    assert_eq!(
+        arrow.y + arrow.h as i32,
+        panel_top,
+        "the arrow's base meets the panel"
+    );
+    assert_eq!(arrow.y, caret_bottom, "and its tip meets the caret");
     assert_eq!(arrow.h, 6);
     let caret_centre = anchor.cursor.x + anchor.cursor.w as i32 / 2;
     assert_eq!(arrow.x + arrow.w as i32 / 2, caret_centre);
+}
+
+#[test]
+fn test_compute_keeps_the_panel_below_when_it_exactly_fits() {
+    // The output is 400 tall and its edge margin is 8, so the panel's bottom edge may reach
+    // 392. The panel is 88 tall and starts one caret gap below the caret, so a caret ending
+    // at 298 puts that edge exactly on the margin: the panel still fits and the window stays
+    // below. An earlier revision measured the surface instead, which needs two shadow
+    // reserves of extra room and flipped the window 64px earlier than this.
+    let screen = output(0, (0, 0), (1920, 400));
+    let frame = frame_with(5, 5);
+    let geometry = place(&anchor_at(960, 278), &screen, row_panel(), &frame);
+
+    assert_eq!(geometry.placement, Placement::Below, "the panel still fits");
+    assert!(
+        geometry.clamped_y,
+        "the reserve has to be pulled back inside"
+    );
+    assert_eq!(geometry.arrow, None, "a clamped placement draws no arrow");
+    assert!(inside(&geometry, &screen));
+    let panel_top = geometry.window_pos.1 + geometry.container_offset.1;
+    assert!(
+        panel_top + geometry.container_size.1 as i32 <= 400 - 8,
+        "the panel is the rectangle that has to stay inside the output"
+    );
+}
+
+#[test]
+fn test_compute_flips_above_when_the_panel_is_one_pixel_too_tall() {
+    // One pixel lower than the case above and the panel's bottom edge crosses the margin,
+    // which is where the flip belongs: the panel is 88 tall, so placing it one gap below a
+    // caret ending at 299 would end at 393.
+    let screen = output(0, (0, 0), (1920, 400));
+    let frame = frame_with(5, 5);
+    let geometry = place(&anchor_at(960, 279), &screen, row_panel(), &frame);
+
+    assert_eq!(geometry.placement, Placement::Above);
+    assert!(!geometry.clamped_y, "the flip is a decision, not a clamp");
+    assert_eq!(geometry.arrow, None, "an arrow would point the wrong way");
+    assert!(inside(&geometry, &screen));
+    let panel_bottom =
+        geometry.window_pos.1 + geometry.window_size.1 as i32 - geometry.container_offset.1;
+    assert_eq!(
+        panel_bottom,
+        279 - 6,
+        "the panel clears the caret by one gap"
+    );
+}
+
+#[test]
+fn test_compute_drops_the_arrow_when_the_panel_cannot_hold_it() {
+    // The arrow is 12px wide and has to stay inside the panel, which a 2px panel cannot do;
+    // the pass draws no arrow rather than one that spills onto the transparent reserve.
+    let screen = output(0, (0, 0), FULL_HD);
+    let anchor = anchor_at(960, 200);
+    let frame = frame_with(1, 5);
+    let geometry = place(&anchor, &screen, panel((0.0, 0.0), 64.0, 5), &frame);
+
+    assert_eq!(geometry.container_size, (2, 2));
+    assert_eq!(geometry.arrow, None, "a 2px panel cannot hold a 12px arrow");
+}
+
+#[test]
+fn test_compute_bounds_the_arrow_by_the_panel_width() {
+    // The window is centred on the caret, so the arrow lands in the middle of the panel: a
+    // panel of exactly two arrow widths is the narrowest one that leaves the arrow its own
+    // width of clearance on either side, and a 22px panel does not. The surface is 64px wider
+    // than either panel, so a bound taken from the window would keep an arrow the panel
+    // cannot hold.
+    let screen = output(0, (0, 0), FULL_HD);
+    let frame = frame_with(1, 5);
+    let anchor = anchor_at(960, 200);
+    let holds = place(&anchor, &screen, panel((24.0, 87.0), 64.0, 1), &frame);
+    assert_eq!(holds.container_size.0, 24);
+    assert!(holds.arrow.is_some(), "12px of clearance on either side");
+
+    let narrow = place(&anchor, &screen, panel((22.0, 87.0), 64.0, 1), &frame);
+    assert_eq!(narrow.container_size.0, 22);
+    assert_eq!(narrow.arrow, None, "5px of clearance is not enough");
 }

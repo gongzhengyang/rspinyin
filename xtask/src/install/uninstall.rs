@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use anyhow::{Result, ensure};
 
 use super::layout::Layout;
-use super::manifest::{Elevation, Entry, EntryState, FILE_MODE, Manifest};
+use super::manifest::{Elevation, Entry, EntryState, Manifest};
 use super::takeover::{self, Outcome};
 use super::{Options, manifest};
 
@@ -41,30 +41,36 @@ pub(super) fn uninstall(layout: &Layout, options: &Options) -> Result<()> {
 /// The body of [`uninstall`], with the user's directories named by the caller.
 ///
 /// Split out so that the removal sequence can be exercised against a scratch tree,
-/// without reading or writing the real `$HOME`.
+/// without reading or writing the real `$HOME`. The round-trip verification is that
+/// caller: it drives a real install and a real uninstall over a staging tree and
+/// compares the tree afterwards, which it can only do if the uninstall takes the
+/// user's directories from the caller instead of resolving them itself.
 ///
 /// # Errors
 ///
 /// As [`uninstall`].
-fn run(layout: &Layout, user: &UserData, options: &Options) -> Result<()> {
+pub(super) fn run(layout: &Layout, user: &UserData, options: &Options) -> Result<()> {
     let elevation = Elevation::detect(options.no_sudo)?;
-    report_takeover(&takeover::restore(
-        &user.takeover,
-        &user.config_home,
-        options.dry_run,
-    )?);
+    print!(
+        "{}",
+        takeover_report(&takeover::restore(
+            &user.takeover,
+            &user.config_home,
+            options.dry_run,
+        )?)
+    );
 
     let Some(record) = Manifest::read(&layout.manifest_path())? else {
         println!(
             "uninstall: {} does not exist, so this installer has nothing to remove",
             layout.manifest_path().display()
         );
-        print_user_data(user);
+        print!("{}", user_data_report(user));
         return Ok(());
     };
     if options.dry_run {
-        report_plan(&record, layout, elevation);
-        print_user_data(user);
+        print!("{}", plan_report(&record, layout, elevation));
+        print!("{}", user_data_report(user));
         return Ok(());
     }
     for entry in &record.entries {
@@ -72,7 +78,7 @@ fn run(layout: &Layout, user: &UserData, options: &Options) -> Result<()> {
     }
     manifest::remove_file(elevation, &layout.manifest_path())?;
     manifest::remove_directory(elevation, &layout.data_dir)?;
-    print_user_data(user);
+    print!("{}", user_data_report(user));
     println!("uninstall: run `fcitx5 -r` to reload Fcitx5");
     Ok(())
 }
@@ -86,7 +92,10 @@ fn run(layout: &Layout, user: &UserData, options: &Options) -> Result<()> {
 fn remove_entry(entry: &Entry, elevation: Elevation) -> Result<()> {
     match (&entry.state, &entry.backup) {
         (EntryState::Replaced, Some(backup)) if backup.exists() => {
-            manifest::place_file(elevation, backup, &entry.path, FILE_MODE)?;
+            // The backup carries the displaced file's own mode, so putting it back
+            // restores the permissions as well as the bytes.
+            let restored = manifest::mode_of(backup);
+            manifest::place_file(elevation, backup, &entry.path, restored)?;
             manifest::remove_file(elevation, backup)?;
             println!("uninstall: restored {}", entry.path.display());
             Ok(())
@@ -106,29 +115,35 @@ fn remove_entry(entry: &Entry, elevation: Elevation) -> Result<()> {
     }
 }
 
-/// Prints what an uninstall would remove, without removing any of it.
-fn report_plan(manifest: &Manifest, layout: &Layout, elevation: Elevation) {
-    println!("uninstall: dry run -- nothing will be removed");
+/// What an uninstall would remove, as the user is told it.
+///
+/// Returned rather than printed so that the account of the run is something a test can
+/// read: it is the only thing a `--dry-run` produces.
+fn plan_report(manifest: &Manifest, layout: &Layout, elevation: Elevation) -> String {
+    let mut report = String::from("uninstall: dry run -- nothing will be removed\n");
     for entry in &manifest.entries {
         let action = match entry.state {
             EntryState::Created => "remove",
             EntryState::Replaced => "restore",
         };
-        println!("uninstall:   {action} {}", entry.path.display());
+        report.push_str(&format!("uninstall:   {action} {}\n", entry.path.display()));
     }
-    println!("uninstall: remove {}", layout.manifest_path().display());
-    println!(
-        "uninstall: privileged operations: {}",
+    report.push_str(&format!(
+        "uninstall: remove {}\n",
+        layout.manifest_path().display()
+    ));
+    report.push_str(&format!(
+        "uninstall: privileged operations: {}\n",
         if elevation.is_sudo() { "sudo" } else { "none" }
-    );
+    ));
+    report
 }
 
-/// Prints what happened to the Fcitx5 user interface the plugin took over.
-fn report_takeover(outcome: &Outcome) {
+/// What happened to the Fcitx5 user interface the plugin took over.
+fn takeover_report(outcome: &Outcome) -> String {
     let (verb, file, value) = match outcome {
         Outcome::NoRecord => {
-            println!("uninstall: the plugin never recorded a user interface takeover");
-            return;
+            return "uninstall: the plugin never recorded a user interface takeover\n".to_owned();
         }
         Outcome::Planned { file, value } => ("would put back", file, value),
         Outcome::Restored { file, value } => ("put back", file, value),
@@ -137,34 +152,42 @@ fn report_takeover(outcome: &Outcome) {
         Some(value) => format!("`{value}`"),
         None => "the key did not exist before, so it is removed".to_owned(),
     };
-    println!(
-        "uninstall: {verb} the previous Fcitx5 user interface in {} ({value})",
+    format!(
+        "uninstall: {verb} the previous Fcitx5 user interface in {} ({value})\n",
         file.display()
-    );
+    )
 }
 
-/// Prints where the user's own data is and how to delete it.
-fn print_user_data(user: &UserData) {
-    println!("uninstall: your own data was left in place:");
-    println!("uninstall:   {}", user.config_dir.display());
-    println!("uninstall:   {}", user.data_dir.display());
-    println!(
-        "uninstall: delete it with `rm -rf {} {}`",
-        user.data_dir.display(),
-        user.config_dir.display()
-    );
+/// Where the user's own data is, and the command that deletes it.
+///
+/// An uninstall leaves it alone -- the user dictionary is the product of everything the
+/// user has typed, and deleting it would make "reinstall" mean "start over" -- so naming
+/// it and the command that removes it is the whole of what an uninstall may do about it.
+fn user_data_report(user: &UserData) -> String {
+    format!(
+        "uninstall: your own data was left in place:\n\
+         uninstall:   {data}\n\
+         uninstall:   {config}\n\
+         uninstall: delete it with `rm -rf {data} {config}`\n",
+        data = user.data_dir.display(),
+        config = user.config_dir.display(),
+    )
 }
 
 /// The user's own copy of the plugin's state, which an uninstall never touches.
-struct UserData {
+///
+/// Visible to the installer's other submodules so that a caller can point the removal
+/// sequence at a scratch home; a verification that resolved the real `$HOME` would
+/// rewrite the configuration of whoever ran it.
+pub(super) struct UserData {
     /// `$XDG_DATA_HOME/rspinyin`.
-    data_dir: PathBuf,
+    pub(super) data_dir: PathBuf,
     /// `$XDG_CONFIG_HOME/rspinyin`.
-    config_dir: PathBuf,
+    pub(super) config_dir: PathBuf,
     /// `$XDG_DATA_HOME/rspinyin/ui_takeover.json`.
-    takeover: PathBuf,
+    pub(super) takeover: PathBuf,
     /// `$XDG_CONFIG_HOME`, where Fcitx5 keeps its own configuration.
-    config_home: PathBuf,
+    pub(super) config_home: PathBuf,
 }
 
 impl UserData {
@@ -261,7 +284,7 @@ mod tests {
             package_version: "0.1.0".to_owned(),
             entries,
         }
-        .write(&layout.manifest_path())
+        .write(Elevation::Direct, &layout.manifest_path())
         .expect("writing the manifest");
     }
 
@@ -402,6 +425,11 @@ mod tests {
             &config,
             "[Behavior]\nActiveUserInterface=rspinyin\nShareInputState=No\n",
         );
+        // The user's input method list, which an install and an uninstall both leave
+        // alone: which input methods are enabled is the user's decision, and neither
+        // direction of this installer has an opinion about it.
+        let profile = user.config_home.join("fcitx5/profile");
+        write(&profile, "[Groups/0]\nDefault Layout=us\n");
         write(
             &user.takeover,
             &format!(
@@ -418,6 +446,40 @@ mod tests {
             "{restored}"
         );
         assert!(restored.contains("ShareInputState=No"), "{restored}");
+        assert_eq!(
+            read(&profile),
+            "[Groups/0]\nDefault Layout=us\n",
+            "the user's input method list is not the installer's to edit"
+        );
+        fs::remove_dir_all(&root).expect("cleaning up");
+    }
+
+    #[test]
+    fn test_run_leaves_the_users_own_data_where_it_is() {
+        // The user dictionary is the product of everything the user has typed, and the
+        // configuration is what the user chose. An uninstall removes the plugin, not the
+        // record of what the user wrote with it.
+        let root = scratch("user-data");
+        let layout = layout(&root);
+        let user = user(&root);
+        let dictionary = user.data_dir.join("user.redb");
+        let configuration = user.config_dir.join("config.toml");
+        let installed = layout.addon_dir.join("librspinyin.so");
+        write(&dictionary, "everything the user has typed");
+        write(&configuration, "the plugin configuration");
+        write(&installed, "ours");
+        let entry = Entry {
+            path: installed.clone(),
+            state: EntryState::Created,
+            backup: None,
+        };
+        record(&layout, vec![entry]);
+
+        run(&layout, &user, &options(false)).expect("uninstalling");
+
+        assert!(!installed.exists(), "the plugin is removed");
+        assert_eq!(read(&dictionary), "everything the user has typed");
+        assert_eq!(read(&configuration), "the plugin configuration");
         fs::remove_dir_all(&root).expect("cleaning up");
     }
 
@@ -467,32 +529,102 @@ mod tests {
     }
 
     #[test]
-    fn test_report_takeover_and_report_plan_describe_every_outcome() {
-        // The reports are the user's only account of what happened, so each shape of
-        // outcome has to render.
-        let root = scratch("report");
-        let layout = layout(&root);
-        report_takeover(&Outcome::NoRecord);
-        report_takeover(&Outcome::Planned {
-            file: PathBuf::from("/etc/fcitx5/config"),
+    fn test_takeover_report_describes_every_outcome() {
+        // The report is the user's only account of what happened to a setting the plugin
+        // changed, so each shape of outcome has to render, and a planned restore has to
+        // read differently from one that happened.
+        let config = PathBuf::from("/etc/fcitx5/config");
+        assert!(
+            takeover_report(&Outcome::NoRecord).contains("never recorded"),
+            "a plugin that never took the user interface over says so"
+        );
+
+        let planned = takeover_report(&Outcome::Planned {
+            file: config.clone(),
             value: Some("classic".to_owned()),
         });
-        report_takeover(&Outcome::Restored {
-            file: PathBuf::from("/etc/fcitx5/config"),
+        assert!(planned.contains("would put back"), "{planned}");
+        assert!(planned.contains("classic"), "{planned}");
+
+        let restored = takeover_report(&Outcome::Restored {
+            file: config,
             value: None,
         });
+        assert!(restored.contains("put back"), "{restored}");
+        assert!(
+            !restored.contains("would"),
+            "a restore that happened is not reported as one that did not: {restored}"
+        );
+        assert!(restored.contains("did not exist before"), "{restored}");
+    }
 
+    #[test]
+    fn test_plan_report_names_every_file_and_the_elevation() {
+        let root = scratch("report-plan");
+        let layout = layout(&root);
+        let created = layout.addon_dir.join("librspinyin.so");
+        let replaced = layout.addon_conf_dir.join("rspinyin.conf");
         let manifest = Manifest {
             version: super::manifest::MANIFEST_VERSION,
             package_version: "0.1.0".to_owned(),
-            entries: vec![Entry {
-                path: layout.addon_dir.join("librspinyin.so"),
-                state: EntryState::Replaced,
-                backup: Some(PathBuf::from("/tmp/librspinyin.so.rspinyin-bak")),
-            }],
+            entries: vec![
+                Entry {
+                    path: created.clone(),
+                    state: EntryState::Created,
+                    backup: None,
+                },
+                Entry {
+                    path: replaced.clone(),
+                    state: EntryState::Replaced,
+                    backup: Some(manifest::backup_path(&replaced)),
+                },
+            ],
         };
-        report_plan(&manifest, &layout, Elevation::Sudo);
-        print_user_data(&user(&root));
+
+        let report = plan_report(&manifest, &layout, Elevation::Sudo);
+        assert!(report.contains("nothing will be removed"), "{report}");
+        assert!(
+            report.contains(&format!("remove {}", created.display())),
+            "a file the install created is reported as removed: {report}"
+        );
+        assert!(
+            report.contains(&format!("restore {}", replaced.display())),
+            "a file the install displaced is reported as restored: {report}"
+        );
+        assert!(
+            report.contains(&layout.manifest_path().display().to_string()),
+            "{report}"
+        );
+        assert!(report.contains("privileged operations: sudo"), "{report}");
+        let direct = plan_report(&manifest, &layout, Elevation::Direct);
+        assert!(
+            direct.contains("privileged operations: none"),
+            "an unelevated run says so"
+        );
+        fs::remove_dir_all(&root).expect("cleaning up");
+    }
+
+    #[test]
+    fn test_user_data_report_names_the_directories_and_the_command_that_removes_them() {
+        // The card asks for the location and the command rather than a deletion, so this
+        // is the assertion that the user is told both.
+        let root = scratch("report-data");
+        let user = user(&root);
+
+        let report = user_data_report(&user);
+        assert!(
+            report.contains(&user.data_dir.display().to_string()),
+            "{report}"
+        );
+        assert!(
+            report.contains(&user.config_dir.display().to_string()),
+            "{report}"
+        );
+        assert!(report.contains("rm -rf"), "{report}");
+        assert!(
+            report.contains("left in place"),
+            "the report says they are still there: {report}"
+        );
         fs::remove_dir_all(&root).expect("cleaning up");
     }
 }

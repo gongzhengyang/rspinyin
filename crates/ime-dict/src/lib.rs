@@ -15,4 +15,5 @@ pub mod fst_index;
 pub mod mmap;
 pub mod paths;
 pub mod recover;
+pub mod script;
 pub mod user_db;

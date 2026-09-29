@@ -1,7 +1,7 @@
 //! Criterion benchmarks for the frame path: the copy out of the scratch, and the whole
 //! `render_if_dirty` call it sits in.
 //!
-//! Three cases, answering two different questions.
+//! Four cases, answering two different questions.
 //!
 //! `frame/render_if_dirty` is the end-to-end frame at the surface size `BUDGET-LAT-03` is
 //! stated for: a steady-state keystroke -- a property change the size of a highlight move --
@@ -17,6 +17,14 @@
 //! precedes it and the backend call that follows it are outside. What the interval does
 //! contain besides the copy is the fold over the two damage lists and the loop setup, tens
 //! of instructions against a megabyte of memory traffic.
+//!
+//! `frame/blit_damage` sweeps the number of damage batches a frame has to carry over, from one
+//! frame's worth to a streak past the point where the renderer folds its pending list into a
+//! single bounding box. A batch is accumulated by starving the frame that would have carried
+//! it: the renderer keeps what a frame it could not commit had damaged, so no scene that
+//! damages many separate cells at once is needed to build the list up. What the sweep shows is
+//! that the copy stays one region -- and one box of memory traffic -- however many batches
+//! accumulated, which is the claim the merge is.
 //!
 //! # What this file does not do
 //!
@@ -44,10 +52,11 @@ use std::hint::black_box;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use slint::ComponentHandle as _;
 
 use ime_types::{FrameToken, PixelBufferMut, PlatformError, RectI, SurfaceBackend, SurfaceEvent};
+use ime_ui::renderer::{PENDING_COLLAPSE_LIMIT, RenderOutcome};
 use ime_ui::slint_platform::RspinyinPlatform;
 
 /// The surface width in logical pixels: 600dp at scale 2.0 is the 1200px window `ASM-17`
@@ -62,6 +71,16 @@ const SCALE: f32 = 2.0;
 
 /// Frames drawn before the measurements start, so the first layout is out of the way.
 const SETTLE_FRAMES: usize = 4;
+
+/// The renderer's pending-collapse limit, under the name the sweep reads it by.
+///
+/// It is the point the damage bookkeeping saturates at: past it a frame's pending list is one
+/// bounding box however long the starvation streak that built it.
+const PENDING_LIMIT: usize = PENDING_COLLAPSE_LIMIT;
+
+/// How many frames' damage the sweep accumulates: one frame's worth, then two, four, and the
+/// collapse limit itself and twice it.
+const DAMAGE_BATCHES: [usize; 5] = [1, 2, 4, PENDING_LIMIT, PENDING_LIMIT * 2];
 
 /// Bytes per pixel of the `Argb8888` surface format.
 ///
@@ -140,6 +159,8 @@ struct Observation {
     copy: Duration,
     /// Events the next `poll_events` call delivers.
     pending: Vec<SurfaceEvent>,
+    /// How many of the next `acquire_buffer` calls fail with `NoFreeBuffer`.
+    starve: usize,
 }
 
 /// Forgets the last frame's copy, so the next one is timed on its own.
@@ -147,6 +168,17 @@ fn forget_copy(observed: &Arc<Mutex<Observation>>) {
     if let Ok(mut seen) = observed.lock() {
         seen.acquired = None;
         seen.copy = Duration::ZERO;
+    }
+}
+
+/// Makes the next `frames` acquisitions fail with `NoFreeBuffer`.
+///
+/// A starved frame is skipped rather than lost: the renderer keeps what it damaged and carries
+/// it over on the next frame that does get a buffer. That is how the sweep accumulates damage
+/// batches without a scene that damages that many separate cells at once.
+fn starve(observed: &Arc<Mutex<Observation>>, frames: usize) {
+    if let Ok(mut seen) = observed.lock() {
+        seen.starve = frames;
     }
 }
 
@@ -201,6 +233,15 @@ impl TimedSurface {
 
 impl SurfaceBackend for TimedSurface {
     fn acquire_buffer(&mut self) -> Result<PixelBufferMut<'_>, PlatformError> {
+        // Read before a buffer is handed out, so a starved frame costs the frame path exactly
+        // what a backend with no free buffer costs it: nothing is stamped and no buffer is
+        // touched.
+        if let Ok(mut seen) = self.observed.lock() {
+            if seen.starve > 0 {
+                seen.starve -= 1;
+                return Err(PlatformError::NoFreeBuffer);
+            }
+        }
         let back = self.back;
         let data = self
             .buffers
@@ -336,6 +377,50 @@ fn frame_bench(criterion: &mut Criterion) {
             total
         });
     });
+
+    // The copy a frame pays after a streak of damage batches. Each starved frame appends its
+    // own damage to the pending list, so the frame that follows `batches - 1` skipped ones
+    // carries what all of them accumulated; past the collapse limit that list is one bounding
+    // box however long the streak ran. What the sweep shows is that the copy is a single
+    // region either way -- the number of rectangles the damage arrived in does not multiply
+    // the memory traffic.
+    for batches in DAMAGE_BATCHES {
+        group.bench_with_input(
+            BenchmarkId::new("blit_damage", batches),
+            &batches,
+            |bencher, &batches| {
+                bencher.iter_custom(|iterations| {
+                    let mut total = Duration::ZERO;
+                    for _ in 0..iterations {
+                        for _ in 1..batches {
+                            highlight = !highlight;
+                            card.set_highlight(highlight);
+                            starve(&observed, 1);
+                            let _ = platform.render_if_dirty();
+                        }
+                        highlight = !highlight;
+                        card.set_highlight(highlight);
+                        forget_copy(&observed);
+                        let outcome = platform.render_if_dirty();
+                        // A frame that did not reach the surface would mean the fixture
+                        // stopped producing damage, and the case would then be timing
+                        // nothing. Anything but one copy of the accumulated damage is a
+                        // measurement of a different frame than the one the case describes.
+                        let carried = match &outcome {
+                            Ok(RenderOutcome::Rendered { copies, .. }) => *copies,
+                            _ => 0,
+                        };
+                        assert_eq!(
+                            carried, 1,
+                            "every damage batch must be carried over in one copy: {outcome:?}"
+                        );
+                        total += copy_time(&observed);
+                    }
+                    total
+                });
+            },
+        );
+    }
 
     group.finish();
 }

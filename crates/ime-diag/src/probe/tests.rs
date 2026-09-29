@@ -1,15 +1,18 @@
 //! Unit tests for the histograms, the counter registry, the probes and the snapshot.
 //!
 //! Responsibility: pin what the design fixes about the probes -- the bucket bounds
-//! and their resolution, the percentile that a rank rounds to, the exact diagnostic
-//! names of the counters and the metrics, the size of a histogram, the no-op
-//! behaviour of a switched-off probe, and the strictness of the snapshot parser.
+//! and their resolution, the percentile that a rank rounds to and the order the
+//! percentiles come out in, the exact diagnostic names of the counters and the metrics,
+//! the size of a histogram, the no-op behaviour of a switched-off probe, the sample a
+//! stamp stands for, the host path's ceiling as the budget document states it, and the
+//! strictness of the snapshot parser.
 //!
-//! Boundaries: nothing here reads the clock for a decision or arranges an environment,
-//! and the one test that touches the filesystem writes into a scratch directory under
-//! the workspace `target/`. The one place a duration is measured -- the end-to-end
-//! latency token -- is asserted by the sample *being recorded*, never by its value, so
-//! the test says the same thing on an idle machine and on a loaded one.
+//! Boundaries: nothing here reads the clock for a decision or arranges an environment.
+//! The tests that touch the filesystem either write into a scratch directory under the
+//! workspace `target/` or read the repository's checked-in budget document, which is a
+//! file and not an environment. The one place a duration is measured -- the end-to-end
+//! latency token, and the stamp -- is asserted by the sample *being recorded*, never by
+//! its value, so the test says the same thing on an idle machine and on a loaded one.
 
 use std::fs;
 use std::mem::size_of;
@@ -57,8 +60,8 @@ const CONTRACT_COUNTERS: [&str; 19] = [
     "platform.x11.no-argb-visual",
 ];
 
-/// The seven metric names, in the order a report lists them.
-const CONTRACT_METRICS: [&str; 7] = [
+/// The eight metric names, in the order a report lists them.
+const CONTRACT_METRICS: [&str; 8] = [
     "key_to_present",
     "decode",
     "raster_full",
@@ -66,6 +69,7 @@ const CONTRACT_METRICS: [&str; 7] = [
     "first_key_to_visible",
     "wakeup",
     "event_loop_key",
+    "post_ui",
 ];
 
 #[test]
@@ -109,6 +113,35 @@ fn test_histogram_percentile_rounds_up_to_the_next_sample() {
     assert_eq!(snapshot.p99_us, 13);
     assert_eq!(snapshot.p999_us, 6_765);
     assert_eq!(snapshot.max_us, 6_765);
+}
+
+#[test]
+fn test_histogram_percentiles_never_decrease() {
+    // One distribution spread across the table: the percentiles of a histogram have to
+    // come out in the order of the percentiles themselves, or a report would show a tail
+    // below its own median.
+    let histogram = Histogram::new();
+    for micros in [1_u64, 4, 9, 16, 25, 100, 1_000, 5_000, 20_000, 90_000] {
+        for _ in 0..10 {
+            histogram.record(Duration::from_micros(micros));
+        }
+    }
+    let snapshot = histogram.snapshot();
+    assert_eq!(snapshot.count, 100);
+    let stated = [
+        snapshot.p50_us,
+        snapshot.p90_us,
+        snapshot.p99_us,
+        snapshot.p999_us,
+        snapshot.max_us,
+    ];
+    for window in stated.windows(2) {
+        assert!(window[0] <= window[1], "{stated:?} must not decrease");
+    }
+    // Every one of them is the upper bound of a bucket, so none of them understates a
+    // sample: the slowest sample of all is inside the highest non-empty bucket.
+    assert!(snapshot.p50_us >= 1);
+    assert!(snapshot.max_us >= 90_000);
 }
 
 #[test]
@@ -159,6 +192,27 @@ fn test_histogram_size_matches_the_design_footprint() {
     // budgets 536 bytes for a histogram, and a probe that grew past it would be
     // spending memory on measurement.
     assert_eq!(size_of::<Histogram>(), 536);
+}
+
+#[test]
+fn test_probes_state_is_inline_and_bounded() {
+    // What keeps a sample off the heap is that the probes' whole state is inline: every
+    // field is an atomic or a clock reading, and the buckets are a fixed array. The
+    // number of allocations one `record` call performs cannot be counted from this
+    // crate -- an allocator hook is `unsafe`, which `unsafe_code = "deny"` refuses -- so
+    // this pins the structure and the delivery report records the gap.
+    assert!(
+        size_of::<Probes>() <= 8 * 1024,
+        "the probes' own state is {} bytes",
+        size_of::<Probes>()
+    );
+    // The state does not grow with the number of samples, either: a thousand samples
+    // land in the same fixed table, which is what lets the probes run for hours.
+    let probes = Probes::new();
+    for _ in 0..1_000 {
+        let _sample = probes.begin(Metric::PostUi);
+    }
+    assert_eq!(probes.post_ui.count(), 1_000);
 }
 
 #[test]
@@ -244,6 +298,42 @@ fn test_metric_unit_prints_microseconds_for_the_wakeup_budget() {
 }
 
 #[test]
+fn test_metric_post_ui_records_into_its_own_histogram_in_microseconds() {
+    // The last segment of the host path: what a post cost the host thread, stated in
+    // microseconds because a post is a hand-off and a write and would read as `0.00ms`.
+    let probes = Probes::new();
+    probes.post_ui.record(Duration::from_micros(120));
+    let snapshot = probes.snapshot();
+    assert_eq!(snapshot.metrics.post_ui.count, 1);
+    assert_eq!(snapshot.metrics.post_ui.p50_us, 144);
+    assert_eq!(Metric::PostUi.unit(), Unit::Micros);
+    assert_eq!(Metric::PostUi.name(), "post_ui");
+    for metric in Metric::ALL {
+        if metric != Metric::PostUi {
+            assert_eq!(
+                metric.snapshot(&snapshot.metrics).count,
+                0,
+                "{}",
+                metric.name()
+            );
+        }
+    }
+}
+
+#[test]
+fn test_metric_post_ui_zero_length_sample_lands_in_the_first_bucket() {
+    // A post that returned before the clock moved is still a sample: it is counted, and
+    // it is counted at the table's floor rather than before the table starts.
+    let probes = Probes::new();
+    probes.post_ui.record(Duration::ZERO);
+    let snapshot = probes.snapshot().metrics.post_ui;
+    assert_eq!(snapshot.count, 1);
+    assert_eq!(snapshot.p50_us, 1);
+    assert_eq!(snapshot.max_us, 1);
+    assert_eq!(snapshot.sum_us, 0);
+}
+
+#[test]
 fn test_probes_bump_counts_each_counter_separately() {
     let probes = Probes::new();
     probes.bump(Counter::FrameCoalesced);
@@ -305,6 +395,53 @@ fn test_probes_end_key_to_present_drops_a_sample_whose_receipt_arrives_switched_
     probes.set_enabled(false);
     probes.end_key_to_present(token);
     assert_eq!(probes.key_to_present.count(), 0);
+}
+
+#[test]
+fn test_stamp_records_one_sample_of_the_metric_it_names() {
+    let probes = Probes::new();
+    {
+        let _decode = probes.begin(Metric::Decode);
+    }
+    {
+        let _key = probes.begin(Metric::EventLoopKey);
+    }
+    assert_eq!(probes.decode.count(), 1);
+    assert_eq!(probes.event_loop_key.count(), 1);
+    for metric in Metric::ALL {
+        if metric != Metric::Decode && metric != Metric::EventLoopKey {
+            assert_eq!(metric.histogram(&probes).count(), 0, "{}", metric.name());
+        }
+    }
+}
+
+#[test]
+fn test_stamp_records_nothing_when_the_probes_are_switched_off() {
+    let probes = Probes::new();
+    probes.set_enabled(false);
+    {
+        let _sample = probes.begin(Metric::PostUi);
+    }
+    assert_eq!(probes.post_ui.count(), 0);
+    assert_eq!(probes.snapshot().metrics.post_ui, HistSnapshot::default());
+}
+
+#[test]
+fn test_stamp_whose_scope_spans_the_switch_records_nothing() {
+    // A sample that spans the switch is dropped rather than half-counted, the way an
+    // end-to-end sample whose receipt arrives after the switch is.
+    let probes = Probes::new();
+    let sample = probes.begin(Metric::PostUi);
+    probes.set_enabled(false);
+    drop(sample);
+    assert_eq!(probes.post_ui.count(), 0);
+    // Switching back on leaves the dropped sample dropped, and the next one recorded.
+    probes.set_enabled(true);
+    assert_eq!(probes.post_ui.count(), 0);
+    {
+        let _sample = probes.begin(Metric::PostUi);
+    }
+    assert_eq!(probes.post_ui.count(), 1);
 }
 
 #[test]
@@ -467,4 +604,73 @@ fn test_snapshot_write_to_creates_a_private_file_that_reads_back() {
         ProbeSnapshot::parse(&text).expect("it parses"),
         ProbeSnapshot::default()
     );
+}
+
+/// The repository's budget document, as text.
+///
+/// Read rather than restated: a threshold is written down in exactly one place, and this
+/// is that place. The file is checked in, so reading it depends on no environment.
+fn budget_document() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/dev/budgets.json");
+    fs::read_to_string(&path).expect("the budget document is readable")
+}
+
+/// One row of the budget document's latency section, in microseconds.
+///
+/// The document states that section in milliseconds, which its own section name says, and
+/// a histogram records microseconds. The two units meet here, in the test that reads the
+/// file -- never in the probe, which states no threshold at all.
+fn latency_row_us(document: &str, key: &str) -> u64 {
+    let needle = format!("\"{key}\":");
+    let start = document
+        .find(&needle)
+        .expect("the budget document states the row")
+        + needle.len();
+    let after = &document[start..];
+    let end = after.find([',', '\n']).unwrap_or(after.len());
+    let millis: f64 = after[..end]
+        .trim()
+        .parse()
+        .expect("a threshold is a number");
+    (millis * 1_000.0) as u64
+}
+
+#[test]
+fn test_host_path_total_is_asserted_against_the_budget_documents_rows() {
+    // The ceiling the host path is measured against is the one the document states for a
+    // key press reaching the candidate frame -- the pair of rows `BUDGET-LAT-01` is
+    // written as. The numbers are read out of the file, so a threshold that moved there
+    // moves here too, and one that was removed fails this test instead of quietly
+    // un-asserting the path.
+    //
+    // The metric is the host thread's whole journey through a key press, which the
+    // performance work calls `key_to_post` and the specification calls `event_loop_key`:
+    // one span, sampled at the ABI boundary and completed once the post has returned.
+    let document = budget_document();
+    let p50_us = latency_row_us(&document, "key_to_present_p50");
+    let p99_us = latency_row_us(&document, "key_to_present_p99");
+    assert!(p50_us > 0, "the document states a median");
+    assert!(p99_us >= p50_us, "the tail is not below the median");
+    // A ceiling above the histogram's top bucket could not be asserted at all: every
+    // sample slower than the top bucket is counted in it.
+    assert!(p99_us < TOP_US, "the ceiling has to be inside the table");
+
+    let probes = Probes::new();
+    // A key whose host-side journey took a quarter of the median budget is inside both
+    // rows. The sample goes through the histogram a real key is recorded into.
+    probes
+        .event_loop_key
+        .record(Duration::from_micros(p50_us / 4));
+    let sample = *Metric::EventLoopKey.snapshot(&probes.snapshot().metrics);
+    assert!(sample.percentile(Percentile::P50) <= p50_us);
+    assert!(sample.percentile(Percentile::P99) <= p99_us);
+
+    // One that spent twice the whole tail budget on the host thread is not, which is what
+    // shows the comparison reads the document's number rather than a constant of its own.
+    probes
+        .event_loop_key
+        .record(Duration::from_micros(p99_us * 2));
+    let sample = *Metric::EventLoopKey.snapshot(&probes.snapshot().metrics);
+    assert!(sample.percentile(Percentile::P99) > p99_us);
+    assert!(sample.percentile(Percentile::P50) <= p50_us);
 }

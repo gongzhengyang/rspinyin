@@ -17,6 +17,7 @@ use super::{Adapter, COMPONENT_FAILED_CODE, PointerState};
 use crate::layout;
 use crate::renderer::mock::{MockState, MockSurface, on_own_thread};
 use crate::slint_platform::RspinyinPlatform;
+use crate::spring::{PAGE_SLIDE_DP, REST_POSITION_DP};
 use crate::theme::{BlurNegotiation, ThemeResolution};
 use crate::ui_generated::{CandidateData, Theme};
 
@@ -549,4 +550,490 @@ fn test_adapter_keeps_the_full_text_of_a_truncated_candidate() {
         index, 1,
         "and the selection names the candidate by index, never by its text"
     );
+}
+
+/// The frame rate the motion tests step at, in seconds per frame.
+///
+/// The design targets 144Hz and the integrator clamps a step to 1/60s, so stepping at the
+/// target rate is what the durations the design quotes are measured against.
+const FRAME_S: f32 = 1.0 / 144.0;
+
+/// Advances the adapter's motion until nothing is in flight and reports how many frames it
+/// took.
+///
+/// The ceiling is what makes a motion that never settles fail the test rather than hang it.
+fn settle(adapter: &mut Adapter) -> u32 {
+    let mut frames = 1u32;
+    while adapter.advance(FRAME_S) {
+        frames += 1;
+        assert!(frames < 1_000, "the window's motion must come to rest");
+    }
+    frames
+}
+
+/// The horizontal distance between two candidate cells, in logical pixels.
+fn cell_step_x() -> f32 {
+    cell_width() + metrics().grid_gap
+}
+
+/// The vertical distance between two rows of candidates, in logical pixels.
+fn cell_step_y() -> f32 {
+    metrics().cell_height + metrics().grid_gap
+}
+
+/// The highlight box's four components as the component holds them.
+fn highlight_box(adapter: &Adapter) -> (f32, f32, f32, f32) {
+    let window = adapter.window();
+    (
+        window.get_highlight_x(),
+        window.get_highlight_y(),
+        window.get_highlight_w(),
+        window.get_highlight_h(),
+    )
+}
+
+#[test]
+fn test_adapter_appear_motion_settles_on_the_end_state_and_stops() {
+    let (start, end, frames, idle) = with_adapter(|adapter| {
+        assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 4)));
+        adapter
+            .set_visible(true)
+            .expect("the surface can be mapped");
+        // The motion reaches the component on the first frame the loop advances, which is the
+        // frame the window appears on.
+        adapter.advance(0.0);
+        let window = adapter.window();
+        let start = (window.get_window_scale(), window.get_window_opacity());
+        let frames = settle(adapter);
+        let idle = !adapter.advance(FRAME_S) && !adapter.advance(FRAME_S);
+        let window = adapter.window();
+        let end = (window.get_window_scale(), window.get_window_opacity());
+        (start, end, frames, idle)
+    });
+    assert_eq!(start.0, 0.96, "the panel starts at 3.3.2's scale floor");
+    assert_eq!(start.1, 0.0, "and fully transparent");
+    assert_eq!(end, (1.0, 1.0), "and reaches full size and full opacity");
+    // 110ms at 144Hz is 15.84 frames.
+    assert!(
+        (14..=18).contains(&frames),
+        "the appear motion took {frames} frames, off the 110ms 3.3.2 allots it"
+    );
+    assert!(
+        idle,
+        "and a window at rest reports no deadline, which is what lets the loop block"
+    );
+}
+
+#[test]
+fn test_adapter_highlight_box_lands_on_the_highlighted_cell() {
+    let (first, second) = with_adapter(|adapter| {
+        assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 9)));
+        settle(adapter);
+        let first = highlight_box(adapter);
+        let visible = adapter.window().get_highlight_visible();
+        // The seventh candidate sits on the second row, second column of a five-per-row page.
+        assert!(
+            adapter.apply_pointer(PointerState {
+                highlighted: Some(6),
+                hovered: None,
+                pressed: None,
+            }),
+            "moving the highlight redraws the grid"
+        );
+        settle(adapter);
+        let second = highlight_box(adapter);
+        (first, (second, visible))
+    });
+    assert_eq!(
+        first,
+        (0.0, 0.0, cell_width(), metrics().cell_height),
+        "the box rests on the first cell, at the grid's own origin"
+    );
+    assert_eq!(
+        second.0,
+        (
+            cell_step_x(),
+            cell_step_y(),
+            cell_width(),
+            metrics().cell_height
+        ),
+        "and one cell right and one row down for the seventh candidate"
+    );
+    assert!(
+        second.1,
+        "the box is drawn while a candidate carries the highlight"
+    );
+}
+
+#[test]
+fn test_adapter_highlight_slides_between_cells_instead_of_jumping() {
+    let (redirect, middle, end) = with_adapter(|adapter| {
+        assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 9)));
+        settle(adapter);
+        assert!(
+            adapter.apply_pointer(PointerState {
+                highlighted: Some(4),
+                hovered: None,
+                pressed: None,
+            }),
+            "moving the highlight redraws the grid"
+        );
+        adapter.advance(0.0);
+        let redirect = highlight_box(adapter).0;
+        adapter.advance(FRAME_S);
+        let middle = highlight_box(adapter).0;
+        settle(adapter);
+        (redirect, middle, highlight_box(adapter).0)
+    });
+    assert_eq!(redirect, 0.0, "a redirect keeps the box where it is");
+    assert!(
+        middle > 0.0 && middle < 4.0 * cell_step_x(),
+        "one frame moves the box part of the way, got {middle} of {}",
+        4.0 * cell_step_x()
+    );
+    assert_eq!(
+        end,
+        4.0 * cell_step_x(),
+        "and it comes to rest on the cell it was sent to"
+    );
+}
+
+#[test]
+fn test_adapter_motion_disabled_lands_on_the_end_values_at_once() {
+    let (scale, opacity, offset, highlight_box, animating) = with_adapter(|adapter| {
+        adapter.set_motion_enabled(false);
+        assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 9)));
+        adapter
+            .set_visible(true)
+            .expect("the surface can be mapped");
+        assert!(adapter.apply_pointer(PointerState {
+            highlighted: Some(3),
+            hovered: None,
+            pressed: None,
+        }));
+        let animating = adapter.advance(FRAME_S);
+        let window = adapter.window();
+        (
+            window.get_window_scale(),
+            window.get_window_opacity(),
+            window.get_page_offset_dp(),
+            highlight_box(adapter),
+            animating,
+        )
+    });
+    assert_eq!(scale, 1.0, "the appear motion is instantaneous");
+    assert_eq!(opacity, 1.0);
+    assert_eq!(offset, 0.0, "the page content is home");
+    assert_eq!(
+        highlight_box,
+        (
+            3.0 * cell_step_x(),
+            0.0,
+            cell_width(),
+            metrics().cell_height
+        ),
+        "the box is already on the cell the highlight moved to"
+    );
+    assert!(!animating, "a disabled motion has nothing in flight");
+}
+
+#[test]
+fn test_adapter_page_turn_slides_the_grid_and_returns_it_home() {
+    let (before, displaced, home) = with_adapter(|adapter| {
+        assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 9)));
+        settle(adapter);
+        let before = adapter.window().get_page_offset_dp();
+        let mut second = frame_with(2, "ni'hao", 9);
+        second.page.current = 2;
+        assert!(adapter.apply_frame(&second));
+        adapter.advance(0.0);
+        let displaced = adapter.window().get_page_offset_dp();
+        settle(adapter);
+        (before, displaced, adapter.window().get_page_offset_dp())
+    });
+    assert_eq!(before, 0.0, "the first page draws no displacement");
+    assert_eq!(
+        displaced, PAGE_SLIDE_DP,
+        "the next page enters displaced from the side it came from"
+    );
+    assert_eq!(home, 0.0, "and the content springs home");
+}
+
+#[test]
+fn test_adapter_scale_anchor_follows_the_placement() {
+    let (below, above, automatic) = with_adapter(|adapter| {
+        adapter.set_placement(Placement::Below);
+        let below = adapter.window().get_grows_upward();
+        adapter.set_placement(Placement::Above);
+        let above = adapter.window().get_grows_upward();
+        adapter.set_placement(Placement::Auto);
+        (below, above, adapter.window().get_grows_upward())
+    });
+    assert!(!below, "a panel below the caret grows from its top edge");
+    assert!(above, "and one above grows upward from its bottom edge");
+    assert!(!automatic, "the automatic side resolves to the one below");
+}
+
+#[test]
+fn test_adapter_highlight_is_hidden_for_a_page_with_no_candidate() {
+    let (visible, highlight_box) = with_adapter(|adapter| {
+        assert!(adapter.apply_frame(&frame_with(1, "ni", 0)));
+        adapter.advance(0.0);
+        (
+            adapter.window().get_highlight_visible(),
+            highlight_box(adapter),
+        )
+    });
+    assert!(
+        !visible,
+        "nothing is highlighted when there is no candidate"
+    );
+    assert_eq!(
+        highlight_box,
+        (0.0, 0.0, 0.0, 0.0),
+        "and the box collapses rather than drawing at a stale size"
+    );
+}
+
+#[test]
+fn test_adapter_highlight_hides_when_the_page_empties() {
+    // The box hiding without moving is the case a frame-to-frame comparison of the motion
+    // alone cannot see: the springs are already at rest on the cell, so the frame the step
+    // produces is the one before it and the component would keep drawing the box.
+    let (before, after) = with_adapter(|adapter| {
+        assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 9)));
+        settle(adapter);
+        let before = adapter.window().get_highlight_visible();
+        assert!(adapter.apply_frame(&frame_with(2, "ni", 0)));
+        adapter.advance(FRAME_S);
+        (before, adapter.window().get_highlight_visible())
+    });
+    assert!(
+        before,
+        "the box is drawn while a candidate carries the highlight"
+    );
+    assert!(
+        !after,
+        "and it is gone once the page has no candidate left to highlight"
+    );
+}
+
+#[test]
+fn test_adapter_highlight_approaches_its_target_monotonically() {
+    let (start, backwards, frames, end) = with_adapter(|adapter| {
+        assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 9)));
+        settle(adapter);
+        let start = adapter.window().get_highlight_x();
+        assert!(
+            adapter.apply_pointer(PointerState {
+                highlighted: Some(1),
+                hovered: None,
+                pressed: None,
+            }),
+            "moving the highlight redraws the grid"
+        );
+        adapter.advance(0.0);
+        let mut previous = adapter.window().get_highlight_x();
+        let mut backwards = 0.0f32;
+        let mut frames = 0u32;
+        while adapter.advance(FRAME_S) {
+            let x = adapter.window().get_highlight_x();
+            backwards = backwards.max(previous - x);
+            previous = x;
+            frames += 1;
+            assert!(frames < 1_000, "the highlight must come to rest");
+        }
+        (start, backwards, frames, adapter.window().get_highlight_x())
+    });
+    assert_eq!(start, 0.0, "the box starts on the first cell");
+    assert!(
+        frames >= 4,
+        "the box was written over only {frames} frames, which is too few for the \
+         convergence to mean anything"
+    );
+    // The approach is monotone up to the band the spring calls arrived: a movement larger
+    // than that would be the box visibly passing the cell it was sent to and coming back.
+    assert!(
+        backwards <= REST_POSITION_DP,
+        "the box moved {backwards}px back off its target, more than the {}px band the spring \
+         settles within",
+        REST_POSITION_DP
+    );
+    assert_eq!(
+        end,
+        cell_step_x(),
+        "and it lands exactly on the cell it was sent to"
+    );
+}
+
+#[test]
+fn test_adapter_highlight_survives_twenty_rapid_retargets_without_jumping() {
+    // Twenty presses four frames apart, which is 28ms at the target refresh rate: the box is
+    // redirected long before it ever arrives, which is what a held arrow key produces.
+    const FRAMES_PER_PRESS: u32 = 4;
+    let (widest, end) = with_adapter(|adapter| {
+        assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 9)));
+        settle(adapter);
+        let mut previous = adapter.window().get_highlight_x();
+        let mut widest = 0.0f32;
+        for press in 0..20u32 {
+            // The user jitters the key between two neighbouring cells rather than walking in
+            // one direction, so every redirect has to absorb a velocity it did not choose.
+            let highlighted = if press % 2 == 0 { 1 } else { 0 };
+            assert!(
+                adapter.apply_pointer(PointerState {
+                    highlighted: Some(highlighted),
+                    hovered: None,
+                    pressed: None,
+                }),
+                "moving the highlight redraws the grid"
+            );
+            for _ in 0..FRAMES_PER_PRESS {
+                adapter.advance(FRAME_S);
+                let x = adapter.window().get_highlight_x();
+                widest = widest.max((x - previous).abs());
+                previous = x;
+            }
+        }
+        settle(adapter);
+        (widest, adapter.window().get_highlight_x())
+    });
+    assert!(
+        widest <= cell_step_x() * 0.2,
+        "one frame moved the box {widest}px of the {}px the box had to cross, which is a jump \
+         rather than a slide",
+        cell_step_x()
+    );
+    // The twentieth press is odd, so the last target is the cell the box started on.
+    assert_eq!(end, 0.0, "the box comes to rest on the last target");
+}
+
+#[test]
+fn test_adapter_motion_disabled_mid_flight_writes_the_end_values_at_once() {
+    let (in_flight, before, after, animating) = with_adapter(|adapter| {
+        // The window is shown first, so the appear motion is running and the switch has
+        // something to snap: an adapter nobody has shown sits at opacity zero, and
+        // asserting the end state of a motion that never started proves nothing.
+        adapter.set_visible(true).expect("the window shows");
+        assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 9)));
+        settle(adapter);
+        assert!(
+            adapter.apply_pointer(PointerState {
+                highlighted: Some(6),
+                hovered: None,
+                pressed: None,
+            }),
+            "moving the highlight redraws the grid"
+        );
+        let mut second = frame_with(2, "ni'hao", 9);
+        second.page.current = 2;
+        assert!(adapter.apply_frame(&second));
+        let in_flight = adapter.advance(0.0);
+        let before = (
+            adapter.window().get_page_offset_dp(),
+            highlight_box(adapter).0,
+        );
+        adapter.set_motion_enabled(false);
+        let animating = adapter.advance(FRAME_S);
+        let window = adapter.window();
+        let after = (
+            window.get_page_offset_dp(),
+            window.get_window_opacity(),
+            window.get_window_scale(),
+            highlight_box(adapter),
+        );
+        (in_flight, before, after, animating)
+    });
+    assert!(
+        in_flight,
+        "the page slide and the highlight are both in flight when the switch goes off"
+    );
+    assert_eq!(
+        before,
+        (PAGE_SLIDE_DP, 0.0),
+        "the content is displaced and the box has not left the first cell"
+    );
+    assert_eq!(after.0, 0.0, "the content is home");
+    assert_eq!(after.1, 1.0, "the window is fully opaque");
+    assert_eq!(after.2, 1.0, "and at its full size");
+    assert_eq!(
+        after.3,
+        (
+            cell_step_x(),
+            cell_step_y(),
+            cell_width(),
+            metrics().cell_height
+        ),
+        "and the box is already on the cell the highlight moved to"
+    );
+    assert!(!animating, "a disabled motion has nothing left in flight");
+}
+
+/// The row length of the pixel scenes, in bytes.
+fn pixel_stride() -> usize {
+    PIXEL_WIDTH_DP as usize * BYTES_PER_PIXEL
+}
+
+/// The surface rows the header strip occupies, and the rows below it.
+///
+/// The two bands are compared as raw bytes because the header owns no property a page turn
+/// could move: only the pixels can say whether it stayed where it was.
+fn bands() -> (core::ops::Range<usize>, core::ops::Range<usize>) {
+    let metrics = metrics();
+    let top = metrics.shadow_margin as usize;
+    let header = top + metrics.header_height as usize;
+    (top..header, header..PIXEL_HEIGHT_DP as usize)
+}
+
+/// One band of surface rows of the last committed frame, as raw bytes.
+fn band(state: &MockState, rows: core::ops::Range<usize>) -> Vec<u8> {
+    let stride = pixel_stride();
+    state.pixels[rows.start * stride..rows.end * stride].to_vec()
+}
+
+#[test]
+fn test_adapter_page_turn_slides_the_grid_and_leaves_the_header_still() {
+    let (header_still, grid_moved) = on_own_thread(|| {
+        let (backend, state) = MockSurface::new(PIXEL_WIDTH_DP, PIXEL_HEIGHT_DP, 1.0);
+        let platform = RspinyinPlatform::new(Box::new(backend));
+        platform
+            .install()
+            .expect("a fresh thread has no Slint platform yet");
+        let mut adapter = Adapter::new().expect("the component binds to the platform");
+        adapter
+            .set_visible(true)
+            .expect("the surface can be mapped");
+        assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 4)));
+        // The appear motion is run out first: a panel that was still growing would change
+        // every band, and the comparison would be about the wrong motion.
+        settle(&mut adapter);
+        platform
+            .render_if_dirty()
+            .expect("the settled frame is drawn");
+        let (header_rows, grid_rows) = bands();
+        let before = {
+            let state = state.lock().expect("the mock is not poisoned");
+            (
+                band(&state, header_rows.clone()),
+                band(&state, grid_rows.clone()),
+            )
+        };
+        let mut second = frame_with(2, "ni'hao", 4);
+        second.page.current = 2;
+        assert!(adapter.apply_frame(&second));
+        adapter.advance(0.0);
+        platform
+            .render_if_dirty()
+            .expect("the displaced frame is drawn");
+        let after = {
+            let state = state.lock().expect("the mock is not poisoned");
+            (band(&state, header_rows), band(&state, grid_rows))
+        };
+        (before.0 == after.0, before.1 != after.1)
+    });
+    assert!(
+        header_still,
+        "the header does not move: the preedit did not change page"
+    );
+    assert!(grid_moved, "the candidate grid does slide");
 }

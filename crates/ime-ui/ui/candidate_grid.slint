@@ -14,6 +14,11 @@
 // and this component can be instantiated anywhere (3.5's command palette reuses these
 // components).
 //
+// The type tokens are the exception, and they are read straight from `theme.slint`, which
+// this file already imports for its colours: the family every run of text draws with and
+// the optical nudge that keeps the header line and the candidate text on one baseline are
+// the window's, so there is nothing to bind them to.
+//
 // # Focus
 //
 // This window must never take keyboard focus. No `TextInput`, no `forward-focus` and no
@@ -135,6 +140,12 @@ export component CandidateGrid inherits VerticalLayout {
             opacity: dim;
 
             HorizontalLayout {
+                // The cell's text takes the window's optical nudge (`Theme.optical-nudge`),
+                // the same shift the header strip takes, so the two lines share one optical
+                // baseline. It belongs to this layout rather than to a text element: Slint
+                // gives an element *inside* a layout its position from the layout and
+                // rejects a binding of its own.
+                y: Theme.optical-nudge;
                 padding-left: root.cell-padding-h;
                 padding-right: root.cell-padding-h;
                 padding-top: root.cell-padding-v;
@@ -147,6 +158,7 @@ export component CandidateGrid inherits VerticalLayout {
                 // own alpha -- 0.48 x 0.55 would be unreadable.
                 Text {
                     text: cell.label;
+                    font-family: Theme.font-family;
                     font-size: root.small-font-size;
                     font-weight: 500;
                     color: Theme.text-primary;
@@ -161,6 +173,7 @@ export component CandidateGrid inherits VerticalLayout {
 
                     Text {
                         text: cell.display-text;
+                        font-family: Theme.font-family;
                         font-size: root.text-font-size;
                         // 3.1.1: the highlighted candidate is a weight heavier.
                         font-weight: cell.is-highlighted ? 500 : 400;
@@ -176,6 +189,7 @@ export component CandidateGrid inherits VerticalLayout {
                     Text {
                         visible: root.show-annotation && cell.annotation != "";
                         text: cell.annotation;
+                        font-family: Theme.font-family;
                         font-size: root.small-font-size;
                         font-weight: 400;
                         color: Theme.text-primary;

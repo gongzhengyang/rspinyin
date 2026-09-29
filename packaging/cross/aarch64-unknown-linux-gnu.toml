@@ -1,0 +1,54 @@
+# Cross-compilation configuration for aarch64-unknown-linux-gnu.
+#
+# This file is not read automatically. Cargo only reads `.cargo/config.toml` and its
+# ancestors, so the settings below reach a build only when the caller asks for them:
+#
+#   cargo build --release --target aarch64-unknown-linux-gnu \
+#       --config packaging/cross/aarch64-unknown-linux-gnu.toml -p ime-fcitx5 \
+#       --features fcitx5-host
+#
+# (The justfile's `cross-arm64` recipe is that command, plus the prerequisite checks and
+# the artifact assertions.)
+#
+# # Why the cross plumbing is not in `.cargo/config.toml`
+#
+# Cargo applies `[target.<triple>]` to host artifacts whenever the host triple is the key;
+# `target-applies-to-host` defaults to true, and the documented behaviour is that "when
+# `--target` is not passed, Cargo respects the same `linker` and `rustflags` for build
+# scripts as for all other compile artifacts". A `linker` entry for
+# `aarch64-unknown-linux-gnu` in the repository-wide config would therefore also be used
+# by a plain `cargo build` on an arm64 machine -- a native build, on a machine that has no
+# `aarch64-linux-gnu-gcc` and does not need one. Keeping the cross settings in this opt-in
+# file means the arm64 CI runner and an arm64 developer machine build untouched, while the
+# x86_64 -> aarch64 path is one `--config` away.
+#
+# # Prerequisites
+#
+# None of these can be installed by this repository, and a build that is missing one of
+# them must fail rather than silently produce an artifact of the wrong architecture:
+#
+#   * the target's standard library: `rustup target add aarch64-unknown-linux-gnu`
+#   * `gcc-aarch64-linux-gnu` and `g++-aarch64-linux-gnu`: the linker named below, and the
+#     compiler the `cc` crate selects for the C++ glue once `TARGET` differs from `HOST`
+#   * an arm64 sysroot holding the Fcitx5 development packages. Both addons are cdylibs
+#     that link against arm64 `libFcitx5Core.so.7` and `libFcitx5Utils.so.2`; no x86_64
+#     installation can supply them, so `cargo build --target aarch64-unknown-linux-gnu`
+#     alone cannot produce a loadable addon. On Debian/Ubuntu the packages are unpacked
+#     into a directory (`dpkg --add-architecture arm64` plus `apt-get download` and
+#     `dpkg-deb -x`), and the build is pointed at it with `PKG_CONFIG_ALLOW_CROSS=1`,
+#     `PKG_CONFIG_SYSROOT_DIR` and `PKG_CONFIG_LIBDIR` -- without the last two, pkg-config
+#     reports the x86_64 include and library paths and the link fails with undefined
+#     `fcitx::` symbols.
+#
+# # Executing the cross-built binaries
+#
+# The runner below lets `cargo test` / `cargo nextest` / `cargo run` execute an aarch64
+# test binary on an x86_64 host; without it they report "exec format error" rather than a
+# test result. It also needs the emulator (`qemu-user-static`) and an arm64 root at
+# `/usr/aarch64-linux-gnu` to resolve the dynamic loader. The arm64 CI job does not use it:
+# it builds and tests on a native arm64 runner, which is why that job is the one the
+# delivery matrix cites as evidence.
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+runner = ["qemu-aarch64-static", "-L", "/usr/aarch64-linux-gnu"]

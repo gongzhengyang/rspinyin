@@ -32,11 +32,32 @@
 //! hundred nanoseconds against a budget stated in milliseconds. Switched off, every
 //! entry point returns before it reads the clock, so the configuration's switch is
 //! free rather than merely cheap.
+//!
+//! # The host thread's path
+//!
+//! A key press crosses four points on its way out of the plugin: the callback the host
+//! calls, the session step that turns the key into an effect, the frame that step
+//! produced, and the hand-off of that frame to the UI thread. The path is sampled at
+//! both ends, because the budget is stated for the whole of it while a regression has
+//! to be attributed to a part: [`Metric::EventLoopKey`] spans the callback from its
+//! entry to the point where the post has returned, and [`Metric::PostUi`] spans the
+//! post itself. The step in the middle is [`Metric::Decode`], stamped by the caller
+//! that runs the state machine: the frame is built inside that step, so the decode and
+//! the frame it produces are one segment rather than two, and nothing can be placed
+//! between them because the code between them may not depend on this crate.
+//!
+//! Taking a sample never does the work it measures. [`Probes::begin`] reads the clock
+//! once, the [`Stamp`] it answers with adds one to a bucket when its scope ends, and that
+//! is the whole of what a callback body has to do to be measured: no allocation, no lock,
+//! no formatting, no file, no syscall. Everything a reader wants -- the percentiles, the
+//! verdict, the text of a report -- is produced when the snapshot is taken, which happens
+//! off the key path. Switched off, both halves return before they touch the clock.
 
 mod counters;
 mod histogram;
 mod metric;
 mod snapshot;
+mod stamp;
 
 #[cfg(test)]
 mod tests;
@@ -45,6 +66,7 @@ pub use self::counters::{COUNTER_COUNT, Counter};
 pub use self::histogram::{BUCKETS, HistSnapshot, Histogram, Percentile, TOP_US};
 pub use self::metric::{METRIC_COUNT, Metric, Unit};
 pub use self::snapshot::{Metrics, ProbeSnapshot, SNAPSHOT_FILE_NAME, SNAPSHOT_HEADER};
+pub use self::stamp::Stamp;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -101,6 +123,8 @@ pub struct Probes {
     pub wakeup: Histogram,
     /// One `on_key_event`, decode and posting included.
     pub event_loop_key: Histogram,
+    /// One command handed to the UI thread, from the host thread's side.
+    pub post_ui: Histogram,
     counters: [AtomicU64; COUNTER_COUNT],
     sessions: AtomicU64,
     keys: AtomicU64,
@@ -120,6 +144,7 @@ impl Probes {
             first_key_to_visible: Histogram::new(),
             wakeup: Histogram::new(),
             event_loop_key: Histogram::new(),
+            post_ui: Histogram::new(),
             counters: [const { AtomicU64::new(0) }; COUNTER_COUNT],
             sessions: AtomicU64::new(0),
             keys: AtomicU64::new(0),
@@ -235,6 +260,7 @@ impl Probes {
                 first_key_to_visible: self.first_key_to_visible.snapshot(),
                 wakeup: self.wakeup.snapshot(),
                 event_loop_key: self.event_loop_key.snapshot(),
+                post_ui: self.post_ui.snapshot(),
             },
             counters,
         }

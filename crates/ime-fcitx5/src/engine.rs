@@ -20,8 +20,10 @@
 //!
 //! # Layout
 //!
-//! * The routing table itself — [`translate_key`], [`claims_key`], [`KeyBindings`] and
-//!   the keysym and modifier constants they read — is this file.
+//! * The routing table itself — [`translate_key`], [`claims_key`] and the keysym and
+//!   modifier constants they read — is this file. The bindings it branches on
+//!   ([`KeyBindings`], [`FlipSet`], [`HighlightSet`]) belong to `ime-config` and are
+//!   re-exported here, so the table and the configuration document cannot drift apart.
 //! * [`context`] is the layered bus the table is read through: which layer of the plugin
 //!   owns a key, and whether the plugin may keep it.
 //! * [`modifier`] is the check that the host's modifier bits are the ones this build was
@@ -34,25 +36,38 @@
 //!
 //! # Configuration
 //!
-//! [`KeyBindings`] is this layer's projection of the `[keys]` section: the three settings
-//! the routing table reads, with the defaults the shipped `config/default.toml` declares.
-//! [`router::RoutingConfig`] is the rest of what the routing layer acts on. Both are
-//! host-layer types rather than contract types — `ime-config` owns the file format, the
-//! key-name whitelist and the validation — so a change to the configuration schema lands
-//! there and is converted here.
+//! [`KeyBindings`] is the `[keys]` section as the routing table reads it: the settings
+//! the table branches on, projected from the document by `ime_config::keymap` and adopted
+//! whole when the configuration is reloaded. The type is the configuration layer's rather
+//! than one of this crate's, so the file format, the key-name whitelist and the validation
+//! stay in one place and this table follows them; [`router::RoutingConfig`] is the rest of
+//! what the routing layer acts on, projected from the document by
+//! [`router::RoutingConfig::from_config`].
 
 use ime_types::KeyAction;
 
 use crate::ffi::FcitxKeyEvent;
 
+pub mod arbiter;
 pub mod context;
 pub mod host;
 pub mod modifier;
 pub mod router;
+pub mod sequence;
 
+pub use arbiter::{Executability, arbitrate, arbitrate_sequence, executability, is_mode_chord};
 pub use context::{Consumed, Dispatcher, KeyContext, KeyEvent, Overlay, SessionView};
-pub use modifier::{MODIFIER_MASK_MISMATCH_CODE, check_modifier_mask};
+pub use ime_config::DigitZero;
+pub use ime_config::keymap::{FlipSet, HighlightSet, KeyBindings};
+pub use modifier::{
+    HOLD_THRESHOLD_MS, HoldOutcome, MODIFIER_MASK_MISMATCH_CODE, ModifierHold, ModifierKey,
+    check_modifier_mask,
+};
 pub use router::{KeyRouter, RoutingConfig};
+pub use sequence::{
+    KeySequence, MAX_SEQUENCE_STROKES, SEQUENCE_CONFLICT_CODE, SEQUENCE_TIMEOUT_MS,
+    SEQUENCE_TOO_LONG_CODE, SequenceDecision, SequencePrefix, SequenceState, SequenceTable,
+};
 
 #[cfg(test)]
 mod tests;
@@ -135,77 +150,21 @@ const KEY_UP: u32 = 0xff52;
 const KEY_RIGHT: u32 = 0xff53;
 /// `FcitxKey_Down`.
 const KEY_DOWN: u32 = 0xff54;
+/// `FcitxKey_Page_Up`, which pages backwards when `[keys] flip_keys` names it.
+const KEY_PAGE_UP: u32 = 0xff55;
+/// `FcitxKey_Page_Down`, which pages forwards when `[keys] flip_keys` names it.
+const KEY_PAGE_DOWN: u32 = 0xff56;
 /// `FcitxKey_Shift_L`.
 const KEY_SHIFT_L: u32 = 0xffe1;
 /// `FcitxKey_Shift_R`.
 const KEY_SHIFT_R: u32 = 0xffe2;
 
-/// What the `0` key does while a composition is active (`[keys] digit_zero`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DigitZero {
-    /// `"passthrough"`, the default: `0` is a digit the application receives.
-    Passthrough,
-    /// `"flip"`: `0` pages the candidate list forward, like the other page keys.
-    Flip,
-}
-
-/// The keys that can page the candidate list (`[keys] flip_keys`).
-///
-/// A set rather than a list: the routing table asks about one key at a time, and the
-/// configuration's whitelist offers exactly these four names.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FlipKeys {
-    /// Whether `-` pages backwards.
-    pub minus: bool,
-    /// Whether `=` pages forwards.
-    pub equal: bool,
-    /// Whether `Up` pages backwards.
-    pub up: bool,
-    /// Whether `Down` pages forwards.
-    pub down: bool,
-}
-
-impl FlipKeys {
-    /// The set the shipped `config/default.toml` declares: all four keys.
-    pub const fn all() -> Self {
-        Self {
-            minus: true,
-            equal: true,
-            up: true,
-            down: true,
-        }
-    }
-}
-
-impl Default for FlipKeys {
-    fn default() -> Self {
-        Self::all()
-    }
-}
-
-/// The `[keys]` settings the routing table reads.
-///
-/// The defaults are the ones the shipped `config/default.toml` declares, so a caller that
-/// has no configuration yet routes keys exactly as a fresh installation would.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct KeyBindings {
-    /// What `0` does while a composition is active.
-    pub digit_zero: DigitZero,
-    /// Whether `Enter` commits the raw input instead of the highlighted candidate.
-    pub enter_commit_raw: bool,
-    /// The keys that page the candidate list.
-    pub flip_keys: FlipKeys,
-}
-
-impl Default for KeyBindings {
-    fn default() -> Self {
-        Self {
-            digit_zero: DigitZero::Passthrough,
-            enter_commit_raw: false,
-            flip_keys: FlipKeys::all(),
-        }
-    }
-}
+// The binding table and the two flag sets it is built from — [`KeyBindings`], [`FlipSet`]
+// and [`HighlightSet`] — are re-exported above rather than declared here: they are the
+// `[keys]` section as `ime-config` projects it, and a second declaration of the same shape
+// would be a table the configuration could not reach. [`DigitZero`] travels with them for
+// the same reason: it is one of the settings the table reads, so it belongs to the layer
+// that parses the spelling the document uses.
 
 /// Translates one host key event into the action the session should take.
 ///
@@ -224,10 +183,10 @@ impl Default for KeyBindings {
 ///
 /// # Panics
 ///
-/// Never. The table and the three lookups it delegates to read only the two integers in
-/// `event` and the three fields of `keys`: no indexing, no arithmetic that can overflow,
-/// no allocation. The guarantee matters because the caller is an FFI entry point, which
-/// must not unwind into C++.
+/// Never. The table and the lookups it delegates to read only the two integers in `event`
+/// and the four settings of `keys`: no indexing, no arithmetic that can overflow, no
+/// allocation. The guarantee matters because the caller is an FFI entry point, which must
+/// not unwind into C++.
 ///
 /// # Examples
 ///
@@ -259,7 +218,7 @@ pub fn translate_key(event: &FcitxKeyEvent, keys: &KeyBindings) -> KeyAction {
     // The rows that tolerate a held Shift: a letter, because Shift is how its uppercase
     // form is typed, and Tab, where Shift reverses the direction.
     if (state & NON_SHIFT_MODIFIERS) == 0 {
-        if let Some(action) = shift_tolerant_action(sym, state) {
+        if let Some(action) = shift_tolerant_action(sym, state, keys) {
             return action;
         }
     }
@@ -296,35 +255,49 @@ fn chord_action(sym: u32, state: u32) -> Option<KeyAction> {
     None
 }
 
-/// The rows that tolerate a held Shift: a letter, and Tab with its reversed direction.
+/// The rows that tolerate a held Shift: a letter, and the Tab shapes.
 ///
-/// Returns `None` when the key is neither, so the caller can go on with the rows that
-/// require a bare press.
-fn shift_tolerant_action(sym: u32, state: u32) -> Option<KeyAction> {
+/// Tab is the one key whose held Shift changes its meaning rather than blocking it, and the
+/// configuration names its two shapes apart (`keys.highlight_keys`): a document that binds
+/// only one of them leaves the other to the application. Returns `None` when the key is
+/// neither, so the caller can go on with the rows that require a bare press.
+fn shift_tolerant_action(sym: u32, state: u32, keys: &KeyBindings) -> Option<KeyAction> {
     if (KEY_A..=KEY_Z).contains(&sym) {
         // The range is ASCII, so the low byte is the character.
         return Some(KeyAction::InputChar(char::from(sym as u8)));
     }
-    if sym == KEY_TAB && (state & SHIFT) == 0 {
-        return Some(KeyAction::MoveHighlight(1));
+    if sym != KEY_TAB {
+        return None;
     }
-    if sym == KEY_TAB {
-        return Some(KeyAction::MoveHighlight(-1));
-    }
-    None
+    let (binding, delta) = if (state & SHIFT) == 0 {
+        (HighlightSet::TAB, 1)
+    } else {
+        (HighlightSet::SHIFT_TAB, -1)
+    };
+    keys.highlight_keys
+        .contains(binding)
+        .then_some(KeyAction::MoveHighlight(delta))
 }
 
 /// The rows that require a bare press: the digits, the page keys, the arrows and the
 /// three editing keys. Anything else stays with the host.
 fn bare_action(sym: u32, keys: &KeyBindings) -> KeyAction {
+    // The highlight rows come first. The projection drops a page binding from a key both
+    // lists name, so a key the configuration bound twice moves the highlight here -- which
+    // is the precedence `ime-config` states when it reports the collision.
+    if let Some(action) = bare_highlight(sym, keys.highlight_keys) {
+        return action;
+    }
     match sym {
         KEY_0 if keys.digit_zero == DigitZero::Flip => KeyAction::PageNext,
         KEY_0 => KeyAction::Ignore,
         KEY_1..=KEY_9 => KeyAction::SelectIndex((sym - KEY_0) as u8),
-        KEY_MINUS if keys.flip_keys.minus => KeyAction::PagePrev,
-        KEY_EQUAL if keys.flip_keys.equal => KeyAction::PageNext,
-        KEY_UP if keys.flip_keys.up => KeyAction::PagePrev,
-        KEY_DOWN if keys.flip_keys.down => KeyAction::PageNext,
+        KEY_MINUS if keys.flip_keys.contains(FlipSet::MINUS) => KeyAction::PagePrev,
+        KEY_EQUAL if keys.flip_keys.contains(FlipSet::EQUAL) => KeyAction::PageNext,
+        KEY_UP if keys.flip_keys.contains(FlipSet::UP) => KeyAction::PagePrev,
+        KEY_DOWN if keys.flip_keys.contains(FlipSet::DOWN) => KeyAction::PageNext,
+        KEY_PAGE_UP if keys.flip_keys.contains(FlipSet::PAGE_UP) => KeyAction::PagePrev,
+        KEY_PAGE_DOWN if keys.flip_keys.contains(FlipSet::PAGE_DOWN) => KeyAction::PageNext,
         KEY_LEFT => KeyAction::MoveCaret(-1),
         KEY_RIGHT => KeyAction::MoveCaret(1),
         KEY_RETURN if keys.enter_commit_raw => KeyAction::CommitRaw,
@@ -333,6 +306,23 @@ fn bare_action(sym: u32, keys: &KeyBindings) -> KeyAction {
         KEY_BACKSPACE => KeyAction::Backspace,
         _ => KeyAction::Ignore,
     }
+}
+
+/// The row a `keys.highlight_keys` binding names, or `None` when the key carries none.
+///
+/// The four arrows are shared with the page and the caret rows: a key the configuration put
+/// in `highlight_keys` moves the highlight, and the row below it in [`bare_action`] is what
+/// answers when the configuration did not.
+fn bare_highlight(sym: u32, set: HighlightSet) -> Option<KeyAction> {
+    let (binding, delta) = match sym {
+        KEY_UP => (HighlightSet::UP, -1),
+        KEY_DOWN => (HighlightSet::DOWN, 1),
+        KEY_LEFT => (HighlightSet::LEFT, -1),
+        KEY_RIGHT => (HighlightSet::RIGHT, 1),
+        _ => return None,
+    };
+    set.contains(binding)
+        .then_some(KeyAction::MoveHighlight(delta))
 }
 
 /// Whether the routing table claims `action`, i.e. whether the key it came from must be

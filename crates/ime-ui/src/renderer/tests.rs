@@ -15,7 +15,7 @@ use slint::{ComponentHandle as _, PhysicalSize};
 
 use super::mock::{MockState, MockSurface, on_own_thread};
 use super::raster::{Argb8888Pixel, BYTES_PER_PIXEL, union_pair, union_rect};
-use super::{FrameState, RenderOutcome, SlintWindowAdapter, copy_bounds, copy_frame};
+use super::{FrameState, RenderOutcome, SlintWindowAdapter, copy_bounds, copy_frame, region_bytes};
 use crate::slint_platform::RspinyinPlatform;
 
 /// The scene the pixel assertions are made on.
@@ -555,6 +555,95 @@ fn test_copy_frame_matches_the_per_rectangle_copy() {
 }
 
 #[test]
+fn test_copy_frame_merges_overlapping_damage_into_one_region() {
+    // The steady state the merge exists for: three rectangles of one frame's damage, all of
+    // them overlapping the rectangle the surface is still showing. One copy covers their
+    // bounding box, so the number of rectangles the damage arrived in does not multiply the
+    // memory traffic -- which is what the per-rectangle form charged for the overlap.
+    let (width_px, height_px) = (64u32, 32u32);
+    let stride = width_px as usize * BYTES_PER_PIXEL;
+    let mut state = patterned_state(width_px, height_px);
+    let damage = [
+        RectI {
+            x: 8,
+            y: 4,
+            w: 16,
+            h: 12,
+        },
+        RectI {
+            x: 12,
+            y: 8,
+            w: 16,
+            h: 12,
+        },
+        RectI {
+            x: 16,
+            y: 6,
+            w: 8,
+            h: 8,
+        },
+    ];
+    let shown = RectI {
+        x: 10,
+        y: 5,
+        w: 20,
+        h: 16,
+    };
+    let all: Vec<RectI> = damage.iter().copied().chain([shown]).collect();
+    state.pending = damage.to_vec();
+    state.shown = vec![shown];
+    // The box of the four rectangles, worked out by hand rather than by asking the code under
+    // test what it produced.
+    let bounds = RectI {
+        x: 8,
+        y: 4,
+        w: 22,
+        h: 17,
+    };
+    let mut destination = vec![INITIAL_FILL; stride * height_px as usize];
+    let copied = copy_frame(&state, &mut destination, stride, width_px, height_px)
+        .expect("the merged copy covers the bounding box of the four rectangles");
+    assert_eq!(
+        copied,
+        Some(bounds),
+        "three overlapping rectangles and the one on screen cost a single copy"
+    );
+    for rect in &all {
+        let right = rect.x + rect.w as i32 - 1;
+        let bottom = rect.y + rect.h as i32 - 1;
+        assert!(
+            inside(bounds, rect.x, rect.y) && inside(bounds, right, bottom),
+            "{rect:?} is not inside the copy region {bounds:?}"
+        );
+    }
+    // What the frame pays is the box, not the sum of the four rectangles: that is the merge,
+    // and it is why a frame's copy cost does not grow with the number of rectangles its damage
+    // is reported as.
+    let separate: u64 = all.iter().map(|rect| region_bytes(*rect)).sum();
+    assert!(
+        region_bytes(bounds) < separate,
+        "the merged copy writes {} bytes where the per-rectangle form wrote {separate}",
+        region_bytes(bounds)
+    );
+    // And the box is written in full, so what the surface holds afterwards is the scratch's
+    // pixel everywhere the copy covered -- the property that makes a superset safe to copy.
+    let mut written = 0usize;
+    for y in bounds.y..bounds.y + bounds.h as i32 {
+        for x in bounds.x..bounds.x + bounds.w as i32 {
+            let at = y as usize * stride + x as usize * BYTES_PER_PIXEL;
+            if destination[at..at + BYTES_PER_PIXEL] != [INITIAL_FILL; BYTES_PER_PIXEL] {
+                written += 1;
+            }
+        }
+    }
+    assert_eq!(
+        written,
+        bounds.w as usize * bounds.h as usize,
+        "every pixel of the bounding box is written, which is the price the merge pays"
+    );
+}
+
+#[test]
 fn test_copy_frame_skips_an_empty_region_and_refuses_a_short_buffer() {
     let (width_px, height_px) = (32u32, 16u32);
     let stride = width_px as usize * BYTES_PER_PIXEL;
@@ -631,14 +720,23 @@ fn test_steady_state_keystroke_copies_the_damage_once() {
     );
     // One copy over the union of both lists, reporting this frame's own damage and nothing
     // else: the per-rectangle form charged two copies for the same two lists.
+    let mut both = previous.clone();
+    both.extend_from_slice(&reported);
+    let copy_region = union_rect(&both);
     assert_eq!(
         outcome,
         RenderOutcome::Rendered {
             bounding: union_rect(&reported),
             rectangles: reported.len() as u32,
             copies: 1,
+            copy_bytes: region_bytes(copy_region),
         },
         "the frame reports its own damage and pays one copy for both lists"
+    );
+    assert!(
+        copy_region != union_rect(&reported),
+        "the copy covers more than the damage the compositor is told about, which is what \
+         makes the byte count a merged one: {copy_region:?} against {reported:?}"
     );
 }
 
