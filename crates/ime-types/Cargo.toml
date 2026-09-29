@@ -1,0 +1,21 @@
+[package]
+name = "ime-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "rspinyin frozen contract crate: error model, IDs, and cross-boundary protocol types (no internal dependencies, safe Rust only)"
+
+[dependencies]
+thiserror.workspace = true                                        # ImeError / DictError 派生
+bitflags.workspace = true                                         # DecodeFlags 位标志
+serde = { workspace = true, optional = true }                     # 契约类型的序列化（诊断/持久化）
+
+[features]
+default = []
+serde = ["dep:serde"]                                             # 供 ime-config / ime-diag 按需开启
+
+[lints]
+workspace = true

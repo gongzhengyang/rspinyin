@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "source": "docs/dev/features.md 0.5.3",
+  "notes": [
+    "Machine-readable mirror of the authoritative budget table in docs/dev/features.md section 0.5.3.",
+    "Every value here is cross-checked against that table by `xtask budget --validate`; a mismatch fails the gate.",
+    "Units: latency_ms = milliseconds, memory_mb = mebibytes of RSS, cpu_pct = percent of one core, size_mb = mebibytes, *_count = occurrences, net_sockets = process-external sockets."
+  ],
+  "latency_ms": {
+    "key_to_present_p50": 4.0,
+    "key_to_present_p99": 16.0,
+    "key_to_present_p99_144hz": 12.0,
+    "decode_p99": 3.0,
+    "decode_p999": 8.0,
+    "raster_p99": 1.5,
+    "first_key_to_visible_p99": 8.0,
+    "addon_load": 120.0
+  },
+  "memory_mb": {
+    "ui_rss": 18.0,
+    "plugin_rss": 45.0,
+    "dict_mmap_rss": 25.0
+  },
+  "cpu_pct": {
+    "idle": 0.3,
+    "typing_10cps": 6.0,
+    "idle_redraw_count": 0,
+    "idle_poll_timer_count": 0
+  },
+  "size_mb": {
+    "so_stripped": 12.0,
+    "base_dict": 20.0
+  },
+  "robustness": {
+    "soak_hours": 8.0,
+    "rss_drift_mb": 2.0,
+    "pass_rate_pct": 100.0
+  },
+  "net_sockets": 0
+}

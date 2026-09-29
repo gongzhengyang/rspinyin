@@ -1,0 +1,48 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["rspinyin contributors"]
+repository = "https://github.com/rspinyin/rspinyin"
+description = "Offline-first Chinese pinyin input method for Linux (in-process Fcitx5 addon with a self-drawn candidate window)"
+
+[workspace.dependencies]
+# ── 内部 crate（依赖方向见 docs/dev/features.md 0.4 规则 1）──────────────
+ime-types = { path = "crates/ime-types" }
+ime-core = { path = "crates/ime-core" }
+ime-dict = { path = "crates/ime-dict" }
+ime-config = { path = "crates/ime-config" }
+ime-ui = { path = "crates/ime-ui" }
+ime-diag = { path = "crates/ime-diag" }
+
+# ── 契约层（ime-types 只允许依赖这三个）────────────────────────────────
+thiserror = "2"                                                        # 错误类型派生
+bitflags = "2"                                                         # DecodeFlags 位标志
+serde = { version = "1", features = ["derive"] }                       # 配置/词源清单序列化
+
+# ── 工程工具 ───────────────────────────────────────────────────────────
+anyhow = "1"                                                           # xtask / 脚本宿主
+clap = { version = "4", features = ["derive"] }                        # xtask 子命令
+serde_json = "1"                                                       # budgets.json 读写
+pkg-config = "0.3"                                                     # ime-fcitx5/build.rs 探测 Fcitx5
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+# 注意：不得设置 `panic = "abort"`。2.2.3 要求所有 `extern "C"` 边界用
+# `std::panic::catch_unwind` 兜底（跨 FFI 边界 unwind 是 UB），而 abort 会让
+# catch_unwind 无法捕获。BUDGET-SIZE-01 的瘦身目标由 strip 达成，不依赖 abort。

@@ -1,0 +1,104 @@
+# rspinyin CI baseline.
+#
+# Four jobs, per the architecture spec's CI matrix:
+#
+#   quality   the four fixed commands of features.md 0.3, on a machine without
+#             the Fcitx5 development packages, so the pure-Rust path is proven
+#   host-abi  the C ABI link against a real libfcitx5core
+#   audit     the architecture rules of 0.4 and the licence obligations of
+#             ADR-0000, plus the self-tests of the audit scripts and the budget
+#             cross-check
+#   bench     budget regression; only on main and on PRs labelled `bench`
+#
+# The audit scripts are bash + python3 (shipped by the runner image), and
+# `just`/`cargo-nextest`/`cargo-public-api` come from prebuilt binaries so the
+# quality job stays inside its cold-cache budget.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  quality:
+    name: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Install just and cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Run the quality gates
+        run: just check
+
+  host-abi:
+    name: host-abi
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Fcitx5 development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libfcitx5core-dev
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Check the C ABI build
+        run: cargo check -p ime-fcitx5 --features fcitx5-host
+
+  audit:
+    name: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Install just and cargo-public-api
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-public-api
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Run the architecture and licence audits
+        run: just check-deps check-unsafe check-net check-slint check-dict
+      - name: Self-test the audit scripts
+        run: just check-self-tests
+      - name: Cross-check the performance budgets
+        run: just check-budget
+
+  bench:
+    name: bench
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'bench')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Run the benchmarks
+        run: just bench-quick

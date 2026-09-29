@@ -1,0 +1,5 @@
+/target
+*.dict.tmp
+user.redb*
+*.corrupt.*
+/logs

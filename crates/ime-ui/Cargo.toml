@@ -1,0 +1,16 @@
+[package]
+name = "ime-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "rspinyin view layer: Slint platform integration, software rasterizer, candidate window geometry and animation"
+
+[dependencies]
+ime-types.workspace = true
+ime-config.workspace = true
+
+[lints]
+workspace = true

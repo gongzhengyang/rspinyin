@@ -1,0 +1,15 @@
+[package]
+name = "ime-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "rspinyin configuration layer: TOML loading, validation, and hot reload"
+
+[dependencies]
+ime-types.workspace = true
+
+[lints]
+workspace = true
