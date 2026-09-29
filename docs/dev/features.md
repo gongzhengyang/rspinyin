@@ -1,6 +1,8 @@
 # rspinyin 现代拼音输入法开发任务矩阵
 
-> 文档版本: v1.2 ｜ 系统形态: Desktop GUI（Linux 桌面输入法：Fcitx5 进程内插件 + 自绘候选框渲染线程） ｜ 架构基线: Rust 2024 + Slint 1.x（**Royalty-free 2.0 许可**，软件光栅优先）+ Fcitx5 5.1 C++/C ABI ｜ 关联 ADR: [adr/0000-upstream-decisions.md](adr/0000-upstream-decisions.md)（Slint 许可 + 词库来源，已冻结，含实测证据）；`adr/0001-frozen-boundary-contracts.md` 待 TASK-1.01.03 建立 ｜ 最后同步 Commit: `<未初始化 git 仓库>` ｜ 维护约定: 代码演进后必须回写《设计假设清单》(第 1 节)、WBS 追溯矩阵 (5.1) 与任务实施状态；任何假设被推翻时，同步修正所有受影响的 NFR 与验收标准；**任何许可相关的变更必须新开 ADR 并回写 0.4、0.5.2、6.1、6.3 与相关任务卡**
+> 文档版本: v1.3 ｜ 系统形态: Desktop GUI（Linux 桌面输入法：Fcitx5 进程内插件 + 自绘候选框渲染线程） ｜ 架构基线: Rust 2024 + Slint 1.x（**Royalty-free 2.0 许可**，软件光栅优先）+ Fcitx5 5.1 C++/C ABI ｜ 关联 ADR: [adr/0000-upstream-decisions.md](adr/0000-upstream-decisions.md)（Slint 许可 + 词库来源，已冻结，含实测证据）；`adr/0001-frozen-boundary-contracts.md` 待 TASK-1.01.03 建立 ｜ 最后同步 Commit: `<未初始化 git 仓库>` ｜ 维护约定: 代码演进后必须回写《设计假设清单》(第 1 节)、WBS 追溯矩阵 (5.1) 与任务实施状态；任何假设被推翻时，同步修正所有受影响的 NFR 与验收标准；**任何许可相关的变更必须新开 ADR 并回写 0.4、0.5.2、6.1、6.3 与相关任务卡**
+
+**v1.3 变更摘要（2026-09-29）**：登记开发机（WSL2 + WSLg）的**实测验证边界**到 0.5.5，并把"哪些 `[实验室]`/`[视觉]` 验收项本机不可验证"清单化。**关键结论：R-01（Fcitx5 C++/Rust 混编）可在本机闭环，R-02（Wayland 四档）完全不可验证**——`wlr-protocols` 未安装且 WSLg 的合成器是 Weston（`ASM-13` 点名的"四档之外"），因此必须在 W2 前准备外部环境。连带修改：0.5.5（设备表 + 本机实测基线 + 不可验证清单 + 排期推论）、6.1 R-02、`TASK-1.04.07`。
 
 **v1.2 变更摘要（2026-09-29）**：完成词源的**定量测量**并把结论写回（详见 [ADR-0000](adr/0000-upstream-decisions.md) 的"实测证据"节）。三项修正：(1) 实测 luna-pinyin 转简后只覆盖 jieba 词频质量的 **6.1%**，**推翻**初稿"luna 覆盖度更好"的判断；(2) 多音字错误面实测为 **4.3% 词数 / 1.9% 加权**，**低于**初稿暗示的 8~18%；(3) 缓解手段由"手工 `polyphone.tsv` 为主"改为 **`L3b` 词频定向多键展开为主**（top 50k 词、`CAP=4`，+23% 键救回 58.1% 错误质量）。连带修改：`ASM-05`（新增 `WORDLIST` 段）、`TASK-1.03.01`（格式 v1 增段 + 展开算法）、`TASK-1.02.04`（新增 `lm_holdout.tsv`）、6.1.1（决策 B 补实测表）。**`BUDGET-SIZE-02`（20MB）保持不上调。**
 
@@ -192,16 +194,39 @@ rspinyin 不存在"联网降级"这一状态——**它从不联网**。行为�
 
 #### 0.5.5 首轮测试设备与合成器登记表
 
-每档至少 1 台真实环境，字段为 `环境名 / 合成器版本 / 显示服务器 / 缩放`，具体值在 TASK-1.07.02 建立测试矩阵后回填。
+每档至少 1 台真实环境，字段为 `环境名 / 合成器版本 / 显示服务器 / 缩放`。**本机（开发环境）实测基线已登记**（2026-09-29 验证），其余档位的值在 `TASK-1.07.02` 建立测试矩阵后回填。
 
-| 档位 | 环境名 | 合成器/桌面版本 | 显示服务器 | 缩放 | 登记状态 |
+| 档位 | 环境名 | 合成器/桌面版本 | 显示服务器 | 缩放 | 本机可验证？ |
 |---|---|---|---|---|---|
-| X11 主流 | 待登记 | picom / mutter-x11 | X11 | 1.0 | 待 TASK-1.07.02 回填 |
-| X11 高 DPI | 待登记 | kwin_x11 | X11 | 2.0 | 待 TASK-1.07.02 回填 |
-| Wayland/wlroots | 待登记 | Sway / Hyprland | Wayland | 1.0 | 待 TASK-1.07.02 回填 |
-| Wayland/wlroots 高 DPI | 待登记 | Hyprland | Wayland | 1.5 | 待 TASK-1.07.02 回填 |
-| Wayland/KWin | 待登记 | KDE Plasma | Wayland | 1.25 | 待 TASK-1.07.02 回填 |
-| Wayland/Mutter | 待登记 | GNOME | Wayland | 2.0 | 待 TASK-1.07.02 回填 |
+| **开发机（WSL2 + WSLg）** | `gong@WSL2` / Ubuntu 24.04 | **Weston**（WSLg 内置，属 `ASM-13` 的"四档之外"） | `DISPLAY=:0`（XWayland）+ `WAYLAND_DISPLAY=wayland-0` | 1.0 | — |
+| X11 主流 | 待登记（开发机可代跑 `DISPLAY=:0`） | 无独立合成器（WSLg 不提供 X11 合成器） | X11 | 1.0 | **是**（`TASK-1.04.06` 的 `[实验室]` 项可测） |
+| X11 高 DPI | 待登记 | kwin_x11 | X11 | 2.0 | 否（需外部环境） |
+| Wayland/wlroots | 待登记 | Sway / Hyprland | Wayland | 1.0 | **否**：`wlr-protocols` 未安装，且 WSLg 的 Weston 不实现 `zwlr_layer_shell_v1` |
+| Wayland/wlroots 高 DPI | 待登记 | Hyprland | Wayland | 1.5 | 否（同上） |
+| Wayland/KWin | 待登记 | KDE Plasma | Wayland | 1.25 | 否（无 KDE 会话） |
+| Wayland/Mutter | 待登记 | GNOME | Wayland | 2.0 | 否（无 GNOME 会话） |
+
+**本机实测基线（已验证，可直接用于 W0/W1）**：
+
+| 项 | 实测值 | 影响的假设 / 任务 |
+|---|---|---|
+| `Fcitx5Core` / `Fcitx5Utils` / `Fcitx5Config` | **5.1.7**，`pkg-config --modversion` 可查 | `ASM-14` 满足；`TASK-1.01.01` 的 `fcitx5-host` feature 可在本机验证 |
+| `/usr/include/Fcitx5/Core/fcitx/instance.h` | 存在 | `TASK-1.04.01` 的 C++ 胶水可编译 |
+| `fcitx5` 运行时 | **5.1.7**，`fcitx5 -r` 可启动，从 `/usr/lib/x86_64-linux-gnu/fcitx5` 加载 addon，创建 classicui | **`TASK-1.04.01` DoD#2（`rspinyin: addon loaded`）与 `TASK-1.04.02`/`1.04.03` 的 `[实验室]` 项可在本机实测**——**这是风险 R-01 的落点，可本地闭环** |
+| CJK 字体 | 98 个（`fc-list :lang=zh`） | `ASM-16` 满足 |
+| 工具链 | `rustc 1.98.0`、`cargo-nextest 0.9.143`、`just 1.21.0` | `TASK-1.01.02` 的 `just ci` 可在本机跑 |
+
+**不可验证项的处理纪律（强制）**：凡 `[实验室]` / `[视觉]` 标签且落在上表"否"行的验收标准，交付时**必须显式标注"本机不可验证"及其原因**，不得当作已通过。受影响的验收标准清单：
+
+| 任务 | 不可验证的验收项 | 需要的环境 |
+|---|---|---|
+| `TASK-1.04.07` | DoD#1（Sway/Hyprland T1 定位）、#2（KWin T2）、#3（GNOME T3/T4）、#4（四档下不夺焦点）、#6 的四个合成器结论 | 真实 Sway/Hyprland/KWin/GNOME 会话（另需 `wlr-protocols`）。**R-02 的 spike 无法在本机完成**，必须提前安排外部环境 |
+| `TASK-1.05.04` | 合成器模糊协商的 `[视觉]` 项（真透明 / 亚克力） | 支持应用侧模糊的合成器（KWin / Hyprland / picom）；本机仅能验证"降级为不透明底"路径 |
+| `TASK-1.05.07` | 依赖 layer-shell 绝对定位的 `[视觉]` 项（光标四角可见性） | wlroots 档会话 |
+| `TASK-1.02.07` / `TASK-1.08.03` | `[性能]` 项可在本机跑，但**数值不代表目标硬件**（WSL2 有虚拟化开销，CPU 频率受宿主影响） | 裸机 Linux；本机数值仅作**相对回归**基线 |
+| `TASK-1.04.05` | 多屏 + 混合 DPI 的 `[实验室]` 项 | 真实多显示器环境 |
+
+**推论（影响排期）**：**R-01 可本机闭环（好消息，最致命的风险可早验证）**，但 **R-02 必须在 W2 之前准备好外部 Wayland 环境**（真机、VM + 嵌套合成器、或 CI 里的 `cage`/`sway --headless`），否则 `TASK-1.04.07` 的验收会被环境卡住。`TASK-1.07.02` 建立测试矩阵时必须把这条作为首要交付。
 
 ### 0.6 开发顺序与波次
 
@@ -536,7 +561,9 @@ pub enum DismissReason { OutsideClick, Escape, ScrollUpEmpty }
 
 #### 2.2.3 插件 ↔ 宿主 C ABI（`crates/ime-fcitx5/src/ffi/`）
 
-ABI 版本冻结为 1。C++ 侧（`addon_glue.cpp` / `engine_glue.cpp` / `ui_glue.cpp`）继承 `fcitx::AddonInstance`、`fcitx::InputMethodEngineV2`、`fcitx::UserInterface`，把虚函数调用转发到下表函数指针；Rust 侧只暴露一个导出符号与一个 vtable 结构体。
+ABI 版本冻结为 1。C++ 侧（`addon_glue.cpp` / `engine_glue.cpp` / `ui_glue.cpp`）继承 `fcitx::AddonInstance`、`fcitx::InputMethodEngineV2`、`fcitx::UserInterface`，把虚函数调用转发到下表函数指针；Rust 侧暴露**两个**导出符号（`rspinyin_plugin_init` 与 `fcitx_addon_factory_instance`）与一个 vtable 结构体。
+
+> **v1.3 修正（2026-09-29，见 [ADR-0002](adr/0002-rust-exports-addon-factory.md)）**：原文为「Rust 侧只暴露一个导出符号」，并规定工厂符号由 C++ 的 `FCITX_ADDON_FACTORY` 宏生成。**该前提在 rustc 的 `cdylib` 下不成立**：rustc 生成的 version script 以 `local: *` 收尾且只列出 Rust 侧标记导出的符号，C++ 定义的符号必然不可见（`--export-dynamic`/`--export-dynamic-symbol`/`--dynamic-list` 与去掉 `strip` 均实测无效）。现改为：C++ 侧手工展开宏为私有名 `rspinyin_addon_factory`，由 Rust 侧 `#[unsafe(no_mangle)] pub extern "C" fn fcitx_addon_factory_instance()` 转发导出；工厂对象仍在 C++ 构造。
 
 ```rust
 // crates/ime-fcitx5/src/ffi/abi.rs
@@ -661,6 +688,30 @@ pub enum DictError {
     #[error("io: {0}")] Io(#[from] std::io::Error),
 }
 ```
+
+**FFI 层的诊断码（v1.3 新增登记）**：`TASK-1.04.01` 的 C ABI 边界在 `ime-fcitx5` 内直接产生一批诊断码。它们**不是** `ImeError` 的变体（跨 FFI 边界的失败无法用 Rust 错误类型表达），但同样遵循 `领域/动作/原因` 的稳定字符串约定，写入崩溃/诊断通道，且不得改写：
+
+| 诊断码 | 触发条件 | 行为 |
+|---|---|---|
+| `ffi/panic` | 任一 `extern "C"` 回调体内 panic | `catch_unwind` 兜底，返回 fallback 值（`false`/`0`/null），不向 C++ unwind |
+| `ffi/null-key-event` | `on_key_event` 收到空 `FcitxKeyEvent` 指针 | 返回 `false`（不吞键） |
+| `ffi/null-panel-snapshot` | `on_input_panel_update` 收到空快照指针 | 返回 `false`（本帧不绘制） |
+| `ffi/invalid-panel-snapshot` | 快照的指针/长度组合越界或非 UTF-8 | 返回 `false` |
+| `ffi/invalid-preedit` | `on_set_preedit` 的缓冲区非法 | 忽略该次调用 |
+| `ffi/host-not-linked` | 未启用 `fcitx5-host` 的纯 Rust 构建下请求工厂 | 返回 null，插件进入纯引擎模式 |
+
+注：`ffi/invalid-commit` 已在 2.2.3 的降级语义表中定义，此处不重复。
+
+**插件生命周期诊断码（v1.3 新增登记，来自 `TASK-1.04.02`）**：由 `crates/ime-fcitx5/src/addon.rs` 产生，同样遵循 `领域/动作/原因` 约定：
+
+| 诊断码 | 触发条件 | 行为 |
+|---|---|---|
+| `lifecycle/pending` | 某个初始化步骤的依赖任务尚未落地 | 打点后继续，不阻断（八步各自的集成点） |
+| `lifecycle/step-failed` | 某个非致命步骤返回错误 | 降级继续，`on_addon_init` 仍返回 `true` |
+| `lifecycle/init` | `on_addon_init` 结束 | 打印同步耗时与最终状态，用于 `BUDGET-LAT-05` 打点 |
+| `lifecycle/destroy` | `on_addon_destroy` 结束 | 打印耗时与 UI 线程停止方式 |
+| `ui/shutdown-timeout` | 投递 `Shutdown` 后 UI 线程 200ms 内未 join | 分离（detach）该线程，不阻塞宿主退出 |
+| `ui/not-ready` | 首个按键到达时 UI 线程尚未就绪 | 本帧只上屏、不显示候选框（可接受的启动期降级） |
 
 ### 2.3 跨边界状态机与跃迁条件
 
@@ -2427,7 +2478,7 @@ CP 总工期 = 29.0 人天（9 个任务）
     ```
     - 用 **`crate-type = ["staticlib", "cdylib"]`**：`staticlib` 供 C++ 侧链接，`cdylib` 直接产出 `.so`。实际上 `build.rs` 用 `cc` 编译 C++ 后由 `cargo` 链接成 `cdylib`，所以只需 `cdylib`；但保留 `staticlib` 便于单元测试与 `--all-targets` 构建。
     - **符号可见性**：`FCITX_ADDON_FACTORY` 宏展开出 `extern "C" fcitx::AddonInstance *fcitx_addon_factory_instance(fcitx::AddonManager *)`，必须**默认可见**（不能用 `-fvisibility=hidden` 隐藏）。在 `build.rs` 中为 C++ 编译加 `-fvisibility=default`，Rust 侧对导出符号加 `#[no_mangle] pub extern "C"`（Rust 的 `#[no_mangle]` 默认可见，但需确保 `crate-type = ["cdylib"]` 时不被 LTO 剔除：加 `#[used]` 或放在 `pub` 模块中并从 `lib.rs` 引用）。
-    - **Rust 侧不直接导出工厂符号**：工厂符号由 C++ 的 `FCITX_ADDON_FACTORY` 宏生成（它依赖 C++ 模板与 `fcitx::AddonManager` 的完整定义，Rust 侧无法生成）。Rust 侧只提供 `RspinyinVtable` 与 `rspinyin_register_vtable`。
+    - **工厂符号由 Rust 侧导出**（v1.3 修正，见 [ADR-0002](adr/0002-rust-exports-addon-factory.md)）：`FCITX_ADDON_FACTORY` 宏无法直接使用——rustc 为 `cdylib` 生成的 version script 以 `local: *` 收尾，C++ 定义的符号必然对 `dlsym` 不可见。改为 C++ 侧手工展开宏为私有名 `rspinyin_addon_factory`，Rust 侧 `#[unsafe(no_mangle)] pub extern "C" fn fcitx_addon_factory_instance()` 转发导出。工厂对象仍在 C++ 构造（完整类型可用），Rust 只转指针。`build.rs` 的 `-Wl,--undefined=fcitx_addon_factory_instance` 仍需保留（它负责把归档成员拉进镜像，与「导出」是两件事）。
   - **FFI 安全纪律（强制）**：
     1. 全部 `extern "C"` 函数体内第一行是 `let _guard = std::panic::catch_unwind(...)`（用 `TASK-1.08.02` 提供的 `#[no_panic_ffi]` 过程宏包装），panic 时返回 `false`/`0` 并写崩溃日志。**跨 FFI 边界的 panic 是未定义行为。**
     2. 全部裸指针参数在使用前用 `if ptr.is_null() { return false; }` 校验。
@@ -2480,16 +2531,16 @@ CP 总工期 = 29.0 人天（9 个任务）
     Configurable=True
 
     [Addon/Dependencies]
-    0=xcb
-    1=wayland
+    0=core:5.1.7
 
     [Addon/OptionalDependencies]
-    0=wayland
+    0=xcb
+    1=wayland
 
     [Dependencies]
     ```
     - `OnDemand=False`：随 fcitx5 启动即加载（因为需要常驻的 UI 线程与预创建的窗口，见 `BUDGET-LAT-04`）。
-    - `Dependencies` 中的 `xcb`/`wayland` 是 fcitx5 的前端 addon；二者取其一即可（`OptionalDependencies` 允许只装一个）。
+    - **`xcb`/`wayland` 必须放在 `[Addon/OptionalDependencies]`，不能放在 `[Addon/Dependencies]`**（v1.3 修正）。fcitx5 把 `[Addon/Dependencies]` 的每一项都当作**硬依赖**：把两个前端都列进去会让插件在**纯 X11 或纯 Wayland 系统上直接不加载**——实测 `fcitx5 -r --disable=xcb` 与 `--disable=wayland` 都会抑制本 addon。而 fcitx5 无法表达「二者取其一」，因此正确做法是只硬依赖 `core`，两个前端都设为可选（存在则先于本插件加载，不存在也不阻断）。这与 fcitx5 自带的跨平台 UI `classicui.conf` 的写法一致。
   - **输入法描述文件**（`packaging/fcitx5/rspinyin-im.conf`，安装到 `/usr/share/fcitx5/inputmethod/`）：
     ```ini
     [InputMethod]
@@ -2858,6 +2909,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 复杂度：高 | 预估工时：5.0 人天
   - 实施状态：`[ ] 待开始`
   - **风险提示**：本任务是 6.1 风险 R-02 的落点。**必须在 W2 第一天开始 spike**：在 Sway、Hyprland、KWin、GNOME 四个真实会话中分别验证 T1/T2/T3 的可用性，把结论写入 `docs/dev/spikes/wayland-tiers.md`。若 T3（全屏透明父 surface）在 Mutter 上因"全屏表面夺取焦点"或"合成器拒绝透明全屏"而不可行，则 GNOME 档直接落到 T4（回退 ClassicUI），并在 0.5.2 矩阵中把 Mutter 档的"候选框绝对定位"改为 `不支持`。
+  - **验证环境阻塞（W2 前必须解决）**：本机（WSL2 + WSLg）**无法验证本任务的任何一档**——`wlr-protocols` 未安装，且 WSLg 的合成器是 Weston（不实现 `zwlr_layer_shell_v1`）。因此 **R-02 的 spike 无法在本机闭环**，必须提前准备外部环境（真机 / VM + 嵌套合成器 / CI 中的 `cage` 或 `sway --headless`）。**这是 0.5.5 唯一一个"本机完全不可验证"的任务**，也是 `TASK-1.07.02` 建立测试矩阵时的首要交付。若 W2 时环境仍未就绪，本任务只能产出**未经真实合成器验证的代码**，其全部 `[实验室]` 验收项必须标注"本机不可验证"，不得标记 `[x]`。
 - **目标与职责**：实现 Wayland 的 T1/T2/T3 三档窗口后端与 T4 兜底探测，全部实现同一个 `trait SurfaceBackend`。完成的定义：在四个真实合成器会话中，至少 Sway/Hyprland（T1）与 KWin（T2）达到像素级定位，Mutter 达到 T3 或明确 T4 并回退。
 - **架构设计与数据流**：
   - 上游：`TASK-1.01.03` 的 `SurfaceBackend`、`TASK-1.04.05` 的 `Anchor`。下游：`TASK-1.05.01`。
@@ -4200,7 +4252,7 @@ Phase 3 的详细任务卡见 [`./docs/dev/features/phase-3.md`](features/phase-
 | 编号 | 风险 | 概率 | 影响 | 承担任务 | 对策与决策点 |
 |---|---|---|---|---|---|
 | `R-01` | **Fcitx5 插件工厂符号导出与 C++/Rust 混编不可行**：Rust `cdylib` 无法让 `FCITX_ADDON_FACTORY` 宏生成的 `fcitx_addon_factory_instance` 符号被 fcitx5 的 `dlopen` 正确识别（符号被 LTO 剔除、可见性被隐藏、或 C++ ABI 不兼容） | 中 | **致命**（架构根基） | `TASK-1.04.01` | **W1 第一天启动 spike（0.5 人天）**，产出 `docs/dev/spikes/abi-spike.md`。降级路径：(a) 若符号可见性问题 → `-fvisibility=default` + `#[used]` + 从 `lib.rs` 强引用；(b) 若 Rust `cdylib` 完全不可行 → 改为"C++ 主导 + Rust 静态库"（`.so` 由 C++ 编译驱动，Rust 侧 `staticlib` 链入），此路径开发量 +1.5 人天；(c) 若 C++ ABI 不兼容 → 用 `cxx` crate 的桥接层。**Go/No-Go 决策点：W1 末。** |
-| `R-02` | **Wayland 绝对定位在 GNOME/Mutter 上不可行**：T3（全屏父 surface + 子 surface）被 Mutter 拒绝或导致焦点被夺 | **高** | 高（GNOME 用户无自绘候选框） | `TASK-1.04.07` | W2 第一天启动 spike，产出 `docs/dev/spikes/wayland-tiers.md`。若 T3 不可行 → GNOME 档直接落 T4（回退 ClassicUI），并把 0.5.2 矩阵的 Mutter 档改为 `不支持：候选框由 Fcitx5 ClassicUI 绘制，配置项与功能完整可用，仅外观不同`。**这是一个"功能降级"而非"项目失败"——输入功能完整，仅视觉不同。** 若用户群以 GNOME 为主，则 Phase 3 的 `TASK-3.04.02`（`zwp_input_method_v2`）优先级需上调。 |
+| `R-02` | **Wayland 绝对定位在 GNOME/Mutter 上不可行**：T3（全屏父 surface + 子 surface）被 Mutter 拒绝或导致焦点被夺。**附带阻塞：本机（WSL2+WSLg/Weston）无法验证任何 Wayland 档**（0.5.5） | **高** | 高（GNOME 用户无自绘候选框） | `TASK-1.04.07`、`TASK-1.07.02` | **W2 前必须解决验证环境**（真机 / VM + 嵌套合成器 / CI 的 `cage` 或 `sway --headless`），否则 spike 无法闭环、`TASK-1.04.07` 的 `[实验室]` 项全部不可标记。W2 第一天启动 spike，产出 `docs/dev/spikes/wayland-tiers.md`。若 T3 不可行 → GNOME 档直接落 T4（回退 ClassicUI），并把 0.5.2 矩阵的 Mutter 档改为 `不支持：候选框由 Fcitx5 ClassicUI 绘制，配置项与功能完整可用，仅外观不同`。**这是一个"功能降级"而非"项目失败"——输入功能完整，仅视觉不同。** 若用户群以 GNOME 为主，则 Phase 3 的 `TASK-3.04.02`（`zwp_input_method_v2`）优先级需上调。 |
 | `R-03` | **光标坐标语义不明**：`fcitx::InputContext::cursorRect()` 在不同 fcitx5 前端（`xcb` / `wayland`）下的语义（client 相对 vs 屏幕绝对）不一致，导致候选框定位错误 | **高** | 中（定位偏差，非功能缺失） | `TASK-1.04.05` | W2 用 5 个应用 × 2 种显示服务器实测并记录到 `docs/dev/spikes/cursor-probe.md`；实现启发式判定（坐标落在屏内视为绝对）+ 三级降级。**兜底位置（屏幕下 1/3 居中）保证"位置不跟随但永远可见"。** |
 | `R-04` | ~~**Slint 的许可证选择**~~ **→ 已决策（[ADR-0000](adr/0000-upstream-decisions.md)）**：采用 **Royalty-free 2.0**（`LicenseRef-Slint-Royalty-free-2.0`），项目代码保持 `Apache-2.0 OR MIT`。残余风险降为两条义务的落地：`OB-1` 归属展示（输入法**无常驻界面、无"关于"对话框、无启动画面**，必须走"公开网页徽章"路径）、`OB-4` API 隔离（`ime-ui` 公共 API 不得导出 Slint 类型） | 低 | 中（法务风险，可控） | `TASK-1.06.03`、`TASK-1.01.02`、`TASK-2.03.03` | 见 6.1.1 的 `OB-1`~`OB-6` 合规清单。**两条硬性落地项**：(a) `TASK-1.06.03` 必须在 W4 前于 `README.md`/`README.zh.md` 放置 Slint 归属徽章；(b) `TASK-1.01.02` 必须建立 `scripts/check-slint-leak.sh` 并在 CI 强制 `OB-4`（已写入 0.4 规则 11）。**降级路径保留**：若 `OB-4` 在实践中不可满足（Slint 宏不可避免地把类型泄漏到公共 API），启用 `tiny-skia` 自绘（+8~12 人天），决策点 W3 前 |
 | `R-05` | **软件光栅在长候选 / 大尺寸下超预算**：`BUDGET-LAT-03`（1.5ms）在 720px 宽 × 5 行 × scale 2.0（= 1440×560 物理像素）时可能不达标，尤其含 28px 模糊半径的阴影 | 中 | 中（掉帧） | `TASK-1.05.03` | 已设计阴影缓存（尺寸不变时位块拷贝）+ `PartialRenderingCache` 脏区渲染。若仍超预算 → (a) 降低阴影模糊半径到 20px；(b) 限制可见行数为 3 行（超出滚动）；(c) Phase 3 启用 GPU 路径（`TASK-3.04.01`）。**降级优先级：先减行数，再降阴影，最后才动 GPU。** |

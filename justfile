@@ -64,6 +64,18 @@ check-dict:
 check-budget:
     cargo run --quiet -p xtask -- budget --validate
 
+# The packaged addon descriptor must advertise the workspace version; Fcitx5 reports the
+# descriptor's value, so drift ships a mislabelled plugin.
+check-versions:
+    cargo run --quiet -p xtask -- check-versions
+
+# Fuzz the decode engine. libFuzzer needs nightly, but the workspace pins a stable
+# toolchain for reproducible builds, so the invocation has to override it explicitly.
+#   just fuzz          the 60-second soak the acceptance criteria ask for
+#   just fuzz 600      a longer run
+fuzz seconds="60":
+    cargo +nightly fuzz run dag_build -- -max_total_time={{seconds}}
+
 # Self-tests of the five audit scripts: each one injects a violation, asserts a
 # non-zero exit, removes it and asserts a zero exit.
 check-self-tests:
@@ -95,4 +107,4 @@ bench-quick:
     esac
 
 # The full gate suite: quality commands plus every architecture and licence audit.
-ci: check check-deps check-unsafe check-net check-slint check-dict
+ci: check check-deps check-unsafe check-net check-slint check-dict check-budget check-versions

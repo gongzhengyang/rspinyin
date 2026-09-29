@@ -7,3 +7,5 @@
 //! store only through the trait objects defined in `ime-types`, which is what allows
 //! it to be tested deterministically against in-memory mocks with no filesystem,
 //! clock, or display server involved.
+
+pub mod segment;

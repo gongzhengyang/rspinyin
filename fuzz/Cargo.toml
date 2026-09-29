@@ -1,0 +1,29 @@
+[package]
+name = "rspinyin-fuzz"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "Fuzz targets for the rspinyin decode engine (nightly toolchain only)"
+
+# libFuzzer needs a nightly toolchain and its own profile, so this crate is excluded
+# from the main workspace (see `exclude = ["fuzz"]` in the root manifest). This empty
+# table keeps it a standalone workspace root.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ime-core = { path = "../crates/ime-core" }
+
+[[bin]]
+name = "dag_build"
+path = "fuzz_targets/dag_build.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

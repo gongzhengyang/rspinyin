@@ -10,6 +10,7 @@ description = "rspinyin core decoding engine: syllable segmentation, word lattic
 
 [dependencies]
 ime-types.workspace = true
+smallvec.workspace = true
 
 [lints]
 workspace = true

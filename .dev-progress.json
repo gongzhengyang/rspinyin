@@ -4,44 +4,356 @@
   "is_workspace": true,
   "wave_plan": "W0=1.01.01-03 | W1=1.02.01,1.03.01-03,1.04.01 | W2=1.02.02-07,1.03.04-07,1.04.02-05 | W3=1.04.06-07,1.05.01-08 | W4=1.06.01-03,1.07.01,1.08.01-03",
   "tasks": [
-    {"id": "TASK-001", "task_id": "TASK-1.01.01", "file": "./docs/dev/features.md", "title": "Cargo Workspace 骨架、依赖锁定与 Fcitx5 构建探测", "wave": "W0", "track": "C", "status": "PENDING"},
-    {"id": "TASK-002", "task_id": "TASK-1.01.02", "file": "./docs/dev/features.md", "title": "质量门禁、审计脚本与 CI 基线", "wave": "W0", "track": "C", "status": "PENDING"},
-    {"id": "TASK-003", "task_id": "TASK-1.01.03", "file": "./docs/dev/features.md", "title": "共享契约 crate：错误模型、ID、版本与 Feature 策略", "wave": "W0", "track": "C", "status": "PENDING"},
-    {"id": "TASK-004", "task_id": "TASK-1.02.01", "file": "./docs/dev/features.md", "title": "拼音音节表、切分 DAG 构建器与非法串保护", "wave": "W1", "track": "A", "status": "PENDING"},
-    {"id": "TASK-005", "task_id": "TASK-1.02.02", "file": "./docs/dev/features.md", "title": "输入缓冲与增量解析（Backspace/光标/清空语义）", "wave": "W2", "track": "A", "status": "PENDING"},
-    {"id": "TASK-006", "task_id": "TASK-1.02.03", "file": "./docs/dev/features.md", "title": "语言模型评分层与用户词频融合", "wave": "W2", "track": "A", "status": "PENDING"},
-    {"id": "TASK-007", "task_id": "TASK-1.02.04", "file": "./docs/dev/features.md", "title": "Viterbi 解码器与 Top-K 候选生成", "wave": "W2", "track": "A", "status": "PENDING"},
-    {"id": "TASK-008", "task_id": "TASK-1.02.05", "file": "./docs/dev/features.md", "title": "Preedit 生成与拼音切分高亮段", "wave": "W2", "track": "A", "status": "PENDING"},
-    {"id": "TASK-009", "task_id": "TASK-1.02.06", "file": "./docs/dev/features.md", "title": "非拼音输入直通与临时英文模式", "wave": "W2", "track": "A", "status": "PENDING"},
-    {"id": "TASK-010", "task_id": "TASK-1.02.07", "file": "./docs/dev/features.md", "title": "解码性能基准与预算断言", "wave": "W2", "track": "A", "status": "PENDING"},
-    {"id": "TASK-011", "task_id": "TASK-1.03.01", "file": "./docs/dev/features.md", "title": "词库二进制格式 v1 与 dictc 编译工具", "wave": "W1", "track": "A", "status": "PENDING"},
-    {"id": "TASK-012", "task_id": "TASK-1.03.02", "file": "./docs/dev/features.md", "title": "FST 索引构建与 mmap 只读加载", "wave": "W1", "track": "A", "status": "PENDING"},
-    {"id": "TASK-013", "task_id": "TASK-1.03.03", "file": "./docs/dev/features.md", "title": "候选条目表与字符串池零拷贝访问", "wave": "W1", "track": "A", "status": "PENDING"},
-    {"id": "TASK-014", "task_id": "TASK-1.03.04", "file": "./docs/dev/features.md", "title": "用户词频库（redb）与提交/降级策略", "wave": "W2", "track": "A", "status": "PENDING"},
-    {"id": "TASK-015", "task_id": "TASK-1.03.05", "file": "./docs/dev/features.md", "title": "词库/用户库损坏自愈与原子替换", "wave": "W2", "track": "A", "status": "PENDING"},
-    {"id": "TASK-016", "task_id": "TASK-1.03.06", "file": "./docs/dev/features.md", "title": "配置模型：TOML 加载、校验、热重载", "wave": "W2", "track": "A", "status": "PENDING"},
-    {"id": "TASK-017", "task_id": "TASK-1.03.07", "file": "./docs/dev/features.md", "title": "输入会话状态机与翻页/选择语义", "wave": "W2", "track": "A", "status": "PENDING"},
-    {"id": "TASK-018", "task_id": "TASK-1.04.01", "file": "./docs/dev/features.md", "title": "fcitx5-sys：C++ 胶水、C ABI 契约与工厂符号导出", "wave": "W1", "track": "B", "status": "PENDING"},
-    {"id": "TASK-019", "task_id": "TASK-1.04.02", "file": "./docs/dev/features.md", "title": "Addon 注册、生命周期与 rspinyin.conf", "wave": "W2", "track": "B", "status": "PENDING"},
-    {"id": "TASK-020", "task_id": "TASK-1.04.03", "file": "./docs/dev/features.md", "title": "自定义 UserInterface 接管与 ClassicUI 抑制", "wave": "W2", "track": "B", "status": "PENDING"},
-    {"id": "TASK-021", "task_id": "TASK-1.04.04", "file": "./docs/dev/features.md", "title": "按键事件路由与 Fcitx5 状态机协作", "wave": "W2", "track": "B", "status": "PENDING"},
-    {"id": "TASK-022", "task_id": "TASK-1.04.05", "file": "./docs/dev/features.md", "title": "光标坐标提取、多屏与缩放归一化", "wave": "W2", "track": "B", "status": "PENDING"},
-    {"id": "TASK-023", "task_id": "TASK-1.04.06", "file": "./docs/dev/features.md", "title": "X11 ARGB 透明窗口后端", "wave": "W3", "track": "C", "status": "PENDING"},
-    {"id": "TASK-024", "task_id": "TASK-1.04.07", "file": "./docs/dev/features.md", "title": "Wayland 四档窗口后端（layer-shell / popup / canvas / 兜底）", "wave": "W3", "track": "B", "status": "PENDING"},
-    {"id": "TASK-025", "task_id": "TASK-1.05.01", "file": "./docs/dev/features.md", "title": "自定义 Slint Platform 与软件光栅渲染器接入", "wave": "W3", "track": "B", "status": "PENDING"},
-    {"id": "TASK-026", "task_id": "TASK-1.05.02", "file": "./docs/dev/features.md", "title": "UI 线程模型与命令队列（跨线程唤醒）", "wave": "W3", "track": "B", "status": "PENDING"},
-    {"id": "TASK-027", "task_id": "TASK-1.05.03", "file": "./docs/dev/features.md", "title": "candidate.slint：候选框骨架与布局约束", "wave": "W3", "track": "B", "status": "PENDING"},
-    {"id": "TASK-028", "task_id": "TASK-1.05.04", "file": "./docs/dev/features.md", "title": "theme.slint：配色 Token、深浅色与亚克力材质", "wave": "W3", "track": "B", "status": "PENDING"},
-    {"id": "TASK-029", "task_id": "TASK-1.05.05", "file": "./docs/dev/features.md", "title": "候选网格、数字快捷键标签与首选项高亮", "wave": "W3", "track": "B", "status": "PENDING"},
-    {"id": "TASK-030", "task_id": "TASK-1.05.06", "file": "./docs/dev/features.md", "title": "鼠标交互：悬停、点击、滚轮翻页", "wave": "W3", "track": "B", "status": "PENDING"},
-    {"id": "TASK-031", "task_id": "TASK-1.05.07", "file": "./docs/dev/features.md", "title": "屏幕避让与几何计算（底部翻转/边缘夹取）", "wave": "W3", "track": "B", "status": "PENDING"},
-    {"id": "TASK-032", "task_id": "TASK-1.05.08", "file": "./docs/dev/features.md", "title": "出现/消失/选中过渡动效（Spring 积分器）", "wave": "W3", "track": "B", "status": "PENDING"},
-    {"id": "TASK-033", "task_id": "TASK-1.06.01", "file": "./docs/dev/features.md", "title": "用户数据目录与文件权限基线", "wave": "W4", "track": "C", "status": "PENDING"},
-    {"id": "TASK-034", "task_id": "TASK-1.06.02", "file": "./docs/dev/features.md", "title": "敏感输入上下文检测与学习抑制", "wave": "W4", "track": "C", "status": "PENDING"},
-    {"id": "TASK-035", "task_id": "TASK-1.06.03", "file": "./docs/dev/features.md", "title": "零网络外联断言与依赖/许可证审计", "wave": "W4", "track": "C", "status": "PENDING"},
-    {"id": "TASK-036", "task_id": "TASK-1.07.01", "file": "./docs/dev/features.md", "title": "Fcitx5 插件安装布局与一键安装脚本", "wave": "W4", "track": "C", "status": "PENDING"},
-    {"id": "TASK-037", "task_id": "TASK-1.08.01", "file": "./docs/dev/features.md", "title": "结构化日志、滚动与脱敏", "wave": "W4", "track": "C", "status": "PENDING"},
-    {"id": "TASK-038", "task_id": "TASK-1.08.02", "file": "./docs/dev/features.md", "title": "panic 钩子、崩溃回溯与 FFI 边界兜底", "wave": "W4", "track": "C", "status": "PENDING"},
-    {"id": "TASK-039", "task_id": "TASK-1.08.03", "file": "./docs/dev/features.md", "title": "帧耗时/解码延迟探针与预算看板", "wave": "W4", "track": "C", "status": "PENDING"}
+    {
+      "id": "TASK-001",
+      "task_id": "TASK-1.01.01",
+      "file": "./docs/dev/features.md",
+      "title": "Cargo Workspace 骨架、依赖锁定与 Fcitx5 构建探测",
+      "wave": "W0",
+      "track": "C",
+      "status": "READY_FOR_FINAL_GATE"
+    },
+    {
+      "id": "TASK-002",
+      "task_id": "TASK-1.01.02",
+      "file": "./docs/dev/features.md",
+      "title": "质量门禁、审计脚本与 CI 基线",
+      "wave": "W0",
+      "track": "C",
+      "status": "READY_FOR_FINAL_GATE"
+    },
+    {
+      "id": "TASK-003",
+      "task_id": "TASK-1.01.03",
+      "file": "./docs/dev/features.md",
+      "title": "共享契约 crate：错误模型、ID、版本与 Feature 策略",
+      "wave": "W0",
+      "track": "C",
+      "status": "READY_FOR_FINAL_GATE"
+    },
+    {
+      "id": "TASK-004",
+      "task_id": "TASK-1.02.01",
+      "file": "./docs/dev/features.md",
+      "title": "拼音音节表、切分 DAG 构建器与非法串保护",
+      "wave": "W1",
+      "track": "A",
+      "status": "READY_FOR_FINAL_GATE"
+    },
+    {
+      "id": "TASK-005",
+      "task_id": "TASK-1.02.02",
+      "file": "./docs/dev/features.md",
+      "title": "输入缓冲与增量解析（Backspace/光标/清空语义）",
+      "wave": "W2",
+      "track": "A",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-006",
+      "task_id": "TASK-1.02.03",
+      "file": "./docs/dev/features.md",
+      "title": "语言模型评分层与用户词频融合",
+      "wave": "W2",
+      "track": "A",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-007",
+      "task_id": "TASK-1.02.04",
+      "file": "./docs/dev/features.md",
+      "title": "Viterbi 解码器与 Top-K 候选生成",
+      "wave": "W2",
+      "track": "A",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-008",
+      "task_id": "TASK-1.02.05",
+      "file": "./docs/dev/features.md",
+      "title": "Preedit 生成与拼音切分高亮段",
+      "wave": "W2",
+      "track": "A",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-009",
+      "task_id": "TASK-1.02.06",
+      "file": "./docs/dev/features.md",
+      "title": "非拼音输入直通与临时英文模式",
+      "wave": "W2",
+      "track": "A",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-010",
+      "task_id": "TASK-1.02.07",
+      "file": "./docs/dev/features.md",
+      "title": "解码性能基准与预算断言",
+      "wave": "W2",
+      "track": "A",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-011",
+      "task_id": "TASK-1.03.01",
+      "file": "./docs/dev/features.md",
+      "title": "词库二进制格式 v1 与 dictc 编译工具",
+      "wave": "W1",
+      "track": "A",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-012",
+      "task_id": "TASK-1.03.02",
+      "file": "./docs/dev/features.md",
+      "title": "FST 索引构建与 mmap 只读加载",
+      "wave": "W1",
+      "track": "A",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-013",
+      "task_id": "TASK-1.03.03",
+      "file": "./docs/dev/features.md",
+      "title": "候选条目表与字符串池零拷贝访问",
+      "wave": "W1",
+      "track": "A",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-014",
+      "task_id": "TASK-1.03.04",
+      "file": "./docs/dev/features.md",
+      "title": "用户词频库（redb）与提交/降级策略",
+      "wave": "W2",
+      "track": "A",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-015",
+      "task_id": "TASK-1.03.05",
+      "file": "./docs/dev/features.md",
+      "title": "词库/用户库损坏自愈与原子替换",
+      "wave": "W2",
+      "track": "A",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-016",
+      "task_id": "TASK-1.03.06",
+      "file": "./docs/dev/features.md",
+      "title": "配置模型：TOML 加载、校验、热重载",
+      "wave": "W2",
+      "track": "A",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-017",
+      "task_id": "TASK-1.03.07",
+      "file": "./docs/dev/features.md",
+      "title": "输入会话状态机与翻页/选择语义",
+      "wave": "W2",
+      "track": "A",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-018",
+      "task_id": "TASK-1.04.01",
+      "file": "./docs/dev/features.md",
+      "title": "fcitx5-sys：C++ 胶水、C ABI 契约与工厂符号导出",
+      "wave": "W1",
+      "track": "B",
+      "status": "READY_FOR_FINAL_GATE"
+    },
+    {
+      "id": "TASK-019",
+      "task_id": "TASK-1.04.02",
+      "file": "./docs/dev/features.md",
+      "title": "Addon 注册、生命周期与 rspinyin.conf",
+      "wave": "W2",
+      "track": "B",
+      "status": "READY_FOR_FINAL_GATE"
+    },
+    {
+      "id": "TASK-020",
+      "task_id": "TASK-1.04.03",
+      "file": "./docs/dev/features.md",
+      "title": "自定义 UserInterface 接管与 ClassicUI 抑制",
+      "wave": "W2",
+      "track": "B",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-021",
+      "task_id": "TASK-1.04.04",
+      "file": "./docs/dev/features.md",
+      "title": "按键事件路由与 Fcitx5 状态机协作",
+      "wave": "W2",
+      "track": "B",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-022",
+      "task_id": "TASK-1.04.05",
+      "file": "./docs/dev/features.md",
+      "title": "光标坐标提取、多屏与缩放归一化",
+      "wave": "W2",
+      "track": "B",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-023",
+      "task_id": "TASK-1.04.06",
+      "file": "./docs/dev/features.md",
+      "title": "X11 ARGB 透明窗口后端",
+      "wave": "W3",
+      "track": "C",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-024",
+      "task_id": "TASK-1.04.07",
+      "file": "./docs/dev/features.md",
+      "title": "Wayland 四档窗口后端（layer-shell / popup / canvas / 兜底）",
+      "wave": "W3",
+      "track": "B",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-025",
+      "task_id": "TASK-1.05.01",
+      "file": "./docs/dev/features.md",
+      "title": "自定义 Slint Platform 与软件光栅渲染器接入",
+      "wave": "W3",
+      "track": "B",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-026",
+      "task_id": "TASK-1.05.02",
+      "file": "./docs/dev/features.md",
+      "title": "UI 线程模型与命令队列（跨线程唤醒）",
+      "wave": "W3",
+      "track": "B",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-027",
+      "task_id": "TASK-1.05.03",
+      "file": "./docs/dev/features.md",
+      "title": "candidate.slint：候选框骨架与布局约束",
+      "wave": "W3",
+      "track": "B",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-028",
+      "task_id": "TASK-1.05.04",
+      "file": "./docs/dev/features.md",
+      "title": "theme.slint：配色 Token、深浅色与亚克力材质",
+      "wave": "W3",
+      "track": "B",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-029",
+      "task_id": "TASK-1.05.05",
+      "file": "./docs/dev/features.md",
+      "title": "候选网格、数字快捷键标签与首选项高亮",
+      "wave": "W3",
+      "track": "B",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-030",
+      "task_id": "TASK-1.05.06",
+      "file": "./docs/dev/features.md",
+      "title": "鼠标交互：悬停、点击、滚轮翻页",
+      "wave": "W3",
+      "track": "B",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-031",
+      "task_id": "TASK-1.05.07",
+      "file": "./docs/dev/features.md",
+      "title": "屏幕避让与几何计算（底部翻转/边缘夹取）",
+      "wave": "W3",
+      "track": "B",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-032",
+      "task_id": "TASK-1.05.08",
+      "file": "./docs/dev/features.md",
+      "title": "出现/消失/选中过渡动效（Spring 积分器）",
+      "wave": "W3",
+      "track": "B",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-033",
+      "task_id": "TASK-1.06.01",
+      "file": "./docs/dev/features.md",
+      "title": "用户数据目录与文件权限基线",
+      "wave": "W4",
+      "track": "C",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-034",
+      "task_id": "TASK-1.06.02",
+      "file": "./docs/dev/features.md",
+      "title": "敏感输入上下文检测与学习抑制",
+      "wave": "W4",
+      "track": "C",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-035",
+      "task_id": "TASK-1.06.03",
+      "file": "./docs/dev/features.md",
+      "title": "零网络外联断言与依赖/许可证审计",
+      "wave": "W4",
+      "track": "C",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-036",
+      "task_id": "TASK-1.07.01",
+      "file": "./docs/dev/features.md",
+      "title": "Fcitx5 插件安装布局与一键安装脚本",
+      "wave": "W4",
+      "track": "C",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-037",
+      "task_id": "TASK-1.08.01",
+      "file": "./docs/dev/features.md",
+      "title": "结构化日志、滚动与脱敏",
+      "wave": "W4",
+      "track": "C",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-038",
+      "task_id": "TASK-1.08.02",
+      "file": "./docs/dev/features.md",
+      "title": "panic 钩子、崩溃回溯与 FFI 边界兜底",
+      "wave": "W4",
+      "track": "C",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-039",
+      "task_id": "TASK-1.08.03",
+      "file": "./docs/dev/features.md",
+      "title": "帧耗时/解码延迟探针与预算看板",
+      "wave": "W4",
+      "track": "C",
+      "status": "PENDING"
+    }
   ]
 }

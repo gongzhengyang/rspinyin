@@ -10,7 +10,11 @@ description = "rspinyin host integration layer: C ABI glue for the Fcitx5 Addon 
 build = "build.rs"
 
 [lib]
-# cdylib：被 fcitx5 dlopen；rlib：供集成测试与 doctest 链接
+# Artifact name is `rspinyin`, so the cdylib is `librspinyin.so` — the name Fcitx5
+# loads and the name the acceptance criteria assert on. The package keeps its
+# `ime-fcitx5` identity for the workspace dependency graph.
+name = "rspinyin"
+# cdylib: dlopen'd by fcitx5. rlib: lets integration tests link the Rust side.
 crate-type = ["cdylib", "rlib"]
 
 [features]
@@ -29,6 +33,7 @@ ime-diag.workspace = true
 
 [build-dependencies]
 pkg-config.workspace = true
+cc.workspace = true
 
 [lints]
 workspace = true

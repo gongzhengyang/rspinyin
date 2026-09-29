@@ -1,0 +1,10 @@
+# Clippy configuration.
+#
+# AGENTS.md section 3.2 bans unwrap/expect/panic in *non-test* code, and the
+# workspace lints in Cargo.toml enforce exactly that. These switches keep the
+# three lints pointed at production code, so test bodies can use panic! and
+# unwrap() naturally instead of contorting themselves to dodge the lint.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

@@ -11,6 +11,8 @@ description = "rspinyin dictionary layer: binary format, FST index, zero-copy mm
 [dependencies]
 ime-types.workspace = true
 ime-core.workspace = true
+fst.workspace = true
+crc32fast.workspace = true
 
 [lints]
 workspace = true
