@@ -13,6 +13,21 @@ ime-types.workspace = true
 ime-core.workspace = true
 fst.workspace = true
 crc32fast.workspace = true
+memmap2.workspace = true
+redb.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+# criterion supplies its own harness, so the default libtest harness must be turned off
+# per target; an auto-discovered bench would otherwise fail to link two `main`s.
+[[bench]]
+name = "dict"
+harness = false
+
+[[bench]]
+name = "userdb"
+harness = false
 
 [lints]
 workspace = true

@@ -11,12 +11,15 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+thiserror.workspace = true                                            # testd 的 TestError / SandboxError 派生
 clap.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 toml.workspace = true
 sha2.workspace = true
 fst.workspace = true
+smallvec.workspace = true                                             # testd 的引擎驱动器：音节网格回写用 SyllableDag::best_segmentation_hint 的入参类型
+x11rb.workspace = true                                                # testd 的 XTEST 键鼠注入与窗口几何读取
 crc32fast.workspace = true
 ime-types.workspace = true
 ime-core.workspace = true

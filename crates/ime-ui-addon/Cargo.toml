@@ -1,0 +1,40 @@
+[package]
+name = "ime-ui-addon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "rspinyin user-interface addon: the Fcitx5 UserInterface glue and the self-drawn candidate window's host side"
+build = "build.rs"
+
+[lib]
+# Artifact name is `rspinyin_ui`, so the cdylib is `librspinyin-ui.so` — the second
+# addon ADR-0003 requires. Fcitx5 picks the active user interface from the addons it
+# discovered with `Category=UI`, and an addon belongs to exactly one category, so the
+# engine addon cannot also be the UI. The package keeps its `ime-ui-addon` identity for
+# the workspace dependency graph.
+name = "rspinyin_ui"
+# cdylib: dlopen'd by fcitx5 as its own addon, independently of librspinyin.so.
+# rlib: lets integration tests link the Rust side.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# 启用真实 fcitx5 C ABI 链接（需要 libfcitx5core-dev）。关闭时只编译 Rust 侧
+# 逻辑，使 CI 的纯 Rust job 无需 Fcitx5 开发包。
+fcitx5-host = []
+
+[dependencies]
+ime-types.workspace = true
+ime-config.workspace = true
+ime-ui.workspace = true
+ime-diag.workspace = true
+
+[build-dependencies]
+pkg-config.workspace = true
+cc.workspace = true
+
+[lints]
+workspace = true

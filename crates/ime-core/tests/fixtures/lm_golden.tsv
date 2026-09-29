@@ -1,0 +1,264 @@
+# rspinyin golden evaluation set.
+#
+# Columns: pinyin <TAB> expected first choice <TAB> weight
+#   * pinyin   the `'`-separated toneless syllable key, in the canonical
+#              spelling of the syllable table.
+#   * expected the word a user typing that key expects at the head of the
+#              candidate list.
+#   * weight   the relative importance of the row, taken from the word list's
+#              own frequency column. The plain hit rate counts every row once;
+#              the weighted rate counts a row this many times.
+#
+# The set is hand-written and is never generated. It is read by `xtask tune`
+# (the weight grid search) and by the decode tests. Rows whose key is ambiguous
+# are deliberate: they are the rows a scoring change can move, and a set of keys
+# with a single candidate each would measure nothing. Blank lines and lines
+# starting with `#` are skipped.
+
+# ── single characters ──────────────────────────────────────────────────────
+de	的	3200000
+yi	一	1600000
+shi	是	900000
+bu	不	800000
+le	了	750000
+zai	在	700000
+ren	人	650000
+you	有	600000
+ta	他	450000
+zhe	这	450000
+zhong	中	400000
+da	大	350000
+shang	上	350000
+guo	国	300000
+ge	个	300000
+dao	到	300000
+men	们	280000
+wei	为	280000
+zi	子	260000
+he	和	260000
+di	地	250000
+chu	出	250000
+ye	也	240000
+nian	年	240000
+jiu	就	230000
+na	那	220000
+yao	要	220000
+xia	下	220000
+sheng	生	210000
+hui	会	200000
+qu	去	200000
+zhi	之	190000
+jia	家	190000
+xue	学	180000
+dui	对	180000
+ke	可	180000
+li	里	170000
+hou	后	170000
+xiao	小	170000
+xin	心	160000
+duo	多	160000
+tian	天	160000
+er	而	160000
+hao	好	150000
+dou	都	150000
+mei	没	150000
+yu	于	140000
+qi	起	140000
+hai	还	140000
+fa	发	140000
+cheng	成	140000
+zuo	作	130000
+dang	当	130000
+xiang	想	130000
+wen	文	120000
+wu	无	120000
+shou	手	120000
+yong	用	120000
+zhu	主	120000
+xing	行	120000
+fang	方	110000
+qian	前	110000
+suo	所	110000
+ben	本	110000
+jian	见	110000
+jing	经	110000
+mian	面	100000
+gong	公	100000
+tong	同	100000
+san	三	100000
+lao	老	100000
+cong	从	100000
+dong	动	95000
+liang	两	95000
+zhang	长	95000
+min	民	90000
+yang	样	90000
+xian	现	90000
+fen	分	90000
+jiang	将	90000
+
+# ── two syllables, several words share the key ─────────────────────────────
+ke'yi	可以	30000
+qi'ta	其他	25000
+shi'jie	世界	19000
+da'jia	大家	18000
+hai'shi	还是	16000
+yi'zhi	一直	14000
+mei'you	没有	12000
+you'yu	由于	11000
+lao'shi	老师	8000
+zu'zhi	组织	5000
+yan'jiu	研究	5000
+fa'xian	发现	5000
+cheng'shi	城市	5000
+jia'ge	价格	4500
+zhi'liang	质量	4500
+shui'ping	水平	4500
+zhi'shi	知识	4500
+jing'yan	经验	4000
+shi'xian	实现	4000
+da'dao	达到	4000
+zhu'yi	注意	3500
+biao'xian	表现	3500
+diao'cha	调查	3500
+jian'shao	减少	3500
+tui'dong	推动	3500
+jian'chi	坚持	3500
+she'ji	设计	3500
+dao'da	到达	3500
+huo'de	获得	3500
+bang'zhu	帮助	3500
+
+# ── two syllables, one word ────────────────────────────────────────────────
+zhong'guo	中国	45000
+wo'men	我们	45000
+shen'me	什么	35000
+yi'ge	一个	35000
+qi'zhong	其中	34000
+ta'men	他们	30000
+gong'zuo	工作	28000
+zi'ji	自己	28000
+yin'wei	因为	25000
+guo'jia	国家	24000
+she'hui	社会	22000
+na'ge	那个	22000
+dan'shi	但是	22000
+fa'zhan	发展	21000
+jing'ji	经济	20000
+sheng'huo	生活	20000
+suo'yi	所以	20000
+shi'hou	时候	20000
+zen'me	怎么	18000
+ru'guo	如果	18000
+jin'tian	今天	16000
+ni'men	你们	16000
+yi'jing	已经	16000
+yi'yang	一样	15000
+yi'ding	一定	14000
+zhe'yang	这样	14000
+yi'qie	一切	13000
+yi'ban	一般	12000
+ming'tian	明天	12000
+wei'le	为了	12000
+guan'yu	关于	11000
+gen'ju	根据	10000
+dui'yu	对于	10000
+zuo'tian	昨天	10000
+xu'yao	需要	9500
+ying'gai	应该	9000
+ke'neng	可能	9000
+zhu'yao	主要	9000
+xue'xi	学习	9000
+gong'si	公司	8500
+hai'zi	孩子	8000
+peng'you	朋友	8000
+xue'sheng	学生	8000
+shi'chang	市场	8000
+mei'guo	美国	8000
+bu'shi	不是	8000
+bing'qie	并且	8000
+yi'yuan	医院	7500
+xue'xiao	学校	7500
+bei'jing	北京	7500
+dian'hua	电话	7000
+dian'nao	电脑	7000
+shou'ji	手机	7000
+ji'shu	技术	7000
+guan'li	管理	7000
+xin'xi	信息	7000
+shang'hai	上海	7000
+bu'neng	不能	7000
+fu'wu	服务	6500
+wang'luo	网络	6500
+
+# ── three syllables ────────────────────────────────────────────────────────
+jiang'xue'jin	奖学金	1000
+you'er'yuan	幼儿园	500
+tu'shu'guan	图书馆	450
+da'xue'sheng	大学生	400
+xiao'xue'sheng	小学生	350
+yan'jiu'sheng	研究生	350
+shi'yan'shi	实验室	350
+zhong'xue'sheng	中学生	300
+gao'zhong'sheng	高中生	250
+liu'xue'sheng	留学生	250
+bo'shi'sheng	博士生	200
+yue'lan'shi	阅览室	200
+jiao'xue'lou	教学楼	200
+shuo'shi'sheng	硕士生	150
+yan'jiu'yuan	研究院	45
+huo'che'zhan	火车站	65
+ti'yu'guan	体育馆	55
+di'tie'zhan	地铁站	45
+qi'che'zhan	汽车站	35
+e'luo'si	俄罗斯	3500
+ren'min'bi	人民币	400
+shen'fen'zheng	身份证	400
+yang'lao'jin	养老金	300
+tui'xiu'jin	退休金	280
+bao'xian'fei	保险费	250
+xue'sheng'zheng	学生证	250
+jia'shi'zheng	驾驶证	250
+yun'dong'hui	运动会	250
+shi'jian'biao	时间表	250
+gong'zuo'zheng	工作证	200
+jie'hun'zheng	结婚证	200
+
+# ── four syllables and longer ──────────────────────────────────────────────
+shao'shu'min'zu	少数民族	250
+yi'si'lan'jiao	伊斯兰教	150
+ri'cheng'an'pai	日程安排	130
+wei'wu'er'zu	维吾尔族	110
+she'hui'zhu'yi	社会主义	65
+bu'zhi'bu'jue	不知不觉	60
+yi'xin'yi'yi	一心一意	55
+yi'ju'yi'dong	一举一动	48
+luan'qi'ba'zao	乱七八糟	45
+ke'xue'ji'shu	科学技术	45
+zi'ben'zhu'yi	资本主义	40
+bu'zhe'bu'kou	不折不扣	35
+qian'fang'bai'ji	千方百计	35
+xiao'xin'yi'yi	小心翼翼	35
+yi'lao'yong'yi	一劳永逸	35
+yi'sheng'yi'shi	一生一世	32
+yi'chao'yi'xi	一朝一夕	30
+bu'huang'bu'mang	不慌不忙	30
+zi'you'zi'zai	自由自在	30
+jing'ji'jian'she	经济建设	30
+gai'ge'kai'fang	改革开放	30
+bu'wen'bu'wen	不闻不问	28
+zi'yan'zi'yu	自言自语	28
+yi'yan'yi'xing	一言一行	26
+bu'san'bu'si	不三不四	25
+san'yan'liang'yu	三言两语	25
+qi'shang'ba'xia	七上八下	25
+qian'xin'wan'ku	千辛万苦	25
+ma'ke'si'zhu'yi	马克思主义	25
+yi'wu'yi'shi	一五一十	22
+
+# ── a reading the L3c table corrects ───────────────────────────────────────
+# The baseline composition of 银行 reads the second character as `xing`; the
+# correction table gives it the reading the word actually has. A lexicon that
+# composes keys from the L1 table alone cannot serve this row, so `xtask tune`
+# reports it as one unreachable row; the compiled dictionary can.
+yin'hang	银行	5500

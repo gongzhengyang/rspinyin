@@ -8,4 +8,11 @@
 //! it to be tested deterministically against in-memory mocks with no filesystem,
 //! clock, or display server involved.
 
+pub mod input;
+pub mod lm;
+pub mod passthrough;
+pub mod preedit;
+pub mod privacy;
 pub mod segment;
+pub mod state;
+pub mod viterbi;

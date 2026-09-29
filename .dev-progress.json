@@ -1,8 +1,28 @@
 {
-  "total": 39,
+  "total": 59,
   "completed": 0,
   "is_workspace": true,
+  "ledger_revision": 3,
+  "reconciled_at": "2026-09-29",
+  "reconcile_basis": "read-only audit of crates/ xtask/ scripts/ fuzz/ data/ packaging/ against docs/dev/features.md 5.2 anchors, plus a green `just ci` run on the committed tree",
   "wave_plan": "W0=1.01.01-03 | W1=1.02.01,1.03.01-03,1.04.01 | W2=1.02.02-07,1.03.04-07,1.04.02-05 | W3=1.04.06-07,1.05.01-08 | W4=1.06.01-03,1.07.01,1.08.01-03",
+  "wave_plan_actual": "W0 done. W1 done except 1.03.02/1.03.03. W2 partially landed ahead of schedule (1.04.02, 1.04.05). Session wave A = 1.02.02, 1.02.03, 1.02.06, 1.03.02, 1.04.03.",
+  "stub_convention": "The codebase contains zero todo!()/unimplemented!(). Unfinished bodies are marked with an explicit `// Stub:` comment naming the replacing work (crates/ime-fcitx5/src/ffi/abi.rs, ffi/cpp/ui_glue.cpp) or a `pending_step(...)` call naming the awaited subsystem (crates/ime-fcitx5/src/addon.rs). Each such marker is owned by a later task card and must be closed by it.",
+  "cross_task_notes": {
+    "InputBuffer::push_char": "TASK-1.02.02 chose 'append at end + caret follows to end'. Phase 1 defers character-level caret editing, so insertion never happens at the caret. If TASK-1.03.07 wants insertion-at-caret, that is an interface decision (~5 lines).",
+    "BackspaceOutcome::BufferEmpty": "Means 'the buffer is empty after this key', NOT 'a syllable was removed'. The nihaoa -> nihao -> ni -> \"\" sequence yields RemovedSyllable, RemovedSyllable, BufferEmpty. TASK-1.03.07 must not expect RemovedSyllable on the clearing press.",
+    "backspace at caret 0": "Deletes the character the caret points at. The card left this boundary undefined; returning BufferEmpty would end the session on non-empty input and lose the preedit.",
+    "InputBuffer::set_boundaries": "Call it only when segmentation succeeded (best_segmentation_hint returned true). Passing the pass-through whole-string grid [0, len] on failure makes one Backspace delete the entire input. TASK-1.03.07 and TASK-1.02.05 must respect this.",
+    "InputBuffer timestamps": "ime-core may not read the clock (0.4 rule 4), so the struct exposes mark_session_start(at_unix_ms) / started_at_unix_ms(); the caller stamps it. Field stays 0 until stamped.",
+    "criterion case-name collision": "The input-buffer bench and the decode bench both want a case named input/buffer_ops. If TASK-1.02.07 also emits it, keep one to avoid duplicate criterion directories.",
+    "PassthroughFlags gained a fifth field": "TASK-1.02.06 added `temp_english: bool` (default false) to PassthroughFlags. It is session state, not a config key, but the card's rule 4 is a state guard and is unreachable inside the pure classifier without it. The four config-backed fields match the card's defaults exactly, so TASK-1.03.06 can still build the struct with ..Default::default().",
+    "passthrough rule order": "The temp-English guard is evaluated BEFORE the uppercase-commit and URL rules, not fourth as the card lists. In the card's literal order, one uppercase letter in temp-English mode would hit rule 3, commit that letter and exit the session -- exactly what the mode exists to prevent.",
+    "EnterTempEnglish is not returned by classify": "A pure text classifier cannot observe a key chord, so the router (TASK-1.04.04) produces EnterTempEnglish and the session machine owns the flag. classify returns the other three variants; is_consumed() reports EnterTempEnglish as consumed.",
+    "English punctuation mode returns HostHandles": "For the twelve ASCII marks under punct_mode = english, classify returns HostHandles rather than the card's fallback Decode. Decode would hand the mark to the normaliser, which discards it as an illegal input character, so pressing a comma would do nothing at all. Host passthrough types it as-is.",
+    "double quote pairing": "The card maps the double quote to two targets. With no keystroke memory, classify pairs it using the unclosed-quote count in the surrounding text and degrades to the opening quote when the host reports none.",
+    "benchmark methodology": "Do NOT trust criterion numbers taken while sub-agents are running. passthrough/classify measured 511ns under load and 726ns on a re-run minutes later, and criterion itself reported a bogus +40% regression. Every budget measurement must be re-taken on an idle machine.",
+    "check-unsafe SAFETY proximity": "check-unsafe.sh looks back SAFETY_LOOKBACK = 5 lines from an `unsafe` block. crates/ime-dict/src/mmap.rs's static_bytes has its `// SAFETY:` line 6 lines above the block, so the audit reports it as undocumented. Fix by tightening that comment block by one line so the marker lands inside the window (the file's other unsafe block passes because its marker is exactly at the boundary). Deferred until the TASK-1.03.03 agent, which owns mmap.rs right now, stops editing it."
+  },
   "tasks": [
     {
       "id": "TASK-001",
@@ -11,7 +31,8 @@
       "title": "Cargo Workspace 骨架、依赖锁定与 Fcitx5 构建探测",
       "wave": "W0",
       "track": "C",
-      "status": "READY_FOR_FINAL_GATE"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "audit: DONE"
     },
     {
       "id": "TASK-002",
@@ -20,7 +41,8 @@
       "title": "质量门禁、审计脚本与 CI 基线",
       "wave": "W0",
       "track": "C",
-      "status": "READY_FOR_FINAL_GATE"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "audit: DONE; all five audit scripts pass with --self-test. GATE DEFECT FIXED 2026-09-29: check-no-network.sh matched banned segment `tls` in any position, so it flagged scoped-tls-hkt (zero-dependency scoped thread-local storage pulled in by Slint) as a network crate and blocked the whole UI track. `tls` is now matched only as a leading or trailing segment, with the reasoning in POSITIONAL_SEGMENTS; the self-test gained a banned-tls-variant (native-tls) and a benign-tls-lookalike (scoped-tls-hkt) case, and now reports 4 injected violations. The self-test count in the script's header comment and PASS line were updated to match."
     },
     {
       "id": "TASK-003",
@@ -29,7 +51,8 @@
       "title": "共享契约 crate：错误模型、ID、版本与 Feature 策略",
       "wave": "W0",
       "track": "C",
-      "status": "READY_FOR_FINAL_GATE"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "audit: DONE; ADR-0001 present"
     },
     {
       "id": "TASK-004",
@@ -38,7 +61,8 @@
       "title": "拼音音节表、切分 DAG 构建器与非法串保护",
       "wave": "W1",
       "track": "A",
-      "status": "READY_FOR_FINAL_GATE"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "audit: code DONE; the segment/dag_build criterion bench is not yet written (benchmarks are TASK-1.02.07's deliverable)"
     },
     {
       "id": "TASK-005",
@@ -47,7 +71,8 @@
       "title": "输入缓冲与增量解析（Backspace/光标/清空语义）",
       "wave": "W2",
       "track": "A",
-      "status": "PENDING"
+      "status": "COMPLETED",
+      "note": "input/mod.rs + input/buffer.rs (664 lines) + benches/input.rs; ime-core nextest 60/60, bench input/buffer_ops = 23.5ns (budget 1us), 2 new doctests pass, fmt + clippy clean; card flipped to [x] with an acceptance record"
     },
     {
       "id": "TASK-006",
@@ -56,7 +81,8 @@
       "title": "语言模型评分层与用户词频融合",
       "wave": "W2",
       "track": "A",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "merged: lm/{mod,ngram,score}.rs (32+215+697 lines) + xtask/src/tune.rs (799 lines) + tests/fixtures/lm_golden.tsv (232 rows) + tests/fixtures/lm_holdout.tsv (6000 rows, generated) + docs/dev/lm-weights.md. ime-core nextest 92/92, 13 doctests. Measured: golden first-choice 95.3% (criterion: >=85%, PASS); holdout baseline first 13.4% / reachable 24.8% -- dominated by the 5441-word development subset's coverage, not by ranking quality, and not comparable to the golden figure. Grid optimum (97.8%) deliberately NOT adopted: the 232-row tuning set cannot distinguish a 5-row difference. PENDING: criterion 7 (holdout full decode < 3s) needs TASK-1.02.04's decoder."
     },
     {
       "id": "TASK-007",
@@ -65,7 +91,7 @@
       "title": "Viterbi 解码器与 Top-K 候选生成",
       "wave": "W2",
       "track": "A",
-      "status": "PENDING"
+      "status": "IN_PROGRESS"
     },
     {
       "id": "TASK-008",
@@ -74,7 +100,7 @@
       "title": "Preedit 生成与拼音切分高亮段",
       "wave": "W2",
       "track": "A",
-      "status": "PENDING"
+      "status": "IN_PROGRESS"
     },
     {
       "id": "TASK-009",
@@ -83,7 +109,8 @@
       "title": "非拼音输入直通与临时英文模式",
       "wave": "W2",
       "track": "A",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "merged: passthrough.rs (792 lines, 8 lines of headroom) + benches/passthrough.rs; ime-core nextest 71/71 green. PENDING: the classify latency criterion (<=500ns) measured 511ns then 726ns, but both runs were taken while five sub-agents were saturating the CPU, so they are not valid; re-measure on an idle machine before closing criterion 2."
     },
     {
       "id": "TASK-010",
@@ -92,7 +119,8 @@
       "title": "解码性能基准与预算断言",
       "wave": "W2",
       "track": "A",
-      "status": "PENDING"
+      "status": "PARTIAL",
+      "note": "audit: xtask/src/budget.rs + docs/dev/budgets.json exist and validate 21 thresholds; the criterion targets and the synthetic-dict generator do not exist"
     },
     {
       "id": "TASK-011",
@@ -101,7 +129,8 @@
       "title": "词库二进制格式 v1 与 dictc 编译工具",
       "wave": "W1",
       "track": "A",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "audit: DONE; 400k-entry compile timing not recorded"
     },
     {
       "id": "TASK-012",
@@ -110,7 +139,8 @@
       "title": "FST 索引构建与 mmap 只读加载",
       "wave": "W1",
       "track": "A",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "merged: mmap.rs (254 lines, the crate's only unsafe, two blocks each with a SAFETY comment) + fst_index.rs (799 lines) + benches/dict.rs. ime-dict nextest 62/62 including the #[ignore]d real-dictionary cross-check. Integration fixes I applied: four u32->usize widenings used usize::from, which does not exist for that pair (usize::try_from with the crate's out-of-range error); the never-read mmap field needed a documented allow because it is held purely for its lifetime and must stay declared last so it outlives the views; and test_load_rejects_a_file_that_is_not_a_container asserted MagicMismatch on a 23-byte file, which fails the length check before the magic is read, so it now uses a header-sized junk image and covers the short-file case separately. PENDING: criteria 2 and 3 (lookup P99 <= 3us, load <= 60ms, resident <= 25MB) need the benchmarks run on an idle machine."
     },
     {
       "id": "TASK-013",
@@ -119,7 +149,8 @@
       "title": "候选条目表与字符串池零拷贝访问",
       "wave": "W1",
       "track": "A",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "merged: entry.rs (483 lines) + mmap.rs helpers (str_unchecked/pool_text, 254->310). Reused the existing DictEntry from format/mod.rs rather than defining a second one. 12/12 entry tests pass. Needs fst_index.rs wiring (3 call sites) once that file's split lands, plus a dict/entry_to_ref bench. Two design points to reconcile: pool_text is a safe fn with documented preconditions (criterion 4 bars unsafe in entry.rs, but calling an unsafe fn needs an unsafe block); and DictEntry::validate() currently rejects undefined flag bits, so the contract's 'ignore unknown bits for forward compatibility' path is unreachable through the load path -- a format-vs-contract inconsistency to settle."
     },
     {
       "id": "TASK-014",
@@ -128,7 +159,8 @@
       "title": "用户词频库（redb）与提交/降级策略",
       "wave": "W2",
       "track": "A",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "merged: user_db.rs (751 lines) + user_db/evict.rs (211) + user_db/tests.rs (380) + benches/userdb.rs; ime-dict nextest 76/76. The agent was interrupted before reporting, so I completed and fixed it: EVICT_BATCH was referenced but never defined (added as 4096 with the reasoning for the chunk size); and the crash-simulation test was failing with only 32 of 100 records surviving, which turned out to be a REAL DEFECT, not a test artifact -- report() relaxed the batching policy to 128 records / 10s on a SINGLE flush sample above 3ms, and the first flush of a new database pays for file creation and first-page costs, so a healthy disk permanently widened its in-memory durability window from <=32 records to <=128. Added SLOW_COMMIT_STREAK = 3 (consecutive slow flushes required, reset by a fast one) and updated the relaxation test to assert both that one slow flush does NOT relax and that a run of three does. The crash test also now paces its child at the 20 records/s the card models, because writing 100 records in a tight loop fires only the batch trigger and never exercises the two-second interval."
     },
     {
       "id": "TASK-015",
@@ -137,7 +169,8 @@
       "title": "词库/用户库损坏自愈与原子替换",
       "wave": "W2",
       "track": "A",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "recover.rs (479) + recover/quarantine.rs (134) + tests (634); 24 tests"
     },
     {
       "id": "TASK-016",
@@ -146,7 +179,8 @@
       "title": "配置模型：TOML 加载、校验、热重载",
       "wave": "W2",
       "track": "A",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "schema.rs (802) + reload.rs (1016); 13 tests; no watcher crate added, reload is driven by fcitx5 reloadConfig()"
     },
     {
       "id": "TASK-017",
@@ -155,7 +189,8 @@
       "title": "输入会话状态机与翻页/选择语义",
       "wave": "W2",
       "track": "A",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "state/ 7 files, 83 tests; independently found and solved the normalized-vs-raw boundary mismatch via state/boundaries.rs"
     },
     {
       "id": "TASK-018",
@@ -164,7 +199,8 @@
       "title": "fcitx5-sys：C++ 胶水、C ABI 契约与工厂符号导出",
       "wave": "W1",
       "track": "B",
-      "status": "READY_FOR_FINAL_GATE"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "audit: DONE; nm -D shows fcitx_addon_factory_instance in the release cdylib"
     },
     {
       "id": "TASK-019",
@@ -173,7 +209,8 @@
       "title": "Addon 注册、生命周期与 rspinyin.conf",
       "wave": "W2",
       "track": "B",
-      "status": "READY_FOR_FINAL_GATE"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "audit: DONE; seven of eight lifecycle steps remain pending_step() placeholders owned by later cards"
     },
     {
       "id": "TASK-020",
@@ -182,7 +219,8 @@
       "title": "自定义 UserInterface 接管与 ClassicUI 抑制",
       "wave": "W2",
       "track": "B",
-      "status": "PENDING"
+      "status": "PARTIAL",
+      "note": "merged and compiling: ui_impl.rs (784 lines) + abi.rs UI role + ui_glue.cpp + addon.rs ui-registration step; ime-fcitx5 nextest 76/76 after I fixed a real defect the agent's own test caught (on_cursor_rect wrote a single global slot, so a second input context evicted the first, contradicting its documented per-context contract; replaced with a bounded 8-entry per-context ring). BLOCKED on ADR-0003: the card assumed a UserInterface registration API that does not exist in fcitx5 5.1.7 (UserInterfaceManager has none; AddonCategory is a single-valued enum; input methods are only discovered from Category=InputMethod addons and the manager casts the addon instance to InputMethodEngine). The UI role therefore needs its own addon and its own cdylib, so criteria 1 and 5 cannot close yet. Remaining work: new crate + Category=UI conf + move the host-side wiring into the UI addon's glue."
     },
     {
       "id": "TASK-021",
@@ -191,7 +229,8 @@
       "title": "按键事件路由与 Fcitx5 状态机协作",
       "wave": "W2",
       "track": "B",
-      "status": "PENDING"
+      "status": "PARTIAL",
+      "note": "audit: engine_glue.cpp written, engine.rs missing, on_key_event is a Stub returning false; blocked on TASK-1.03.07"
     },
     {
       "id": "TASK-022",
@@ -200,7 +239,8 @@
       "title": "光标坐标提取、多屏与缩放归一化",
       "wave": "W2",
       "track": "B",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "audit: DONE; cursor.rs + screen.rs + cursor-probe.md spike"
     },
     {
       "id": "TASK-023",
@@ -209,7 +249,8 @@
       "title": "X11 ARGB 透明窗口后端",
       "wave": "W3",
       "track": "C",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "merged: platform/x11.rs (788 lines) + platform/mod.rs (721 lines). Integration fixes I applied: x11rb needs its `shape` feature (it has no default features, so x11rb::protocol::shape did not exist and ime-ui could not compile at all); RequestConnection was not imported, and prefetch_extension_information/extension_information live on that trait, not on Connection; CreateWindowAux has no border_width field (it is a required argument of create_window, already passed as 0); and clamp_dimension was not imported. BLOCKED criteria: 0.4ms/commit cannot be met because SysV MIT-SHM needs shmget/shmat (libc + unsafe), both barred in ime-ui, so uploads go through PutImage as the card permits; criterion 5 is satisfied by construction since no SysV segment is ever created. Also flagged a contract gap: frozen SurfaceBackend has no resize, so TASK-1.05.07 cannot push a new window size through it."
     },
     {
       "id": "TASK-024",
@@ -218,7 +259,8 @@
       "title": "Wayland 四档窗口后端（layer-shell / popup / canvas / 兜底）",
       "wave": "W3",
       "track": "B",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "platform/wayland/ 11 files, 4105 lines, 85 tests; found the cards T2/T3 popup approach is not expressible in xdg-shell"
     },
     {
       "id": "TASK-025",
@@ -227,7 +269,8 @@
       "title": "自定义 Slint Platform 与软件光栅渲染器接入",
       "wave": "W3",
       "track": "B",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "slint_platform.rs (444) + renderer.rs (419) + renderer/{raster,probe,mock,tests}.rs; 31 tests. Found that slint needs the software-renderer-systemfonts feature or any Text element panics inside SoftwareRenderer::render, and that slint 1.13 has no Argb8888Pixel (self-implemented TargetPixel)"
     },
     {
       "id": "TASK-026",
@@ -236,7 +279,8 @@
       "title": "UI 线程模型与命令队列（跨线程唤醒）",
       "wave": "W3",
       "track": "B",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "channel/ + ui_thread/, 51 tests, needs rustix (wired)"
     },
     {
       "id": "TASK-027",
@@ -245,7 +289,8 @@
       "title": "candidate.slint：候选框骨架与布局约束",
       "wave": "W3",
       "track": "B",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "ui/candidate.slint + layout.rs + layout/metrics.rs; found that drop-shadow-* is a NO-OP in Slints software renderer"
     },
     {
       "id": "TASK-028",
@@ -254,7 +299,7 @@
       "title": "theme.slint：配色 Token、深浅色与亚克力材质",
       "wave": "W3",
       "track": "B",
-      "status": "PENDING"
+      "status": "IN_PROGRESS"
     },
     {
       "id": "TASK-029",
@@ -281,7 +326,8 @@
       "title": "屏幕避让与几何计算（底部翻转/边缘夹取）",
       "wave": "W3",
       "track": "B",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "geometry.rs + geometry/placement.rs + tests; 28 tests"
     },
     {
       "id": "TASK-032",
@@ -290,7 +336,8 @@
       "title": "出现/消失/选中过渡动效（Spring 积分器）",
       "wave": "W3",
       "track": "B",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "spring.rs + spring/{highlight,transition,set}.rs; 42 tests; found semi-implicit Euler damps ~6% more than the continuous model, so the NFRs overshoot tolerance is unreachable as written"
     },
     {
       "id": "TASK-033",
@@ -299,7 +346,8 @@
       "title": "用户数据目录与文件权限基线",
       "wave": "W4",
       "track": "C",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "merged: paths.rs (784 lines, 18 tests) + perms.rs (283 lines, 10 tests). Layering respected -- paths.rs depends only on ime-types, perms.rs only on std, neither imports the other. Modes are set at creation (OpenOptions::mode / DirBuilder::mode), so there is no window where a file exists world-readable; an existing loose file is narrowed through its own fd. Symlinks below the XDG base are refused and neither the link nor its target is touched; the base directories themselves are the trust root and are never chmod'd, because putting $HOME on another volume is a legitimate layout. Two diagnostic codes are defined in both files because the layer order forbids sharing them -- a single source would mean promoting them into the frozen ime-types, which needs an ADR. PENDING: criterion 3 needs StatusStrip.readonly wired at the addon, and criterion 5's 5ms probe needs a gate run."
     },
     {
       "id": "TASK-034",
@@ -308,7 +356,8 @@
       "title": "敏感输入上下文检测与学习抑制",
       "wave": "W4",
       "track": "C",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "privacy.rs (474) + privacy_impl.rs (712) + privacy_impl/blacklist.rs (173)"
     },
     {
       "id": "TASK-035",
@@ -317,7 +366,7 @@
       "title": "零网络外联断言与依赖/许可证审计",
       "wave": "W4",
       "track": "C",
-      "status": "PENDING"
+      "status": "IN_PROGRESS"
     },
     {
       "id": "TASK-036",
@@ -326,7 +375,8 @@
       "title": "Fcitx5 插件安装布局与一键安装脚本",
       "wave": "W4",
       "track": "C",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "xtask/src/install* 8 files + packaging/{install,uninstall}.sh; 69 tests. Found pkg-config --variable=addondir Fcitx5Core does not exist on Ubuntu 24.04, so the layout derives from libdir"
     },
     {
       "id": "TASK-037",
@@ -335,7 +385,8 @@
       "title": "结构化日志、滚动与脱敏",
       "wave": "W4",
       "track": "C",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "log.rs (790) + redact.rs (799)"
     },
     {
       "id": "TASK-038",
@@ -344,7 +395,8 @@
       "title": "panic 钩子、崩溃回溯与 FFI 边界兜底",
       "wave": "W4",
       "track": "C",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "panic.rs (170) + crash.rs (448) + crash/{context,record,signal}.rs"
     },
     {
       "id": "TASK-039",
@@ -353,7 +405,201 @@
       "title": "帧耗时/解码延迟探针与预算看板",
       "wave": "W4",
       "track": "C",
+      "status": "PARTIAL",
+      "note": "audit: docs/dev/budgets.json exists; probe.rs, report.rs and the xtask report subcommand missing"
+    },
+    {
+      "id": "TASK-040",
+      "task_id": "FEAT-TEST-P0.01.01",
+      "file": "./docs/dev/features-test.md",
+      "title": "XTEST 输入注入通道（键鼠）",
+      "wave": "P0",
+      "track": "T",
+      "status": "IN_PROGRESS"
+    },
+    {
+      "id": "TASK-041",
+      "task_id": "FEAT-TEST-P0.01.02",
+      "file": "./docs/dev/features-test.md",
+      "title": "X11 截图采集与 DPI 映射",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-042",
+      "task_id": "FEAT-TEST-P0.01.03",
+      "file": "./docs/dev/features-test.md",
+      "title": "帧率采样与掉帧检测",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-043",
+      "task_id": "FEAT-TEST-P0.02.01",
+      "file": "./docs/dev/features-test.md",
+      "title": "`UiFrame` 快照通道（A11y 树的显式替代）",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-044",
+      "task_id": "FEAT-TEST-P0.02.02",
+      "file": "./docs/dev/features-test.md",
+      "title": "客户端上屏文本读取",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-045",
+      "task_id": "FEAT-TEST-P0.02.03",
+      "file": "./docs/dev/features-test.md",
+      "title": "`runtime://logs` 日志与审计输出抓取",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-046",
+      "task_id": "FEAT-TEST-P0.02.04",
+      "file": "./docs/dev/features-test.md",
+      "title": "`runtime://ui_metrics` 度量通道（Computed Style 的显式替代）",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-047",
+      "task_id": "FEAT-TEST-P0.02.05",
+      "file": "./docs/dev/features-test.md",
+      "title": "内存与资源采样",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-048",
+      "task_id": "FEAT-TEST-P0.02.06",
+      "file": "./docs/dev/features-test.md",
+      "title": "`runtime://env` 环境能力探测",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-049",
+      "task_id": "FEAT-TEST-P0.03.01",
+      "file": "./docs/dev/features-test.md",
+      "title": "引擎直驱通道（不经 fcitx5）",
+      "wave": "P0",
+      "track": "T",
+      "status": "IN_PROGRESS"
+    },
+    {
+      "id": "TASK-050",
+      "task_id": "FEAT-TEST-P0.03.02",
+      "file": "./docs/dev/features-test.md",
+      "title": "词库注入与畸形输入构造",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-051",
+      "task_id": "FEAT-TEST-P0.03.03",
+      "file": "./docs/dev/features-test.md",
+      "title": "预算比对与回归门禁",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-052",
+      "task_id": "FEAT-TEST-P0.04.01",
+      "file": "./docs/dev/features-test.md",
+      "title": "商业化视觉审查提示模板",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-053",
+      "task_id": "FEAT-TEST-P0.04.02",
+      "file": "./docs/dev/features-test.md",
+      "title": "定位漂移与竞态的自愈归因提示",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-054",
+      "task_id": "FEAT-TEST-P0.05.01",
+      "file": "./docs/dev/features-test.md",
+      "title": "环境隔离与沙盒重置",
+      "wave": "P0",
+      "track": "T",
+      "status": "IN_PROGRESS"
+    },
+    {
+      "id": "TASK-055",
+      "task_id": "FEAT-TEST-P0.05.02",
+      "file": "./docs/dev/features-test.md",
+      "title": "定位器自愈（常量与坐标漂移）",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-056",
+      "task_id": "FEAT-TEST-P0.05.03",
+      "file": "./docs/dev/features-test.md",
+      "title": "自愈安全红线",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-057",
+      "task_id": "FEAT-TEST-P0.05.04",
+      "file": "./docs/dev/features-test.md",
+      "title": "失败取证与快照存盘规范",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-058",
+      "task_id": "FEAT-TEST-P0.05.05",
+      "file": "./docs/dev/features-test.md",
+      "title": "环境能力门禁",
+      "wave": "P0",
+      "track": "T",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-059",
+      "task_id": "FEAT-TEST-P0.05.06",
+      "file": "./docs/dev/features-test.md",
+      "title": "性能测量纯净度",
+      "wave": "P0",
+      "track": "T",
       "status": "PENDING"
     }
+  ],
+  "concurrency": 10,
+  "concurrency_note": "The harness caps concurrent subagents at 20 (CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS); the requested 50 cannot be reached from inside the session.",
+  "scopes": [
+    "docs/dev/features.md (39 engineering cards)",
+    "docs/dev/features-test.md (20 test-platform cards)"
+  ],
+  "blockers": [
+    "workspace compiles; 3 residual warnings in ime-diags test build",
+    "3 files over the 800-line limit: ime-config/src/reload.rs (1016), xtask/src/testd/engine/scenario.rs (937), ime-config/src/schema.rs (802)",
+    "no benchmark has been run on an idle machine - every number taken today is under 20 concurrent agents and untrustworthy",
+    "the Slint build wiring compiles but the .slint sources have not been rendered end to end",
+    "the system-installed librspinyin.so is the pre-fix build that segfaults; a lab run without FCITX_ADDON_DIRS reproduces it"
   ]
 }

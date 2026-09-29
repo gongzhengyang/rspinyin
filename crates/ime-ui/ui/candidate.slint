@@ -1,0 +1,287 @@
+// Candidate window skeleton: the floating panel, its header strip, the candidate area and
+// the two-layer shadow that makes it read as a panel rather than a rectangle.
+//
+// Every geometry value of docs/dev/features.md 3.1 is declared once, in the
+// `CandidateMetrics` global below. `src/layout.rs` parses those lines out of this file
+// instead of restating them in Rust, and the spec audit script compares the same lines
+// against the 3.1 tables, so a size can never drift between what is drawn and what is
+// computed. Keep the block's shape: one scalar metric per line, spelled
+// `out property <length> kebab-case-name: <value>px;`.
+//
+// Units are logical pixels: Slint's `px` is this project's `dp`. Device pixels never
+// appear here, the renderer applies `Window.scale-factor` (ASM-09), so one file drives
+// 1x and 2x displays.
+//
+// This window must never take keyboard focus. No `TextInput`, no `forward-focus` and no
+// `focus()` call may appear in this file or in anything it includes.
+//
+// The file is declaration only: no branch over candidate data, no string formatting and
+// no measurement lives here. Everything the window draws arrives already resolved, which
+// is what keeps the render path a pure function of the frame.
+
+import { Theme } from "theme.slint";
+
+// Geometry, material and type-scale constants (3.1.1 - 3.1.4).
+export global CandidateMetrics {
+    // -- window geometry (3.1.1) --------------------------------------------
+    out property <length> shadow-margin: 32px;
+    out property <length> stroke-width: 1px;
+    out property <length> container-radius: 12px;
+    out property <length> container-padding: 8px;
+    out property <length> min-width: 220px;
+    out property <length> max-width: 720px;
+
+    // -- header (3.1.1) -----------------------------------------------------
+    out property <length> header-height: 34px;
+    out property <length> header-height-compact: 28px;
+    out property <length> header-padding-h: 10px;
+    out property <length> header-icon-size: 16px;
+    out property <length> header-icon-gap: 8px;
+    out property <length> header-text-gap: 6px;
+    out property <length> separator-height: 1px;
+
+    // -- candidate grid (3.1.1) ---------------------------------------------
+    out property <length> cell-min-width: 64px;
+    out property <length> cell-height: 36px;
+    out property <length> cell-padding-h: 10px;
+    out property <length> cell-padding-v: 6px;
+    // Concentric with the container: a cell nested `container-padding` inside a container of
+    // radius `container-radius` reads as the same curve only at `12 - 8 = 4dp`. Anything
+    // rounder looks like a sticker floating on the panel, which is what the earlier 8dp value
+    // produced at the grid's corners. 3.1.1 states the derivation, not just the number.
+    out property <length> cell-radius: 4px;
+    out property <length> number-gap: 6px;
+    out property <length> annotation-gap: 6px;
+    out property <length> grid-gap: 6px;
+
+    // -- cursor arrow (3.1.1) -----------------------------------------------
+    // Drawn by the geometry task, which is the only place that knows whether the window
+    // was flipped or clamped; the sizes live here so there is one place to read them.
+    out property <length> cursor-arrow-width: 12px;
+    out property <length> cursor-arrow-height: 6px;
+
+    // -- material (3.1.2) ---------------------------------------------------
+    out property <length> shadow-blur: 28px;
+    out property <length> shadow-offset-y: 8px;
+    // 3.1.2 asks for `0 1dp 2dp`; the spread is the blur rounded up to the 4dp grid so
+    // that the layer can be a plain border band.
+    out property <length> shadow-inner-spread: 4px;
+    out property <length> shadow-inner-offset-y: 1px;
+    // Four bands: enough that the falloff reads as a gradient rather than as steps, few
+    // enough that the layer stays cheap on the software rasterizer.
+    out property <int> shadow-band-count: 4;
+    out property <float> shadow-band-opacity: 0.18;
+    out property <float> shadow-inner-opacity: 1.0;
+
+    // -- truncation and paging (3.1.3) --------------------------------------
+    out property <length> max-text-width: 120px;
+    // Everything a candidate cell spends on something other than its text: 2 x 10dp
+    // padding, the number label and its 6dp gap, rounded to the 4dp grid. A cell whose
+    // text hits `max-text-width` therefore stops at 120 + 36 = 156dp.
+    out property <length> cell-chrome-width: 36px;
+    out property <int> max-pages: 5;
+
+    // -- candidates per row (3.1.1) -----------------------------------------
+    out property <int> min-per-row: 3;
+    out property <int> max-per-row: 5;
+    out property <int> max-per-row-limit: 9;
+
+    // -- type scale (3.1.1, 3.1.4); `sp` and `dp` are the same unit here -----
+    out property <length> font-size-header: 14px;
+    out property <length> font-size-cell: 15px;
+    out property <length> font-size-small: 11px;
+}
+
+// The two material layers behind the panel (3.1.2): L3, the soft outer shadow that gives
+// the window its height, and L2, the tight inner shadow that keeps the acrylic surface
+// from blurring into whatever sits behind it.
+//
+// Slint's `drop-shadow-*` is deliberately unused: the software renderer's
+// `draw_box_shadow` is a stub, so a `drop-shadow-blur` rectangle would draw no shadow at
+// all under the renderer this project ships. The layers are built from concentric
+// rounded borders instead, and each band paints only its own ring, so the cost follows
+// the panel's perimeter rather than its area.
+export component CandidateShadow inherits Rectangle {
+    in property <length> container-width: CandidateMetrics.min-width;
+    in property <length> container-height: 0px;
+    in property <length> container-radius: CandidateMetrics.container-radius;
+
+    background: transparent;
+
+    private property <length> band-step:
+        CandidateMetrics.shadow-blur / CandidateMetrics.shadow-band-count;
+
+    // L3: the bands tile the blur radius, widest and faintest first, so the falloff
+    // accumulates towards the panel edge.
+    for band in CandidateMetrics.shadow-band-count: Rectangle {
+        private property <length> spread:
+            (CandidateMetrics.shadow-band-count - band) * root.band-step;
+        x: 0px - self.spread;
+        y: CandidateMetrics.shadow-offset-y - self.spread;
+        width: root.container-width + 2 * self.spread;
+        height: root.container-height + 2 * self.spread;
+        border-radius: root.container-radius + self.spread;
+        background: transparent;
+        border-width: root.band-step;
+        border-color: Theme.shadow-outer;
+        opacity: CandidateMetrics.shadow-band-opacity;
+    }
+
+    // L2: the hard edge, declared last so it stays closest to the panel.
+    Rectangle {
+        x: 0px - CandidateMetrics.shadow-inner-spread;
+        y: CandidateMetrics.shadow-inner-offset-y - CandidateMetrics.shadow-inner-spread;
+        width: root.container-width + 2 * CandidateMetrics.shadow-inner-spread;
+        height: root.container-height + 2 * CandidateMetrics.shadow-inner-spread;
+        border-radius: root.container-radius + CandidateMetrics.shadow-inner-spread;
+        background: transparent;
+        border-width: CandidateMetrics.shadow-inner-spread;
+        border-color: Theme.shadow-inner;
+        opacity: CandidateMetrics.shadow-inner-opacity;
+    }
+}
+
+// The header strip: the preedit on the left, the mode label on the right. The sizes are
+// 3.1.1's, the colours are the theme's (3.2). The status cluster and the span-level
+// preedit styling (the 0.40-opacity syllable separators) belong to the theme task.
+export component Header inherits Rectangle {
+    in property <string> preedit-text: "";
+    in property <string> mode-label: "";
+    // Driven by the window: 3.1.1 compresses the strip to 28dp for a preedit-only window.
+    in property <length> strip-height: CandidateMetrics.header-height;
+
+    background: transparent;
+    height: root.strip-height;
+
+    HorizontalLayout {
+        padding-left: CandidateMetrics.header-padding-h;
+        padding-right: CandidateMetrics.header-padding-h;
+        spacing: CandidateMetrics.header-text-gap;
+
+        // 3.1.3 wants a preedit that is too wide to be cut from the left, keeping the
+        // newest input. Slint can only elide the tail, so the adapter hands over a string
+        // that is already truncated on the left; this binding is the last-resort guard.
+        Text {
+            text: root.preedit-text;
+            font-size: CandidateMetrics.font-size-header;
+            font-weight: 500;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+            overflow: elide;
+            wrap: no-wrap;
+            horizontal-stretch: 1;
+        }
+
+        Text {
+            text: root.mode-label;
+            font-size: CandidateMetrics.font-size-small;
+            font-weight: 500;
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+            overflow: elide;
+            wrap: no-wrap;
+        }
+    }
+}
+
+// The candidate area. What is here is the placeholder that reserves exactly the space the
+// layout computed -- the cells, the number labels and the five states land with the grid
+// task, which keeps this property interface.
+export component CandidateGrid inherits VerticalLayout {
+    in property <int> item-count: 0;
+    in property <int> max-per-row: CandidateMetrics.max-per-row;
+    in property <int> rows: 0;
+    in property <length> cell-width: CandidateMetrics.cell-min-width;
+    in property <length> cell-height: CandidateMetrics.cell-height;
+
+    padding: CandidateMetrics.container-padding;
+    spacing: CandidateMetrics.grid-gap;
+
+    for row in root.rows: HorizontalLayout {
+        spacing: CandidateMetrics.grid-gap;
+        // The last row holds what is left over, which is why the count is clamped rather
+        // than always `max-per-row`.
+        for column in min(root.max-per-row, root.item-count - row * root.max-per-row): Rectangle {
+            width: root.cell-width;
+            height: root.cell-height;
+            border-radius: CandidateMetrics.cell-radius;
+            background: transparent;
+        }
+    }
+}
+
+// The candidate window. Sizes arrive from `src/layout.rs`, which owns every geometric
+// decision; this component only places what it is given.
+export component CandidateWindow inherits Window {
+    // Frame data, resolved by the adapter.
+    in property <string> preedit-text: "";
+    in property <string> mode-label: "";
+
+    // Geometry, written by `src/layout.rs`. The geometry task reads `window-width` and
+    // `window-height` to place and flip the window, and needs the shadow reserve included
+    // because that is what the surface covers.
+    in-out property <length> container-width: CandidateMetrics.min-width;
+    in-out property <length> container-height: CandidateMetrics.header-height-compact
+        + CandidateMetrics.separator-height
+        + 2 * CandidateMetrics.container-padding;
+    in-out property <length> container-radius: CandidateMetrics.container-radius;
+    in-out property <length> header-height: CandidateMetrics.header-height;
+    in property <int> item-count: 0;
+    in property <int> max-per-row: CandidateMetrics.max-per-row;
+    in property <int> grid-rows: 0;
+    in property <length> cell-width: CandidateMetrics.cell-min-width;
+
+    out property <length> window-width: root.container-width + 2 * CandidateMetrics.shadow-margin;
+    out property <length> window-height: root.container-height + 2 * CandidateMetrics.shadow-margin;
+
+    // An overlay panel: no decorations, and a transparent surface so the shadow reserve
+    // really is transparent (3.1.1) and can stay out of the input region.
+    no-frame: true;
+    background: transparent;
+    width: root.window-width;
+    height: root.window-height;
+
+    CandidateShadow {
+        x: CandidateMetrics.shadow-margin;
+        y: CandidateMetrics.shadow-margin;
+        width: root.container-width;
+        height: root.container-height;
+        container-radius: root.container-radius;
+    }
+
+    // L0 base and L4 stroke: the stroke is drawn inside the border, so it never changes
+    // the container's outer size.
+    Rectangle {
+        x: CandidateMetrics.shadow-margin;
+        y: CandidateMetrics.shadow-margin;
+        width: root.container-width;
+        height: root.container-height;
+        border-radius: root.container-radius;
+        background: Theme.surface-fill;
+        border-width: CandidateMetrics.stroke-width;
+        border-color: Theme.surface-stroke;
+
+        VerticalLayout {
+            spacing: 0;
+
+            Header {
+                strip-height: root.header-height;
+                preedit-text: root.preedit-text;
+                mode-label: root.mode-label;
+            }
+
+            Rectangle {
+                height: CandidateMetrics.separator-height;
+                background: Theme.separator;
+            }
+
+            CandidateGrid {
+                item-count: root.item-count;
+                max-per-row: root.max-per-row;
+                rows: root.grid-rows;
+                cell-width: root.cell-width;
+                cell-height: CandidateMetrics.cell-height;
+            }
+        }
+    }
+}

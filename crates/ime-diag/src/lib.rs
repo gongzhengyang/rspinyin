@@ -12,3 +12,9 @@
 //! to a log event in the first place; application identifiers are logged as hashes and
 //! home-directory prefixes are rewritten. Diagnostics substitute structural facts —
 //! candidate counts, source distributions, DAG sizes — for the content itself.
+
+pub mod crash;
+pub mod log;
+pub mod panic;
+pub mod perms;
+pub mod redact;

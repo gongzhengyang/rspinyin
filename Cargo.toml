@@ -21,6 +21,7 @@ ime-core = { path = "crates/ime-core" }
 ime-dict = { path = "crates/ime-dict" }
 ime-config = { path = "crates/ime-config" }
 ime-ui = { path = "crates/ime-ui" }
+ime-ui-addon = { path = "crates/ime-ui-addon" }
 ime-diag = { path = "crates/ime-diag" }
 
 # ── 契约层（ime-types 只允许依赖这三个）────────────────────────────────
@@ -29,16 +30,39 @@ bitflags = "2"                                                         # DecodeF
 serde = { version = "1", features = ["derive"] }                       # 配置/词源清单序列化
 
 # ── 核心引擎 ───────────────────────────────────────────────────────────
-smallvec = "1"                                                         # 音节切分 DAG 的每节点边表（≤8 边零堆分配）
+smallvec = { version = "1", features = ["const_generics"] }             # 音节切分 DAG 的每节点边表（≤8 边零堆分配）；const_generics 让数组容量可按推导值取，而不必迁就 crate 内置的那组固定尺寸
 
 # ── 词库层 ─────────────────────────────────────────────────────────────
 fst = "0.4"                                                            # 音节串 → 词表区间的 FST 索引
 crc32fast = "1"                                                        # 词库段与文件级 CRC32 校验
 memmap2 = "0.9"                                                        # base.dict 只读 mmap 零拷贝加载
+redb = "2"                                                             # 用户词频库（纯 Rust 嵌入式 KV，无网络能力）
+
+# ── 诊断层 ─────────────────────────────────────────────────────────────
+tracing = "0.1"                                                        # 业务 crate 的结构化日志宏
+tracing-subscriber = "0.3"                                             # ime-diag 唯一安装的 subscriber 与脱敏层
+tracing-appender = "0.2"                                               # 日志滚动（按大小/时间切分）
+
+# ── 视图层 ─────────────────────────────────────────────────────────────
+# Slint Royalty-free 2.0（见 docs/dev/adr/0000-upstream-decisions.md）。只开自绘候选框需要的
+# 部分：自带软件光栅（不依赖 GPU），并由 ime-ui 提供自定义 Platform，因此不需要任何窗口系统后端。
+# `software-renderer-systemfonts` 是必需的而非可选：缺了它，任何含 `Text` 的组件都会在
+# SoftwareRenderer::render 内 panic（i-slint-core 的 fonts.rs 在无字体后端时直接 panic），
+# 而候选框必然要画文本。
+slint = { version = "1.13", default-features = false, features = ["compat-1-2", "renderer-software", "software-renderer-systemfonts", "std"] }
+slint-build = "1.13"                                                   # 构建期编译 ui/*.slint
+
+# ── 平台后端 ───────────────────────────────────────────────────────────
+x11rb = { version = "0.14", features = ["shape", "xtest"] }            # X11 ARGB override-redirect 候选窗口后端（shape 输入区域整形；xtest 供测试平台注入真实键鼠事件）
+rustix = { version = "1", features = ["event"] }                       # eventfd 唤醒 + poll(2)（ime-ui 唯一允许的 syscall 出口，无需 unsafe）
+libc = "0.2"                                                           # ime-fcitx5/src/ffi 的信号注册器（SA_SIGINFO 需要 libc::sigaction）
+signal-hook = "0.3"                                                    # ime-diag 的 SIGBUS/SIGSEGV 处理器（async-signal-safe 的 exit 与默认行为恢复）
 
 # ── 工程工具 ───────────────────────────────────────────────────────────
 anyhow = "1"                                                           # xtask / 脚本宿主
 clap = { version = "4", features = ["derive"] }                        # xtask 子命令
+criterion = "0.8"                                                      # 解码/词库热路径基准与预算断言
+proptest = "1"                                                         # 输入缓冲与切分的不变量属性测试
 serde_json = "1"                                                       # budgets.json 读写
 toml = "0.9"                                                           # data/sources.toml 白名单解析
 sha2 = "0.10"                                                          # 词源 SHA256 校验

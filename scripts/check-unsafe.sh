@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 #
-# check-unsafe.sh - keep `unsafe` and `extern "C"` inside the two audited files.
+# check-unsafe.sh - keep `unsafe` and `extern "C"` inside the audited files.
 #
-# features.md 0.4 rule 3 allows unsafe code in exactly two places:
+# features.md 0.4 rule 3 allows unsafe code in exactly three places:
 #
-#   crates/ime-fcitx5/src/ffi/**   (the C ABI glue)
-#   crates/ime-dict/src/mmap.rs    (the only place that maps a file)
+#   crates/ime-fcitx5/src/ffi/**     (the engine addon's C ABI glue)
+#   crates/ime-ui-addon/src/ffi/**   (the user-interface addon's C ABI glue)
+#   crates/ime-dict/src/mmap.rs      (the only place that maps a file)
 #
 # The allowlist is file-precise: any `unsafe` or `extern` keyword anywhere else
 # fails, because `[workspace.lints.rust] unsafe_code = "deny"` is the compiler's
 # backstop and this script is the architectural one.
+#
+# There are two FFI directories because there are two cdylibs. ADR-0003 split the
+# plugin into an input-method addon and a user-interface addon, each with its own
+# C ABI and its own glue; both are `dlopen`'d by Fcitx5 and neither links the
+# other, so each needs the same narrow allowance.
 #
 # Two further rules from AGENTS.md section 3.3 and 8.2 are enforced here:
 #
@@ -84,7 +90,10 @@ root = os.path.abspath(sys.argv[1])
 
 # features.md 0.4 rule 3, file-precise.
 ALLOWED_FILES = ("crates/ime-dict/src/mmap.rs",)
-ALLOWED_DIRS = ("crates/ime-fcitx5/src/ffi/",)
+ALLOWED_DIRS = (
+    "crates/ime-fcitx5/src/ffi/",
+    "crates/ime-ui-addon/src/ffi/",
+)
 
 SKIP_DIRS = frozenset(
     {".git", ".cargo", "target", "node_modules", "vendor", "dist", "build"}
@@ -310,6 +319,7 @@ run_self_test() {
     mkdir -p "$scratch/crates/ime-core/src"
     mkdir -p "$scratch/crates/ime-dict/src"
     mkdir -p "$scratch/crates/ime-fcitx5/src/ffi"
+    mkdir -p "$scratch/crates/ime-ui-addon/src/ffi"
     mkdir -p "$scratch/crates/ime-ui/src"
 
     # A file whose only mentions of the keyword are in comments and literals.
@@ -336,6 +346,25 @@ pub fn exported() {
     unsafe { std::ptr::null::<u8>() };
 }
 extern "C" { pub fn fcitx_host_entry(); }
+EOF
+
+    # The second addon host. Its FFI directory carries the same allowance, so a clean
+    # tree here is what proves the allowlist covers both cdylibs rather than only the
+    # one it was written for.
+    cat >"$scratch/crates/ime-ui-addon/src/ffi/glue.rs" <<'EOF'
+//! User-interface C ABI glue.
+pub fn exported() {
+    // SAFETY: the caller guarantees a valid pointer.
+    unsafe { std::ptr::null::<u8>() };
+}
+extern "C" { pub fn fcitx_ui_host_entry(); }
+EOF
+
+    # Outside an allowed directory in the same crate, so the check is proven to be
+    # path-scoped and not merely crate-scoped.
+    cat >"$scratch/crates/ime-ui-addon/src/lib.rs" <<'EOF'
+//! User-interface addon, no unsafe outside ffi.
+pub fn start() {}
 EOF
 
     cat >"$scratch/crates/ime-ui/src/lib.rs" <<'EOF'

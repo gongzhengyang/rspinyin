@@ -8,6 +8,10 @@
 //   * `rspinyin_register_vtable`, the handshake the Rust side calls to hand over its
 //     callback table. The Rust half of the contract is `src/ffi/abi.rs`.
 //   * the input-context identity the engine and UI glue use in their callbacks.
+//   * the addon lifecycle: the sequence `startPlugin` runs at load and `stopPlugin` runs
+//     at unload. The addon *instance* is not defined here — it has to be the
+//     input-method engine, and only `engine_glue.cpp` can define a class derived from the
+//     engine type; this file keeps the sequence and the entry points.
 //
 // The struct definitions below mirror the `#[repr(C)]` declarations in
 // `src/ffi/abi.rs`. There is deliberately no shared header: the glue is compiled as
@@ -65,8 +69,6 @@ struct RspinyinVtable {
     void (*on_reset)(void *, std::uint64_t);
     bool (*on_key_event)(void *, std::uint64_t, const FcitxKeyEvent *);
 
-    bool (*on_input_panel_update)(void *, std::uint64_t, const UiPanelSnapshot *);
-    void (*on_cursor_rect)(void *, std::uint64_t, FcitxCursorRect);
     void (*on_focus_in)(void *, std::uint64_t);
     void (*on_focus_out)(void *, std::uint64_t);
 
@@ -83,7 +85,11 @@ extern "C" void *rspinyin_plugin_init();
 namespace {
 
 /// ABI version this glue was compiled against; must equal the Rust constant.
-constexpr std::uint32_t kAbiVersion = 1;
+///
+/// Version 2 is the two-addon split: the two user-interface slots left this table and
+/// became the first two entries of the user-interface addon's own table, in
+/// `crates/ime-ui-addon/src/ffi/cpp/ui_addon_glue.cpp`.
+constexpr std::uint32_t kAbiVersion = 2;
 
 /// Handshake state, filled in once while the addon instance is constructed.
 struct HandshakeState {
@@ -112,7 +118,6 @@ bool isComplete(const RspinyinVtable *vt) {
     return vt->on_addon_init != nullptr && vt->on_addon_destroy != nullptr &&
            vt->on_activate != nullptr && vt->on_deactivate != nullptr &&
            vt->on_reset != nullptr && vt->on_key_event != nullptr &&
-           vt->on_input_panel_update != nullptr && vt->on_cursor_rect != nullptr &&
            vt->on_focus_in != nullptr && vt->on_focus_out != nullptr &&
            vt->on_commit_string != nullptr && vt->on_set_preedit != nullptr &&
            vt->on_clear_preedit != nullptr;
@@ -182,50 +187,56 @@ std::uint64_t ic_id(const fcitx::InputContext *inputContext) {
     return hash == 0 ? 1 : hash;
 }
 
+/// Creates the addon instance; Fcitx5 takes ownership of the returned pointer.
+///
+/// Defined in `engine_glue.cpp`, because the instance is also the input-method engine
+/// and a class may only be derived from a complete base type. See that file's header for
+/// why those two roles cannot be separate objects.
+fcitx::AddonInstance *createAddonInstance(fcitx::AddonManager *manager);
+
+/// Runs the plugin handshake and the addon initialisation sequence.
+///
+/// Called by the addon instance in `engine_glue.cpp` while it is constructed. The
+/// handshake comes first: it asks the Rust side for the callback table and hands that
+/// table to this side, and every callback the glue makes is reached through it.
+void startPlugin() {
+    void *context = rspinyin_plugin_init();
+    const RspinyinVtable *vt = vtable();
+    if (context == nullptr || vt == nullptr) {
+        FCITX_WARN() << "rspinyin: plugin entry declined; pure engine mode";
+        return;
+    }
+    state().context = context;
+    if (!vt->on_addon_init(context)) {
+        FCITX_WARN() << "rspinyin: addon init declined; pure engine mode";
+        return;
+    }
+    FCITX_INFO() << "rspinyin: addon loaded";
+}
+
+/// Releases everything `startPlugin` took.
+///
+/// Called by the addon instance before it is freed, and unconditionally. The lifecycle
+/// may have completed part of its sequence before the step that failed, and the Rust
+/// destroy path is idempotent, so calling it for an addon that never initialised costs
+/// nothing — while skipping it would strand whatever the partial sequence had taken.
+void stopPlugin() {
+    const RspinyinVtable *vt = vtable();
+    if (vt == nullptr || vt->on_addon_destroy == nullptr) {
+        return;
+    }
+    vt->on_addon_destroy(context());
+}
+
 } // namespace rspinyin
 
 namespace {
 
-/// The addon instance Fcitx5 creates through the factory below.
-///
-/// It owns the handshake: constructing it asks the Rust side for the callback table and
-/// starts the engine, destroying it releases the engine. The input-method-engine and
-/// user-interface roles live in `engine_glue.cpp` and `ui_glue.cpp`.
-class RspinyinAddon : public fcitx::AddonInstance {
-public:
-    explicit RspinyinAddon(fcitx::AddonManager *) {
-        void *context = rspinyin_plugin_init();
-        const RspinyinVtable *vt = rspinyin::vtable();
-        if (context == nullptr || vt == nullptr) {
-            FCITX_WARN() << "rspinyin: plugin entry declined; pure engine mode";
-            return;
-        }
-        state().context = context;
-        if (!vt->on_addon_init(context)) {
-            FCITX_WARN() << "rspinyin: addon init declined; pure engine mode";
-            return;
-        }
-        FCITX_INFO() << "rspinyin: addon loaded";
-    }
-
-    ~RspinyinAddon() override {
-        // Released even when the constructor declined. The lifecycle may have completed
-        // part of its sequence before the step that failed, and the Rust destroy path is
-        // idempotent, so calling it for an addon that never initialised costs nothing —
-        // while skipping it would strand whatever the partial sequence had taken.
-        const RspinyinVtable *vt = rspinyin::vtable();
-        if (vt == nullptr || vt->on_addon_destroy == nullptr) {
-            return;
-        }
-        vt->on_addon_destroy(rspinyin::context());
-    }
-};
-
-/// Creates the addon instance; Fcitx5 takes ownership of the returned pointer.
+/// Creates the addon instance through the engine glue, which owns the class.
 class RspinyinAddonFactory : public fcitx::AddonFactory {
 public:
     fcitx::AddonInstance *create(fcitx::AddonManager *manager) override {
-        return new RspinyinAddon(manager);
+        return rspinyin::createAddonInstance(manager);
     }
 };
 

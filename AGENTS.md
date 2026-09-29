@@ -83,7 +83,7 @@ cargo test --workspace --doc                      # nextest does not cover docte
 - **Never block the host thread.** No filesystem IO, no `mmap`-cold-page faults, no lock contention, no `sleep` on the fcitx5 main loop. Decoding is pure and bounded (`BUDGET-LAT-02`); user-frequency writes are batched and deferred per `ASM-04`/`ASM-20`.
 - Decoding is **single-threaded and serial per session** (`ASM-11`). Do not introduce concurrency into session state; if a concurrent source appears, add a `revision` and let the UI drop stale frames.
 - Prefer message passing over shared mutable state. Where shared state is unavoidable: atomics > `Mutex`/`RwLock` > `unsafe`.
-- `unsafe` is permitted **only** in `crates/ime-fcitx5/src/ffi/**` and `crates/ime-dict/src/mmap.rs` (0.4 rule 3, enforced by `scripts/check-unsafe.sh`). Every `unsafe` block carries a `// SAFETY:` comment justifying the invariants it relies on.
+- `unsafe` is permitted **only** in `crates/ime-fcitx5/src/ffi/**`, `crates/ime-ui-addon/src/ffi/**` and `crates/ime-dict/src/mmap.rs` (0.4 rule 3, enforced by `scripts/check-unsafe.sh`). There are two FFI directories because there are two cdylibs: ADR-0003 splits the plugin into an input-method addon and a user-interface addon, each with its own C ABI and its own glue, neither linking the other. Every `unsafe` block carries a `// SAFETY:` comment justifying the invariants it relies on.
 - The decoder must stay a pure function (0.4 rule 4): no filesystem, clock, environment, or global mutable state. User frequency arrives through `trait UserFreqSource`. This is what makes deterministic testing possible — do not break it for convenience.
 
 ### 3.4 Logging & Debug Output
@@ -207,7 +207,7 @@ cargo test --workspace --doc                      # nextest does not cover docte
 ## 8. Prohibited
 
 1. Committing `todo!()` / `unimplemented!()` stub code to the mainline (unless the user explicitly requests a skeleton first).
-2. `unsafe` without a `// SAFETY:` comment, or `unsafe` anywhere outside `crates/ime-fcitx5/src/ffi/**` and `crates/ime-dict/src/mmap.rs`.
+2. `unsafe` without a `// SAFETY:` comment, or `unsafe` anywhere outside `crates/ime-fcitx5/src/ffi/**`, `crates/ime-ui-addon/src/ffi/**` and `crates/ime-dict/src/mmap.rs`.
 3. `unwrap()` / `expect()` / `panic!` in non-test code for recoverable errors (0.4 rule 7).
 4. Deleting or bypassing tests to make the build pass.
 5. Unreviewed new dependencies, or major-version upgrades without notifying the user.

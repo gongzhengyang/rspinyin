@@ -11,6 +11,12 @@ description = "rspinyin view layer: Slint platform integration, software rasteri
 [dependencies]
 ime-types.workspace = true
 ime-config.workspace = true
+slint.workspace = true
+rustix.workspace = true
+x11rb.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
 
 [lints]
 workspace = true

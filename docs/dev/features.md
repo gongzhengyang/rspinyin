@@ -1,6 +1,8 @@
 # rspinyin 现代拼音输入法开发任务矩阵
 
-> 文档版本: v1.3 ｜ 系统形态: Desktop GUI（Linux 桌面输入法：Fcitx5 进程内插件 + 自绘候选框渲染线程） ｜ 架构基线: Rust 2024 + Slint 1.x（**Royalty-free 2.0 许可**，软件光栅优先）+ Fcitx5 5.1 C++/C ABI ｜ 关联 ADR: [adr/0000-upstream-decisions.md](adr/0000-upstream-decisions.md)（Slint 许可 + 词库来源，已冻结，含实测证据）；`adr/0001-frozen-boundary-contracts.md` 待 TASK-1.01.03 建立 ｜ 最后同步 Commit: `<未初始化 git 仓库>` ｜ 维护约定: 代码演进后必须回写《设计假设清单》(第 1 节)、WBS 追溯矩阵 (5.1) 与任务实施状态；任何假设被推翻时，同步修正所有受影响的 NFR 与验收标准；**任何许可相关的变更必须新开 ADR 并回写 0.4、0.5.2、6.1、6.3 与相关任务卡**
+> 文档版本: v1.4 ｜ 系统形态: Desktop GUI（Linux 桌面输入法：Fcitx5 进程内插件 + 自绘候选框渲染线程） ｜ 架构基线: Rust 2024 + Slint 1.x（**Royalty-free 2.0 许可**，软件光栅优先）+ Fcitx5 5.1 C++/C ABI ｜ 关联 ADR: [adr/0000-upstream-decisions.md](adr/0000-upstream-decisions.md)（Slint 许可 + 词库来源，已冻结，含实测证据）；`adr/0001-frozen-boundary-contracts.md` 待 TASK-1.01.03 建立 ｜ 最后同步 Commit: `<未初始化 git 仓库>` ｜ 维护约定: 代码演进后必须回写《设计假设清单》(第 1 节)、WBS 追溯矩阵 (5.1) 与任务实施状态；任何假设被推翻时，同步修正所有受影响的 NFR 与验收标准；**任何许可相关的变更必须新开 ADR 并回写 0.4、0.5.2、6.1、6.3 与相关任务卡**
+
+**v1.4 变更摘要（2026-09-29）**：由候选框 UI 工艺审计（`docs/dev/opt-ui.md`）暴露的三处**规范内部矛盾**，经裁决后修正第 3 节。三项修正：(1) **3.1.4 的 4dp 规则与 3.1.1 表自相矛盾**——3.1.1 给出 8 个非 4 倍数尺寸（`header-height 34dp`、`header-padding-h 10dp`、`header-text-gap 6dp`、`cell-padding-h 10dp`、`cell-padding-v 6dp`、`number-gap 6dp`、`annotation-gap 6dp`、`grid-gap 6dp`），而 3.1.4 只允许 1dp 描边与 6dp 箭头两个例外；另有 3.1.2 的内层阴影下移 `1dp`（`shadow-inner-offset-y`）同样未列。现改为**显式例外清单**，规则本身保留（新值仍须为 4 的倍数）；(2) **候选单元圆角由 `8dp` 改为 `4dp`**——容器圆角 12dp + 内边距 8dp 的同心内圆角为 `12 − 8 = 4dp`，原 `8dp` 使网格四角出现"外方内圆"破绽；(3) **`text.annotation` 明确为"不叠加"用法**——3.2 的 Token α 与 3.1.1 的 `opacity` 不得相乘，否则序号有效 α 仅 `0.48 × 0.55 = 0.264`（对比度 ≈ 2.35:1），数字键提示不可读。连带修改：3.1.1（候选单元圆角行）、3.1.4（例外清单）、3.2（`text.annotation` 行注记）。**代码侧同步**：`crates/ime-ui/ui/candidate.slint` 的 `cell-radius` 常量与 `crates/ime-ui/src/layout/metrics.rs` 的断言。
 
 **v1.3 变更摘要（2026-09-29）**：登记开发机（WSL2 + WSLg）的**实测验证边界**到 0.5.5，并把"哪些 `[实验室]`/`[视觉]` 验收项本机不可验证"清单化。**关键结论：R-01（Fcitx5 C++/Rust 混编）可在本机闭环，R-02（Wayland 四档）完全不可验证**——`wlr-protocols` 未安装且 WSLg 的合成器是 Weston（`ASM-13` 点名的"四档之外"），因此必须在 W2 前准备外部环境。连带修改：0.5.5（设备表 + 本机实测基线 + 不可验证清单 + 排期推论）、6.1 R-02、`TASK-1.04.07`。
 
@@ -935,7 +937,7 @@ pub enum DictError {
 | 候选单元最小宽度 | `64dp` |
 | 候选单元高度 | `36dp` |
 | 候选单元内边距 | 水平 `10dp`，垂直 `6dp` |
-| 候选单元圆角 | `8dp` |
+| 候选单元圆角 | `4dp`（**同心圆角**：`容器圆角 12dp − 容器内边距 8dp`） |
 | 候选序号字号 | `11sp / 500`，`opacity 0.55`，与候选文本间距 `6dp` |
 | 候选文本字号/字重 | `15sp / 400`；**首选项与键盘高亮项为 `15sp / 500`** |
 | 候选注音字号 | `11sp / 400`，`opacity 0.50`，与候选文本间距 `6dp` |
@@ -979,7 +981,22 @@ pub enum DictError {
 
 #### 3.1.4 4dp 网格与字阶
 
-所有间距与尺寸必须是 `4dp` 的整数倍；字号阶为 `11 / 14 / 15 / 16 / 18sp`。禁止出现 `13dp`、`7sp` 这类值。例外仅两处：描边 `1dp`、光标箭头 `6dp` 高。
+所有间距与尺寸**默认**必须是 `4dp` 的整数倍；字号阶为 `11 / 14 / 15 / 16 / 18sp`。禁止出现 `13dp`、`7sp` 这类值。
+
+**显式例外清单**（除此之外的任何新尺寸都必须落在 4dp 网格上；新增例外必须同时更新本表与 `scripts/check-ui-spec.sh` 的白名单）。**「常量」列是 `ui/candidate.slint` 的 `CandidateMetrics` 属性名，脚本按此列构造白名单，不得在脚本里另抄一份**：
+
+| 例外值 | 常量 | 理由 |
+|---|---|---|
+| `1dp` | `stroke-width`（容器描边）、`separator-height`（Header 分隔线）、`shadow-inner-offset-y`（内层阴影下移）、候选单元 Focus Ring 描边 | 亚像素级线条与偏移；2dp 会显得粗笨，0.5dp 在 1x 下无法稳定绘制 |
+| `6dp` | `cursor-arrow-height`（光标箭头高）、`header-text-gap`、`grid-gap`、`cell-padding-v`、`number-gap`、`annotation-gap` | 紧凑网格下的呼吸量；提到 8dp 会让单行候选数与单屏行数同时下降，而 4dp 又不足以把序号、文本、注音三者在视觉上分开 |
+| `10dp` | `header-padding-h`、`cell-padding-h` | 序号槽位与文本之间的光学平衡；8dp 偏挤、12dp 偏松 |
+| `34dp` | `header-height` | `14sp` 拼音串的行高加 `6dp` 上下留白；压到 32dp 会挤压 CJK 字面框 |
+
+> **不适用本规则的量**：字号（由上面的字阶约束，`font-size-header 14sp` / `font-size-cell 15sp` / `font-size-small 11sp`）、
+> 计数（`shadow-band-count`、`max-pages`、`min-per-row`、`max-per-row`、`max-per-row-limit`）、
+> 比例（`shadow-band-opacity`、`shadow-inner-opacity`）。脚本只对 `length` 类型的常量断言。
+
+> **本清单的历史原因**：3.1.1 的尺寸表先于本规则定稿，两者在初稿中相互矛盾（8 个值不是 4 的倍数却不属于当时声明的两处例外），使得按 3.1.4 编写的断言脚本无法通过。v1.4 裁决为**保留规则、显式列例外**，而非把尺寸改成 4 的倍数——后者会让候选框整体变高变松，并减少单行可容纳的候选数。
 
 ### 3.2 色彩 Token 与深浅色
 
@@ -989,7 +1006,7 @@ pub enum DictError {
 | `surface.stroke` | `rgba(255,255,255,0.10)` | `rgba(0,0,0,0.06)` | 容器描边 |
 | `text.primary` | `#F2F2F7` | `#1C1C1E` | 候选文本、拼音串 |
 | `text.secondary` | `rgba(242,242,247,0.62)` | `rgba(28,28,30,0.60)` | 状态区文本 |
-| `text.annotation` | `rgba(242,242,247,0.48)` | `rgba(28,28,30,0.45)` | 注音、候选序号 |
+| `text.annotation` | `rgba(242,242,247,0.48)` | `rgba(28,28,30,0.45)` | 注音、候选序号（**有效 α 见下方注记**） |
 | `text.separator` | `rgba(242,242,247,0.40)` | `rgba(28,28,30,0.35)` | 拼音切分符 `'` |
 | `accent.default` | `#4C9AFF` | `#0A6CFF` | 强调色（跟随系统强调色时覆盖） |
 | `accent.on` | `#FFFFFF` | `#FFFFFF` | 强调色上的文本（当前未使用，预留） |
@@ -1007,6 +1024,10 @@ pub enum DictError {
 - `text.primary` 在 `surface.base` 上的对比度 ≥ **7:1**（AAA 正文级）。
 - 最坏情况下 `surface.base` 叠加在纯白（暗色主题）或纯黑（亮色主题）背景之上，`text.primary` 对比度仍 ≥ **4.5:1**。计算依据：暗色 `#1C1C1E @0.85` 叠于 `#FFFFFF` 得 `#3E3E40`，`#F2F2F7` 对其对比度 ≈ 8.9:1；亮色 `#FFFFFF @0.85` 叠于 `#000000` 得 `#D9D9D9`，`#1C1C1E` 对其对比度 ≈ 14:1。
 - `state.selected.bg` 之上的 `text.primary` 对比度 ≥ **4.5:1**。
+
+**`text.annotation` 的 α 不叠加（v1.4 裁决）**：本表的 Token α（暗 `0.48` / 亮 `0.45`）与 3.1.1 给序号、注音规定的 `opacity`（`0.55` / `0.50`）**不得相乘**。3.1.1 的 `opacity` 是**最终有效 α**，实现方式是给文本元素写 `opacity` 而颜色取不透明的 `text.primary`，而不是用本 Token 再乘一次。
+
+> **为什么**：按字面叠加得到序号有效 α = `0.48 × 0.55 = 0.264`、注音 `0.48 × 0.50 = 0.24`，在 `#1C1C1E` 底上对比度约 **2.35:1 / 2.2:1**——候选序号是候选框最核心的键盘入口（用户靠它决定按几上屏），这个对比度不可读。而 3.1.1 特意给出 `0.55` 与 `0.50` 两个**不同**的数值，说明设计意图是"序号略亮于注音"这一关系；相乘后两者差异被压到 0.264 与 0.24，关系不可辨。按"取代"读法，两者分别为 0.55 与 0.50，对比度约 6.3:1 与 5.6:1，均达 `CONTRAST_MINIMUM`。
 
 **深浅色切换来源优先级**：XDG Portal `org.freedesktop.appearance::color-scheme`（0 = 未指定 → 暗色，1 = 偏好暗色，2 = 偏好亮色）→ `GTK_THEME` 环境变量含 `dark` 子串 → `QT_STYLE_OVERRIDE` → 默认暗色。切换延迟 ≤ 300ms（含 120ms crossfade 过渡）。系统强调色（`org.freedesktop.appearance::accent-color`，Portal 版本 ≥ 2）可用时覆盖 `accent.default`。
 
@@ -1297,7 +1318,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：无
   - 代码落地锚点：`Cargo.toml`、`crates/*/Cargo.toml`、`crates/ime-fcitx5/build.rs`、`.gitignore`
   - 复杂度：中 | 预估工时：2.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：交付一个可编译、可测试、可跨发行版构建的 Rust workspace 骨架，并在构建期探测 Fcitx5 开发环境。完成的定义：`git clone` 后 `cargo check --workspace` 全绿（在装有 `libfcitx5core-dev` 的环境），且缺失 Fcitx5 开发包时给出**可读的构建期错误**而非晦涩的链接失败。
 - **架构设计与数据流**：
   - 上游：无。下游：所有任务。
@@ -1348,6 +1369,18 @@ CP 总工期 = 29.0 人天（9 个任务）
   4. `scripts/check-deps.sh` 输出 `PASS`，且反向验证（临时把 `ime-dict` 加入 `ime-core` 的依赖）能使其以非零码退出。[自动]
   5. `git log --oneline` 至少 1 个 commit；`git status --porcelain` 为空。[自动]
 
+- **验收记录**（2026-09-29）：
+  - **交付物**：`Cargo.toml`（workspace 依赖收敛与 lints）、7 个 `crates/*/Cargo.toml`、`crates/ime-fcitx5/build.rs`、`.gitignore`、`rust-toolchain.toml`、`clippy.toml`、`scripts/check-deps.sh`。
+  - **验证命令与结果**：
+    - 判据 1：`cargo check --workspace --all-targets` 通过；纯 Rust 构建不依赖 Fcitx5 开发包（`fcitx5-host` 为可选 feature）。
+    - 判据 2：`cargo check -p ime-fcitx5 --features fcitx5-host` 通过；`cargo build --release -p ime-fcitx5 --features fcitx5-host` 产出 `target/release/librspinyin.so`，`nm -D --defined-only` 可见 `fcitx_addon_factory_instance`。本机 Fcitx5 版本 5.1.7。
+    - 判据 3：以 `PKG_CONFIG_LIBDIR=/nonexistent PKG_CONFIG_PATH=/nonexistent` 模拟移除开发包并强制 `build.rs` 重跑，构建以 `platform/fcitx5/dev-missing: could not find the Fcitx5 development package` 失败，并打印 Debian/Ubuntu、Fedora、Arch 的安装指引与"可改用无 `fcitx5-host` 的纯 Rust 构建"的提示——不是链接器符号错误。
+    - 判据 4：`scripts/check-deps.sh` 输出 `PASS (8 workspace crates, 16 internal edges)`；`--self-test`（含反向依赖注入）通过。
+    - 判据 5：`git log --oneline` 有 2 个 commit；提交基线处 `git status --porcelain` 为空。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85，由 `rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7（`libfcitx5core-dev`/`libfcitx5utils-dev` 已安装）、链接器 clang + mold。
+  - **已知限制**：
+    1. `build.rs` 只声明了 `rerun-if-changed`，未声明 `rerun-if-env-changed`；因此判据 3 的复现需要先 `touch crates/ime-fcitx5/build.rs` 才能触发重跑。这是验收手法上的限制，不影响判据本身成立。
+
 ---
 
 #### `TASK-1.01.02` 质量门禁、审计脚本与 CI 基线
@@ -1358,7 +1391,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.01.01`
   - 代码落地锚点：`.github/workflows/ci.yml`、`justfile`、`scripts/check-unsafe.sh`、`scripts/check-no-network.sh`、`scripts/check-slint-leak.sh`、`scripts/check-dict-sources.sh`、`docs/dev/budgets.json`
   - 复杂度：中 | 预估工时：2.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：把 0.3 的四条 Rust 质量命令与 0.4 的三条架构规则变成**机器可判定的 CI 门禁**，使后续所有任务有统一的"完成"标准。
 - **架构设计与数据流**：
   - 上游：`TASK-1.01.01` 的 workspace。下游：`TASK-1.06.03`（复用 `check-no-network.sh`）、全部任务（验收依据）。
@@ -1414,6 +1447,21 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. `quality` job 冷缓存耗时 ≤ 6 分钟（记录在验收记录中）。[性能]
   6. `scripts/check-slint-leak.sh` 对 `cargo public-api -p ime-ui` 的输出断言无 `slint::` 前缀符号；`--self-test` 通过（在 `ime-ui` 中临时加一个 `pub fn f() -> slint::Window` 使其失败）。[自动]
   7. `scripts/check-dict-sources.sh` 断言 `data/raw/*.tsv` 的每个来源都在 `data/sources.toml` 白名单内且带许可证标识与 SHA256；`--self-test` 通过（引入一个非白名单来源使其失败）。[自动]
+
+- **验收记录**（2026-09-29）：
+  - **交付物**：`.github/workflows/ci.yml`（4 个 job）、`justfile`（`check`/`ci`/`check-*`/`check-self-tests` 等 recipe）、五个审计脚本（`check-deps.sh`、`check-unsafe.sh`、`check-no-network.sh`、`check-slint-leak.sh`、`check-dict-sources.sh`）、`docs/dev/budgets.json`、`xtask/src/budget.rs`。
+  - **验证命令与结果**：
+    - 判据 1：`just check`（`cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets --all-features -- -D warnings` → `cargo nextest run --workspace --all-features` → `cargo test --workspace --doc`）在提交基线上全绿；四条命令与 0.3 逐字一致。
+    - 判据 2：`just check-self-tests` 五个脚本的 `--self-test` 全部通过（注入违规 → 非零退出；移除 → 零退出）。
+    - 判据 3：`cargo run -p xtask -- budget --validate` → `budget: schema v1 - 21 thresholds match docs/dev/features.md section 0.5.3`。
+    - 判据 6：`check-slint-leak: PASS (1 public API lines, no Slint symbol)`；`--self-test` 通过（合成 API 文档，检测能力已验证）。
+    - 判据 7：`check-dict-sources: PASS (5 raw source(s) verified against data/sources.toml, 5 declared)`；`--self-test` 通过（5 类违规可检出）。
+  - **本次修复的门禁缺陷**（2026-09-29）：`check-no-network.sh` 把禁用段 `tls` 按"任意位置"匹配，于是把 `scoped-tls-hkt` 误判为网络 crate —— 该 crate 是零依赖的 scoped thread-local 存储，由 Slint 引入，且它阻断了整条 UI 轨道（8 个任务）。现 `tls` 仅作为首段或末段匹配（见脚本内 `POSITIONAL_SEGMENTS` 及其理由注释），真实的 `native-tls`/`tls-api` 仍被拦截；`--self-test` 相应新增 `banned-tls-variant`（`native-tls` 必须失败）与 `benign-tls-lookalike`（`scoped-tls-hkt` 必须通过）两个用例，注入违规计数由 3 升为 4。修复后带 Slint 的依赖闭包（536 个包）通过，`just ci` 仍全绿。
+  - **环境**：Rust 1.98.0、cargo-nextest 0.9.143、Linux 6.18.40.1-microsoft-standard-WSL2、python3（审计脚本依赖）。
+  - **已知限制（本机不可验证）**：
+    1. 判据 4（CI 的 4 个 job 在首次 push 后全绿）无法在本机验证——本仓库尚无远端，`git push` 亦按 AGENTS.md 第 7 节需显式授权。`.github/workflows/ci.yml` 的内容已静态核对，但其真实运行结果待首次 push 后补记。
+    2. 判据 5（`quality` job 冷缓存耗时 ≤ 6 分钟）未测量，同样待首次 push 后在 CI 上取值。
+    3. `check-slint-leak.sh` 依赖 `cargo-public-api`；该工具不在本机默认工具链内，脚本已按缺失情形给出提示（本机自检时已可用）。
 
 ---
 
@@ -1590,7 +1638,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - 前置依赖：`TASK-1.02.01`
   - 代码落地锚点：`crates/ime-core/src/input/buffer.rs`
   - 复杂度：中 | 预估工时：2.0 人天
-  - 实施状态：`[ ] 待开始`
+  - 实施状态：`[x] 已完成`
 - **目标与职责**：维护输入串的可变缓冲，定义 Backspace 的"按音节删除"语义、光标移动边界与清空行为。完成的定义：Backspace 一次删除**整个末尾音节**（而非一个字母），且光标移动不破坏 UTF-8 与音节边界不变量。
 - **架构设计与数据流**：
   - 上游：`KeyAction`（来自 `TASK-1.04.04` 的按键翻译）。下游：`SyllableDag::build`、`TASK-1.02.04`。
@@ -1639,6 +1687,23 @@ CP 总工期 = 29.0 人天（9 个任务）
   3. 达到 64 字节上限后 `push_char` 返回 `DecodeTooLong`，且 `raw` 不变。[自动]
   4. 单次 `push_char`/`backspace` ≤ 1µs（`criterion` 基准 `input/buffer_ops`）。[性能]
 
+- **验收记录**（2026-09-29）：
+  - **交付物**：`crates/ime-core/src/input/mod.rs`（模块根与导出）、`crates/ime-core/src/input/buffer.rs`（664 行，含约 300 行测试）、`crates/ime-core/benches/input.rs`（criterion 组 `input`）。
+  - **验证命令与结果**：
+    - `cargo nextest run -p ime-core` → **60/60 通过**，其中本卡新增 18 个用例，含一次 10000 例的 `proptest` 不变量检查（验收 2）。
+    - `cargo bench -p ime-core --bench input` → `input/buffer_ops` = **23.5 ns**（判据 ≤ 1µs，余量约 42 倍，验收 4）。
+    - `cargo fmt --all -- --check` 无输出；`cargo clippy -p ime-core --lib -- -D warnings` 零告警；`cargo test --workspace --doc` 全绿。
+    - 表驱动序列 `nihaoa → nihao → ni → ""` 与三种 `BackspaceOutcome` 逐项匹配（验收 1）；64 字节上限后 `push_char` 返回 `DecodeTooLong` 且 `raw` 不变（验收 3）。
+  - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、criterion 0.8.2、proptest 1.11.0、cargo-nextest 0.9.143。
+  - **已知限制**：
+    1. `push_char` 语义定为"末尾追加 + caret 跟随到末尾"；字符级光标编辑（含重新切分）按卡片排入 `TASK-2.02.03`，故不在 caret 处插入。
+    2. `BackspaceOutcome::BufferEmpty` 语义为"本次按键后缓冲区为空"，因此清空那一次返回 `BufferEmpty` 而非 `RemovedSyllable`；`TASK-1.03.07` 须按此实现。
+    3. `caret = 0` 时的 Backspace 删除"光标所指字符"——卡片未定义该边界，已在方法文档中写明并测试。
+    4. `set_boundaries` 仅在切分成功（`best_segmentation_hint` 为真）时回写；把失败时的整串 pass-through 网格传入会使一次 Backspace 删掉整串。该调用约定已写入方法文档，`TASK-1.03.07` 与 `TASK-1.02.05` 须遵守。
+    5. 时间戳由调用方经 `mark_session_start(at_unix_ms)` 盖戳——`ime-core` 不得读时钟（0.4 规则 4），字段在未盖戳时为 0。
+    6. 测试模块约 300 行，超过 3.6 的"超 200 行迁往 `tests/`"阈值；因用例引用私有项（`is_valid_grid`、`last_boundaries`），迁出须公开内部细节，故保留原处。
+    7. `input/buffer_ops` 这一 criterion 用例名与 `TASK-1.02.07` 的解码基准存在命名冲突风险，合并时二者只保留一处。
+
 ---
 
 #### `TASK-1.02.03` 语言模型评分层与用户词频融合
@@ -1679,7 +1744,7 @@ CP 总工期 = 29.0 人天（9 个任务）
     语义：用户打过 1 次的词比从未打过的词多得 `λ_user · 1/8 ≈ 0.1`（Q8.8 的 26），打 8 次多得 `λ_user · 3/8 ≈ 0.3`。**限制上限**：`user_term` 最大 `λ_user · 2`（Q8.8 的 410），防止某个词被打 10 万次后永久霸榜。
   - **长度奖励**：`λ_len · (char_count - 1) · 256`，即 2 字词比 1 字词多得 0.35，4 字词多得 1.05。作用是偏好长词（成语、专名）。
   - **段数惩罚**：`-λ_seg · seg_count · 256`，即每多一段扣 0.5。作用是偏好"少切分"的整句。
-  - **权重默认值与调优**：默认 `λ = (1.0, 0.6, 0.35, 0.5, 0.8)`。`TASK-1.02.03` 附带一个离线调优脚本 `xtask/src/tune.rs`：读入 `tests/fixtures/lm_golden.tsv`（形如 `pinyin<TAB>期望首选词<TAB>权重`，≥ 200 条），网格搜索 `λ` 使首选词命中率最大。**该脚本不参与 CI**（耗时），只在权重变更时手动跑并把新权重写回 `DecodeConfig` 默认值 + `docs/dev/lm-weights.md`。
+  - **权重默认值与调优**：默认 `λ = (1.0, 0.6, 0.35, 0.5, 0.8)`。`TASK-1.02.03` 附带一个离线调优脚本 `xtask/src/tune.rs`（模块根；`tune/` 下按职责分为 `io`/`lexicon`/`eval`/`grid`/`holdout`）：读入 `tests/fixtures/lm_golden.tsv`（形如 `pinyin<TAB>期望首选词<TAB>权重`，≥ 200 条），网格搜索 `λ` 使首选词命中率最大。**该脚本不参与 CI**（耗时），只在权重变更时手动跑并把新权重写回 `DecodeConfig` 默认值 + `docs/dev/lm-weights.md`。
   - **留出测试集（可观测性缺口补齐）**：`lm_golden.tsv` 的 200 条**太小，无法检出 1.9% 量级的差异**（ADR-0000 的实测结论），因此必须另建 `tests/fixtures/lm_holdout.tsv`（**≥ 5000 条**，从语料切分而来、与 `lm_golden.tsv` 无重叠），格式同为 `pinyin<TAB>期望首选词`。用途：(a) 建立**基线错误率**并写入验收记录；(b) 度量 `L3b` 展开阈值/`CAP`、词源增删、权重调整的真实影响。该集合参与 CI（一次全量解码 ≥ 5000 条，实测应 < 3 秒，可接受）。**判定口径**：以"首选词命中率"与"目标词是否出现在前 9 个候选中"两个指标分别记录——前者衡量排序质量，后者衡量**可达性**（`L3b` 展开修的是后者）。
   - **定点运算纪律**：禁止在 `Scorer` 内出现 `f32`/`f64`。`log2_q8` 用整数实现的 `log2` 近似（对 `prob_num/prob_den` 先规格化到 `[256, 512)` 区间，再用 8 项查表插值）。
 - **底层与非功能约束 (NFR)**：

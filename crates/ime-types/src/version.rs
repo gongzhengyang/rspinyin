@@ -15,10 +15,17 @@ use crate::error::ImeError;
 
 /// ABI version of the Rust / C++ vtable contract.
 ///
-/// Bumped whenever a vtable field is appended: a C struct has no other
+/// Bumped whenever a vtable's layout changes: a C struct has no other
 /// compatibility mechanism, so this version is what stops an old host from
 /// calling into a newer plugin.
-pub const RSPINYIN_ABI_VERSION: u32 = 1;
+///
+/// Version 2 is the two-addon split (ADR-0003, ADR-0004). The engine's table lost
+/// the two user-interface slots, `on_input_panel_update` and `on_cursor_rect`,
+/// which became the first two entries of the user-interface addon's own table in
+/// `crates/ime-ui-addon`. Both tables carry this same constant: it identifies the
+/// revision of the project's Rust/C++ contract, and the two libraries are built
+/// with their own glue so they can never disagree at run time.
+pub const RSPINYIN_ABI_VERSION: u32 = 2;
 
 /// Format version of the compiled dictionary container.
 ///

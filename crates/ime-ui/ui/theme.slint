@@ -1,0 +1,70 @@
+// The candidate window's colour tokens (docs/dev/features.md 3.2), the light/dark
+// switch and the acrylic base alpha.
+//
+// Imported by `candidate.slint`; this file is not compiled as a root document.
+//
+// `src/theme.rs` writes exactly three of these properties -- `dark`, `accent` and
+// `base-alpha` -- and every other token derives from them. Three writes are what
+// makes a theme switch a property update rather than a rebuild, which is what keeps
+// a dark-to-light switch from flashing.
+//
+// The values are the 3.2 table's, spelled the way the table spells them, because
+// `scripts/check-ui-spec.sh` compares the two line by line; each token carries the
+// table row it comes from. `src/theme.rs` repeats the same palette, because the
+// contrast self-check has to evaluate it without a renderer; the two copies are
+// pinned to each other by the tests there and by that script, and no third copy may
+// exist.
+//
+// Alphas are written as the 0..1 fractions the table uses. Slint rounds them into
+// the 8-bit channel with `round(alpha * 255)`, which is the same rounding
+// `src/theme.rs` applies, so the two sides agree byte for byte.
+
+export global Theme {
+    // True while the dark palette is in use. Written by `src/theme.rs`; `true` is the
+    // documented default for a system that reports no preference.
+    in property <bool> dark: true;
+
+    // 3.2 `accent.default`. Written by `src/theme.rs` when the portal or the
+    // configuration supplies one; the default follows the scheme.
+    in property <color> accent: dark ? #4C9AFF : #0A6CFF;
+
+    // 0.85 while the compositor blurs what is behind the window, 1.0 when it does
+    // not. Written by `src/theme.rs` from the negotiation result and the contrast
+    // self-check; it is the only value the degradation ladder changes.
+    in property <float> base-alpha: 0.85;
+
+    // 3.2 `surface.base`, and the fill the panel is painted with. The fill is the
+    // only token that carries the acrylic alpha: every other token is composited
+    // over it by the renderer.
+    out property <color> surface-base: dark ? #1C1C1E : #FFFFFF;
+    out property <color> surface-fill: surface-base.with-alpha(base-alpha);
+
+    // 3.2 `surface.stroke`
+    out property <color> surface-stroke: dark ? rgba(255,255,255,0.10) : rgba(0,0,0,0.06);
+
+    // 3.2 `text.*`
+    out property <color> text-primary: dark ? #F2F2F7 : #1C1C1E;
+    out property <color> text-secondary: dark ? rgba(242,242,247,0.62) : rgba(28,28,30,0.60);
+    out property <color> text-annotation: dark ? rgba(242,242,247,0.48) : rgba(28,28,30,0.45);
+    out property <color> text-separator: dark ? rgba(242,242,247,0.40) : rgba(28,28,30,0.35);
+
+    // 3.2 `accent.on`: text drawn on top of a solid accent fill. Reserved.
+    out property <color> accent-on: #FFFFFF;
+
+    // 3.2 `state.*`
+    out property <color> state-hover: dark ? rgba(242,242,247,0.08) : rgba(28,28,30,0.06);
+    out property <color> state-selected-bg: accent.with-alpha(dark ? 0.18 : 0.14);
+    out property <color> state-selected-stroke: accent.with-alpha(dark ? 0.55 : 0.50);
+    out property <color> state-pressed: dark ? rgba(242,242,247,0.14) : rgba(28,28,30,0.12);
+
+    // 3.2 `separator`
+    out property <color> separator: dark ? rgba(242,242,247,0.10) : rgba(28,28,30,0.08);
+
+    // 3.2 `shadow.*`: the two material layers of 3.1.2.
+    out property <color> shadow-inner: dark ? rgba(0,0,0,0.35) : rgba(0,0,0,0.08);
+    out property <color> shadow-outer: dark ? rgba(0,0,0,0.42) : rgba(0,0,0,0.16);
+
+    // 3.2 `status.dot.*`
+    out property <color> status-dot-active: accent;
+    out property <color> status-dot-idle: dark ? rgba(242,242,247,0.35) : rgba(28,28,30,0.30);
+}

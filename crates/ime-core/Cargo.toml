@@ -12,5 +12,23 @@ description = "rspinyin core decoding engine: syllable segmentation, word lattic
 ime-types.workspace = true
 smallvec.workspace = true
 
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+
+# criterion supplies its own harness, so the default libtest harness must be turned off
+# per target; an auto-discovered bench would otherwise fail to link two `main`s.
+[[bench]]
+name = "input"
+harness = false
+
+[[bench]]
+name = "passthrough"
+harness = false
+
+[[bench]]
+name = "decode"
+harness = false
+
 [lints]
 workspace = true

@@ -18,6 +18,9 @@
 # Matching is per dash/underscore-separated segment of the crate name, so
 # variants such as `hyper-util`, `curl-sys`, `tokio-rustls`, `quinn-proto` and
 # `native-tls` are all caught, while unrelated names (`surface-nets`) are not.
+# `tls` is the single exception: it is matched only as a leading or trailing
+# segment, because it abbreviates thread-local storage as well as transport
+# security and would otherwise flag `scoped-tls-hkt`. See POSITIONAL_SEGMENTS.
 # The OpenSSL stack is banned wholesale rather than by "network part": an
 # offline input method has no legitimate use for it.
 #
@@ -124,6 +127,24 @@ BANNED_SEGMENTS = frozenset(
     }
 )
 
+# `tls` is the one name that is only banned in a leading or trailing segment.
+# It abbreviates both Transport Layer Security and thread-local storage, and the
+# crates this gate exists to stop -- `native-tls`, `tokio-native-tls`, `tls-api` --
+# all carry it at one end. Matched in a medial position it would flag
+# `scoped-tls-hkt`, a zero-dependency scoped thread-local helper that Slint pulls
+# in and that cannot open a socket. Every other banned name is position-independent.
+POSITIONAL_SEGMENTS = frozenset({"tls"})
+
+
+def banned_segments(name):
+    """Segments of `name` that put it in the banned set."""
+    segments = name.replace("_", "-").split("-")
+    hits = {segment for segment in segments if segment in BANNED_SEGMENTS}
+    for segment in segments:
+        if segment in POSITIONAL_SEGMENTS and segment not in (segments[0], segments[-1]):
+            hits.discard(segment)
+    return hits
+
 # Crates that are only banned while their network features are enabled.
 NET_FEATURE_CRATES = ("tokio", "async-std")
 NET_FEATURE_PREFIX = "net"
@@ -186,10 +207,14 @@ if mode == "banned-crate":
     inject_package("reqwest")
 elif mode == "banned-variant":
     inject_package("openssl-sys")
+elif mode == "banned-tls-variant":
+    inject_package("native-tls")
 elif mode == "net-feature":
     enable_feature("tokio", "net")
 elif mode == "benign-lookalike":
     inject_package("surface-nets")
+elif mode == "benign-tls-lookalike":
+    inject_package("scoped-tls-hkt")
 elif mode != "none":
     sys.exit(f"check-no-network: unknown self-test mode: {mode}")
 
@@ -218,8 +243,7 @@ scanned = 0
 
 for package_id, name in sorted(names.items(), key=lambda item: item[1]):
     scanned += 1
-    segments = name.replace("_", "-").split("-")
-    banned = sorted({segment for segment in segments if segment in BANNED_SEGMENTS})
+    banned = sorted(banned_segments(name))
     if banned:
         path = path_from_workspace(package_id)
         where = f" (dependency path: {' -> '.join(path)})" if path else ""
@@ -305,10 +329,12 @@ if [ "$mode" = "self-test" ]; then
     expect_clean none "the unmodified workspace"
     expect_violation banned-crate "reqwest" "a banned crate (reqwest)"
     expect_violation banned-variant "openssl-sys" "a banned variant (openssl-sys)"
+    expect_violation banned-tls-variant "native-tls" "a trailing-segment TLS crate (native-tls)"
     expect_violation net-feature "tokio: network feature enabled" "tokio with the net feature"
     expect_clean benign-lookalike "an unrelated name (surface-nets)"
+    expect_clean benign-tls-lookalike "a medial tls that means thread-local storage (scoped-tls-hkt)"
     expect_clean none "the workspace after removing the violations"
-    echo "check-no-network: self-test PASS (3 injected violations detected, clean graph accepted)"
+    echo "check-no-network: self-test PASS (4 injected violations detected, clean graph accepted)"
     exit 0
 fi
 

@@ -1,8 +1,15 @@
 //! rspinyin host integration layer.
 //!
-//! Registers the plugin with Fcitx5 as an addon, takes over `UserInterface` so the
-//! candidate window can be self-drawn, and translates between Fcitx5's C++ object
-//! model and the frozen Rust contract in `ime-types`.
+//! Registers the plugin with Fcitx5 as an input-method addon and translates between
+//! Fcitx5's C++ object model and the frozen Rust contract in `ime-types`.
+//!
+//! # This crate is the engine addon only
+//!
+//! The user-interface role lives in `crates/ime-ui-addon`, which builds the second
+//! cdylib Fcitx5 loads. The two are separate addons because Fcitx5 picks the active
+//! user interface from the addons it discovered with `Category=UI`, and an addon
+//! belongs to exactly one category — so one addon cannot be both the engine and the
+//! user interface. See `docs/dev/adr/0003-ui-role-separate-addon.md`.
 //!
 //! # Raw-pointer boundary
 //!
@@ -15,8 +22,8 @@
 //! tests run on machines without the Fcitx5 development packages installed.
 
 pub mod addon;
-pub mod cursor;
-pub mod screen;
+pub mod engine;
+pub mod privacy_impl;
 
 // The `unsafe_code` allowance is scoped to this one module declaration rather than
 // applied crate-wide, so raw pointers stay confined to the FFI boundary the architecture

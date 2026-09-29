@@ -1,0 +1,138 @@
+//! The holdout generator: a held-out evaluation set derived from the corpus.
+//!
+//! Responsibility: pick the most frequent corpus words the golden set does not already
+//! contain, by word and by key, and write them out as the set a tuning run is measured
+//! against.
+//!
+//! Boundaries: this layer writes exactly one file, and only once the whole selection has
+//! been made -- a corpus too small to fill the set must leave the previous file untouched
+//! rather than half-written. It never scores anything: a generated row carries no weight,
+//! because the set is drawn from corpus frequency, not from a measured preference.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
+
+use anyhow::{Context, Result, ensure};
+
+use super::io::{baseline_key, data_lines, load_l1, load_rows, read_text};
+use super::{MIN_HOLDOUT_ROWS, TuneArgs};
+
+/// Longest word a generated holdout row may name, in characters.
+const MAX_HOLDOUT_CHARS: usize = 6;
+
+/// Returns `true` for the Han ranges a holdout word may be made of.
+fn is_han(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x2_0000..=0x2_FA1F
+    )
+}
+
+/// Derives the holdout set from the corpus and writes it out.
+///
+/// The rows are the most frequent corpus words the evaluation set does not already
+/// contain, by word and by key, so the two sets never measure the same thing twice.
+///
+/// # Errors
+///
+/// Returns an error when a file cannot be read or written, or when the corpus
+/// cannot supply [`MIN_HOLDOUT_ROWS`] usable rows.
+pub(super) fn generate_holdout(root: &Path, args: &TuneArgs) -> Result<()> {
+    let l1 = load_l1(&root.join(&args.l1))?;
+    let evaluation = load_rows(&root.join(&args.eval))?;
+    let excluded_words: BTreeSet<&str> = evaluation.iter().map(|row| row.word.as_str()).collect();
+    let excluded_keys: BTreeSet<&str> = evaluation.iter().map(|row| row.key.as_str()).collect();
+
+    let corpus_path = root.join(&args.corpus);
+    let text = read_text(&corpus_path)?;
+    let (mut taken, skipped) = collect_candidates(&text, &l1, &excluded_words, &excluded_keys);
+    taken.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
+    taken.truncate(args.holdout_rows);
+    ensure!(
+        taken.len() >= MIN_HOLDOUT_ROWS,
+        "{}: only {} usable rows, {MIN_HOLDOUT_ROWS} are required",
+        corpus_path.display(),
+        taken.len()
+    );
+
+    let holdout_path = root.join(&args.holdout);
+    fs::write(&holdout_path, render_holdout(&taken))
+        .with_context(|| format!("cannot write {}", holdout_path.display()))?;
+    println!(
+        "tune: {} rows written to {} ({} skipped: bad-count {}, non-han {}, too-long {}, overlap {}, duplicate {})",
+        taken.len(),
+        holdout_path.display(),
+        skipped.iter().sum::<u64>(),
+        skipped[0],
+        skipped[1],
+        skipped[2],
+        skipped[3],
+        skipped[4]
+    );
+    Ok(())
+}
+
+/// Scans the corpus for rows the evaluation set does not already cover.
+///
+/// Returns the usable `(frequency, word, key)` rows, unsorted, together with the count of
+/// rejected lines by reason, in the order bad-count, non-han, too-long, overlap,
+/// duplicate. The counters are returned rather than logged so that the caller reports them
+/// once, with the row count it actually wrote.
+fn collect_candidates<'a>(
+    text: &'a str,
+    l1: &BTreeMap<char, String>,
+    excluded_words: &BTreeSet<&str>,
+    excluded_keys: &BTreeSet<&str>,
+) -> (Vec<(u32, &'a str, String)>, [u64; 5]) {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut taken: Vec<(u32, &'a str, String)> = Vec::new();
+    let mut skipped: [u64; 5] = [0; 5];
+    for (_, line) in data_lines(text) {
+        let mut columns = line.split('\t');
+        let word = columns.next().unwrap_or_default();
+        let Ok(count) = columns.next().unwrap_or_default().parse::<u32>() else {
+            skipped[0] += 1;
+            continue;
+        };
+        let Some(key) = baseline_key(word, l1) else {
+            skipped[1] += 1;
+            continue;
+        };
+        if !word.chars().all(is_han) {
+            skipped[1] += 1;
+            continue;
+        }
+        if word.chars().count() > MAX_HOLDOUT_CHARS {
+            skipped[2] += 1;
+            continue;
+        }
+        if excluded_words.contains(word) || excluded_keys.contains(key.as_str()) {
+            skipped[3] += 1;
+            continue;
+        }
+        if !seen.insert(word) {
+            skipped[4] += 1;
+            continue;
+        }
+        taken.push((count, word, key));
+    }
+    (taken, skipped)
+}
+
+/// Renders the holdout document: a header saying how to regenerate it, then one
+/// `key<TAB>word` row each.
+fn render_holdout(taken: &[(u32, &str, String)]) -> String {
+    let mut out = String::with_capacity(taken.len() * 24);
+    out.push_str("# rspinyin holdout evaluation set, generated by `xtask tune --gen-holdout`.\n");
+    out.push_str("# Regenerate rather than edit. Columns: pinyin <TAB> expected first choice.\n");
+    out.push_str("# The rows are the most frequent corpus words the golden set does not already\n");
+    out.push_str("# contain, by word or by key. Blank lines and `#` lines are skipped.\n");
+    for (_, word, key) in taken {
+        out.push_str(key);
+        out.push('\t');
+        out.push_str(word);
+        out.push('\n');
+    }
+    out
+}

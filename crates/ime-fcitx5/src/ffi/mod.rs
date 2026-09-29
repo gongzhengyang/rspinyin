@@ -7,7 +7,8 @@
 //! # Layout
 //!
 //! * [`abi`] — the frozen `#[repr(C)]` contract (`docs/dev/features.md` §2.2.3) and
-//!   the callbacks the host calls into.
+//!   the callbacks the host calls into. This is the *engine* addon's table; the
+//!   user-interface addon has its own, in `crates/ime-ui-addon`.
 //! * `guard_ffi` / `catch_ffi` — the panic guard. Unwinding into C++ is undefined
 //!   behaviour, so a panic has to become a value at the boundary; the workspace
 //!   profile deliberately keeps unwinding enabled, without which the guard could not
@@ -36,8 +37,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 pub mod abi;
 
 pub use abi::{
-    FcitxCursorRect, FcitxKeyEvent, RSPINYIN_ABI_VERSION, RSPINYIN_VTABLE, RspinyinHandshake,
-    RspinyinVtable, UiPanelSnapshot, rspinyin_plugin_init,
+    FcitxKeyEvent, RSPINYIN_ABI_VERSION, RSPINYIN_VTABLE, RspinyinHandshake, RspinyinVtable,
+    rspinyin_plugin_init,
 };
 
 /// A panic caught at the FFI boundary, ready for the crash channel.

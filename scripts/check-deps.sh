@@ -100,6 +100,13 @@ metadata_path, mode = sys.argv[1], sys.argv[2]
 
 # Layer order of features.md 0.4 rule 1: lower rank may be depended upon, never
 # the other way round.
+#
+# `ime-fcitx5` and `ime-ui-addon` share rank 5. They are the two addon hosts: both sit
+# directly above `ime-ui`, and neither may depend on the other. That is not a
+# convenience — Fcitx5 `dlopen`s the two cdylibs independently as separate addons, and
+# a dependency between them would be a link-time relationship the split exists to
+# remove. Equal rank is what forbids it, since only strictly lower layers may be
+# depended upon.
 LAYERS = {
     "ime-types": 0,
     "ime-core": 1,
@@ -107,6 +114,7 @@ LAYERS = {
     "ime-config": 3,
     "ime-ui": 4,
     "ime-fcitx5": 5,
+    "ime-ui-addon": 5,
 }
 
 # Cross-cutting crates with their own rule: the allowed internal dependencies.
@@ -181,7 +189,8 @@ for crate, dependencies in edges.items():
         if crate in LAYERS and dependency in LAYERS and LAYERS[dependency] >= LAYERS[crate]:
             problems.append(
                 f"{crate} depends on {dependency}, but rule 1 fixes the order "
-                f"ime-types <- ime-core <- ime-dict <- ime-config <- ime-ui <- ime-fcitx5; "
+                f"ime-types <- ime-core <- ime-dict <- ime-config <- ime-ui, with the "
+                f"two addon hosts (ime-fcitx5, ime-ui-addon) at the same rank above it; "
                 f"only strictly lower layers may be depended upon"
             )
 

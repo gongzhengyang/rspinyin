@@ -52,6 +52,11 @@ check-unsafe:
 check-net:
     bash scripts/check-no-network.sh
 
+# The runtime half of the same promise: a live fcitx5 session must hold no IP
+# socket (BUDGET-NET-01). Needs a real session, so it is not part of `ci`.
+check-net-runtime:
+    bash scripts/runtime-socket-check.sh
+
 # No Slint type in the public API of ime-ui (0.4 rule 11, ADR-0000 OB-4).
 check-slint:
     bash scripts/check-slint-leak.sh
@@ -59,6 +64,19 @@ check-slint:
 # Dictionary source allowlist: licences and hashes (ADR-0000 decision 2).
 check-dict:
     bash scripts/check-dict-sources.sh
+
+# Dependency licences and the OB-1..OB-6 review (ADR-0000 decision 1).
+check-licenses:
+    bash scripts/gen-licenses.sh --check
+
+# Refresh the generated blocks in docs/dev/licenses.md and docs/dev/NOTICE.
+gen-licenses:
+    bash scripts/gen-licenses.sh --write
+
+# OB-1's reachability assertion. Kept out of `ci` because it is the only network
+# access in this repository's tooling and the CI job is offline by design.
+check-licenses-links:
+    bash scripts/gen-licenses.sh --check-links
 
 # Performance budgets against the authoritative table (0.5.3).
 check-budget:
@@ -76,16 +94,26 @@ check-versions:
 fuzz seconds="60":
     cargo +nightly fuzz run dag_build -- -max_total_time={{seconds}}
 
-# Self-tests of the five audit scripts: each one injects a violation, asserts a
+# Self-tests of the seven audit scripts: each one injects a violation, asserts a
 # non-zero exit, removes it and asserts a zero exit.
+# Build and install the plugin into the system's Fcitx5 addon directories.
+install *args:
+    bash packaging/install.sh {{args}}
+
+# Remove it again, restoring whatever it replaced.
+uninstall *args:
+    bash packaging/uninstall.sh {{args}}
+
 check-self-tests:
     #!/usr/bin/env bash
     set -euo pipefail
     bash scripts/check-deps.sh --self-test
     bash scripts/check-unsafe.sh --self-test
     bash scripts/check-no-network.sh --self-test
+    bash scripts/runtime-socket-check.sh --self-test
     bash scripts/check-slint-leak.sh --self-test
     bash scripts/check-dict-sources.sh --self-test
+    bash scripts/gen-licenses.sh --self-test
 
 # Benchmarks (budget assertions live with the benchmarks themselves).
 bench:
@@ -107,4 +135,4 @@ bench-quick:
     esac
 
 # The full gate suite: quality commands plus every architecture and licence audit.
-ci: check check-deps check-unsafe check-net check-slint check-dict check-budget check-versions
+ci: check check-deps check-unsafe check-net check-slint check-dict check-licenses check-budget check-versions

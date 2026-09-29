@@ -19,7 +19,10 @@ use std::path::PathBuf;
 const REQUIRED_LIBS: [&str; 3] = ["Fcitx5Core", "Fcitx5Utils", "Fcitx5Config"];
 
 /// Translation units of the C ABI glue, relative to `src/ffi/cpp/`.
-const GLUE_SOURCES: [&str; 3] = ["addon_glue.cpp", "engine_glue.cpp", "ui_glue.cpp"];
+///
+/// `ui_glue.cpp` is not here: the user-interface role is the second cdylib
+/// (`crates/ime-ui-addon`), which Fcitx5 loads as its own addon.
+const GLUE_SOURCES: [&str; 2] = ["addon_glue.cpp", "engine_glue.cpp"];
 
 /// The addon factory symbol Fcitx5 resolves with `dlsym` after `dlopen`.
 const FACTORY_SYMBOL: &str = "fcitx_addon_factory_instance";

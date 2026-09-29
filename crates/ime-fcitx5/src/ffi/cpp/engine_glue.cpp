@@ -9,6 +9,22 @@
 //   fcitx::InputMethodEngine::activate/deactivate/reset(..., InputContextEvent &)
 //   fcitx::InputMethodEngine::listInputMethods()
 //
+// # Why the addon instance lives in this translation unit
+//
+// Fcitx5 never asks an addon for its input-method engine. `InputMethodManager` collects
+// the addons whose description declares `Category=InputMethod` and treats the
+// `AddonInstance` of each one as an `InputMethodEngine` (5.1.7
+// `inputmethodmanager.cpp`, the dynamic-entry loader). An instance that does not derive
+// from that class is dispatched through a vtable slot the object does not have, which
+// kills the process with SIGSEGV while the host enumerates input methods.
+//
+// The object the factory returns therefore has to *be* the engine, and `RspinyinAddon`
+// below is that object. It is defined here rather than in `addon_glue.cpp` because a
+// class may only be derived from a complete base type, and this is the translation unit
+// that defines the engine. `addon_glue.cpp` keeps the loadable-library entry points, the
+// handshake state and the lifecycle sequence; this file reaches that sequence through
+// the free functions declared below.
+//
 // The struct definitions mirror the `#[repr(C)]` declarations in `src/ffi/abi.rs` and
 // are identical to the copies in the other glue files; see `addon_glue.cpp` for why
 // there is no shared header.
@@ -18,6 +34,8 @@
 #include <vector>
 
 #include <fcitx-utils/key.h>
+#include <fcitx/addoninstance.h>
+#include <fcitx/addonmanager.h>
 #include <fcitx/event.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputmethodengine.h>
@@ -85,18 +103,32 @@ void *context();
 /// Stable 64-bit identity of an input context.
 std::uint64_t ic_id(const fcitx::InputContext *inputContext);
 
+/// Runs the plugin handshake and the addon initialisation sequence.
+void startPlugin();
+
+/// Releases everything `startPlugin` took.
+void stopPlugin();
+
 } // namespace rspinyin
 
 namespace {
 
 /// The input-method-engine role of the plugin.
 ///
-/// Nothing instantiates this class yet: Fcitx5 creates one addon instance per shared
-/// library (see `addon_glue.cpp`), and how the engine and UI roles are handed out is
-/// the next decision to make. The translation unit is compiled regardless, which is
-/// what proves these overrides still match the installed headers.
+/// Every override below reads at most a few fields and forwards into the Rust callback
+/// table: this class runs on the Fcitx5 main loop, so nothing here may block, allocate
+/// without bound or hold a lock.
 class RspinyinEngine : public fcitx::InputMethodEngineV2 {
 public:
+    /// Takes the manager Fcitx5 handed to the factory.
+    ///
+    /// `AddonInstance` exposes no way back to the host — it has `reloadConfig`, `save`
+    /// and the configuration accessors and nothing else — so the handle an addon needs
+    /// for anything beyond the events it is handed has to be captured while it is
+    /// created. This engine is not the only role that needs it: the user-interface role
+    /// reaches `UserInterfaceManager` the same way.
+    explicit RspinyinEngine(fcitx::AddonManager *manager) : manager_(manager) {}
+
     /// The input methods this engine provides.
     ///
     /// Returning an entry here is what makes the input method selectable in
@@ -123,6 +155,12 @@ public:
     }
 
     /// A key press or release for this input method.
+    ///
+    /// The engine consumes a key only when the Rust side reports that it acted on it.
+    /// Everything else — every key no subsystem can act on yet, every key release, and
+    /// every key arriving before the callback table is registered — keeps travelling
+    /// down the Fcitx5 pipeline, which is what "not consumed" means for this callback.
+    /// Answering anything else would take the user's typing away from the application.
     void keyEvent(const fcitx::InputMethodEntry &, fcitx::KeyEvent &event) override {
         const RspinyinVtable *vt = rspinyin::vtable();
         if (vt == nullptr || vt->on_key_event == nullptr) {
@@ -173,6 +211,15 @@ public:
         }
         vt->on_reset(rspinyin::context(), rspinyin::ic_id(event.inputContext()));
     }
+
+    /// The manager Fcitx5 handed to the factory, or null if it passed null.
+    fcitx::AddonManager *manager() const { return manager_; }
+
+private:
+    /// The plugin's only handle back to the host. Kept because the decoder's effects
+    /// are applied through the host's own objects (`Instance`, the input-context
+    /// manager), which are reachable from here and from nowhere else.
+    fcitx::AddonManager *manager_;
 };
 
 // Compile-time proof that every pure virtual of the engine chain is implemented: an
@@ -180,4 +227,44 @@ public:
 static_assert(!std::is_abstract_v<RspinyinEngine>,
               "RspinyinEngine must implement every pure virtual of fcitx::InputMethodEngineV2");
 
+/// The addon instance Fcitx5 creates through the factory in `addon_glue.cpp`.
+///
+/// It is the engine *and* the addon: the host reaches the engine by treating the
+/// instance it was handed as an `InputMethodEngine`, so the two cannot be separate
+/// objects (see the file header). The lifecycle around the engine — the Rust handshake
+/// and the addon init/destroy sequence — stays in `addon_glue.cpp` and is entered from
+/// here.
+class RspinyinAddon final : public RspinyinEngine {
+public:
+    /// Starts the plugin lifecycle around a freshly created engine.
+    explicit RspinyinAddon(fcitx::AddonManager *manager) : RspinyinEngine(manager) {
+        rspinyin::startPlugin();
+    }
+
+    /// Releases the plugin lifecycle. The Rust destroy path is idempotent, so an addon
+    /// whose initialisation declined part-way is released exactly like one that
+    /// completed.
+    ~RspinyinAddon() override { rspinyin::stopPlugin(); }
+};
+
+// The invariant the whole file exists for: an instance that is not an
+// `InputMethodEngine` crashes the host while it enumerates input methods, so a future
+// refactor that drops the base class fails the build instead of the user's session.
+static_assert(std::is_base_of_v<fcitx::InputMethodEngine, RspinyinAddon>,
+              "the addon instance must be an fcitx::InputMethodEngine: that is how "
+              "Fcitx5 reaches the engine");
+
 } // namespace
+
+namespace rspinyin {
+
+/// Creates the addon instance; Fcitx5 takes ownership of the returned pointer.
+///
+/// Declared in `addon_glue.cpp` and called from the factory there. It has to be defined
+/// in this translation unit because the instance is also the engine, and the engine
+/// class is complete only here.
+fcitx::AddonInstance *createAddonInstance(fcitx::AddonManager *manager) {
+    return new RspinyinAddon(manager);
+}
+
+} // namespace rspinyin

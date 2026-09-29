@@ -1,0 +1,187 @@
+//! A display-free [`SurfaceBackend`] for this crate's tests.
+//!
+//! It exists so the renderer, the damage bookkeeping and the platform's geometry handling
+//! can be asserted without a display server, and so the same call sequence the real
+//! backends get can be replayed against a backend that records what it was asked to do.
+//! Everything a test observes lives behind an `Arc<Mutex<_>>` the test keeps a handle on,
+//! because the backend itself is moved into the platform and cannot be reached afterwards.
+
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use ime_types::{FrameToken, PixelBufferMut, PlatformError, RectI, SurfaceBackend, SurfaceEvent};
+
+use super::raster::BYTES_PER_PIXEL;
+
+/// Everything a test can observe about a [`MockSurface`].
+#[derive(Default)]
+pub(crate) struct MockState {
+    /// The last committed frame, copied out of the draw buffer.
+    pub(crate) pixels: Vec<u8>,
+    /// How many frames were committed.
+    pub(crate) commits: usize,
+    /// The damage every commit reported, concatenated in commit order.
+    pub(crate) damage: Vec<RectI>,
+    /// How many draw buffers were handed out.
+    pub(crate) acquired: usize,
+    /// Whether the surface is mapped.
+    pub(crate) visible: bool,
+    /// The last interactive region that was set.
+    pub(crate) region: Vec<RectI>,
+    /// Events the next `poll_events` call delivers.
+    pub(crate) pending: Vec<SurfaceEvent>,
+    /// How many of the next `acquire_buffer` calls fail with `NoFreeBuffer`.
+    pub(crate) starve: usize,
+}
+
+impl MockState {
+    /// One pixel of the last committed frame, as the bytes `[blue, green, red, alpha]`.
+    ///
+    /// `stride` is the row length in bytes, which is the surface width times
+    /// [`BYTES_PER_PIXEL`].
+    pub(crate) fn pixel(&self, stride: usize, x: usize, y: usize) -> [u8; 4] {
+        let at = y * stride + x * BYTES_PER_PIXEL;
+        let mut pixel = [0u8; 4];
+        pixel.copy_from_slice(&self.pixels[at..at + BYTES_PER_PIXEL]);
+        pixel
+    }
+}
+
+/// A `SurfaceBackend` that needs no display server.
+///
+/// It double buffers like the real backends do, so a test can tell a copy that covers the
+/// whole frame from one that only covers the region the frame redrew.
+pub(crate) struct MockSurface {
+    state: Arc<Mutex<MockState>>,
+    /// The two draw buffers, `Argb8888`, `width_px * 4` bytes per row.
+    buffers: [Vec<u8>; 2],
+    /// Which buffer `acquire_buffer` hands out next.
+    back: usize,
+    width_px: u32,
+    height_px: u32,
+    width_dp: u32,
+    height_dp: u32,
+    scale: f32,
+}
+
+impl MockSurface {
+    /// Creates a surface of `width_dp * scale` by `height_dp * scale` physical pixels, and
+    /// hands back the observation state the test asserts on.
+    pub(crate) fn new(width_dp: u32, height_dp: u32, scale: f32) -> (Self, Arc<Mutex<MockState>>) {
+        let (width_px, height_px) = crate::platform::physical_size(width_dp, height_dp, scale);
+        let state = Arc::new(Mutex::new(MockState::default()));
+        let length = crate::platform::buffer_len(width_px, height_px);
+        let surface = Self {
+            state: Arc::clone(&state),
+            buffers: [vec![0; length], vec![0; length]],
+            back: 0,
+            width_px,
+            height_px,
+            width_dp,
+            height_dp,
+            scale,
+        };
+        (surface, state)
+    }
+
+    /// Locks the observation state, reporting a poisoned lock as an unusable backend.
+    fn lock(&self) -> Result<MutexGuard<'_, MockState>, PlatformError> {
+        self.state.lock().map_err(|_| PlatformError::Unavailable)
+    }
+}
+
+impl SurfaceBackend for MockSurface {
+    fn acquire_buffer(&mut self) -> Result<PixelBufferMut<'_>, PlatformError> {
+        let starved = {
+            let mut state = self.lock()?;
+            if state.starve > 0 {
+                state.starve -= 1;
+                true
+            } else {
+                state.acquired += 1;
+                false
+            }
+        };
+        if starved {
+            return Err(PlatformError::NoFreeBuffer);
+        }
+        let back = self.back;
+        let data = self
+            .buffers
+            .get_mut(back)
+            .map(|buffer| buffer.as_mut_slice())
+            .ok_or(PlatformError::Unavailable)?;
+        Ok(PixelBufferMut {
+            data,
+            stride: self.width_px as usize * BYTES_PER_PIXEL,
+            width: self.width_px,
+            height: self.height_px,
+        })
+    }
+
+    fn commit(&mut self, damage: &[RectI]) -> Result<(), PlatformError> {
+        let back = self.back;
+        {
+            let mut state = self.lock()?;
+            state.commits += 1;
+            state.damage.extend_from_slice(damage);
+            // Copied out so the test can sample the frame after the backend has been moved
+            // into the platform and can no longer be reached.
+            state.pixels.clear();
+            if let Some(buffer) = self.buffers.get(back) {
+                state.pixels.extend_from_slice(buffer);
+            }
+        }
+        self.back = 1 - back;
+        Ok(())
+    }
+
+    fn set_input_region(&mut self, rects: &[RectI]) -> Result<(), PlatformError> {
+        let mut state = self.lock()?;
+        state.region = rects.to_vec();
+        Ok(())
+    }
+
+    fn set_visible(&mut self, visible: bool) -> Result<(), PlatformError> {
+        let mut state = self.lock()?;
+        state.visible = visible;
+        Ok(())
+    }
+
+    fn request_frame(&mut self) -> Option<FrameToken> {
+        // Stands in for a compositor that has frame callbacks, so the token bookkeeping in
+        // the renderer is exercised as well.
+        Some(FrameToken(1))
+    }
+
+    fn poll_events(&mut self, out: &mut Vec<SurfaceEvent>) -> Result<(), PlatformError> {
+        let mut state = self.lock()?;
+        out.append(&mut state.pending);
+        Ok(())
+    }
+
+    fn geometry(&self) -> (u32, u32, f32) {
+        (self.width_dp, self.height_dp, self.scale)
+    }
+
+    fn backend_id(&self) -> &'static str {
+        "mock"
+    }
+}
+
+/// Runs a scene on a thread of its own and returns what it produced.
+///
+/// Slint installs its platform per thread and refuses a second one on the same thread, so a
+/// scene that needs a platform gets a fresh thread: that keeps the tests independent of how
+/// the runner schedules them, and of each other.
+///
+/// # Panics
+///
+/// Panics when the scene panics, after the default panic hook has already reported the
+/// scene's own message.
+pub(crate) fn on_own_thread<R: Send + 'static>(scene: impl FnOnce() -> R + Send + 'static) -> R {
+    let thread = std::thread::Builder::new()
+        .name(String::from("ime-ui-test"))
+        .spawn(scene)
+        .expect("the test thread can be spawned");
+    thread.join().expect("the scene completes")
+}
