@@ -44,9 +44,9 @@ cargo test --workspace --doc                      # nextest does not cover docte
 ```
 
 - **Test execution baseline**: run tests through `cargo nextest run`. If it is not installed, run `cargo install cargo-nextest --locked` first; fall back to `cargo test --workspace --all-features` only if the install fails. **nextest does not execute doctests**, so `cargo test --workspace --doc` must be run as a supplement on either path.
-- **Host-ABI gate** (requires `libfcitx5core-dev`; absent by default so the pure-Rust job stays dependency-free):
+- **Host-ABI gate** (requires `libfcitx5core-dev`; absent by default so the pure-Rust job stays dependency-free). It is `just check-host`, **not** a single `cargo check -p`: ADR-0003 split the plugin into two cdylibs, so the gate has to build the C ABI of `ime-fcitx5` **and** `ime-ui-addon`, and it asserts the factory symbol each of them exports rather than only that they compile.
   ```bash
-  cargo check -p ime-fcitx5 --features fcitx5-host
+  just check-host
   ```
 - **Architecture & license audits** — required before any release-quality claim. Established by `TASK-1.01.02`; until those scripts exist, run the equivalent check by hand and say so in the report:
   ```bash
@@ -83,7 +83,7 @@ cargo test --workspace --doc                      # nextest does not cover docte
 - **Never block the host thread.** No filesystem IO, no `mmap`-cold-page faults, no lock contention, no `sleep` on the fcitx5 main loop. Decoding is pure and bounded (`BUDGET-LAT-02`); user-frequency writes are batched and deferred per `ASM-04`/`ASM-20`.
 - Decoding is **single-threaded and serial per session** (`ASM-11`). Do not introduce concurrency into session state; if a concurrent source appears, add a `revision` and let the UI drop stale frames.
 - Prefer message passing over shared mutable state. Where shared state is unavoidable: atomics > `Mutex`/`RwLock` > `unsafe`.
-- `unsafe` is permitted **only** in `crates/ime-fcitx5/src/ffi/**`, `crates/ime-ui-addon/src/ffi/**` and `crates/ime-dict/src/mmap.rs` (0.4 rule 3, enforced by `scripts/check-unsafe.sh`). There are two FFI directories because there are two cdylibs: ADR-0003 splits the plugin into an input-method addon and a user-interface addon, each with its own C ABI and its own glue, neither linking the other. Every `unsafe` block carries a `// SAFETY:` comment justifying the invariants it relies on.
+- `unsafe` is permitted **only** in `crates/ime-fcitx5/src/ffi/**`, `crates/ime-ui-addon/src/ffi/**`, `crates/ime-dict/src/mmap.rs` and `crates/alloc-count/src/**` (0.4 rule 3, enforced by `scripts/check-unsafe.sh`). There are two FFI directories because there are two cdylibs: ADR-0003 splits the plugin into an input-method addon and a user-interface addon, each with its own C ABI and its own glue, neither linking the other. The fourth path is a **test-only** allocation counter — a `#[global_allocator]` needs `unsafe impl GlobalAlloc`, and the decoder's allocation budget (`BUDGET-MEM-04`, `TC-CORE-09`) is otherwise unassertable. It is a `dev-dependency` of nothing that ships; `scripts/check-unsafe.sh` additionally asserts that no release artifact depends on it. Every `unsafe` block carries a `// SAFETY:` comment justifying the invariants it relies on.
 - The decoder must stay a pure function (0.4 rule 4): no filesystem, clock, environment, or global mutable state. User frequency arrives through `trait UserFreqSource`. This is what makes deterministic testing possible — do not break it for convenience.
 
 ### 3.4 Logging & Debug Output
@@ -207,7 +207,7 @@ cargo test --workspace --doc                      # nextest does not cover docte
 ## 8. Prohibited
 
 1. Committing `todo!()` / `unimplemented!()` stub code to the mainline (unless the user explicitly requests a skeleton first).
-2. `unsafe` without a `// SAFETY:` comment, or `unsafe` anywhere outside `crates/ime-fcitx5/src/ffi/**`, `crates/ime-ui-addon/src/ffi/**` and `crates/ime-dict/src/mmap.rs`.
+2. `unsafe` without a `// SAFETY:` comment, or `unsafe` anywhere outside `crates/ime-fcitx5/src/ffi/**`, `crates/ime-ui-addon/src/ffi/**`, `crates/ime-dict/src/mmap.rs` and `crates/alloc-count/src/**`.
 3. `unwrap()` / `expect()` / `panic!` in non-test code for recoverable errors (0.4 rule 7).
 4. Deleting or bypassing tests to make the build pass.
 5. Unreviewed new dependencies, or major-version upgrades without notifying the user.

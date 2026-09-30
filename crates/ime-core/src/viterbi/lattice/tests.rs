@@ -196,6 +196,24 @@ fn test_build_lattice_counts_characters_and_syllables_of_each_edge() {
 }
 
 #[test]
+fn test_lattice_edge_stays_within_its_size_budget() {
+    // The edge is pushed once per word per span, so its width is what the edge vector
+    // costs and what the sweep touches once per path that uses the edge. It cannot reach
+    // the 24 bytes the design asks for: the borrowed `WordRef` alone is 24 bytes -- a
+    // `&str` is a pointer and a length, plus the weight, the syllable count and the
+    // flags -- and the penalty is another four. The assertion is therefore the width this
+    // build actually has, which is what stops a field from being added unnoticed.
+    let width = core::mem::size_of::<LatticeEdge<'_>>();
+    let word = core::mem::size_of::<WordRef<'_>>();
+    assert!(
+        width <= 40,
+        "an edge is {width} bytes; the borrowed word is {word} of them and the penalty 4"
+    );
+    // The borrowed word is the floor: no edge is narrower than the word it holds.
+    assert!(width > word);
+}
+
+#[test]
 fn test_lattice_with_capacity_sizes_the_edge_vector_for_the_graph() {
     let lattice: Lattice<'_> = Lattice::with_capacity(4, true);
     assert!(lattice.is_empty());

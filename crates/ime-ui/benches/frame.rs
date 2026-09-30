@@ -26,6 +26,13 @@
 //! that the copy stays one region -- and one box of memory traffic -- however many batches
 //! accumulated, which is the claim the merge is.
 //!
+//! `frame/animate_steady` is the animation steady state: a highlight box sliding between two
+//! neighbouring cells at the refresh rate the frame budgets name, one frame per iteration.
+//! It is the case the merge exists for -- the box damages the same neighbourhood frame after
+//! frame -- and the one where a fallback to a full repaint, or a damage list that grew with
+//! the number of rectangles the renderer reported, would cost a whole window per frame while
+//! still landing inside the deadline on a fast machine.
+//!
 //! # What this file does not do
 //!
 //! It records no number. A figure belongs in the task document once it has been taken on a
@@ -58,6 +65,7 @@ use slint::ComponentHandle as _;
 use ime_types::{FrameToken, PixelBufferMut, PlatformError, RectI, SurfaceBackend, SurfaceEvent};
 use ime_ui::renderer::{PENDING_COLLAPSE_LIMIT, RenderOutcome};
 use ime_ui::slint_platform::RspinyinPlatform;
+use ime_ui::spring::{HighlightAnim, HighlightRect, SpringParams};
 
 /// The surface width in logical pixels: 600dp at scale 2.0 is the 1200px window `ASM-17`
 /// states the frame working set for.
@@ -74,13 +82,25 @@ const SETTLE_FRAMES: usize = 4;
 
 /// The renderer's pending-collapse limit, under the name the sweep reads it by.
 ///
-/// It is the point the damage bookkeeping saturates at: past it a frame's pending list is one
-/// bounding box however long the starvation streak that built it.
+/// The sweep uses it as the upper end of its range rather than as a point it expects to
+/// cross: the damage is merged as it is recorded, so a streak of these two neighbouring cells
+/// never builds a list that long, and the case is about the copy rather than about the list.
 const PENDING_LIMIT: usize = PENDING_COLLAPSE_LIMIT;
 
-/// How many frames' damage the sweep accumulates: one frame's worth, then two, four, and the
-/// collapse limit itself and twice it.
+/// How many frames' damage the sweep accumulates: one frame's worth, then two, four, and two
+/// more past the limit the collapse names -- a range that spans "a little damage" to far more
+/// than the bookkeeping was designed for.
 const DAMAGE_BATCHES: [usize; 5] = [1, 2, 4, PENDING_LIMIT, PENDING_LIMIT * 2];
+
+/// The two cells the animation slides between, in logical pixels.
+const SLIDE_FROM: f32 = 120.0;
+const SLIDE_TO: f32 = 216.0;
+const SLIDE_Y: f32 = 48.0;
+const SLIDE_W: f32 = 96.0;
+const SLIDE_H: f32 = 44.0;
+
+/// One frame of the animation, in seconds: the 144Hz the frame budgets name.
+const FRAME_S: f32 = 1.0 / 144.0;
 
 /// Bytes per pixel of the `Argb8888` surface format.
 ///
@@ -132,6 +152,21 @@ mod scene {
                 width: 96px;
                 height: 44px;
                 visible: highlight;
+                background: #3a6ea5;
+            }
+
+            // The box `frame/animate_steady` slides between the two cells above. It is
+            // invisible for every other case, so only that one pays for it.
+            in-out property <length> slide-x: 120px;
+            in-out property <length> slide-y: 48px;
+            in-out property <bool> slide-visible: false;
+
+            Rectangle {
+                x: slide-x;
+                y: slide-y;
+                width: 96px;
+                height: 44px;
+                visible: slide-visible;
                 background: #3a6ea5;
             }
         }
@@ -318,6 +353,26 @@ fn setup() -> Option<(RspinyinPlatform, scene::FrameCard, Arc<Mutex<Observation>
     Some((platform, card, observed))
 }
 
+/// A highlight box parked on the first cell, ready to slide.
+///
+/// The motion is the renderer's own: the case drives the same [`HighlightAnim`] the UI thread
+/// does, so the frames it measures are the frames an animation produces rather than a
+/// synthetic sequence of rectangles.
+fn slide_anim() -> HighlightAnim {
+    let mut anim = HighlightAnim::new(
+        SpringParams::HIGHLIGHT,
+        HighlightRect::new(SLIDE_FROM, SLIDE_Y, SLIDE_W, SLIDE_H),
+    );
+    anim.set_visible(true);
+    anim
+}
+
+/// Moves the scene's animated box to `rect`.
+fn apply_slide(card: &scene::FrameCard, rect: HighlightRect) {
+    card.set_slide_x(rect.x);
+    card.set_slide_y(rect.y);
+}
+
 /// Runs every case of this benchmark target.
 fn frame_bench(criterion: &mut Criterion) {
     let Some((platform, card, observed)) = setup() else {
@@ -378,12 +433,12 @@ fn frame_bench(criterion: &mut Criterion) {
         });
     });
 
-    // The copy a frame pays after a streak of damage batches. Each starved frame appends its
-    // own damage to the pending list, so the frame that follows `batches - 1` skipped ones
-    // carries what all of them accumulated; past the collapse limit that list is one bounding
-    // box however long the streak ran. What the sweep shows is that the copy is a single
-    // region either way -- the number of rectangles the damage arrived in does not multiply
-    // the memory traffic.
+    // The copy a frame pays after a streak of damage batches. Each starved frame records its
+    // own damage, so the frame that follows `batches - 1` skipped ones carries what all of
+    // them accumulated. The damage is merged as it is recorded, and the two cells the scene
+    // toggles between only touch, so the list a streak of any length builds is two entries --
+    // which is the point of the sweep: the copy stays one region whatever the damage arrived
+    // as, and the number of batches does not multiply the memory traffic.
     for batches in DAMAGE_BATCHES {
         group.bench_with_input(
             BenchmarkId::new("blit_damage", batches),
@@ -421,6 +476,36 @@ fn frame_bench(criterion: &mut Criterion) {
             },
         );
     }
+
+    // The animation steady state: one frame of a highlight sliding between two neighbouring
+    // cells. The box bounces between them, so every iteration is a frame of a motion rather
+    // than a frame of a window standing still -- an idle frame would measure nothing.
+    group.bench_function("animate_steady", |bencher| {
+        let mut anim = slide_anim();
+        let mut heading_to_second = true;
+        card.set_slide_visible(true);
+        // Start the motion, so that the first iteration is a frame that moves rather than the
+        // idle frame a box already at rest would produce.
+        anim.retarget(HighlightRect::new(SLIDE_TO, SLIDE_Y, SLIDE_W, SLIDE_H));
+        bencher.iter(|| {
+            let step = anim.step(FRAME_S, SCALE);
+            apply_slide(&card, step.rect);
+            if step.settled {
+                heading_to_second = !heading_to_second;
+                let x = if heading_to_second { SLIDE_TO } else { SLIDE_FROM };
+                anim.retarget(HighlightRect::new(x, SLIDE_Y, SLIDE_W, SLIDE_H));
+            }
+            let outcome = platform.render_if_dirty();
+            // A frame that did not reach the surface would mean the box stopped moving, and
+            // the case would then be timing an idle window.
+            let copies = match &outcome {
+                Ok(RenderOutcome::Rendered { copies, .. }) => *copies,
+                _ => 0,
+            };
+            assert!(copies <= 2, "an animation frame pays at most two copies");
+            black_box(outcome)
+        });
+    });
 
     group.finish();
 }

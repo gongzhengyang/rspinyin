@@ -32,9 +32,12 @@ asserts that a live Fcitx5 session holding the plugin has no IP socket at all.
 
 ## Requirements
 
-- **Linux** with **Fcitx5 5.1.7 or newer**. Both addon descriptors declare
-  `core:5.1.7`, and the two must stay equal: a UI addon that loads where the engine
-  does not leaves you with half an input method.
+- **Linux** with **Fcitx5 5.1.0 or newer**. Both addon descriptors declare
+  `core:5.1.0`, and the two must stay equal: a UI addon that loads where the engine
+  does not leaves you with half an input method. The floor is 5.1.0 rather than the
+  version this was developed against, because that is the release that introduced
+  the addon API the two descriptors depend on; `xtask check-versions` asserts the
+  two descriptors agree.
 - **A display server: X11 or Wayland.** Both frontends are listed as optional
   dependencies, so either one works and neither is required at build time. The
   candidate window positions itself through the X11 or the Wayland backend that is

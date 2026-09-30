@@ -7,6 +7,33 @@
 //! frame, and it is why this module exists rather than the rendering being
 //! called from the fcitx5 callback.
 //!
+//! # The channels it owns
+//!
+//! Everything the host thread says to this one travels through
+//! [`crate::channel`], and so does everything this thread says back. The
+//! boundary contract fixes each channel's capacity and its overflow behaviour,
+//! and the semantics behind those numbers belong here as well, because the loop
+//! is what drains them:
+//!
+//! | Channel | Semantics | Capacity | Overflow behaviour |
+//! |---|---|---|---|
+//! | `UiCommand::Frame` | data stream | 1 | latest-wins: the older frame is replaced, counted as `ui.frame.coalesced` |
+//! | `UiCommand::Show` / `Hide` | command | 8 | ordered: the newest value is staged and the sender returns, counted as `ui.control.dropped` |
+//! | `UiCommand::Theme` | data stream | 1 | latest-wins: the older value is replaced |
+//! | `UiCommand::Overlay` | data stream | 1 | latest-wins; `None` closes the overlay |
+//! | `UiCommand::Shutdown` | command | 1 | a flag of its own, so a later frame cannot overwrite it |
+//! | `UiEvent::Select` | command | 64 | never dropped: this thread waits its budget, then abandons the click and reports `ui/select/timeout` |
+//! | `UiEvent::Hover` | event | 1 | latest-wins, posted only when the hovered index changes |
+//! | `UiEvent::Page` / `Dismiss` | event | 16 | ordered, as `Show` / `Hide` |
+//! | `UiEvent::Rendered` | data stream | 1 | latest-wins: the newest probe sample is the one that matters |
+//!
+//! The host thread produces the command channel and this thread consumes it; the
+//! event channel runs the other way, and the loop drains it on every pass rather
+//! than only when the display connection was readable. Two consequences follow,
+//! and both are asserted by tests: a `Frame` may be lost without the user
+//! noticing, while a `Show`/`Hide` pair may not be collapsed, and a click is
+//! never silently dropped.
+//!
 //! # Lifecycle
 //!
 //! [`UiThread::spawn`] creates the channels and starts the thread, which builds
@@ -138,7 +165,10 @@ impl UiThread {
     ///
     /// Returns [`ImeError::UiChannelClosed`] when the wakeup counter cannot be
     /// created or the thread cannot be started, which means the candidate window
-    /// will not appear and the host should stay on its fallback path.
+    /// will not appear and the host should stay on its fallback path. Returns
+    /// [`ImeError::ConfigInvalid`] when the channel configuration breaks the
+    /// boundary contract, which is a programming error rather than a runtime
+    /// condition: no thread is started and the host keeps its own window.
     ///
     /// # Panics
     ///
@@ -147,6 +177,11 @@ impl UiThread {
     where
         F: FnOnce(UiContext) -> Result<Box<dyn UiSurface>, ImeError> + Send + 'static,
     {
+        // The command half checks the whole configuration against the boundary
+        // contract before it builds anything, so an illegal one is refused here
+        // rather than by starting a thread that would violate `features.md`
+        // 2.2.1. The event half is built from the same value and takes it on
+        // trust, which is why it needs no second check.
         let channels = Arc::new(CommandChannels::new(&config.channels)?);
         let events = Arc::new(UiEventQueue::new(&config.channels));
         let dead = Arc::new(AtomicBool::new(false));
@@ -261,7 +296,9 @@ impl UiThread {
         ChannelStats {
             frames_coalesced: channels.frames_coalesced(),
             themes_coalesced: channels.themes_coalesced(),
+            overlays_coalesced: channels.overlays_coalesced(),
             controls_collapsed: channels.controls_collapsed(),
+            control_revision_regressions: channels.control_revision_regressions(),
             select_timeouts: self.events.select_timeouts(),
             thread_dead: self.dead.load(Ordering::Acquire),
             thread_panicked: self.panicked.load(Ordering::Acquire),

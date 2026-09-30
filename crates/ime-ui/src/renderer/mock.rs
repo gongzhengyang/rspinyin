@@ -83,6 +83,31 @@ impl MockSurface {
         (surface, state)
     }
 
+    /// Adopts a physical size, reallocating both buffers.
+    ///
+    /// The real backends do this when the compositor reports a configure -- `X11Backend`
+    /// reallocates in `apply_size`, the Wayland pool adopts a deferred resize -- so the mock
+    /// has to as well: a test that resizes the window and then renders would otherwise have
+    /// the window and the surface describing two different sizes, and the copy would be
+    /// refused by a buffer that is too small for the frame.
+    ///
+    /// A size the surface already has is not a resize, which is the rule the Wayland pool
+    /// states for its own `request_resize`.
+    fn adopt_size(&mut self, width_px: u32, height_px: u32) {
+        let width_px = crate::platform::clamp_dimension(width_px);
+        let height_px = crate::platform::clamp_dimension(height_px);
+        if (width_px, height_px) == (self.width_px, self.height_px) {
+            return;
+        }
+        self.width_px = width_px;
+        self.height_px = height_px;
+        self.width_dp = crate::platform::logical_dimension(width_px, self.scale);
+        self.height_dp = crate::platform::logical_dimension(height_px, self.scale);
+        let length = crate::platform::buffer_len(width_px, height_px);
+        self.buffers = [vec![0; length], vec![0; length]];
+        self.back = 0;
+    }
+
     /// Locks the observation state, reporting a poisoned lock as an unusable backend.
     fn lock(&self) -> Result<MutexGuard<'_, MockState>, PlatformError> {
         self.state.lock().map_err(|_| PlatformError::Unavailable)
@@ -154,8 +179,19 @@ impl SurfaceBackend for MockSurface {
     }
 
     fn poll_events(&mut self, out: &mut Vec<SurfaceEvent>) -> Result<(), PlatformError> {
-        let mut state = self.lock()?;
-        out.append(&mut state.pending);
+        let pending = {
+            let mut state = self.lock()?;
+            std::mem::take(&mut state.pending)
+        };
+        // A size the compositor reported is adopted before the events are handed on, which is
+        // the order the real backends do it in: `poll_events` resizes itself first, then
+        // reports the size it actually adopted.
+        for event in &pending {
+            if let SurfaceEvent::Resize { w, h } = *event {
+                self.adopt_size(w, h);
+            }
+        }
+        out.extend_from_slice(&pending);
         Ok(())
     }
 

@@ -8,6 +8,20 @@
 //!
 //! Every scenario here is a real assertion. A step whose expectation is only that the
 //! engine answered would be indistinguishable from a passing one, so there are none.
+//!
+//! # What this set cannot drive
+//!
+//! A step carries a `KeyAction`, so a scenario here begins *after* the routing table: the
+//! keystroke that produced the action is never exercised, and a green run says nothing
+//! about whether a key can reach the machine at all. The other side of that gap is
+//! `crates/ime-fcitx5/tests/keymap_matrix.rs`, which drives real keysyms through the
+//! table, the bus, the session and the host boundary. Closing it *here* would take two
+//! changes outside this module: `xtask` would have to link `ime-fcitx5` for
+//! `translate_key`, and the step type would need a variant carrying a keysym and a
+//! modifier mask instead of an action. Until both exist, the shortcut table's composing
+//! rows are covered only where a `KeyAction` can express them -- typing, Backspace, the
+//! caret and Escape -- and the rows whose effect is a commit, a selection or a page flip
+//! are outside this harness's reach entirely.
 
 use ime_core::segment::MAX_RAW_LEN;
 use ime_types::KeyAction;
@@ -31,6 +45,8 @@ pub fn scenarios() -> Vec<Scenario> {
         typing_reaches_a_word(),
         backspace_removes_a_syllable(),
         caret_moves_by_syllable(),
+        caret_returns_after_moving_back(),
+        escape_takes_back_the_composition(),
         ranking_follows_the_unigram(),
         ranking_follows_the_user_frequency(),
         ranking_follows_the_language_model(),
@@ -158,6 +174,38 @@ fn caret_moves_by_syllable() -> Scenario {
     steps.push(move_caret(-1, preedit("ni'hao", 3, 4)));
     Scenario::new(
         "engine-caret-moves-by-syllable",
+        two_syllable_dictionary(),
+        steps,
+    )
+}
+
+/// The caret moves back to the end of the input, one syllable at a time.
+///
+/// The forward half of the pair the shortcut table names: `Left` steps the caret towards
+/// the start of the input and `Right` steps it back, and the preedit follows both. A grid
+/// written back by the previous step is what makes the second move land where it does, so
+/// this scenario fails if the write-back stops happening.
+fn caret_returns_after_moving_back() -> Scenario {
+    let mut steps = typing_a_two_syllable_word();
+    steps.push(move_caret(-1, preedit("ni'hao", 3, 4)));
+    steps.push(move_caret(1, preedit("ni'hao", 6, 4)));
+    Scenario::new(
+        "engine-caret-returns-after-moving-back",
+        two_syllable_dictionary(),
+        steps,
+    )
+}
+
+/// Escape takes the composition back: the input is dropped and nothing is committed.
+///
+/// The step after the cancel decodes an empty input, which is the same observation the
+/// empty-input scenario makes -- the codes the engine surfaces for an input it cannot
+/// read are what tells the two apart from a step that did nothing.
+fn escape_takes_back_the_composition() -> Scenario {
+    let mut steps = typing_a_two_syllable_word();
+    steps.push(escape(degraded("decode/empty-input")));
+    Scenario::new(
+        "engine-escape-takes-back-the-composition",
         two_syllable_dictionary(),
         steps,
     )
@@ -349,6 +397,14 @@ fn backspace(expect: Expectation) -> Step {
 fn move_caret(delta: i8, expect: Expectation) -> Step {
     Step {
         action: KeyAction::MoveCaret(delta),
+        expect,
+    }
+}
+
+/// One `escape` step.
+fn escape(expect: Expectation) -> Step {
+    Step {
+        action: KeyAction::Escape,
         expect,
     }
 }

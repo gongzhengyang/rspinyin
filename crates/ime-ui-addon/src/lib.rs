@@ -33,6 +33,7 @@
 
 pub mod addon;
 pub mod cursor;
+pub mod platform;
 pub mod screen;
 pub mod ui_impl;
 

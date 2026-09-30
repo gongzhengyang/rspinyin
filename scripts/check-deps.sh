@@ -118,7 +118,12 @@ LAYERS = {
 }
 
 # Cross-cutting crates with their own rule: the allowed internal dependencies.
-LEAF_ONLY = {"ime-diag": {"ime-types"}}
+#
+# `alloc-count` is the test-only global allocator, and the empty set is the point: it is
+# the only crate in the workspace allowed to carry `unsafe` outside the FFI and mmap paths,
+# so it must stay a leaf with no internal dependencies at all, and nothing that ships may
+# depend on it (that half is asserted by `scripts/check-unsafe.sh`).
+LEAF_ONLY = {"ime-diag": {"ime-types"}, "alloc-count": set()}
 
 # Crates of the pure engine path that must stay free of diagnostics IO.
 NO_DIAGNOSTICS = ("ime-core", "ime-dict", "ime-config")
@@ -199,7 +204,8 @@ for crate, allowed in LEAF_ONLY.items():
         if dependency not in allowed:
             problems.append(
                 f"{crate} depends on {dependency}, but it may only depend on "
-                f"{', '.join(sorted(allowed))}; diagnostics is a cross-cutting leaf"
+                f"{', '.join(sorted(allowed)) or 'no internal crate at all'}; "
+                f"it is a leaf with a fixed, documented dependency set"
             )
 
 for crate in NO_DIAGNOSTICS:

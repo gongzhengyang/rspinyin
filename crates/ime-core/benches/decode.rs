@@ -23,6 +23,15 @@
 //! the window draws from, and the number it reports is the cost of that whole path, which is
 //! what a user waits for between two letters.
 //!
+//! `lattice/build` separates the dictionary walk from the rest of a decode: it is the one
+//! part of the pipeline that reads the dictionary once per span of every reading of the
+//! input, and it is where the character count an edge carries is computed.
+//!
+//! `lm/unigram_memory` times one unigram lookup of the in-memory model, which is the
+//! reference half of the language-model comparison: the dictionary-backed model answers the
+//! same question out of the compiled dictionary's unigram table, and its case lives in that
+//! crate's own bench target, because this one may not depend on it.
+//!
 //! This file measures. Comparing the measurements against the thresholds is
 //! `xtask budget --check`, which reads the same numbers out of
 //! `docs/dev/budgets.json` and the criterion output this run leaves in
@@ -41,10 +50,11 @@ use std::hint::black_box;
 
 use criterion::{BatchSize, Criterion, Throughput};
 use ime_core::lm::{InMemoryLm, LOG2_FLOOR, Scorer};
-use ime_core::segment::SyllableDag;
+use ime_core::segment::{Readings, SyllableDag};
 use ime_core::state::{Effect, Session, SessionConfig, SessionEnv};
-use ime_core::viterbi::{DecodeScratch, Decoder};
-use ime_types::{DecodeRequest, KeyAction, UserFreqSource};
+use ime_core::viterbi::lattice::LatticeOptions;
+use ime_core::viterbi::{DecodeScratch, Decoder, build_lattice};
+use ime_types::{DecodeFlags, DecodeRequest, KeyAction, LanguageModel, UserFreqSource};
 
 use fixtures::{CASES, SyntheticDict, holdout_keys};
 
@@ -56,6 +66,12 @@ const FULL_SAMPLES: usize = 200;
 
 /// Lattice edges the `lm/edge_score` case scores per iteration.
 const EDGE_SCORES: usize = 1_000;
+
+/// Unigram lookups the `lm/unigram_memory` case makes per iteration.
+///
+/// The same count as the edge-score case, so that both throughput columns are the cost of
+/// one lookup and can be read side by side.
+const UNIGRAM_LOOKUPS: usize = EDGE_SCORES;
 
 /// The case the reuse pair measures: the twelve-syllable input of `BUDGET-LAT-02`, which is
 /// the shape a decode's working set is largest for.
@@ -107,7 +123,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     bench_session(&mut criterion, &dictionary, &model);
     bench_holdout(&mut criterion, &dictionary, &model);
     bench_segment(&mut criterion);
+    bench_lattice(&mut criterion, &dictionary);
     bench_edge_score(&mut criterion, &dictionary, &model);
+    bench_unigram(&mut criterion, &dictionary, &model);
 
     criterion.final_summary();
     Ok(())
@@ -378,6 +396,77 @@ fn bench_session(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &
                     "each keystroke repaints the window"
                 );
                 black_box(frames)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.finish();
+}
+
+/// Times building the word lattice of the widest input the buffer accepts.
+///
+/// The lattice is where the dictionary meets the graph: every span of every reading of the
+/// input is spelled into a key and looked up, and every word that comes back becomes an
+/// edge. A decode includes this work, so the case exists to make a change to the edge
+/// construction -- the capacity the edge vector is given, the character count an edge
+/// carries -- measurable on its own rather than as a difference inside a whole decode.
+///
+/// The input is [`REUSE_CASE`], the twelve-syllable case the latency budget is stated for,
+/// and the graph is built once outside the measurement: the case measures the walk, not the
+/// segmentation that feeds it.
+fn bench_lattice(criterion: &mut Criterion, dictionary: &SyntheticDict) {
+    let Some(case) = CASES.iter().find(|case| case.name == REUSE_CASE) else {
+        return;
+    };
+    let mut dag = SyllableDag::new();
+    assert!(dag.build(case.raw).is_ok(), "the case input is segmentable");
+    let user = NoUser;
+    let mut readings = Readings::new();
+    let mut group = criterion.benchmark_group("lattice");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("build", |bencher| {
+        bencher.iter_batched(
+            || (),
+            |()| {
+                let lattice = build_lattice(
+                    black_box(&dag),
+                    dictionary,
+                    &user,
+                    LatticeOptions {
+                        fallback_single: true,
+                        flags: DecodeFlags::empty(),
+                        readings: &mut readings,
+                    },
+                );
+                black_box(lattice.len())
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.finish();
+}
+
+/// Times one unigram lookup of the in-memory model.
+///
+/// The reference half of the language-model comparison: the dictionary-backed model answers
+/// the same question out of the compiled dictionary's unigram table, where a word is found
+/// by hashing it and binary-searching fixed-width records, while this one walks a map keyed
+/// by the word's own text and compares strings at every step. Its counterpart case belongs
+/// in `ime-dict`'s bench target, next to the container it measures, because this target may
+/// not depend on that crate.
+fn bench_unigram(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &InMemoryLm) {
+    let words: Vec<&str> = dictionary.texts().take(UNIGRAM_LOOKUPS).collect();
+    let mut group = criterion.benchmark_group("lm");
+    group.throughput(Throughput::Elements(words.len() as u64));
+    group.bench_function("unigram_memory", |bencher| {
+        bencher.iter_batched(
+            || (),
+            |()| {
+                let mut total = 0i32;
+                for word in &words {
+                    total = total.wrapping_add(model.unigram(black_box(*word)));
+                }
+                black_box(total)
             },
             BatchSize::SmallInput,
         );

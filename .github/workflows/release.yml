@@ -1,0 +1,713 @@
+# Tag-driven release.
+#
+# Pushing a tag that names a version runs the full gate suite, builds every artifact of the
+# delivery matrix on the architecture it is for, assembles the release manifest and its
+# signature, verifies the assembled release the way a user would, and publishes a GitHub
+# Release. There is no manual step between the tag and the release, and no manual step is
+# meant to exist: `docs/dev/release-checklist.md` is for a maintainer who wants to confirm
+# something before tagging, or to work out afterwards which job failed.
+#
+# Nothing here produces an update channel, and nothing here contacts a network service on a
+# user's behalf. rspinyin's upgrade path is the distribution's package manager; a component
+# that could fetch its own replacement would be a network-reachable code path in a process
+# that is contractually forbidden from opening a socket (docs/dev/opt-deploy.md ASM-04,
+# AGENTS.md prohibited item 17, BUDGET-NET-01). The manifest and the signature over the
+# checksum list exist so that a user can check what they downloaded, and the check is
+# `xtask verify`, which reads local files and nothing else.
+#
+# The shape of the run:
+#
+#   gate      the whole suite (`just ci-host`, the single definition of "done") plus the two
+#             version assertions that make a tag a release: the tag names the version the
+#             tree builds, and the addon descriptors agree with it. On the tag itself, not
+#             on an assumption that CI already passed -- a tag can be pushed to a commit
+#             that never went through a pull request.
+#   source    the source archive, which is also the `Source0` / `source` of all three
+#             packaging recipes, so the packages are built from the bytes the release
+#             publishes rather than from a second checkout that could differ.
+#   packages  one distribution package per ecosystem and architecture, each built on the
+#             runner for its own architecture, and inside the distribution it is for.
+#   assemble  collect everything, write the manifest over it, sign the checksum list, drop
+#             the private key, and run `xtask verify` -- which is the user's own path.
+#   publish   create the GitHub Release and assert the release page lists exactly what the
+#             manifest records.
+#
+# Ordering is the part that is easy to get wrong, so it is written down here:
+#
+#   1. `xtask release manifest` writes the manifest with `"signature": null`. A placeholder
+#      key id would read like a signature that had been checked.
+#   2. The signing key's fingerprint is written into the manifest's `signature` block. This
+#      has to happen *before* the checksum list, because the list covers the manifest: a
+#      manifest edited afterwards would no longer match the list that was signed.
+#   3. `SHA256SUMS` is regenerated over every file in `dist/` except the list itself and the
+#      signature over it -- a file cannot carry its own digest, and the signature is produced
+#      after the list it covers. `xtask verify` requires exactly this coverage, so the two
+#      definitions cannot drift.
+#   4. The list is signed, and the signature is checked immediately with `gpg --verify`.
+#   5. The private key is deleted from the runner's keyring, and only then does `xtask verify`
+#      run -- so the end-to-end check exercises the user's situation, where the public half is
+#      all there is.
+#
+# The private key arrives through a repository secret and never touches a file: it is piped
+# into gpg through the environment, and a step asserts that no file in the workspace carries
+# it. Committing key material is forbidden outright, and so is generating it here -- the
+# maintainer creates the key, commits the public half under `packaging/keys/`, and stores the
+# private half as `RSPINYIN_GPG_PRIVATE_KEY`. `packaging/keys/README.md` is the procedure.
+#
+# Verification must not reach a keyserver: `xtask verify` passes gpg the two
+# `--no-auto-key-*` flags, and the public key a user imports ships with the release rather
+# than being fetched.
+#
+# What this workflow does not do, and why:
+#
+#   * It does not build a pacman package for aarch64. The official Arch Linux container image
+#     publishes `linux/amd64` only, and Arch's aarch64 port is a separate project with a
+#     separate tree -- so there is no environment in which that package can be built here.
+#     The delivery matrix's Arch slice is a `PKGBUILD` rather than a binary package, and the
+#     AUR is where that recipe lives. See `docs/dev/release-checklist.md`.
+#   * It does not publish the per-architecture release archives `xtask package` writes. Those
+#     carry the payloads, and every payload is already inside a distribution package or the
+#     source archive; the release's own file list is fixed by `xtask release manifest`.
+
+name: release
+
+on:
+  push:
+    # A semantic version, optionally with a pre-release suffix: v1.2.3, v1.2.3-rc.1.
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  # A rehearsal: everything runs and nothing is published. The one step that cannot be taken
+  # back is `publish`, and this is how the signing chain is exercised before a tag exists.
+  workflow_dispatch:
+
+# A release must not be cancelled halfway: a partially published release is worse than a
+# failed one, because the artifacts that did land look complete.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # The epoch the archive's member timestamps and the manifest's `source_date_epoch` are
+  # stamped with. Fixed rather than derived from the clock, so that a rebuild of the same
+  # commit produces the same archive -- which is what makes the signature worth anything to
+  # somebody who rebuilds and compares. Kept identical to the value in ci.yml, and to the one
+  # the packaging recipes fall back to.
+  SOURCE_DATE_EPOCH: 1790899200
+  # The `cc` crate reads CXXFLAGS, so the prefix map reaches the C++ glue without touching
+  # build.rs. It rewrites absolute build paths to a stable token, which is what makes two
+  # builds of the same tree byte-identical.
+  CXXFLAGS: "-ffile-prefix-map=${{ github.workspace }}=. -fdebug-prefix-map=${{ github.workspace }}=."
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-24.04
+    # The suite as one recipe, with the Fcitx5 development packages installed so that the
+    # host-ABI half actually runs: `RSPINYIN_REQUIRE_HOST_ABI=1` turns the skip into a
+    # failure, which is what a release gate needs. `quality` in ci.yml deliberately runs
+    # without those packages to keep the dependency-free path proven; a release is where the
+    # C ABI link has to be exercised rather than assumed.
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The source job archives the tag, and `git archive` needs the tag itself rather
+          # than the commit it points at.
+          fetch-depth: 0
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Install just and cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest
+      - name: Install cargo-public-api for the Slint-leak audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-public-api
+      - name: Install the nightly toolchain for the public-API audit
+        # `just check-slint` drives `cargo public-api`, which needs a nightly rustdoc. The
+        # workspace build itself stays on the toolchain pinned by rust-toolchain.toml.
+        run: rustup toolchain install nightly --profile minimal
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Assert the tag names the version this tree builds
+        id: version
+        run: |
+          set -eu
+          # The first assertion, because it is the cheapest and because everything after it
+          # is named with the version it prints: a tag pushed before the version was bumped
+          # would otherwise build a release that no commit in it was built from.
+          version="$(cargo run --quiet -p xtask -- release check-tag "$GITHUB_REF_NAME")"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - name: Assert the addon descriptors agree with the workspace version
+        # Also part of `just ci-host` below, and run early for the same reason: a descriptor
+        # left behind by a version bump ships a plugin that mislabels itself, and finding
+        # that out after a thirty-minute suite wastes the run.
+        run: cargo run --quiet -p xtask -- check-versions
+      - name: Install the Fcitx5 development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev
+      - name: Run the full gate suite with the host ABI required
+        run: RSPINYIN_REQUIRE_HOST_ABI=1 just ci
+
+  source:
+    name: source
+    runs-on: ubuntu-24.04
+    needs: gate
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build the source archive
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -eu
+          mkdir -p dist
+          archive="dist/rspinyin-${VERSION}.tar.gz"
+          # `git archive` rather than a checkout and a tar: it writes exactly the tracked
+          # files of the tag, with no build output, no ignored file and no local
+          # modification, and it stamps every member with the commit's own timestamp, which
+          # is what makes two archives of one tag identical. `gzip -n` clears the name and
+          # the timestamp gzip would otherwise put in the header -- the same reason the
+          # packager compresses through it.
+          git archive --format=tar --prefix="rspinyin-${VERSION}/" "$GITHUB_REF_NAME" \
+            | gzip -n > "$archive"
+          # The three packaging recipes unpack this archive and each derives the directory
+          # name from the version: the RPM spec's `%setup` and the PKGBUILD's
+          # `cd "$pkgname-$pkgver"` both expect `rspinyin-<version>`, and makepkg refuses a
+          # source tree whose name disagrees with the recipe.
+          first="$(tar -tzf "$archive" | head -n 1)"
+          test "$first" = "rspinyin-${VERSION}/" \
+            || { echo "release: the source archive starts with ${first} rather than rspinyin-${VERSION}/" >&2; exit 1; }
+          # A tree without the files the recipes build from is not a source release, whatever
+          # else it holds.
+          for required in Cargo.toml Cargo.lock rust-toolchain.toml \
+                          packaging/rpm/rspinyin.spec packaging/aur/PKGBUILD packaging/debian/rules; do
+            tar -tzf "$archive" | grep -qx "rspinyin-${VERSION}/${required}" \
+              || { echo "release: the source archive carries no ${required}" >&2; exit 1; }
+          done
+          sha256sum "$archive"
+      - name: Upload the source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-source
+          path: dist/
+          retention-days: 5
+          if-no-files-found: error
+
+  packages:
+    name: package-${{ matrix.kind }}-${{ matrix.target }}
+    # Each package is built on the runner for its own architecture: both addons are cdylibs
+    # that link against the target's libFcitx5Core, so a cross build would have to assemble
+    # a complete sysroot for the other architecture and could not run what it produced.
+    # `ubuntu-24.04-arm` is a hosted arm64 runner, generally available for public
+    # repositories and unavailable in private ones -- the same constraint ci.yml records for
+    # its `cross-arch` job.
+    runs-on: ${{ matrix.runner }}
+    needs: [gate, source]
+    timeout-minutes: 90
+    strategy:
+      # One architecture failing must not hide the state of the others: a release is either
+      # complete or not, and knowing which rows failed is what makes the retry possible.
+      fail-fast: false
+      matrix:
+        include:
+          - kind: deb
+            target: amd64
+            machine: x86_64
+            runner: ubuntu-24.04
+          - kind: deb
+            target: arm64
+            machine: aarch64
+            runner: ubuntu-24.04-arm
+          - kind: rpm
+            target: x86_64
+            machine: x86_64
+            runner: ubuntu-24.04
+          - kind: rpm
+            target: aarch64
+            machine: aarch64
+            runner: ubuntu-24.04-arm
+          - kind: pkg
+            target: x86_64
+            machine: x86_64
+            runner: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert the runner is the architecture this job builds for
+        env:
+          MACHINE: ${{ matrix.machine }}
+        run: |
+          set -eu
+          actual="$(uname -m)"
+          test "$actual" = "$MACHINE" \
+            || { echo "release: this job builds ${MACHINE} packages and the runner is ${actual}. A package labelled with an architecture it was not built for is worse than no package at all." >&2; exit 1; }
+      - name: Download the source archive
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-source
+          path: dist
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Assert the build uses the toolchain the manifest will record
+        # One document states one compiler for the whole release, so every job that produces
+        # an artifact has to have built it with the pinned one. This is what makes that
+        # statement true rather than likely: the containers below install the same toolchain
+        # through rustup, and each of them checks it again inside.
+        run: |
+          set -eu
+          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)"
+          test -n "$channel" \
+            || { echo "release: rust-toolchain.toml states no channel, so no build here can be recorded against one" >&2; exit 1; }
+          cargo --version | grep -qF "cargo ${channel} " \
+            || { echo "release: this job's cargo is $(cargo --version) and the workspace pins ${channel}. Every artifact of one release is recorded as built by the pinned toolchain; a job that used another one would make the manifest untrue." >&2; exit 1; }
+      - name: Build the Debian package
+        if: matrix.kind == 'deb'
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -eu
+          # debhelper and the Fcitx5 development packages: a Debian build compiles both
+          # addons and the dictionary, because that is what a Debian source package does.
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential debhelper dpkg-dev pkg-config binutils \
+            libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev \
+            curl python3 unzip
+          # The Debian metadata lives under `packaging/` so that the repository root is not a
+          # Debian source tree; `dpkg-buildpackage` looks for `debian/` beside the source it
+          # builds. The published source archive is unpacked and the directory placed there,
+          # so the package is built from the bytes the release publishes.
+          stage="$(mktemp -d)"
+          tar -xzf "dist/rspinyin-${VERSION}.tar.gz" -C "$stage"
+          root="${stage}/rspinyin-${VERSION}"
+          cp -r packaging/debian "$root/debian"
+          # `dpkg-buildpackage` executes `debian/rules` rather than reading it, so the file
+          # has to carry its executable bit through the archive. Stating it here rather than
+          # relying on the checkout is the difference between a build that works and one that
+          # fails with a message about a missing build system.
+          chmod +x "$root/debian/rules"
+          ( cd "$root" && dpkg-buildpackage -us -uc -b -d )
+          # `-d` skips the distribution's build-dependency check. The Rust toolchain comes
+          # from rust-toolchain.toml through rustup rather than from Debian's `rustc`
+          # package, so the check would refuse a build whose toolchain is pinned and newer
+          # than the archive's -- which is the whole point of pinning it.
+          deb="$(find "$stage" -maxdepth 1 -name '*.deb' | head -n 1)"
+          test -n "$deb" || { echo "release: the Debian build produced no package" >&2; exit 1; }
+          # What the package claims to be, rather than what it was asked to be: the
+          # architecture and the version are read back from the file that will be published.
+          built="$(dpkg-deb -f "$deb" Architecture)"
+          test "$built" = "$TARGET" \
+            || { echo "release: the package is built for ${built} and this job builds ${TARGET}" >&2; exit 1; }
+          case "$(dpkg-deb -f "$deb" Version)" in
+            "${VERSION}-"*) ;;
+            *) echo "release: the package is version $(dpkg-deb -f "$deb" Version); packaging/debian/changelog needs an entry for ${VERSION}" >&2; exit 1 ;;
+          esac
+          mkdir -p out
+          cp "$deb" out/
+          sha256sum out/*.deb
+      - name: Build the RPM package
+        if: matrix.kind == 'rpm'
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -eu
+          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)"
+          # Built inside the distribution it is for. `rpmbuild` runs on Ubuntu too, but it
+          # would then resolve Fedora's `BuildRequires` against Ubuntu's packages, and a spec
+          # that names `fcitx5-devel` and `rust >= 1.85` would be built against whatever the
+          # host happened to have. The official image is the environment the spec was written
+          # for, and the pinned toolchain is installed into it rather than taken from it, so
+          # that the manifest's one-compiler statement stays true.
+          script="${RUNNER_TEMP}/build-rpm.sh"
+          cat > "$script" <<'SCRIPT'
+          set -euxo pipefail
+          export CXXFLAGS="-ffile-prefix-map=/src=. -fdebug-prefix-map=/src=."
+          dnf install --yes --setopt=install_weak_deps=False \
+            rpm-build gcc-c++ pkgconf-pkg-config fcitx5-devel binutils \
+            curl unzip python3 git tar gzip rustup
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install "$CHANNEL" --profile minimal
+          # Read into a variable and matched, rather than piped into `grep -q`: grep exits on
+          # its first match, and under `pipefail` the resulting SIGPIPE would be read as a
+          # failure of the command it was checking.
+          actual="$(cargo --version)"
+          case "$actual" in
+            "cargo ${CHANNEL} "*) ;;
+            *) echo "release: the container has ${actual} and the workspace pins ${CHANNEL}" >&2; exit 1 ;;
+          esac
+          mkdir -p rpmbuild/BUILD rpmbuild/RPMS rpmbuild/SOURCES rpmbuild/SPECS rpmbuild/SRPMS
+          # The published source archive, not a second checkout: `%setup` unpacks it and the
+          # spec's `Source0` names it, so what is packaged is what the release publishes.
+          cp "dist/rspinyin-${VERSION}.tar.gz" rpmbuild/SOURCES/
+          # `--nodeps` because the BuildRequires were installed above by name; the check would
+          # otherwise compare Fedora capability names against what dnf just resolved.
+          rpmbuild --define "_topdir $PWD/rpmbuild" --nodeps -bb packaging/rpm/rspinyin.spec
+          built="$(find rpmbuild/RPMS -name '*.rpm' -print -quit)"
+          test -n "$built" || { echo "release: the RPM build produced no package" >&2; exit 1; }
+          arch="$(rpm -qp --qf '%{ARCH}' "$built")"
+          test "$arch" = "$TARGET" \
+            || { echo "release: the package is built for ${arch} and this job builds ${TARGET}" >&2; exit 1; }
+          version="$(rpm -qp --qf '%{VERSION}' "$built")"
+          test "$version" = "$VERSION" \
+            || { echo "release: the package is version ${version}; packaging/rpm/rspinyin.spec needs a bump to ${VERSION}" >&2; exit 1; }
+          mkdir -p out
+          cp "$built" out/
+          sha256sum out/*.rpm
+          SCRIPT
+          docker run --rm \
+            -e VERSION -e TARGET -e CHANNEL="$channel" \
+            -v "$PWD:/src" -v "$script:/build.sh:ro" -w /src \
+            fedora:42 bash /build.sh
+      - name: Build the pacman package
+        if: matrix.kind == 'pkg'
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -eu
+          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)"
+          # makepkg refuses to run as root, and the official Arch image ships base-devel
+          # without a build user, so the image's own documented pattern is followed: a user
+          # is added, the tree is handed to it, and makepkg runs there.
+          script="${RUNNER_TEMP}/build-pkg.sh"
+          cat > "$script" <<'SCRIPT'
+          set -euxo pipefail
+          # makepkg refuses to run as root, and the official Arch image ships base-devel with
+          # no build user, so the script provisions one and then re-enters itself as that
+          # user -- the image's own documented pattern. `su` resets HOME and PATH, so the
+          # values the build needs are passed on the command line rather than inherited.
+          if [ "$(id -u)" = "0" ]; then
+            pacman -Syu --noconfirm --needed git rustup pkgconf curl python unzip
+            useradd --create-home builder
+            chown -R builder /src
+            exec su builder -c "env HOME=/home/builder CHANNEL='$CHANNEL' VERSION='$VERSION' TARGET='$TARGET' bash /build.sh"
+          fi
+          export PATH="$HOME/.cargo/bin:$PATH"
+          export CXXFLAGS="-ffile-prefix-map=/src=. -fdebug-prefix-map=/src=."
+          rustup toolchain install "$CHANNEL" --profile minimal
+          # Read into a variable and matched, rather than piped into `grep -q`: grep exits on
+          # its first match, and under `pipefail` the resulting SIGPIPE would be read as a
+          # failure of the command it was checking.
+          actual="$(cargo --version)"
+          case "$actual" in
+            "cargo ${CHANNEL} "*) ;;
+            *) echo "release: the container has ${actual} and the workspace pins ${CHANNEL}" >&2; exit 1 ;;
+          esac
+          cd /src/packaging/aur
+          # The recipe names the upstream archive as its `source`; the release's own source
+          # archive is placed in `SRCDEST` so makepkg uses it instead of downloading a second
+          # copy of a file that does not exist yet. `--nodeps` because every dependency was
+          # installed above by name: the recipe's `makedepends` names Arch packages, and the
+          # pinned toolchain is what actually builds this.
+          SRCDEST=/src/dist makepkg --noconfirm --nodeps
+          built="$(find . -maxdepth 1 -name "*.pkg.tar.zst" -print -quit)"
+          test -n "$built" || { echo "release: makepkg produced no package" >&2; exit 1; }
+          # What the package claims to be, rather than what it was asked to be.
+          info="$(pacman -Qip "$built")"
+          arch="$(printf '%s\n' "$info" | sed -n 's/^Architecture *: *//p')"
+          test "$arch" = "$TARGET" \
+            || { echo "release: the package is built for ${arch} and this job builds ${TARGET}" >&2; exit 1; }
+          version="$(printf '%s\n' "$info" | sed -n 's/^Version *: *//p')"
+          case "$version" in
+            "${VERSION}-"*) ;;
+            *) echo "release: the package is version ${version}; packaging/aur/PKGBUILD needs a bump to ${VERSION}" >&2; exit 1 ;;
+          esac
+          mkdir -p /src/out
+          cp "$built" /src/out/
+          sha256sum /src/out/*.pkg.tar.zst
+          SCRIPT
+          docker run --rm \
+            -e VERSION -e TARGET -e CHANNEL="$channel" \
+            -v "$PWD:/src" -v "$script:/build.sh:ro" -w /src \
+            archlinux:base-devel bash /build.sh
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.kind }}-${{ matrix.target }}
+          path: out/
+          retention-days: 5
+          if-no-files-found: error
+
+  assemble:
+    name: assemble
+    runs-on: ubuntu-24.04
+    needs: [gate, source, packages]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Collect every artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the signing key with the release
+        # The key is a published file like any other, and it is listed in the manifest: the
+        # instructions a user follows import it from what they downloaded, and `xtask verify`
+        # refuses a directory holding a file no record names. A release with no key beside it
+        # is one nobody can check.
+        run: |
+          set -eu
+          key=packaging/keys/rspinyin-signing-key.asc
+          test -f "$key" \
+            || { echo "release: ${key} is not committed, so a user has no key to import. See packaging/keys/README.md." >&2; exit 1; }
+          cp "$key" "dist/$(basename "$key")"
+      - name: Import the signing key
+        id: key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.RSPINYIN_GPG_PRIVATE_KEY }}
+        run: |
+          set -eu
+          if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+            echo "release: RSPINYIN_GPG_PRIVATE_KEY is not set" >&2
+            exit 1
+          fi
+          # Piped through the environment rather than written to a file, and never echoed:
+          # the runner masks secrets in its log, but a file in the workspace is a file a
+          # later step can upload. `--batch --pinentry-mode loopback` keeps gpg from trying
+          # to open a terminal on a runner.
+          printf '%s' "$GPG_PRIVATE_KEY" \
+            | gpg --batch --import --pinentry-mode loopback
+          gpg --list-secret-keys --with-colons | grep -q '^sec:' \
+            || { echo "release: the imported key has no secret half" >&2; exit 1; }
+          fingerprint="$(gpg --list-secret-keys --with-colons \
+            | awk -F: '$1 == "fpr" { print $10; exit }')"
+          if [ -z "$fingerprint" ]; then
+            echo "release: the imported key has no fingerprint" >&2
+            exit 1
+          fi
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+      - name: Assert the published key is the signing key
+        env:
+          FINGERPRINT: ${{ steps.key.outputs.fingerprint }}
+        run: |
+          set -eu
+          # If the committed key is not the key that signs releases, every user verifies
+          # against the wrong key -- and they would only find out from a failure they cannot
+          # explain.
+          committed="$(gpg --show-keys --with-colons dist/rspinyin-signing-key.asc \
+            | awk -F: '$1 == "fpr" { print $10; exit }')"
+          if [ "$committed" != "$FINGERPRINT" ]; then
+            echo "release: the published key is ${committed}, which is not the key that signs releases" >&2
+            exit 1
+          fi
+      - name: Write the release manifest
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -eu
+          # The package list is the matrix above, in the architecture spelling the delivery
+          # matrix uses rather than the one each ecosystem uses. The tool refuses a directory
+          # that is short one of them, which is what turns a matrix row that failed quietly
+          # into a failed release. The manifest is written into the directory it describes,
+          # because a record published apart from what it records is a record nobody can
+          # check against it.
+          cargo run --quiet -p xtask -- release manifest \
+            --artifacts dist \
+            --version "$VERSION" \
+            --packages deb:x86_64,deb:aarch64,rpm:x86_64,rpm:aarch64,pkg:x86_64
+      - name: Record the signing key in the manifest
+        env:
+          FINGERPRINT: ${{ steps.key.outputs.fingerprint }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+
+          # The manifest is written before the checksum list rather than after, because the
+          # list covers it: a manifest edited afterwards would no longer be the document the
+          # signature covers. The fingerprint reaches this script through the environment so
+          # that it is never interpolated into the program text.
+          path = pathlib.Path("dist/rspinyin-release.json")
+          document = json.loads(path.read_text())
+          document["signature"] = {
+              "scheme": "openpgp",
+              "key_id": os.environ["FINGERPRINT"],
+              "detached": "SHA256SUMS.asc",
+          }
+          path.write_text(json.dumps(document, indent=2) + "\n")
+          PY
+      - name: Regenerate the checksum list over the assembled release
+        run: |
+          set -eu
+          cd dist
+          # Every file except the list and the signature over it. `xtask verify` requires
+          # exactly this coverage, and `sha256sum --check` reads the format.
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS' ! -name 'SHA256SUMS.asc' -printf '%P\n' \
+            | sort \
+            | xargs sha256sum > SHA256SUMS
+          cat SHA256SUMS
+      - name: Sign the checksum list
+        env:
+          FINGERPRINT: ${{ steps.key.outputs.fingerprint }}
+        run: |
+          set -eu
+          cd dist
+          gpg --batch --yes --local-user "$FINGERPRINT" \
+              --detach-sign --armor --output SHA256SUMS.asc SHA256SUMS
+          # Signed, and checked before anything else happens: a signing step that produced an
+          # unverifiable signature would otherwise be discovered by a user.
+          gpg --verify SHA256SUMS.asc SHA256SUMS
+      - name: Assert the private key never reached the workspace
+        if: always()
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.RSPINYIN_GPG_PRIVATE_KEY }}
+        run: |
+          set -eu
+          if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+            exit 0
+          fi
+          # One line out of the middle of the armor rather than a header every key shares.
+          body="$(printf '%s' "$GPG_PRIVATE_KEY" | tr -d '\r' | sed -n '3p')"
+          if [ -z "$body" ]; then
+            exit 0
+          fi
+          if grep -rqF --exclude-dir=target --exclude-dir=.git -- "$body" .; then
+            echo "release: the private key material was written into the workspace" >&2
+            exit 1
+          fi
+          echo "release: no file in the workspace carries the private key"
+      - name: Remove the private key from the runner
+        if: always()
+        env:
+          FINGERPRINT: ${{ steps.key.outputs.fingerprint }}
+        run: |
+          set -eu
+          if [ -n "${FINGERPRINT:-}" ]; then
+            gpg --batch --yes --delete-secret-keys --pinentry-mode loopback "$FINGERPRINT" || true
+          fi
+          # `always()` so that a failed signing step cannot leave the key behind, and a
+          # failure of its own if anything did: the key exists to sign one release, and a
+          # runner that keeps it is a runner whose next job can sign as the maintainer.
+          if gpg --list-secret-keys --with-colons | grep -q '^sec:'; then
+            echo "release: a secret key is still in the runner's keyring" >&2
+            exit 1
+          fi
+      - name: Verify the release the way a user would
+        run: |
+          set -eu
+          # Only the public half is left in the keyring now, which is what a user has after
+          # importing the key that ships with the release. This is the end-to-end check of
+          # the whole chain: manifest, digests, sizes, ceilings, checksum-list coverage and
+          # signature. It is also the step that fails when an artifact was tampered with --
+          # `docs/dev/release-checklist.md` records how to reproduce that on purpose.
+          cargo run --quiet -p xtask -- verify \
+            --manifest dist/rspinyin-release.json \
+            --artifacts dist
+          (cd dist && sha256sum --check SHA256SUMS)
+      - name: Record what was signed
+        if: always()
+        run: |
+          {
+            echo "### Signed release"
+            echo
+            echo "Request ID: \`$(python3 -c 'import json;print(json.load(open("dist/rspinyin-release.json"))["request_id"])' 2>/dev/null || echo 'no manifest')\`"
+            echo
+            echo '| file | bytes | sha256 (first 16) |'
+            echo '|---|---|---|'
+            if [ -f dist/SHA256SUMS ]; then
+              while read -r digest name; do
+                printf '| %s | %s | %s |\n' "$name" "$(stat -c%s "dist/$name")" "${digest:0:16}"
+              done < dist/SHA256SUMS
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the assembled release
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-release
+          path: dist/
+          # Longer than the build artifacts above: if `publish` fails, this is what a
+          # maintainer publishes by hand rather than re-running the pipeline and producing a
+          # second, differently identified release.
+          retention-days: 30
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    runs-on: ubuntu-24.04
+    needs: [gate, assemble]
+    # The one step that cannot be taken back. A rehearsal (`workflow_dispatch`) stops after
+    # the release has been assembled and verified.
+    if: github.event_name == 'push'
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the assembled release
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-release
+          path: dist
+      - name: Assert the release is intact before publishing it
+        # The assembled job already ran the full verification. This re-runs the checksum
+        # list, because the artifact crossed a service on its way here and what a user will
+        # download is this copy rather than that one.
+        run: |
+          set -eu
+          test -f dist/rspinyin-release.json
+          test -f dist/SHA256SUMS.asc
+          (cd dist && sha256sum --check SHA256SUMS)
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -eu
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "rspinyin ${VERSION}" \
+            --generate-notes \
+            dist/*.tar.gz \
+            dist/*.deb \
+            dist/*.rpm \
+            dist/*.pkg.tar.zst \
+            dist/rspinyin-signing-key.asc \
+            dist/rspinyin-release.json \
+            dist/SHA256SUMS \
+            dist/SHA256SUMS.asc
+      - name: Assert the release carries what the manifest records
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          # The release page and the manifest are two records of one release, and a user
+          # reads the first while their verifier reads the second. The three files that
+          # cannot be listed inside the manifest -- the manifest itself, the checksum list,
+          # and the signature over it -- are added here, because they are published too.
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' \
+            | sort > "$RUNNER_TEMP/published.txt"
+          python3 - <<'PY' | sort > "$RUNNER_TEMP/recorded.txt"
+          import json
+          document = json.load(open("dist/rspinyin-release.json"))
+          names = [artifact["name"] for artifact in document["artifacts"]]
+          names += ["rspinyin-release.json", "SHA256SUMS", "SHA256SUMS.asc"]
+          print("\n".join(names))
+          PY
+          diff -u "$RUNNER_TEMP/recorded.txt" "$RUNNER_TEMP/published.txt" \
+            || { echo "release: the release page and the manifest do not list the same files" >&2; exit 1; }
+      - name: Record the published release
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "### Published ${{ github.ref_name }}"
+            echo
+            echo "https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
+          } >> "$GITHUB_STEP_SUMMARY"

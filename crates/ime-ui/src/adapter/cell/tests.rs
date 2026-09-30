@@ -16,7 +16,6 @@ fn geometry(position: u16, width: f32) -> CellGeometry {
         position,
         width,
         annotation_width: 0.0,
-        show_annotation: true,
         metrics: parsed(),
     }
 }
@@ -180,11 +179,13 @@ fn test_cell_write_past_the_ninth_candidate_draws_no_label() {
 }
 
 #[test]
-fn test_cell_write_hides_an_annotation_the_layout_turned_off() {
+fn test_cell_write_hides_an_annotation_the_cell_has_no_room_for() {
     let mut cell = CellState::default();
     let mut annotated = candidate("你好");
     annotated.annotation = Some(String::from("自造词"));
     let mut measure = Measure::default();
+    // The cost carries the whole decision: the caller writes the annotation's width when the
+    // cell can afford it and zero when it cannot, and the cell draws what it is told.
     let shown = CellGeometry {
         annotation_width: 40.0,
         ..geometry(0, 120.0)
@@ -192,7 +193,7 @@ fn test_cell_write_hides_an_annotation_the_layout_turned_off() {
     cell.write(&annotated, shown, &mut measure);
     assert_eq!(cell.annotation, "自造词");
     let hidden = CellGeometry {
-        show_annotation: false,
+        annotation_width: 0.0,
         ..shown
     };
     cell.write(&annotated, hidden, &mut measure);

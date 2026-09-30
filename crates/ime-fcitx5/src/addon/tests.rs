@@ -8,17 +8,42 @@
 //! environment, the wall clock or a real XDG directory, and the backup stamp is an
 //! argument -- the one exception is the test that runs the real initialisation sequence,
 //! and it asserts only what that sequence reports about itself.
+//!
+//! # Layout
+//!
+//! This file holds the sequence, the store and the fixtures the three of them share. What
+//! a step does with a real file lives in `steps`, and what the packaging descriptors pin
+//! lives in `packaging`; both are split out so that no one file carries every subject.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
-use ime_dict::user_db::list_backups;
-use ime_types::{SchemeId, UserFreqSource};
+use ime_config::{Config, ConfigStore};
+use ime_dict::paths::READONLY_CODE;
+use ime_dict::recover::USER_DB_RECOVERED_CODE;
+use ime_dict::user_db::{
+    BACKUP_FAILED_CODE, BACKUP_RESTORED_CODE, BackupConfig, BackupOutcome, RestoreOutcome, UserDb,
+    backup_dir, list_backups,
+};
+use ime_types::{ImeError, SchemeId, UserFreqSource};
 
-use crate::engine::{DigitZero, FlipSet, HighlightSet};
+use crate::engine::{DigitZero, FlipSet, HighlightSet, RoutingConfig};
 
-use super::*;
+use super::config::{CONFIG, ROUTING, init_key_bindings, install_config_store, start_config_watch};
+use super::user_store::{
+    UserStore, backup_notice, install_user_store, recover_store, restore_notice,
+    run_shutdown_backup, start_shutdown_backup, take_user_store,
+};
+use super::{
+    DESTROY_BUDGET, INIT_BUDGET, INIT_STEPS, InitStep, lock, on_addon_destroy, on_addon_init,
+    on_config_reload, routing_config, run_init_steps,
+};
+
+mod packaging;
+mod steps;
 
 /// The stamp the backup tests write at: 2023-11-14 22:13:20 UTC, so the generation names
 /// the assertions expect are literals.
@@ -112,6 +137,7 @@ fn test_init_steps_pin_the_documented_lifecycle() {
             "phrases",
             "store-recovery",
             "lexicon",
+            "session-host",
         ]
     );
     let fatal: Vec<&str> = INIT_STEPS
@@ -175,9 +201,9 @@ fn test_lifecycle_runs_and_shuts_down_cleanly() {
 fn test_on_addon_init_stays_inside_the_load_budget() {
     // The synchronous sequence, measured as Fcitx5 runs it: the line the outcome is
     // reported with carries the same two numbers, and this is what fails when they cross.
-    // The probe drives the real sequence, so it pays the real store open and the real
-    // phrase read — which is the point, because the dictionary step will start counting
-    // its CRC against this same ceiling when it lands.
+    // The probe drives the real sequence, so it pays the real store open, the real phrase
+    // read and the real dictionary load -- which is the point, because the dictionary's
+    // checksum pass is the step this ceiling exists for.
     let started = Instant::now();
     assert!(on_addon_init(std::ptr::null_mut()));
     let elapsed = started.elapsed();
@@ -277,11 +303,6 @@ fn config_store(dir: &Path, document: &str) -> ConfigStore {
     store
 }
 
-/// Installs `store` as the configuration in force.
-fn install_config_store(store: ConfigStore) {
-    *lock(&CONFIG) = Some(store);
-}
-
 #[test]
 fn test_init_key_bindings_projects_the_configuration_in_force() {
     let dir = scratch_dir("key-bindings");
@@ -306,9 +327,9 @@ fn test_init_key_bindings_projects_the_configuration_in_force() {
 
 #[test]
 fn test_init_key_bindings_falls_back_to_the_shipped_defaults_without_a_store() {
-    // The `config` step has not landed, so there is no store to project. The routing layer
-    // must still have a table: a fresh installation routes exactly as the shipped document
-    // says, and a plugin that routed nothing would eat every key.
+    // An environment with no configuration directory leaves the store uninstalled, and the
+    // routing layer must still have a table: a fresh installation routes exactly as the
+    // shipped document says, and a plugin that routed nothing would eat every key.
     let _ = lock(&CONFIG).take();
     *lock(&ROUTING) = None;
 
@@ -712,99 +733,6 @@ fn test_backup_notice_reports_the_two_failures_and_stays_quiet_otherwise() {
 }
 
 // ── what ships ─────────────────────────────────────────────────────────────────────
-
-/// The addon description, relative to this crate's manifest directory.
-const ADDON_CONF: &str = "../../packaging/fcitx5/rspinyin.conf";
-
-/// The input-method description, relative to this crate's manifest directory.
-const INPUT_METHOD_CONF: &str = "../../packaging/fcitx5/rspinyin-im.conf";
-
-/// Reads a packaging file, or `None` when it is missing.
-fn packaging_file(relative: &str) -> Option<String> {
-    fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)).ok()
-}
-
-#[test]
-fn test_addon_conf_pins_what_fcitx5_resolves() {
-    let conf = packaging_file(ADDON_CONF);
-    assert!(conf.is_some(), "the addon description must ship");
-    if let Some(conf) = conf {
-        // The artifact is librspinyin.so: a bare `Library=rspinyin` would not resolve.
-        assert!(
-            conf.contains("Library=librspinyin"),
-            "Library must name the artifact this crate builds"
-        );
-        assert!(conf.contains("Type=SharedLibrary"));
-        assert!(
-            conf.contains("OnDemand=False"),
-            "the engine has to exist before the first key arrives"
-        );
-        // The engine addon is an input method and nothing else. `Category` is a
-        // single-valued enum in Fcitx5, so declaring `UI` here would make the host
-        // look for a `fcitx::UserInterface` this library does not provide — and
-        // dispatch through a vtable slot the object does not have.
-        assert!(
-            conf.contains("Category=InputMethod"),
-            "the engine addon must be registered under Category=InputMethod"
-        );
-        // The frontends must be optional, not required. fcitx5 treats every entry in
-        // [Addon/Dependencies] as mandatory, so listing xcb and wayland there makes
-        // the plugin refuse to load on an X11-only or Wayland-only system.
-        let required = conf_section(&conf, "[Addon/Dependencies]");
-        let optional = conf_section(&conf, "[Addon/OptionalDependencies]");
-        assert!(
-            !required.contains("xcb") && !required.contains("wayland"),
-            "a frontend in [Addon/Dependencies] makes the plugin unloadable when that \
-             frontend is absent; required section was: {required:?}"
-        );
-        assert!(
-            optional.contains("xcb") && optional.contains("wayland"),
-            "both frontends belong in [Addon/OptionalDependencies]"
-        );
-        assert!(
-            required.contains("core"),
-            "the core addon is the one genuine dependency"
-        );
-        // The packaged version has to track the crate version.
-        let version = format!("Version={}", env!("CARGO_PKG_VERSION"));
-        assert!(conf.contains(&version), "must declare {version}");
-    }
-}
-
-/// Body of the named INI section, or an empty string when the section is absent.
-///
-/// Section-scoped rather than a plain `contains`, because the whole point of these
-/// assertions is *which* section a key lives in.
-fn conf_section(conf: &str, header: &str) -> String {
-    let mut body = String::new();
-    let mut inside = false;
-    for line in conf.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            inside = trimmed == header;
-            continue;
-        }
-        if inside {
-            body.push_str(trimmed);
-            body.push('\n');
-        }
-    }
-    body
-}
-
-#[test]
-fn test_input_method_conf_points_at_the_addon() {
-    let conf = packaging_file(INPUT_METHOD_CONF);
-    assert!(conf.is_some(), "the input-method entry must ship");
-    if let Some(conf) = conf {
-        assert!(
-            conf.contains("Addon=rspinyin"),
-            "the entry must select this addon"
-        );
-        assert!(
-            conf.contains("Name=Rust Pinyin"),
-            "this is the name configtool lists"
-        );
-        assert!(conf.contains("LangCode=zh_CN"));
-    }
-}
+//
+// The packaging descriptors Fcitx5 resolves are pinned in `tests::packaging`, which is
+// where the assertions about them live now that this module has more than one subject.

@@ -46,8 +46,11 @@
 //! key -> word mapping into `WORDLIST` keeps `ENTRIES` at one record per word and
 //! puts the expansion cost on a 4-byte word-list pair instead of a 16-byte entry.
 
+pub mod collisions;
 pub mod reader;
 pub mod writer;
+
+pub use crate::format::collisions::find_colliding_hashes;
 
 use ime_types::DictError;
 
@@ -257,8 +260,16 @@ pub struct DictEntry {
     pub flags: u8,
     /// Ranking weight used to order words that share a key.
     pub weight: u32,
+    /// Characters in the word, or zero when the record does not carry the count.
+    ///
+    /// The count is stored rather than derived because deriving it costs a full UTF-8
+    /// scan of the text, and the decode path asks for the same word's count once per
+    /// span that word covers; the compiler knows the count when it writes the record.
+    /// Zero is the value a record written before this field existed carries, so it is
+    /// read as "not recorded" rather than as a fault -- see [`DictEntry::validate`].
+    pub char_count: u8,
     /// Reserved padding, always zero; keeps the record 16 bytes wide.
-    pub _pad: u32,
+    pub _pad: [u8; 3],
 }
 
 /// Encoded width of [`DictEntry`], asserted at compile time below.
@@ -267,7 +278,12 @@ pub const ENTRY_SIZE: usize = 16;
 const _: () = assert!(std::mem::size_of::<DictEntry>() == ENTRY_SIZE);
 
 impl DictEntry {
-    /// Builds an entry with zeroed padding.
+    /// Builds an entry with zeroed padding and no character count.
+    ///
+    /// The character count is a property of the word's text, which this constructor is
+    /// not given; [`DictEntry::with_characters`] fills it in. A record without one is
+    /// in contract, because every record written before the field existed reads the
+    /// same way.
     ///
     /// # Examples
     ///
@@ -284,8 +300,24 @@ impl DictEntry {
             syl_count,
             flags,
             weight,
-            _pad: 0,
+            char_count: 0,
+            _pad: [0; 3],
         }
+    }
+
+    /// Returns the entry with its character count filled in.
+    ///
+    /// The count is not checked here: a record whose count exceeds its own byte length
+    /// names no text a reader could have produced, and [`DictEntry::validate`] is where
+    /// that is rejected.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    #[must_use]
+    pub fn with_characters(mut self, characters: u8) -> Self {
+        self.char_count = characters;
+        self
     }
 
     /// Encodes the entry as its 16 little-endian bytes.
@@ -296,7 +328,8 @@ impl DictEntry {
         out[6] = self.syl_count;
         out[7] = self.flags;
         out[8..12].copy_from_slice(&self.weight.to_le_bytes());
-        out[12..16].copy_from_slice(&self._pad.to_le_bytes());
+        out[12] = self.char_count;
+        out[13..16].copy_from_slice(&self._pad);
         out
     }
 
@@ -306,7 +339,8 @@ impl DictEntry {
     /// Returns [`DictError::LengthOutOfRange`] when `bytes` is shorter than
     /// [`ENTRY_SIZE`], or when the decoded record violates the layout contract
     /// (a `word_len` outside `1..=MAX_WORD_LEN`, a `syl_count` outside
-    /// `1..=MAX_SYL_COUNT`, or a non-zero padding word).
+    /// `1..=MAX_SYL_COUNT`, a `char_count` above `word_len`, or a non-zero
+    /// padding word).
     pub fn decode(bytes: &[u8]) -> Result<Self, DictError> {
         let entry = Self {
             word_off: read_u32(bytes, 0, "word_off")?,
@@ -320,7 +354,11 @@ impl DictEntry {
                 value: 0,
             })?,
             weight: read_u32(bytes, 8, "weight")?,
-            _pad: read_u32(bytes, 12, "_pad")?,
+            char_count: *bytes.get(12).ok_or(DictError::LengthOutOfRange {
+                field: "char_count",
+                value: 0,
+            })?,
+            _pad: decode_padding(bytes)?,
         };
         entry.validate()?;
         Ok(entry)
@@ -331,7 +369,8 @@ impl DictEntry {
     /// # Errors
     /// Returns [`DictError::LengthOutOfRange`] naming the offending field when
     /// `word_len` exceeds [`MAX_WORD_LEN`], `syl_count` is zero or above
-    /// [`MAX_SYL_COUNT`], or `_pad` is not zero.
+    /// [`MAX_SYL_COUNT`], `char_count` is neither zero nor at most `word_len`, or
+    /// `_pad` is not zero.
     pub fn validate(&self) -> Result<(), DictError> {
         if self.word_len == 0 || self.word_len > MAX_WORD_LEN {
             return Err(DictError::LengthOutOfRange {
@@ -345,17 +384,43 @@ impl DictEntry {
                 value: u64::from(self.syl_count),
             });
         }
+        // A character is at least one byte, so a count above the byte length describes a
+        // text no compiler could have written. Zero is the "not recorded" value and is
+        // deliberately accepted: see the field's own documentation.
+        if self.char_count != 0 && u16::from(self.char_count) > self.word_len {
+            return Err(DictError::LengthOutOfRange {
+                field: "char_count",
+                value: u64::from(self.char_count),
+            });
+        }
         // `flags` is deliberately left unchecked: a bit this version does not define is a flag
         // a later version added, and refusing the record would turn a newer dictionary into an
         // unreadable one, while keeping the byte lets the reader pick out the bits it knows.
-        if self._pad != 0 {
+        if self._pad != [0; 3] {
             return Err(DictError::LengthOutOfRange {
                 field: "_pad",
-                value: u64::from(self._pad),
+                value: 1,
             });
         }
         Ok(())
     }
+}
+
+/// Reads the three reserved bytes at the tail of a record.
+///
+/// # Errors
+/// Returns [`DictError::LengthOutOfRange`] naming `_pad` when `bytes` is shorter than
+/// [`ENTRY_SIZE`]; a slice of any other length cannot occur, and is reported the same
+/// way rather than indexed.
+fn decode_padding(bytes: &[u8]) -> Result<[u8; 3], DictError> {
+    let pad = bytes.get(13..ENTRY_SIZE).ok_or(DictError::LengthOutOfRange {
+        field: "_pad",
+        value: 0,
+    })?;
+    pad.try_into().map_err(|_| DictError::LengthOutOfRange {
+        field: "_pad",
+        value: 0,
+    })
 }
 
 /// Computes the CRC32 of `bytes`, the checksum every section and the file body
@@ -380,7 +445,10 @@ pub fn crc32(bytes: &[u8]) -> u32 {
 /// two compiles of the same input produce the same table. Collisions are possible
 /// and are resolved by comparing the word text: the section is sorted by
 /// `(hash, word)`, and `word_id` is the index in that order, which is what keeps
-/// `ENTRIES` and `UNIGRAM` addressable by the same index.
+/// `ENTRIES` and `UNIGRAM` addressable by the same index. A lookup that can reach
+/// the text resolves a collision that way; one that reads the `UNIGRAM` section
+/// alone cannot, which is why a build refuses a word list whose hashes collide --
+/// see [`find_colliding_hashes`].
 ///
 /// # Examples
 ///
@@ -621,172 +689,4 @@ pub fn parse_section_table(bytes: &[u8]) -> Result<[SectionEntry; SECTION_COUNT]
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A minimal but structurally valid container, used by several tests.
-    fn sample_file() -> Vec<u8> {
-        let mut writer = writer::DictWriter::new();
-        writer
-            .add_section(SectionKind::Fst, vec![1, 2, 3, 4, 5, 6, 7, 8])
-            .expect("adding the FST section");
-        writer
-            .add_section(SectionKind::Entries, Vec::new())
-            .expect("adding the ENTRIES section");
-        writer.encode().expect("encoding the container")
-    }
-
-    #[test]
-    fn test_dict_entry_round_trips_through_its_bytes() {
-        let entry = DictEntry::new(0x1234, 6, 2, FLAG_PLACE, 30_000);
-        let decoded = DictEntry::decode(&entry.encode()).expect("decoding");
-        assert_eq!(decoded, entry);
-        assert_eq!(decoded.word_off, 0x1234);
-        assert_eq!(decoded.weight, 30_000);
-        assert_eq!(decoded.flags, FLAG_PLACE);
-    }
-
-    #[test]
-    fn test_dict_entry_decode_rejects_a_short_buffer() {
-        let entry = DictEntry::new(0, 6, 2, 0, 1);
-        let bytes = entry.encode();
-        for len in 0..ENTRY_SIZE {
-            let result = DictEntry::decode(&bytes[..len]);
-            assert!(
-                matches!(result, Err(DictError::LengthOutOfRange { .. })),
-                "a {len}-byte buffer must not decode"
-            );
-        }
-    }
-
-    #[test]
-    fn test_dict_entry_validate_rejects_out_of_contract_fields() {
-        let padded = DictEntry {
-            _pad: 1,
-            ..DictEntry::new(0, 6, 1, 0, 0)
-        };
-        let cases = [
-            DictEntry::new(0, 0, 1, 0, 0),
-            DictEntry::new(0, MAX_WORD_LEN + 1, 1, 0, 0),
-            DictEntry::new(0, 6, 0, 0, 0),
-            DictEntry::new(0, 6, MAX_SYL_COUNT + 1, 0, 0),
-            padded,
-        ];
-        for entry in cases {
-            assert!(
-                matches!(entry.validate(), Err(DictError::LengthOutOfRange { .. })),
-                "{entry:?} must not validate"
-            );
-        }
-        assert!(DictEntry::new(0, 3, 1, FLAG_SURNAME, 7).validate().is_ok());
-    }
-
-    #[test]
-    fn test_dict_entry_keeps_flag_bits_it_does_not_know() {
-        // Forward compatibility: a later version that defines a new flag must not make its
-        // dictionary unreadable here. The bit survives the round trip, and the bits this
-        // version knows are still extractable from it.
-        let future = DictEntry::new(0, 6, 1, FLAG_SURNAME | 0b1000_0000, 7);
-        assert!(future.validate().is_ok(), "an undefined bit is not a fault");
-        let decoded = DictEntry::decode(&future.encode()).expect("decoding");
-        assert_eq!(decoded.flags, FLAG_SURNAME | 0b1000_0000);
-        assert_eq!(decoded.flags & ENTRY_FLAG_MASK, FLAG_SURNAME);
-    }
-
-    #[test]
-    fn test_parse_header_accepts_a_written_file() {
-        let bytes = sample_file();
-        let header = parse_header(&bytes).expect("header");
-        assert_eq!(header.format_version, FORMAT_VERSION);
-        assert_eq!(header.total_len, bytes.len() as u64);
-        assert_eq!(header.entry_count, 0);
-        assert_eq!(header.flags, 0);
-    }
-
-    #[test]
-    fn test_parse_section_table_reads_the_written_layout() {
-        let bytes = sample_file();
-        let sections = parse_section_table(&bytes).expect("section table");
-        assert_eq!(sections[0].kind, SectionKind::Fst);
-        assert_eq!(sections[0].len, 8);
-        assert_eq!(sections[0].offset, SECTIONS_OFFSET);
-        assert_eq!(sections[0].crc32, crc32(&bytes[208..216]));
-        assert!(sections[1].is_absent());
-        assert_eq!(sections[5].kind, SectionKind::WordList);
-    }
-
-    #[test]
-    fn test_parse_section_table_rejects_a_truncated_table() {
-        let bytes = vec![0u8; HEADER_SIZE];
-        assert!(matches!(
-            parse_section_table(&bytes),
-            Err(DictError::LengthOutOfRange {
-                field: "section_table",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn test_section_kind_round_trips_and_names_itself() {
-        for kind in SectionKind::ALL {
-            assert_eq!(SectionKind::from_raw(kind.as_raw()), Some(kind));
-            assert!(!kind.name().is_empty());
-        }
-        assert_eq!(SectionKind::ALL.len(), SECTION_COUNT);
-    }
-
-    #[test]
-    fn test_pack_and_unpack_fst_value_round_trip() {
-        let cases = [(0u64, 0u32), (1, 1), (123_456, 32), (MAX_FST_START, 0)];
-        for (start, count) in cases {
-            let packed = pack_fst_value(start, count).expect("packing");
-            assert_eq!(unpack_fst_value(packed), (start, count));
-        }
-        assert!(matches!(
-            pack_fst_value(0, 1 << FST_COUNT_BITS),
-            Err(DictError::LengthOutOfRange {
-                field: "fst_count",
-                ..
-            })
-        ));
-        assert!(matches!(
-            pack_fst_value(MAX_FST_START + 1, 1),
-            Err(DictError::LengthOutOfRange {
-                field: "fst_start",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn test_hash_word_is_stable_and_documented() {
-        assert_eq!(hash_word(""), 0x811c_9dc5);
-        assert_eq!(hash_word("中国"), hash_word("中国"));
-        assert_ne!(hash_word("中国"), hash_word("中國"));
-    }
-
-    #[test]
-    fn test_read_helpers_reject_short_slices() {
-        let bytes = [1u8, 2, 3];
-        assert_eq!(read_u16(&bytes, 0, "x").expect("two bytes"), 0x0201);
-        assert!(matches!(
-            read_u16(&bytes, 2, "x"),
-            Err(DictError::LengthOutOfRange { field: "x", .. })
-        ));
-        assert!(matches!(
-            read_u32(&bytes, 0, "y"),
-            Err(DictError::LengthOutOfRange { field: "y", .. })
-        ));
-        assert!(matches!(
-            read_u64(&bytes, 0, "z"),
-            Err(DictError::LengthOutOfRange { field: "z", .. })
-        ));
-    }
-
-    #[test]
-    fn test_crc32_matches_a_known_vector() {
-        // The CRC32 of "123456789" is the standard check value.
-        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
-    }
-}
+mod tests;

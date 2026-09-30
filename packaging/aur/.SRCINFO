@@ -1,0 +1,25 @@
+pkgbase = rspinyin
+	pkgdesc = Offline-first Chinese pinyin input method for Fcitx5, with a self-drawn candidate window
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/gongzhengyang/rspinyin
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	license = Apache
+	makedepends = cargo
+	makedepends = gcc
+	makedepends = pkgconf
+	makedepends = git
+	makedepends = curl
+	makedepends = python
+	makedepends = unzip
+	depends = fcitx5>=5.1.0
+	provides = fcitx5-rspinyin
+	conflicts = fcitx5-rspinyin
+	options = !lto
+	options = !strip
+	source = rspinyin-0.1.0.tar.gz::https://github.com/gongzhengyang/rspinyin/archive/v0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = rspinyin

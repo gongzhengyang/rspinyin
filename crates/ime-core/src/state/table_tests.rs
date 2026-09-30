@@ -434,6 +434,9 @@ fn test_enter_temp_english_sets_the_flag_and_cancels_a_composition() {
 
 #[test]
 fn test_temp_english_passes_every_key_through() {
+    // The mode's whole meaning: every key reaches the application, the composing keys
+    // included. Nothing is composed, nothing is committed and the mode survives the whole
+    // run, which is what makes it a mode rather than a one-key gesture.
     let cfg = SessionConfig::default();
     let fixture = Fixture::new();
     let env = fixture.env();
@@ -441,10 +444,9 @@ fn test_temp_english_passes_every_key_through() {
     let _ = session.handle_key(KeyAction::EnterTempEnglish, &cfg, &env);
 
     for action in every_key_action() {
-        if matches!(
-            action,
-            KeyAction::Escape | KeyAction::CommitHighlighted | KeyAction::CommitRaw
-        ) {
+        if matches!(action, KeyAction::Escape | KeyAction::CommitRaw) {
+            // The two actions exactly one key produces that mean "leave the mode". The keys
+            // themselves are the subject of the test below.
             continue;
         }
         let effects = session.handle_key(action, &cfg, &env);
@@ -454,16 +456,24 @@ fn test_temp_english_passes_every_key_through() {
             "",
             "{action:?} must not reach the input buffer"
         );
-        assert!(session.temp_english, "{action:?}");
+        assert_eq!(
+            session.state,
+            SessionState::Idle,
+            "{action:?} must not compose"
+        );
+        assert!(session.temp_english, "{action:?} must not end the mode");
     }
 }
 
 #[test]
-fn test_temp_english_leaves_on_enter_or_escape() {
+fn test_temp_english_leaves_on_escape_and_on_the_raw_commit() {
+    // The two actions a single key produces. `Escape` is the `Escape` key; `CommitRaw` is
+    // the `Return` key of a document that commits the raw input on it. Neither changes
+    // anything else, so the key that left the mode is handed back to the application too.
     let cfg = SessionConfig::default();
     let fixture = Fixture::new();
     let env = fixture.env();
-    for action in [KeyAction::Escape, KeyAction::CommitHighlighted] {
+    for action in [KeyAction::Escape, KeyAction::CommitRaw] {
         let mut session = Session::new();
         let _ = session.handle_key(KeyAction::EnterTempEnglish, &cfg, &env);
 
@@ -474,7 +484,88 @@ fn test_temp_english_leaves_on_enter_or_escape() {
             effects.is_empty(),
             "{action:?} is handed back to the application"
         );
+        // And the session is not stranded behind the mode: the next letter composes.
+        let effects = session.handle_key(KeyAction::InputChar('n'), &cfg, &env);
+        assert_eq!(session.state, SessionState::Composing, "{action:?}");
+        assert!(!effects.is_empty(), "{action:?}");
     }
+}
+
+#[test]
+fn test_temp_english_space_does_not_leave_the_mode() {
+    // The space bar is translated to `CommitHighlighted`, which is also what the `Return`
+    // key means in the shipped configuration. Reading the mode's exit out of the shared
+    // action ended the mode on a space bar press -- the one key the mode exists to pass
+    // through -- and a mode the user cannot stay in is not a mode.
+    let cfg = SessionConfig::default();
+    let fixture = Fixture::new();
+    let env = fixture.env();
+    let mut session = Session::new();
+    let _ = session.handle_key(KeyAction::EnterTempEnglish, &cfg, &env);
+
+    let effects = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
+
+    assert!(effects.is_empty(), "the space bar reaches the application");
+    assert!(session.temp_english, "and the mode is still on");
+    assert_eq!(session.buf.raw(), "", "and nothing was typed behind it");
+
+    // Not stranded either: the keys that follow are still the application's, and the mode
+    // is still the one that leaves them alone.
+    let effects = session.handle_key(KeyAction::InputChar('n'), &cfg, &env);
+    assert!(effects.is_empty());
+    assert!(session.temp_english);
+    assert_eq!(session.state, SessionState::Idle);
+    assert_eq!(session.buf.raw(), "");
+}
+
+/// A session in temporary English mode, and the fixture it was entered against.
+///
+/// The mode is entered the way a user enters it, so that the flag is the one the
+/// transition sets rather than one a test wrote.
+fn temp_english() -> (Session, Fixture) {
+    let fixture = Fixture::new();
+    let mut session = Session::new();
+    let cfg = SessionConfig::default();
+    let effects = session.handle_key(KeyAction::EnterTempEnglish, &cfg, &fixture.env());
+    assert!(session.temp_english, "the chord turns the mode on");
+    assert!(effects.is_empty(), "and commits nothing");
+    (session, fixture)
+}
+
+#[test]
+fn test_leave_temp_english_clears_the_flag_and_changes_nothing_else() {
+    // The transition the layer that holds the key takes instead of the one the action
+    // carries: it moves the one flag and leaves the session otherwise exactly as it was.
+    let (mut session, _fixture) = temp_english();
+    let id = session.id;
+    let state = session.state;
+    let revision = session.revision.value();
+
+    assert!(session.leave_temp_english(), "the mode was on");
+
+    assert!(!session.temp_english, "the mode is off");
+    assert_eq!(session.state, state, "leaving the mode moves no state");
+    assert_eq!(session.id, id, "and starts no composition");
+    assert_eq!(session.revision.value(), revision, "and asks for no frame");
+    assert_eq!(session.buf.raw(), "", "and holds no input to clear");
+}
+
+#[test]
+fn test_leave_temp_english_is_idempotent() {
+    let (mut session, _fixture) = temp_english();
+    assert!(session.leave_temp_english(), "the mode was on");
+    assert!(
+        !session.leave_temp_english(),
+        "a session that is not in the mode has nothing to leave"
+    );
+
+    let mut fresh = Session::new();
+    assert!(
+        !fresh.leave_temp_english(),
+        "and neither has one that never entered it"
+    );
+    assert!(!fresh.temp_english);
+    assert_eq!(fresh.state, SessionState::Idle);
 }
 
 #[test]

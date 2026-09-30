@@ -89,6 +89,7 @@ const RULE_CASES: &[(&str, PassthroughFlags, Option<&str>, Expected)] = &[
     ("a", TEMP_ENGLISH, None, Expected::Host),
     ("N", TEMP_ENGLISH, None, Expected::Host),
     ("hello", TEMP_ENGLISH, None, Expected::Host),
+    ("Nihao", TEMP_ENGLISH, None, Expected::Host),
     (",", TEMP_ENGLISH, Some("他说："), Expected::Host),
     // Rule 3: a leading uppercase letter is committed and leaves the session.
     ("N", DEFAULT_FLAGS, None, Expected::Commit("N")),
@@ -172,6 +173,60 @@ fn test_classify_rule_table_returns_the_expected_decision() {
             classify(raw, *flags, *surrounding),
             expected.decision(),
             "classify({raw:?}, {flags:?}, {surrounding:?})"
+        );
+    }
+}
+
+#[test]
+fn test_classify_never_returns_enter_temp_english() {
+    // `EnterTempEnglish` is the key router's answer to the shortcut itself. The chord
+    // produces no text, so the mode switch is the router's decision rather than a rule of
+    // this table, and the text classifier must never answer with it: a rule that did would
+    // move the mode switch onto the text path, where the next letter the user typed would
+    // trip it. The boundary is checked over the rule table's own inputs and over a wider
+    // matrix of texts, flag sets and surrounding text.
+    let flag_sets = [
+        DEFAULT_FLAGS,
+        NO_UPPERCASE_RULE,
+        NO_URL_RULE,
+        ENGLISH_PUNCT,
+        FULL_WIDTH,
+        TEMP_ENGLISH,
+    ];
+    let texts = [
+        "",
+        "a",
+        "N",
+        "Nihao",
+        "e",
+        "E",
+        "hello world",
+        ",",
+        "'",
+        "@",
+        "www.example.com",
+        "nihao",
+        "，",
+        "ê",
+    ];
+    let surroundings = [None, Some(""), Some("https://example.com"), Some("你好")];
+    for raw in texts {
+        for flags in flag_sets {
+            for surrounding in surroundings {
+                let decision = classify(raw, flags, surrounding);
+                assert_ne!(
+                    decision,
+                    PassthroughDecision::EnterTempEnglish,
+                    "classify({raw:?}, {flags:?}, {surrounding:?})"
+                );
+            }
+        }
+    }
+    for (raw, flags, surrounding, _) in RULE_CASES {
+        assert_ne!(
+            classify(raw, *flags, *surrounding),
+            PassthroughDecision::EnterTempEnglish,
+            "the rule table's own input {raw:?}"
         );
     }
 }

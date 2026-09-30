@@ -3,8 +3,9 @@
 //! Responsibility: map `base.dict`, verify it through the container reader, keep the five
 //! zero-copy views the read path needs -- the FST, the entry table, the string pool, the
 //! word list and the unigram table -- and answer the [`Lexicon`] queries the decoder makes.
-//! It does not compile, write or repair a dictionary, it does not know how a word is
-//! scored, and it never copies a word: every [`WordRef`] it hands out borrows the mapping.
+//! It does not compile, write or repair a dictionary, it never copies a word -- every
+//! [`WordRef`] it hands out borrows the mapping -- and it scores nothing itself: the
+//! language model is [`DictLm`], a view over the same unigram table.
 //!
 //! # The read path
 //!
@@ -46,7 +47,10 @@ use crate::format::{
 };
 use crate::mmap::{MappedFile, WordPool};
 
+pub mod dict_lm;
 mod read;
+
+pub use crate::fst_index::dict_lm::DictLm;
 
 /// Width of one `WORDLIST` element: a `word_id` is a little-endian `u32`.
 const WORD_ID_SIZE: usize = 4;
@@ -244,6 +248,20 @@ impl FstLexicon {
     /// Returns the number of word records in the container.
     pub fn entry_count(&self) -> u32 {
         self.entry_count
+    }
+
+    /// Returns the `UNIGRAM` section, which is the table a language model scores with.
+    ///
+    /// Exposed as bytes rather than as a typed slice: reinterpreting a borrowed buffer as
+    /// `&[(u32, u16, u16)]` would be the unchecked read the format layer refuses to
+    /// perform, so the model built on it ([`DictLm`]) decodes field by field exactly as
+    /// the read path does. The section is empty for a container that carries none.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn unigram_section(&self) -> &'static [u8] {
+        self.unigram
     }
 
     /// Returns the `(hash, prob_q12)` record at `index` of the unigram table.

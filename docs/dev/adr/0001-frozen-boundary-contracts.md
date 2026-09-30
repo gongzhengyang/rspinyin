@@ -44,8 +44,8 @@
 **`version.rs`（4 个条目）**
 `RSPINYIN_ABI_VERSION`、`DICT_FORMAT_VERSION`、`CONFIG_SCHEMA_VERSION`、`check_abi`。
 
-**`ui.rs`（21 个类型）**
-`UiCommand`、`UiFrame`、`Anchor`、`Placement`、`RectI`、`Preedit`、`PreeditSpan`、`SpanKind`、`Candidate`、`CandidateSource`、`PageState`、`StatusStrip`、`LayoutHint`、`HideReason`、`ThemeSpec`、`ColorScheme`、`Rgba8`、`UiEvent`、`SelectTrigger`、`PageDir`、`DismissReason`。
+**`ui.rs`（25 个类型）**
+`UiCommand`、`UiFrame`、`Anchor`、`Placement`、`RectI`、`Preedit`、`PreeditSpan`、`SpanKind`、`Candidate`、`CandidateSource`、`PageState`、`StatusStrip`、`LayoutHint`、`HideReason`、`ThemeSpec`、`ColorScheme`、`Rgba8`、`UiEvent`、`SelectTrigger`、`PageDir`、`DismissReason`，以及 [ADR-0006](0006-overlay-channel.md) 追加的 `OverlayKind`、`OverlayFrame`、`OverlaySection`、`OverlayEntry`（`UiCommand::Overlay` 通道的载荷）。
 
 **`decode.rs`（5 个类型）**
 `DecodeRequest`、`DecodeResult`、`Segment`、`SyllableId`、`DecodeFlags`。

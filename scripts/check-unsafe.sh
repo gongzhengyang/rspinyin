@@ -93,6 +93,11 @@ ALLOWED_FILES = ("crates/ime-dict/src/mmap.rs",)
 ALLOWED_DIRS = (
     "crates/ime-fcitx5/src/ffi/",
     "crates/ime-ui-addon/src/ffi/",
+    # The test-only allocation counter. A `#[global_allocator]` needs
+    # `unsafe impl GlobalAlloc`, and nothing else in the workspace can install one, so the
+    # decoder's allocation budget would be unassertable without this path. The crate is a
+    # `dev-dependency` only -- see the `--no-release-dependency` assertion below.
+    "crates/alloc-count/src/",
 )
 
 SKIP_DIRS = frozenset(
@@ -259,6 +264,45 @@ for directory, subdirectories, filenames in os.walk(root):
                     f"on the preceding lines (AGENTS.md 3.3)"
                 )
 
+# The fourth allowed path is a test-only counter, so the allowance is only safe as long as
+# nothing that ships depends on it. A `[dependencies]` entry anywhere in the workspace, or
+# any mention at all in the two cdylib crates, would put `unsafe` back on the release path
+# through a file this scan already blessed.
+COUNTER_CRATE = "alloc-count"
+RELEASE_CRATES = ("crates/ime-fcitx5", "crates/ime-ui-addon")
+
+for crate in sorted(os.listdir(os.path.join(root, "crates"))):
+    manifest = os.path.join(root, "crates", crate, "Cargo.toml")
+    if not os.path.isfile(manifest):
+        continue
+    if crate == COUNTER_CRATE:
+        # Its own manifest names it under `[package]`, which is not a dependency edge.
+        continue
+    with open(manifest, "r", encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+    relative = os.path.relpath(manifest, root).replace(os.sep, "/")
+    if COUNTER_CRATE not in text:
+        continue
+    if f"crates/{crate}" in RELEASE_CRATES:
+        problems.append(
+            f"{relative}: the {COUNTER_CRATE} counter is a test-only crate and must never "
+            f"be a dependency of a cdylib that ships; it carries the only `unsafe` outside "
+            f"the FFI and mmap paths"
+        )
+        continue
+    section = None
+    for number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped
+            continue
+        if section != "[dev-dependencies]" and COUNTER_CRATE in stripped:
+            problems.append(
+                f"{relative}:{number}: `{COUNTER_CRATE}` is listed under {section or 'no section'}; "
+                f"it may only appear under [dev-dependencies], or `unsafe` re-enters the "
+                f"release dependency graph"
+            )
+
 if problems:
     print("check-unsafe: FAIL", file=sys.stderr)
     for problem in problems:
@@ -320,6 +364,7 @@ run_self_test() {
     mkdir -p "$scratch/crates/ime-dict/src"
     mkdir -p "$scratch/crates/ime-fcitx5/src/ffi"
     mkdir -p "$scratch/crates/ime-ui-addon/src/ffi"
+    mkdir -p "$scratch/crates/alloc-count/src"
     mkdir -p "$scratch/crates/ime-ui/src"
 
     # A file whose only mentions of the keyword are in comments and literals.
@@ -358,6 +403,36 @@ pub fn exported() {
     unsafe { std::ptr::null::<u8>() };
 }
 extern "C" { pub fn fcitx_ui_host_entry(); }
+EOF
+
+    # The test-only allocation counter. Its whole reason for existing is a
+    # `unsafe impl GlobalAlloc`, so a clean tree here is what proves the fourth allowed
+    # path is actually allowed rather than merely written down.
+    cat >"$scratch/crates/alloc-count/src/lib.rs" <<'EOF'
+//! Counting allocator for tests.
+use std::alloc::{GlobalAlloc, Layout};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+pub static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
+
+/// A pass-through allocator that counts what it is asked for.
+pub struct Counting;
+
+// SAFETY: every method forwards to `System`, which upholds the `GlobalAlloc` contract;
+// this type only adds a counter and never changes a pointer or a layout.
+#[allow(unsafe_code)]
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOCATED.fetch_add(layout.size(), Ordering::Relaxed);
+        // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract, which is what
+        // `System::alloc` requires.
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` came from this allocator's `alloc` with this same `layout`.
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+}
 EOF
 
     # Outside an allowed directory in the same crate, so the check is proven to be

@@ -691,36 +691,6 @@ pub(super) fn result_of_into(out: &mut DecodeResult, drafts: &[Draft], degraded:
     out.degraded = degraded;
 }
 
+/// Tests for the sweep, in a file of their own because this one is at its line budget.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_sweep_storage_prepare_grows_to_the_sweep_it_will_hold() {
-        let mut storage = SweepStorage::new();
-        assert_eq!(storage.slots.len(), 0, "an empty storage holds nothing");
-        storage.prepare(4, 16);
-        assert_eq!(storage.slots.len(), 64);
-        // A wider sweep than the storage holds grows it; a smaller one reuses it.
-        storage.prepare(8, 16);
-        assert_eq!(storage.slots.len(), 128);
-        storage.prepare(2, 16);
-        assert_eq!(
-            storage.slots.len(),
-            128,
-            "a smaller sweep keeps the allocation"
-        );
-    }
-
-    #[test]
-    fn test_sweep_storage_prepare_cuts_the_beam_and_the_nodes_to_their_ceilings() {
-        let mut storage = SweepStorage::new();
-        // A configuration past either ceiling cannot make the storage allocate without bound:
-        // the ceilings are what the sweep clamps to as well.
-        storage.prepare(usize::MAX, usize::from(MAX_BEAM_K) + 8);
-        assert_eq!(storage.slots.len(), MAX_NODES * usize::from(MAX_BEAM_K));
-        let mut zero = SweepStorage::new();
-        zero.prepare(4, 0);
-        assert_eq!(zero.slots.len(), 0, "a beam of no slots needs no storage");
-    }
-}
+mod tests;

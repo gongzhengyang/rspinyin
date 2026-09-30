@@ -211,6 +211,26 @@ const PAYLOADS: &[Payload] = &[
         budget: None,
         exports: &[],
     },
+    Payload {
+        // A name with a separator in it: the archive carries the same directory
+        // structure the repository does, so a recipient of the tarball finds the
+        // licence text where `NOTICE` says it is. Both copy sites create the parent
+        // directory for exactly this entry.
+        name: "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md",
+        candidates: &["LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"],
+        role: "license",
+        optional: false,
+        budget: None,
+        exports: &[],
+    },
+    Payload {
+        name: "org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml",
+        candidates: &["packaging/metainfo/org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml"],
+        role: "appstream-metadata",
+        optional: false,
+        budget: None,
+        exports: &[],
+    },
 ];
 
 /// One payload whose build output exists, with the path it is staged to.
@@ -371,6 +391,10 @@ fn collect(plan: &mut Plan, policy: StripPolicy) -> Result<()> {
     }
     fs::create_dir_all(tree).with_context(|| format!("creating {}", tree.display()))?;
     for payload in &mut plan.payloads {
+        if let Some(parent) = payload.path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
         if payload.required_exports.is_empty() {
             fs::copy(&payload.source, &payload.path).with_context(|| {
                 format!(
@@ -450,6 +474,10 @@ fn publish(
     let mut shipped = Vec::with_capacity(plan.payloads.len() + 2);
     for payload in &plan.payloads {
         let destination = out.join(payload.name);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
         fs::copy(&payload.path, &destination).with_context(|| {
             format!(
                 "copying {} to {}",

@@ -80,6 +80,11 @@ export component CandidateGrid inherits VerticalLayout {
     in property <length> cell-radius: 0px;
     in property <length> cell-padding-h: 0px;
     in property <length> cell-padding-v: 0px;
+    // The slot the number label occupies. A fixed slot rather than the glyph's own advance,
+    // because digits do not all advance by the same amount: a label that hugged its glyph
+    // would start the candidate text at a different x on every cell and the row would read
+    // as ragged. 3.1.1's `cell-chrome-width` already budgets for it.
+    in property <length> number-slot-width: 0px;
     in property <length> number-gap: 0px;
     in property <length> annotation-gap: 0px;
     in property <length> grid-gap: 0px;
@@ -156,8 +161,13 @@ export component CandidateGrid inherits VerticalLayout {
                 // `text.primary` rather than `text.annotation` because 3.2 fixes the 0.55
                 // as the final effective alpha and forbids multiplying it by the token's
                 // own alpha -- 0.48 x 0.55 would be unreadable.
+                //
+                // The label is drawn in a fixed-width slot and aligned to its left edge, so
+                // the candidate text beside it starts at one x for every cell in the row.
                 Text {
                     text: cell.label;
+                    width: root.number-slot-width;
+                    horizontal-alignment: left;
                     font-family: Theme.font-family;
                     font-size: root.small-font-size;
                     font-weight: 500;

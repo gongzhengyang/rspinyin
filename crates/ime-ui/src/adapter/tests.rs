@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use ime_types::{
     Anchor, Candidate, CandidateSource, ColorScheme, LayoutHint, PageState, Placement, Preedit,
-    RectI, Rgba8, ScreenId, StatusStrip, ThemeSpec, UiFrame,
+    PreeditSpan, RectI, Rgba8, ScreenId, SpanKind, StatusStrip, ThemeSpec, UiFrame,
 };
 use slint::{ComponentHandle as _, Model as _, SharedString, VecModel};
 
@@ -19,7 +19,9 @@ use crate::renderer::mock::{MockState, MockSurface, on_own_thread};
 use crate::slint_platform::RspinyinPlatform;
 use crate::spring::{PAGE_SLIDE_DP, REST_POSITION_DP};
 use crate::theme::{BlurNegotiation, ThemeResolution};
-use crate::ui_generated::{CandidateData, Theme};
+use crate::ui_generated::{CandidateData, PreeditRun, Theme};
+
+mod header;
 
 /// The caret position every fixture anchors to.
 pub(crate) fn anchor() -> Anchor {
@@ -33,6 +35,46 @@ pub(crate) fn anchor() -> Anchor {
         screen: ScreenId::new(0),
         scale: 1.0,
         placement: Placement::Below,
+    }
+}
+
+/// The preedit of a reading typed to the end, as the preedit builder produces it.
+///
+/// The text is the canonical spelling -- syllables joined by the separator the user did not
+/// have to type -- and the span list tiles it exactly with one zero-width cursor span at the
+/// caret, which is what `ime_types::Preedit` guarantees and what the header is written
+/// against.
+pub(crate) fn preedit_fixture(reading: &str) -> Preedit {
+    let mut text = String::new();
+    let mut spans = Vec::new();
+    for (index, part) in reading.split('\'').enumerate() {
+        if index > 0 {
+            let start = text.len();
+            text.push('\'');
+            spans.push(PreeditSpan {
+                start: start as u16,
+                end: text.len() as u16,
+                kind: SpanKind::Separator,
+            });
+        }
+        let start = text.len();
+        text.push_str(part);
+        spans.push(PreeditSpan {
+            start: start as u16,
+            end: text.len() as u16,
+            kind: SpanKind::Syllable,
+        });
+    }
+    let caret = text.len() as u16;
+    spans.push(PreeditSpan {
+        start: caret,
+        end: caret,
+        kind: SpanKind::Cursor,
+    });
+    Preedit {
+        text,
+        caret: u32::from(caret),
+        spans,
     }
 }
 
@@ -53,11 +95,7 @@ pub(crate) fn frame_with(revision: u32, preedit: &str, count: usize) -> UiFrame 
         .collect();
     UiFrame {
         revision,
-        preedit: Preedit {
-            text: String::from(preedit),
-            caret: preedit.len() as u32,
-            spans: Vec::new(),
-        },
+        preedit: preedit_fixture(preedit),
         candidates,
         page: PageState {
             current: 1,
@@ -72,6 +110,22 @@ pub(crate) fn frame_with(revision: u32, preedit: &str, count: usize) -> UiFrame 
             max_width_dp: 720,
         },
     }
+}
+
+/// The text of every run of a preedit model, in order.
+fn run_texts(model: &slint::ModelRc<PreeditRun>) -> Vec<String> {
+    (0..model.row_count())
+        .filter_map(|index| model.row_data(index))
+        .map(|run| run.text.to_string())
+        .collect()
+}
+
+/// The kind of every run of a preedit model, in order.
+fn run_kinds(model: &slint::ModelRc<PreeditRun>) -> Vec<i32> {
+    (0..model.row_count())
+        .filter_map(|index| model.row_data(index))
+        .map(|run| run.kind)
+        .collect()
 }
 
 /// Builds an adapter on a fresh thread and runs `scene` against it.
@@ -89,20 +143,22 @@ fn with_adapter<R: Send + 'static>(scene: impl FnOnce(&mut Adapter) -> R + Send 
 
 #[test]
 fn test_adapter_writes_the_panel_properties_from_a_frame() {
-    let (count, rows, width, height, header, per_row, preedit) = with_adapter(|adapter| {
-        let frame = frame_with(1, "ni'hao", 9);
-        assert!(adapter.apply_frame(&frame), "the first frame is drawn");
-        let window = adapter.window();
-        (
-            window.get_item_count(),
-            window.get_grid_rows(),
-            window.get_container_width(),
-            window.get_container_height(),
-            window.get_header_height(),
-            window.get_max_per_row(),
-            window.get_preedit_text().to_string(),
-        )
-    });
+    let (count, rows, width, height, header, per_row, before, after) =
+        with_adapter(|adapter| {
+            let frame = frame_with(1, "ni'hao", 9);
+            assert!(adapter.apply_frame(&frame), "the first frame is drawn");
+            let window = adapter.window();
+            (
+                window.get_item_count(),
+                window.get_grid_rows(),
+                window.get_container_width(),
+                window.get_container_height(),
+                window.get_header_height(),
+                window.get_max_per_row(),
+                run_texts(&window.get_preedit_before()),
+                run_texts(&window.get_preedit_after()),
+            )
+        });
     assert_eq!(count, 9);
     assert_eq!(rows, 2, "nine candidates at five per row");
     assert_eq!(width, 370.0);
@@ -112,7 +168,12 @@ fn test_adapter_writes_the_panel_properties_from_a_frame() {
         "the full strip is drawn when there is a candidate"
     );
     assert_eq!(per_row, 5);
-    assert_eq!(preedit, "ni'hao");
+    assert_eq!(
+        before,
+        ["ni", "'", "hao"],
+        "the whole reading is drawn before a caret at its end"
+    );
+    assert!(after.is_empty());
 }
 
 #[test]

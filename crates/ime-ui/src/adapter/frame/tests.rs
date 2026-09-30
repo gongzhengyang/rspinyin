@@ -8,6 +8,7 @@ use ime_types::StatusStrip;
 
 use super::*;
 use crate::adapter::cell::VisualState;
+use crate::adapter::preedit::PREEDIT_MAX_CHARS;
 use crate::adapter::tests::frame_with;
 
 /// The metrics of the real `candidate.slint`, which every mapping test builds on.
@@ -21,6 +22,17 @@ fn mapped(frame: &UiFrame) -> DrawState {
     draw_state(frame, container_cap(frame, &metrics), &metrics)
 }
 
+/// The text the header draws, as one string: the runs on either side of the caret joined.
+fn drawn(state: &DrawState) -> String {
+    state
+        .preedit
+        .before
+        .iter()
+        .chain(state.preedit.after.iter())
+        .map(|run| run.text.as_str())
+        .collect()
+}
+
 #[test]
 fn test_draw_state_empty_frame_draws_only_the_header() {
     let frame = frame_with(1, "ni", 0);
@@ -28,7 +40,7 @@ fn test_draw_state_empty_frame_draws_only_the_header() {
     assert_eq!(state.item_count, 0);
     assert_eq!(state.grid_rows, 0, "no candidate occupies no row");
     assert!(state.cells.is_empty(), "and the grid draws no cell");
-    assert_eq!(state.preedit_text, "ni");
+    assert_eq!(drawn(&state), "ni");
     // The compressed 28dp header, the rule and the two 8dp paddings.
     assert_eq!(state.header_height, 28.0);
     assert_eq!(state.container_height, 45.0);
@@ -79,19 +91,48 @@ fn test_draw_state_long_preedit_keeps_the_newest_characters() {
     let text: String = "ni'hao".chars().cycle().take(200).collect();
     let frame = frame_with(5, &text, 1);
     let state = mapped(&frame);
-    assert_eq!(state.preedit_text.chars().count(), PREEDIT_MAX_CHARS);
+    let drawn = drawn(&state);
+    assert!(state.preedit.truncated, "the head was cut");
     assert!(
-        text.ends_with(state.preedit_text.as_str()),
-        "the tail of the input is what stays visible"
+        text.ends_with(&drawn),
+        "the tail of the input is what stays visible: {drawn:?}"
     );
-    assert_ne!(state.preedit_text, text, "the head really was cut");
+    assert!(
+        drawn.chars().count() < text.chars().count(),
+        "and the head really was dropped"
+    );
+    // The width is what binds here: the panel is 220dp, the strip's own chrome and the
+    // status cluster take most of it, and the header font spends 7dp on each ASCII
+    // character. The character ceiling of `PREEDIT_MAX_CHARS` is the second bound, and the
+    // preedit module's own tests are where it is measured.
+    assert!(
+        drawn.chars().count() < PREEDIT_MAX_CHARS,
+        "a preedit narrower than the character ceiling is cut by its width"
+    );
+    assert!(
+        !state.preedit.before.is_empty(),
+        "what survived is drawn before the caret at the end of the input"
+    );
+    assert!(state.preedit.after.is_empty());
+    assert!(state.preedit.caret_visible);
 }
 
 #[test]
 fn test_draw_state_preedit_inside_the_bound_is_untouched() {
     let frame = frame_with(6, "ni'hao'ma", 1);
     let state = mapped(&frame);
-    assert_eq!(state.preedit_text, "ni'hao'ma");
+    assert_eq!(drawn(&state), "ni'hao'ma");
+    assert!(!state.preedit.truncated);
+    assert_eq!(
+        state
+            .preedit
+            .before
+            .iter()
+            .map(|run| run.text.as_str())
+            .collect::<Vec<_>>(),
+        ["ni", "'", "hao", "'", "ma"],
+        "the syllables and their separators arrive as runs of their own"
+    );
 }
 
 #[test]
@@ -172,27 +213,27 @@ fn test_draw_state_unchanged_frame_reports_no_change_and_keeps_its_buffers() {
     let mut state = DrawState::default();
     let first = state.update(&frame, cap, &metrics);
     assert!(!first.is_empty(), "the first frame changes everything");
-    let capacity = state.preedit_text.capacity();
+    let capacity = state.preedit.before[0].text.capacity();
     let second = state.update(&frame, cap, &metrics);
     assert!(
         second.is_empty(),
         "a frame that draws the same state changes nothing: {second:?}"
     );
     assert_eq!(
-        state.preedit_text.capacity(),
+        state.preedit.before[0].text.capacity(),
         capacity,
-        "the buffer is reused rather than reallocated"
+        "the run's buffer is reused rather than reallocated"
     );
     // The same holds for a frame whose text changed but kept its length: the buffer is
     // refilled rather than replaced, so no allocation happens either.
     let other = frame_with(12, "ma'fan", 9);
     let third = state.update(&other, cap, &metrics);
     assert!(
-        third.preedit_text,
+        third.preedit,
         "different text is a change, so the property is written"
     );
-    assert_eq!(state.preedit_text, "ma'fan");
-    assert_eq!(state.preedit_text.capacity(), capacity);
+    assert_eq!(drawn(&state), "ma'fan");
+    assert_eq!(state.preedit.before[0].text.capacity(), capacity);
 }
 
 #[test]
@@ -205,8 +246,9 @@ fn test_draw_state_reports_the_properties_a_frame_changed() {
     assert!(delta.item_count && delta.grid_rows);
     assert!(delta.container_width && delta.container_height);
     assert!(
-        !delta.preedit_text
+        !delta.preedit
             && !delta.mode_label
+            && !delta.status
             && !delta.header_height
             && !delta.cell_width
             && !delta.max_per_row,
@@ -331,6 +373,45 @@ fn test_draw_state_cell_width_reserves_room_for_the_annotation() {
         plain.cell_width + 3.0 * metrics.font_size_small + metrics.annotation_gap
     );
     assert_eq!(annotated.cells[0].annotation, "自造词");
+}
+
+#[test]
+fn test_draw_state_annotation_yields_whole_when_the_text_fills_its_budget() {
+    let metrics = parsed();
+    let reading = String::from("自造词");
+    // A text that already fills 3.1.3's limit: the annotation cannot fit beside it, so the
+    // cell drops it whole rather than eliding the text to make room for it.
+    let mut full = frame_with(43, "ni", 1);
+    full.candidates[0].text = "你".repeat(8);
+    full.candidates[0].annotation = Some(reading.clone());
+    let state = mapped(&full);
+    assert_eq!(
+        state.cells[0].display_text, full.candidates[0].text,
+        "the text is drawn whole: the annotation gave way, not the text"
+    );
+    assert_eq!(
+        state.cells[0].annotation, "",
+        "and the annotation is dropped in one piece"
+    );
+    assert_eq!(
+        state.cell_width,
+        metrics.max_text_width + metrics.cell_chrome_width,
+        "the cell is the text limit plus its chrome, with nothing reserved for the hint"
+    );
+
+    // A text with room to spare keeps its annotation, and the cell grows by exactly what the
+    // hint costs.
+    let mut short = frame_with(44, "ni", 1);
+    short.candidates[0].annotation = Some(reading.clone());
+    let annotated = mapped(&short);
+    assert_eq!(annotated.cells[0].annotation, reading);
+    assert_eq!(
+        annotated.cell_width,
+        2.0 * metrics.font_size_cell
+            + metrics.cell_chrome_width
+            + 3.0 * metrics.font_size_small
+            + metrics.annotation_gap
+    );
 }
 
 #[test]
@@ -459,20 +540,4 @@ fn test_container_cap_of_a_degenerate_configuration_uses_the_component_maximum()
         metrics.max_width,
         "a ceiling that cannot describe a panel falls back to the component's"
     );
-}
-
-#[test]
-fn test_truncation_start_stays_on_a_character_boundary() {
-    let text = "拼音ni'hao";
-    for max_chars in 0..=text.chars().count() + 2 {
-        let start = truncation_start(text, max_chars);
-        assert!(text.is_char_boundary(start), "max_chars {max_chars}");
-    }
-    assert_eq!(truncation_start(text, 0), text.len(), "an empty tail");
-    assert_eq!(
-        truncation_start(text, 2),
-        text.len() - 2,
-        "the last two bytes"
-    );
-    assert_eq!(truncation_start(text, 100), 0, "everything fits");
 }

@@ -40,18 +40,20 @@ pub(super) fn plan_availability(is_window_ready: bool, is_backend_available: boo
 
 /// Whether a platform backend that can host the self-drawn window exists.
 ///
-/// Set by the platform probe once it lands: `true` is the `layer-shell` / `popup` /
-/// `subsurface` tiers, `false` is the fallback tier where no backend can place the
-/// window at all. It starts `false`, because a session nothing has probed is a session
-/// that must keep the host's own candidate window.
+/// Written by the platform probe when it finishes, and cleared when the addon is released
+/// and the backend goes away with it. `true` means a backend was constructed: the X11
+/// window backend, or one of the Wayland tiers once they are part of the build. It starts
+/// `false`, because a session nothing has probed is a session that must keep the host's own
+/// candidate window.
 pub fn window_backend_available() -> bool {
     WINDOW_BACKEND_AVAILABLE.load(Ordering::Acquire)
 }
 
 /// Records the platform probe's answer.
 ///
-/// Called by the probe when it finishes, and by a test that drives the takeover
-/// policy; nothing else changes it.
+/// Called by the probe when it finishes and by the addon's release path, which clears it
+/// once the surface is gone; a test that drives the takeover policy uses it too. Nothing
+/// else changes it.
 pub fn set_window_backend_available(is_available: bool) {
     WINDOW_BACKEND_AVAILABLE.store(is_available, Ordering::Release);
 }

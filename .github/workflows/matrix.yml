@@ -1,0 +1,444 @@
+# Cross-distribution build matrix.
+#
+# ci.yml runs the gate suite on the runner image, which is Ubuntu. That proves the
+# plugin builds on the platform CI happens to use, and nothing about the three
+# distributions the specification actually ships to. This workflow runs the
+# distribution-sensitive half of the same suite inside each distribution's own
+# userland, so a Fedora or Arch breakage is caught on the pull request that causes it
+# rather than by a user.
+#
+# What differs between the slices is not the source tree, it is the build and the
+# install: a different C++ compiler, a different glibc, a different Fcitx5 -- and three
+# different addon directories (/usr/lib/<triplet>/fcitx5 on Debian and Ubuntu,
+# /usr/lib64/fcitx5 on Fedora, /usr/lib/fcitx5 on Arch) that `xtask install` has to
+# derive from pkg-config rather than assume. A hardcoded path installs the plugin where
+# Fcitx5 never looks for it, on exactly two of the three, and the user sees only "the
+# input method is not in the list".
+#
+# Eight slices, in the specification's terms: Ubuntu 24.04, Ubuntu 22.04, Fedora 40+
+# and Arch, each on x86_64 and aarch64. Fedora 40 and 41 are two images because that
+# row is a range rather than a version. There is no Windows, macOS, AppImage, Flatpak
+# or Snap slice: the plugin is an in-process addon that has to share the host's ABI,
+# which rules the sandboxed formats out, and the other two are explicit non-goals.
+#
+# What each leg runs, and what it deliberately does not:
+#
+#   * `just check` and `just check-host` -- the four commands of the specification's
+#     quality gates plus the host-ABI half, both built and executed by *this*
+#     distribution's compiler against *this* distribution's Fcitx5. On aarch64 the
+#     project's own `just check-arm64` runs instead of `check-host`, because it adds
+#     the assertions that make an architecture claim mean something: the container is
+#     really aarch64, and both artifacts are really AArch64 objects exporting the
+#     addon factory.
+#   * the install round trip: build, install into a staging prefix, assert every
+#     payload landed at the directory this distribution's pkg-config names, assert
+#     both libraries still export the factory symbol *after* the install stripped
+#     them, uninstall, and assert the file tree is byte for byte what it was.
+#
+#   * `just audits` is deliberately absent. Those gates assert properties of the
+#     source tree -- dependency direction, `unsafe` placement, the licence allowlist,
+#     the Slint-leak rule -- that are identical on every distribution, so ten more
+#     containers would add no assertion and multiply the flake surface; ci.yml's
+#     `quality` job owns them, and it owns them once. There is a cost argument on top
+#     of that one: `check-slint` builds the crate graph again with the nightly
+#     toolchain, and a target directory that alternates between two toolchains
+#     invalidates what the other one produced, so every leg would pay for a second
+#     full build to re-assert what one job already proved. "Not just compiling" is
+#     what this workflow is for, and the two recipes above are the gates a distribution
+#     can actually change the answer to.
+#
+# The images are built from packaging/containers/*.Dockerfile, which is why they exist
+# as files rather than as package lists repeated in the steps below: the Dockerfile is
+# the one definition of what a distribution needs, used both here and by a developer
+# reproducing a slice locally.
+#
+# Network access, stated plainly: these are container jobs, so they pull a base image,
+# reach the crates.io registry through cargo, and fetch the dictionary sources on the
+# runner. That is the opposite of ci.yml's `quality` job, which is offline by design --
+# which is exactly why this is a separate workflow rather than more jobs in that one.
+
+name: matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a rolling distribution's drift is caught between releases rather than
+    # during one. Monday 03:17 UTC -- off the hour and off the half hour, because that
+    # is when everyone else's cron runs.
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Nothing here pushes an image or writes to the repository; the containers only read
+# it. Saying so keeps a workflow that runs third-party container images from holding a
+# token it has no use for.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Reproducible builds, as in ci.yml: the timestamp in the C++ glue's debug info must
+  # not depend on when the job ran, or two slices of the same commit would differ for a
+  # reason that has nothing to do with the distribution.
+  SOURCE_DATE_EPOCH: 1790899200
+  # The `cc` crate reads CXXFLAGS, so the prefix map reaches the C++ glue without
+  # touching build.rs. The container mounts the workspace at the same absolute path, so
+  # the token below means the same thing inside and outside it.
+  CXXFLAGS: "-ffile-prefix-map=${{ github.workspace }}=. -fdebug-prefix-map=${{ github.workspace }}=."
+
+jobs:
+  distro:
+    name: ${{ matrix.distro }} / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    # Every slice runs on every trigger, pull requests included. The arm64 archives of
+    # these distributions move on their own schedule, so a leg that only ran sometimes
+    # would answer the question after the merge; and a leg that is skipped still reports
+    # success, which is the one failure mode a matrix must not have. A slice that is too
+    # expensive to run per pull request belongs out of the matrix, not behind a
+    # condition.
+    timeout-minutes: 60
+    strategy:
+      # One distribution failing must not cancel the others: the whole point of the
+      # matrix is to find out which slices are broken, and a cancelled job reports
+      # nothing about the slice it was going to test.
+      fail-fast: false
+      matrix:
+        include:
+          # x86_64. `addon_dir` is the directory Fcitx5 looks for addons in on that
+          # distribution; the leg asserts the installed library is really there, so a
+          # wrong derivation in xtask/src/install/layout.rs fails the slice instead of
+          # shipping.
+          - distro: ubuntu-24.04
+            arch: x86_64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+            addon_dir: /usr/lib/x86_64-linux-gnu/fcitx5
+          - distro: ubuntu-22.04
+            arch: x86_64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+            addon_dir: /usr/lib/x86_64-linux-gnu/fcitx5
+          - distro: fedora-40
+            arch: x86_64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+            addon_dir: /usr/lib64/fcitx5
+          - distro: fedora-41
+            arch: x86_64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+            addon_dir: /usr/lib64/fcitx5
+          - distro: arch
+            arch: x86_64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+            addon_dir: /usr/lib/fcitx5
+          # aarch64, on GitHub's native arm64 image. Native rather than emulated, and
+          # the trade-off is worth stating: these legs compile the whole workspace and
+          # run its test suite, and under qemu-user that takes five to ten times as
+          # long *and* makes every failure ambiguous between the code and the
+          # emulator. A matrix that cannot say which of the two it found is worse than
+          # no matrix. The price is that the arm64 runner pool must be available to the
+          # repository; if it is not, this job queues rather than fails, which reads as
+          # "pending" and must not be mistaken for coverage. The fallback is the
+          # emulated path -- `docker/setup-qemu-action` plus
+          # `docker buildx build --platform linux/arm64 --load`, with the timeout
+          # tripled -- and its results are timing-incomparable by construction.
+          - distro: ubuntu-24.04
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            addon_dir: /usr/lib/aarch64-linux-gnu/fcitx5
+          - distro: ubuntu-22.04
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            addon_dir: /usr/lib/aarch64-linux-gnu/fcitx5
+          - distro: fedora-40
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            addon_dir: /usr/lib64/fcitx5
+          - distro: fedora-41
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            addon_dir: /usr/lib64/fcitx5
+          - distro: arch
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            addon_dir: /usr/lib/fcitx5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        # rust-toolchain.toml pins the channel and the components, so this both installs
+        # the toolchain every other job builds with and asserts the pin is resolvable.
+        run: rustup show active-toolchain
+
+      - name: Install just and cargo-nextest
+        # These land in ~/.cargo/bin, which the container mounts, so the whole matrix
+        # runs one pinned version of each and the images stay about the distribution.
+        # The test-execution baseline is the recipes' business: `just check` runs
+        # `cargo nextest run` and follows it with `cargo test --doc`, because nextest
+        # does not execute doctests. No test command is written down in this file.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest
+
+      - name: Restore the raw dictionary sources
+        # Restore only: ci.yml's `dictionary` job owns this key and saves it, and two
+        # jobs saving the same key would race for it. The key is deliberately the same
+        # one, so a run that already built the sources verifies their digests here
+        # instead of downloading them again.
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw
+          key: dict-raw-${{ hashFiles('data/sources.toml', 'data/raw/base.tsv', 'data/raw/polyphone.tsv') }}
+
+      - name: Fetch the dictionary sources
+        # On the runner rather than in the container. `data/fetch.sh` needs python3
+        # 3.11+ for tomllib, which Ubuntu 22.04 does not ship, and the container's job
+        # is to be the distribution under test -- not to be the place where every
+        # helper script has to run. The compiler that builds the dictionary is still
+        # the container's.
+        run: bash data/fetch.sh
+
+      - name: Cache the cargo build
+        # The action's key already covers the toolchain and `Cargo.lock`; `shared-key`
+        # keeps each slice's `target/` to itself, because a test binary linked against
+        # Fedora's glibc must not be restored on Ubuntu -- cargo would consider it fresh
+        # and the failure would be a loader error rather than a rebuild. The container
+        # writes as the runner's own user, so what it produces is what this step is able
+        # to save.
+        #
+        # Only main-line runs save. Ten slices share one repository cache budget, and a
+        # pull request that filled it would evict the entries the main-line runs restore
+        # from -- buying a faster pull request with a slower merge. A pull request still
+        # restores whatever the main line saved.
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.distro }}-${{ matrix.arch }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Pull the base image and record its digest
+        # The record, not a pin. The digest of the tag that was used is what a pin would
+        # hold, and it is printed here because it is a value only the registry knows;
+        # pasting it into the Dockerfile's `ARG BASE_IMAGE=` as `<tag>@<digest>` freezes
+        # the slice. Asserting it instead would be wrong: a pin that is deliberately
+        # behind the current tag is as valid as a current one, and nothing in the build
+        # can tell those apart.
+        #
+        # Pulling first is also what makes the digest readable at all -- a tag acquires a
+        # repository digest when it is pulled from one -- and it costs nothing extra,
+        # because the build that follows resolves the same reference from the image store
+        # this step just filled.
+        run: |
+          set -euo pipefail
+          dockerfile="packaging/containers/${{ matrix.distro }}.Dockerfile"
+          base="$(grep -m1 '^ARG BASE_IMAGE=' "$dockerfile" | sed 's/^ARG BASE_IMAGE=//')"
+          {
+            echo "### ${{ matrix.distro }} container base"
+            echo
+            if [ -z "$base" ]; then
+              echo "The Dockerfile names no base image through \`ARG BASE_IMAGE\`."
+              exit 0
+            fi
+            # Progress goes to the step log rather than into the summary, which is
+            # markdown and would render a progress bar as a wall of text.
+            docker pull "$base" >&2
+            digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$base" 2>/dev/null || true)"
+            echo "- reference: \`${base}\`"
+            echo "- digest: \`${digest:-not reported by the local image store}\`"
+            echo
+            echo "To freeze this slice, replace the tag in \`${dockerfile}\` with"
+            echo "\`<tag>@<digest>\` using the digest above."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build the distribution container
+        env:
+          # BuildKit is what makes `--platform` mean anything; the classic builder
+          # ignores it and would quietly build for the runner's architecture instead,
+          # turning a mislabelled runner into a leg that passes for the wrong reason.
+          DOCKER_BUILDKIT: "1"
+        run: |
+          set -euo pipefail
+          docker build \
+            --platform "${{ matrix.platform }}" \
+            --file "packaging/containers/${{ matrix.distro }}.Dockerfile" \
+            --tag "rspinyin-matrix:${{ matrix.distro }}-${{ matrix.arch }}" \
+            packaging/containers
+
+      - name: Run the gates and the install round trip in the container
+        # One container session, one mount list. The workspace is mounted at its own
+        # path so the absolute paths in the log, in CXXFLAGS and in the compiler's
+        # debug info are the same inside and outside; the cargo and rustup homes are
+        # mounted because that is where the toolchain the runner installed lives, and
+        # the container runs as the runner's own user so everything it writes -- the
+        # build tree, the cache, the cargo registry -- is owned by the step that has to
+        # read it afterwards.
+        run: |
+          set -euo pipefail
+          # Where the runner's toolchain lives. Taken from the environment when it is
+          # set, because that is where rustup and the install action put things.
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
+          # Both are mounted, so both must exist and be owned by this user: a path that
+          # docker has to create would be created as root, and the container's writes
+          # into it would fail.
+          mkdir -p "$cargo_home" "$rustup_home"
+          docker run --rm --interactive \
+            --user "$(id -u):$(id -g)" \
+            --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            --workdir "$GITHUB_WORKSPACE" \
+            --volume "$cargo_home:$cargo_home" \
+            --volume "$rustup_home:$rustup_home" \
+            --env HOME=/tmp \
+            --env "CARGO_HOME=$cargo_home" \
+            --env "RUSTUP_HOME=$rustup_home" \
+            --env "PATH=$cargo_home/bin:$PATH" \
+            --env CARGO_TERM_COLOR \
+            --env RUST_BACKTRACE \
+            --env SOURCE_DATE_EPOCH \
+            --env CXXFLAGS \
+            --env RSPINYIN_REQUIRE_HOST_ABI=1 \
+            --env "MATRIX_DISTRO=${{ matrix.distro }}" \
+            --env "MATRIX_MACHINE=${{ matrix.arch }}" \
+            --env "EXPECTED_ADDON_DIR=${{ matrix.addon_dir }}" \
+            "rspinyin-matrix:${{ matrix.distro }}-${{ matrix.arch }}" \
+            bash -euo pipefail -s <<'IN_CONTAINER'
+          echo "matrix: ${MATRIX_DISTRO} on $(uname -m)"
+
+          # The architecture this leg claims, asserted before anything is built. A
+          # runner that was swapped or mislabelled would otherwise produce an x86_64
+          # leg labelled aarch64, and every assertion below would still pass.
+          if [ "$(uname -m)" != "${MATRIX_MACHINE}" ]; then
+              echo "dist/verify/not-${MATRIX_MACHINE}: this leg claims ${MATRIX_MACHINE} and the container is $(uname -m)" >&2
+              exit 1
+          fi
+
+          # The distribution-sensitive half of `just ci`: the quality gates of the
+          # specification, and the host-ABI half, both compiled and run by this
+          # distribution. `just check` is the recipe that owns the test-execution
+          # baseline (nextest, then doctests, which nextest does not cover).
+          just check
+          if [ "${MATRIX_MACHINE}" = "aarch64" ]; then
+              just check-arm64
+          else
+              RSPINYIN_REQUIRE_HOST_ABI=1 just check-host
+          fi
+
+          # ---- install round trip -------------------------------------------------
+          # `xtask install` reads release artifacts, so the two cdylibs and the
+          # dictionary are built here rather than reused from the test profile.
+          cargo build --release -p ime-fcitx5 --features fcitx5-host
+          cargo build --release -p ime-ui-addon --features fcitx5-host
+          cargo run --quiet -p xtask -- dictc
+
+          rm -rf /tmp/stage
+          mkdir -p /tmp/stage
+          # Files only: an install creates shared directories it must not delete, so a
+          # snapshot that included directories could never be restored and would report
+          # a difference on every run.
+          find /tmp/stage -type f -printf '%P\t%s\n' | sort > /tmp/stage.before
+
+          DESTDIR=/tmp/stage PREFIX=/usr bash packaging/install.sh --no-sudo --skip-build
+
+          # The same derivation `xtask install` makes, from the same pkg-config
+          # variables: an `addondir` where the distribution defines one, and
+          # `<libdir>/fcitx5` where it does not.
+          addon_dir="$(pkg-config --variable=addondir Fcitx5Core || true)"
+          if [ -z "$addon_dir" ]; then
+              addon_dir="$(pkg-config --variable=libdir Fcitx5Core)/fcitx5"
+          fi
+          datadir="$(pkg-config --variable=datadir Fcitx5Core || true)"
+          if [ -z "$datadir" ]; then
+              datadir="$(pkg-config --variable=prefix Fcitx5Core)/share"
+          fi
+
+          # The three layouts are the reason this workflow exists. The expected value
+          # comes from the matrix rather than from pkg-config, because a check that
+          # asks the same source twice can only ever agree with itself.
+          if [ "$addon_dir" != "${EXPECTED_ADDON_DIR}" ]; then
+              printf '%s\n' \
+                  "dist/verify/layout-mismatch: ${MATRIX_DISTRO} derives ${addon_dir} for the addon directory," \
+                  "dist/verify/layout-mismatch: and this matrix expects ${EXPECTED_ADDON_DIR}. Either the derivation in" \
+                  "dist/verify/layout-mismatch: xtask/src/install/layout.rs is wrong for this distribution, or the" \
+                  "dist/verify/layout-mismatch: expectation recorded in .github/workflows/matrix.yml is stale." >&2
+              exit 1
+          fi
+
+          for file in \
+              "${addon_dir}/librspinyin.so" \
+              "${addon_dir}/librspinyin_ui.so" \
+              "${datadir}/fcitx5/addon/rspinyin.conf" \
+              "${datadir}/fcitx5/addon/rspinyin-ui.conf" \
+              "${datadir}/fcitx5/inputmethod/rspinyin.conf" \
+              "${datadir}/rspinyin/base.dict" \
+              "${datadir}/icons/hicolor/48x48/apps/fcitx-rspinyin.png" \
+              "${datadir}/icons/hicolor/scalable/apps/fcitx-rspinyin.svg"
+          do
+              test -f "/tmp/stage${file}" \
+                  || { echo "dist/verify/artifact-missing: /tmp/stage${file}" >&2; exit 1; }
+          done
+
+          # Both libraries, read from the installed file rather than from the build
+          # output: an install strips each one with --strip-unneeded, and a library that
+          # lost the addon factory loads into fcitx5 and provides no addon at all.
+          for library in librspinyin.so librspinyin_ui.so; do
+              nm --dynamic --defined-only "/tmp/stage${addon_dir}/${library}" \
+                  | grep -q 'fcitx_addon_factory_instance' \
+                  || { echo "dist/verify/factory-symbol-missing: ${library} after install on ${MATRIX_DISTRO}" >&2; exit 1; }
+          done
+
+          DESTDIR=/tmp/stage PREFIX=/usr bash packaging/uninstall.sh --no-sudo
+          find /tmp/stage -type f -printf '%P\t%s\n' | sort > /tmp/stage.after
+          diff -u /tmp/stage.before /tmp/stage.after \
+              || { echo "dist/verify/uninstall-not-reversible: ${MATRIX_DISTRO} on ${MATRIX_MACHINE}" >&2; exit 1; }
+
+          # ---- what was actually measured -----------------------------------------
+          # Written into the workspace, which the runner can read once the container is
+          # gone; the next step appends it to the job summary. The versions are the
+          # point: "the slice passed" means nothing next to which Fcitx5 and which
+          # compiler it passed against, and a rolling distribution's answer to that
+          # changes without anything in this repository changing.
+          mkdir -p target/matrix
+          {
+              echo "### ${MATRIX_DISTRO} / $(uname -m)"
+              echo
+              echo "| item | value |"
+              echo "|---|---|"
+              echo "| distribution | $(. /etc/os-release && echo "${PRETTY_NAME}") |"
+              echo "| kernel architecture | $(uname -m) |"
+              echo "| fcitx5 | $(pkg-config --modversion Fcitx5Core) |"
+              echo "| addon directory | ${addon_dir} |"
+              echo "| rustc | $(rustc --version) |"
+              echo "| cargo-nextest | $(cargo nextest --version) |"
+              echo "| base.dict bytes | $(stat -c%s data/compiled/base.dict) |"
+          } > target/matrix/report.md
+          cat target/matrix/report.md
+          IN_CONTAINER
+
+      - name: Record the distribution and the resolved versions
+        # `always()`, so a slice that failed still reports what it failed against: the
+        # versions are how a reader tells a real regression from a distribution that
+        # moved, and that question is asked after a failure, not before one.
+        if: always()
+        run: |
+          if [ -f target/matrix/report.md ]; then
+            cat target/matrix/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### ${{ matrix.distro }} / ${{ matrix.arch }}"
+              echo
+              echo "The container produced no report, so it stopped before the gates ran."
+              echo "The failing step above is the reason."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -8,11 +8,15 @@
 //! it can predict by hand, and the offline weight tuner builds one from a word
 //! list before the compiled dictionary exists.
 //!
-//! Boundaries: the real model -- a unigram table and a bigram table read out of
-//! the compiled dictionary's sections -- lives in `ime-dict`, the crate that
-//! owns the mapping. This one never touches a file and holds only what it was
-//! given. It implements the same frozen trait, so every test written against it
-//! keeps its meaning when the real model is swapped in.
+//! Boundaries: the production model is `ime_dict::fst_index::DictLm`, which reads
+//! the compiled dictionary's `UNIGRAM` section straight out of its mapping and
+//! allocates nothing. This one never touches a file and holds only what it was
+//! given, and no production assembly path constructs it: it is the double the
+//! engine is tested against and the model the offline tuner scores with. It
+//! implements the same frozen trait, so every test written against it keeps its
+//! meaning when the real model is assembled in its place -- and the two answer
+//! identically for the same data, which is the property the dictionary model's
+//! own tests assert.
 //!
 //! # The miss path
 //!
@@ -187,6 +191,65 @@ mod tests {
         // Both sides unknown.
         assert_eq!(lm.bigram("wo", "bu"), UNIGRAM_MISS + BIGRAM_MISS_PENALTY);
         assert_eq!(BIGRAM_MISS_PENALTY, -64);
+    }
+
+    #[test]
+    fn test_bigram_miss_penalty_stays_the_same_across_one_hundred_repeats() {
+        // The miss path is a constant rather than something derived from the counts that
+        // happened to be loaded, so the same pair scores the same on every run and in
+        // every process. Every shape of pair is asked for a hundred times and compared
+        // with the first answer: a hit, an unknown successor, an unknown predecessor,
+        // both unknown, and the empty strings on either side.
+        let lm = populated();
+        let pairs = [
+            ("ni", "hao"),
+            ("ni", "bu"),
+            ("wo", "hao"),
+            ("wo", "bu"),
+            ("", "hao"),
+            ("ni", ""),
+            ("", ""),
+        ];
+        let expected: Vec<i32> = pairs
+            .iter()
+            .map(|&(prev, word)| lm.bigram(prev, word))
+            .collect();
+        for run in 0..100 {
+            for (pair, wanted) in pairs.iter().zip(&expected) {
+                assert_eq!(
+                    lm.bigram(pair.0, pair.1),
+                    *wanted,
+                    "the score of {pair:?} on run {run}"
+                );
+            }
+        }
+        // And the constant is exactly what separates a miss from the unigram it falls
+        // back to, on every pair the model does not hold.
+        assert_eq!(BIGRAM_MISS_PENALTY, -64);
+        let misses = [("ni", "bu"), ("wo", "hao"), ("wo", "bu"), ("", "hao")];
+        for (prev, word) in misses {
+            assert_eq!(
+                lm.bigram(prev, word),
+                lm.unigram(word) + BIGRAM_MISS_PENALTY,
+                "the miss of {word:?} after {prev:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_bigram_with_an_empty_predecessor_takes_the_miss_path() {
+        // The boundary the fallback has to hold at: an empty predecessor is not a case of
+        // its own, it is a pair nobody recorded, and it degrades like any other.
+        let lm = populated();
+        assert_eq!(lm.bigram("", "hao"), -256 + BIGRAM_MISS_PENALTY);
+        assert_eq!(lm.bigram("", "bu"), UNIGRAM_MISS + BIGRAM_MISS_PENALTY);
+        assert_eq!(lm.bigram("", ""), UNIGRAM_MISS + BIGRAM_MISS_PENALTY);
+        // A model that recorded the empty predecessor answers with what it recorded,
+        // which is what makes the branch above a fallback rather than a rule.
+        let mut recorded = populated();
+        recorded.insert_bigram("", "hao", -8);
+        assert_eq!(recorded.bigram("", "hao"), -8);
+        assert_eq!(recorded.bigram("", "bu"), UNIGRAM_MISS + BIGRAM_MISS_PENALTY);
     }
 
     #[test]

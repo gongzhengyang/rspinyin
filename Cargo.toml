@@ -11,7 +11,7 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 authors = ["rspinyin contributors"]
-repository = "https://github.com/rspinyin/rspinyin"
+repository = "https://github.com/gongzhengyang/rspinyin"
 description = "Offline-first Chinese pinyin input method for Linux (in-process Fcitx5 addon with a self-drawn candidate window)"
 
 [workspace.dependencies]
@@ -23,6 +23,10 @@ ime-config = { path = "crates/ime-config" }
 ime-ui = { path = "crates/ime-ui" }
 ime-ui-addon = { path = "crates/ime-ui-addon" }
 ime-diag = { path = "crates/ime-diag" }
+# Test-only. A `#[global_allocator]` is the one `unsafe` in the workspace that is neither an
+# FFI boundary nor the dictionary's mmap, so it lives alone and nothing that ships may
+# depend on it -- `scripts/check-unsafe.sh` enforces both halves of that.
+alloc-count = { path = "crates/alloc-count" }
 
 # ── 契约层（ime-types 只允许依赖这三个）────────────────────────────────
 thiserror = "2"                                                        # 错误类型派生

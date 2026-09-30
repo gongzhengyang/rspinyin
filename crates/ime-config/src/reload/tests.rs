@@ -414,8 +414,9 @@ fn test_reload_reports_a_binding_conflict_through_the_reload_diagnostics() {
     let (mut store, _) = ConfigStore::load_at(&path, 7);
 
     // One key claimed by both lists. The configuration layer's own repair settles a repeat
-    // inside one list, so a cross-list conflict reaches the projection, which is where it
-    // is reported.
+    // inside one list, and the schema layer settles a cross-list overlap -- both under the
+    // same `keys/binding-conflict` code, so the projection below is only the last place the
+    // code can come from rather than the only one.
     write(
         &path,
         "[keys]\nflip_keys = [\"up\"]\nhighlight_keys = [\"up\"]\n",

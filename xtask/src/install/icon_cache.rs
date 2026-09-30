@@ -96,6 +96,7 @@ mod tests {
             addon_conf_dir: destdir.join("usr/share/fcitx5/addon"),
             input_method_dir: destdir.join("usr/share/fcitx5/inputmethod"),
             data_dir: destdir.join("usr/share/rspinyin"),
+            metainfo_dir: destdir.join("usr/share/metainfo"),
             icon_dir: root.join("usr/share/icons/hicolor"),
             prefix: PathBuf::from("/usr"),
             destdir,

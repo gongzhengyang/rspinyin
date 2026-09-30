@@ -52,22 +52,47 @@
 //! no formatting, no file, no syscall. Everything a reader wants -- the percentiles, the
 //! verdict, the text of a report -- is produced when the snapshot is taken, which happens
 //! off the key path. Switched off, both halves return before they touch the clock.
+//!
+//! # Memory
+//!
+//! The latency budgets are not the only ones a running plugin answers for: three of the
+//! memory budgets are stated for this process's resident growth, and [`Probes::snapshot`]
+//! carries them in the same file the latencies go into. The reading is taken when the
+//! snapshot is written, and the baselines it is measured against are taken when the
+//! plugin creates its probes, when the UI layer says it has started, and when the
+//! dictionary has been mapped. A baseline nobody marked leaves its growth unmeasured,
+//! which a report states as such rather than as a zero.
+//!
+//! The allocator probe is the other half of the memory picture and deliberately not part
+//! of a snapshot: a decode's instantaneous working set is measured by arming
+//! [`AllocProbe`] around the decode, which is something a measurement run does and a
+//! running plugin does not.
 
+mod alloc;
 mod counters;
 mod histogram;
+mod memory;
 mod metric;
 mod snapshot;
 mod stamp;
 
 #[cfg(test)]
+mod memory_tests;
+
+#[cfg(test)]
 mod tests;
 
+pub use self::alloc::{ALLOC_PROBE, AllocProbe, AllocSnapshot};
 pub use self::counters::{COUNTER_COUNT, Counter};
 pub use self::histogram::{BUCKETS, HistSnapshot, Histogram, Percentile, TOP_US};
+pub use self::memory::{MEMORY_PREFIX, MemoryReading, MemorySnapshot};
 pub use self::metric::{METRIC_COUNT, Metric, Unit};
 pub use self::snapshot::{Metrics, ProbeSnapshot, SNAPSHOT_FILE_NAME, SNAPSHOT_HEADER};
 pub use self::stamp::Stamp;
 
+use std::io;
+use std::path::Path;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -131,12 +156,39 @@ pub struct Probes {
     seq: AtomicU64,
     enabled: AtomicBool,
     start: Instant,
+    /// The readings the memory budgets' growths are measured from.
+    baselines: Baselines,
+}
+
+/// The readings a memory growth is measured from.
+///
+/// Each is taken once and never replaced: a baseline that moved would make the growth a
+/// report states depend on when the report was asked for rather than on what the process
+/// did between the two moments the growth is about.
+///
+/// `OnceLock` rather than an atomic with a sentinel, because a reading is three numbers
+/// and "nothing was measured" has to be distinguishable from "the process happened to
+/// read as zero". It is not a lock on any path a measurement takes: the slot is written
+/// once, by the caller that owns the moment, and read by the snapshot.
+#[derive(Debug, Default)]
+struct Baselines {
+    /// This process, when the probes were created.
+    start: OnceLock<MemoryReading>,
+    /// The UI rendering layer, when it said it had started.
+    ui: OnceLock<MemoryReading>,
+    /// The dictionary, once it had been mapped.
+    dictionary: OnceLock<MemoryReading>,
 }
 
 impl Probes {
     /// Probes with nothing recorded yet, switched on.
+    ///
+    /// Creating the probes takes the process's memory baseline, which is the reading the
+    /// plugin's own memory budget is a growth from. The caller is expected to create them
+    /// before it maps the dictionary, so that the dictionary's resident pages are inside
+    /// the growth rather than below the baseline.
     pub fn new() -> Self {
-        Self {
+        let probes = Self {
             key_to_present: Histogram::new(),
             decode: Histogram::new(),
             raster_full: Histogram::new(),
@@ -151,7 +203,10 @@ impl Probes {
             seq: AtomicU64::new(0),
             enabled: AtomicBool::new(true),
             start: Instant::now(),
-        }
+            baselines: Baselines::default(),
+        };
+        probes.mark(&probes.baselines.start);
+        probes
     }
 
     /// Switches every probe on or off.
@@ -263,6 +318,79 @@ impl Probes {
                 post_ui: self.post_ui.snapshot(),
             },
             counters,
+        }
+    }
+
+    /// Marks the moment the UI rendering layer started.
+    ///
+    /// This is the baseline the UI layer's own memory budget is a growth from. Called
+    /// once, by whatever brings the layer up; a run that never calls it reports no UI
+    /// growth, and a report says the budget was not measured rather than judging it
+    /// against the process's whole growth.
+    pub fn mark_ui_baseline(&self) {
+        self.mark(&self.baselines.ui);
+    }
+
+    /// Marks the moment the dictionary had been mapped.
+    ///
+    /// This is the baseline the dictionary mapping's private growth is measured from.
+    /// Called once, after the mapping is in place and before anything reads it, so that
+    /// the growth covers the pages the mapping faults in.
+    pub fn mark_dictionary_baseline(&self) {
+        self.mark(&self.baselines.dictionary);
+    }
+
+    /// This process's memory, as a snapshot file carries it.
+    ///
+    /// The reading is taken now and the baselines come from the marks above. A field the
+    /// kernel could not be asked for, and a growth whose baseline nobody marked, are left
+    /// empty -- which is what lets a report say a budget went unmeasured instead of
+    /// reading a zero as a pass.
+    ///
+    /// # Panics
+    ///
+    /// Never: a reading that fails leaves its fields empty.
+    pub fn memory(&self) -> MemorySnapshot {
+        let now = MemoryReading::now().ok();
+        MemorySnapshot {
+            rss_kib: now.map(|reading| reading.rss_kib),
+            dirty_kib: now.map(|reading| reading.dirty_kib()),
+            baseline_rss_kib: self.baselines.start.get().map(|reading| reading.rss_kib),
+            baseline_dirty_kib: self.baselines.start.get().map(MemoryReading::dirty_kib),
+            ui_baseline_rss_kib: self.baselines.ui.get().map(|reading| reading.rss_kib),
+            dictionary_baseline_dirty_kib: self
+                .baselines
+                .dictionary
+                .get()
+                .map(MemoryReading::dirty_kib),
+        }
+    }
+
+    /// Writes the snapshot and this process's memory to `path`.
+    ///
+    /// One file carries both, and both are read back by `xtask report` and
+    /// `xtask budget --memory`: the numbers a report judges are the numbers one process
+    /// wrote at one moment, and a second file would be a second moment. The memory
+    /// section follows the snapshot's own records, and the snapshot reader skips it, so
+    /// either reader can be handed the whole file.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying [`io::Error`] when the file cannot be created, its mode
+    /// cannot be set, or the text cannot be written.
+    pub fn write_snapshot(&self, path: &Path) -> io::Result<()> {
+        let mut text = self.snapshot().to_text();
+        text.push_str(&self.memory().to_text());
+        self::snapshot::write_private(path, &text)
+    }
+
+    /// Records this process's memory into `slot`, when the kernel can be read.
+    ///
+    /// A slot that already holds a reading keeps it: a baseline is taken once, and a
+    /// second mark would move the window rather than widen it.
+    fn mark(&self, slot: &OnceLock<MemoryReading>) {
+        if let Ok(reading) = MemoryReading::now() {
+            let _ = slot.set(reading);
         }
     }
 }

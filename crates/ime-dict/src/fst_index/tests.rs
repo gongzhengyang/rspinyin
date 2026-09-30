@@ -12,7 +12,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use fst::Streamer;
 
-use ime_types::WordFlags;
+use ime_core::lm::{BIGRAM_MISS_PENALTY, InMemoryLm, UNIGRAM_MISS};
+use ime_core::viterbi::Decoder;
+use ime_types::{DecodeRequest, LanguageModel, WordFlags};
 
 use crate::format::{
     DictEntry, FLAG_TERM, PROB_Q12_MAX, hash_word, pack_fst_value,
@@ -480,6 +482,137 @@ fn test_lookup_survives_deleting_the_dictionary_file() {
     let words: Vec<WordRef<'_>> = served.expect("looking up").collect();
     assert_eq!(words.len(), 1);
     assert_eq!(words[0].text, "中国");
+}
+
+#[test]
+fn test_dict_lm_scores_every_word_the_unigram_table_holds() {
+    let lexicon = fixture("dict-lm-hit");
+    assert_eq!(lexicon.entry_count() as usize, FIXTURE_WORDS.len());
+    let model = DictLm::new(&lexicon);
+    // The fixture writes `PROB_Q12_MAX` for every record, so every word scores
+    // `log2(1.0)`, which is the one score a test can state without recomputing the table.
+    for (text, ..) in FIXTURE_WORDS {
+        assert_eq!(model.unigram(text), 0, "{text}");
+    }
+}
+
+#[test]
+fn test_dict_lm_answers_the_miss_floor_for_a_word_the_table_lacks() {
+    let lexicon = fixture("dict-lm-miss");
+    let model = DictLm::new(&lexicon);
+    assert_eq!(model.unigram("没有"), UNIGRAM_MISS);
+    assert_eq!(model.unigram(""), UNIGRAM_MISS);
+    // A prefix of a word the table holds is a word of its own, and is a miss.
+    assert_eq!(model.unigram("银"), UNIGRAM_MISS);
+}
+
+#[test]
+fn test_dict_lm_bigram_falls_back_to_the_unigram_minus_the_miss_penalty() {
+    let lexicon = fixture("dict-lm-bigram");
+    let model = DictLm::new(&lexicon);
+    // Version 1 carries no bigram section, so every pair takes the miss path -- and the
+    // path is the documented one, not the bare penalty: the word's own unigram minus the
+    // constant, which is what the in-memory model answers for a pair it was never given.
+    assert_eq!(model.bigram("你", "中国"), BIGRAM_MISS_PENALTY);
+    assert_eq!(
+        model.bigram("你", "没有"),
+        UNIGRAM_MISS + BIGRAM_MISS_PENALTY
+    );
+}
+
+#[test]
+fn test_dict_lm_agrees_with_the_in_memory_model_over_the_same_words() {
+    let lexicon = fixture("dict-lm-equivalence");
+    let dictionary = DictLm::new(&lexicon);
+    // The same data in the shape the engine is tested with. The dictionary model is the
+    // production one and the in-memory model is the double, so the two answering alike
+    // for every word is what lets a test written against the double keep its meaning
+    // when the dictionary model is assembled in its place.
+    let mut memory = InMemoryLm::new();
+    for (text, ..) in FIXTURE_WORDS {
+        memory.insert_unigram(text, 0);
+    }
+    let mut words: Vec<&str> = FIXTURE_WORDS.iter().map(|(text, ..)| *text).collect();
+    words.extend(["没有", "", "银", "你泥", "中国银行"]);
+    for word in &words {
+        assert_eq!(
+            dictionary.unigram(word),
+            memory.unigram(word),
+            "unigram({word:?})"
+        );
+    }
+    for prev in ["你", "中", "没有"] {
+        for word in &words {
+            assert_eq!(
+                dictionary.bigram(prev, word),
+                memory.bigram(prev, word),
+                "bigram({prev:?}, {word:?})"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_dict_lm_over_a_container_with_no_entries_misses_every_word() {
+    // A container whose index holds a key with no words: the unigram table has no
+    // records, and a lookup answers the floor rather than walking an empty section.
+    let mut index = fst::MapBuilder::memory();
+    let packed = pack_fst_value(0, 0).expect("an empty range packs");
+    index
+        .insert("ni".as_bytes(), packed)
+        .expect("inserting the key");
+    let mut container = writer::DictWriter::new();
+    container
+        .add_section(
+            SectionKind::Fst,
+            index.into_inner().expect("finishing the index"),
+        )
+        .expect("adding the index");
+    let image = container.encode().expect("encoding the container");
+    let scratch = ScratchDict::new(&image, "dict-lm-empty");
+    let lexicon = FstLexicon::load(scratch.path()).expect("loading the container");
+    let model = DictLm::new(&lexicon);
+    assert_eq!(model.unigram("你"), UNIGRAM_MISS);
+    assert_eq!(model.bigram("你", "你"), UNIGRAM_MISS + BIGRAM_MISS_PENALTY);
+}
+
+#[test]
+fn test_dict_lm_ranks_the_fixture_exactly_like_the_in_memory_model() {
+    // The property the two models are interchangeable for, asserted where a user would
+    // feel it: a whole decode through each, over every key the fixture holds, has to
+    // produce the same candidates in the same order. The in-memory model is given the
+    // same scores the container carries, so a difference can only come from the model.
+    let lexicon = fixture("dict-lm-ranking");
+    let dictionary = DictLm::new(&lexicon);
+    let mut memory = InMemoryLm::new();
+    for (text, ..) in FIXTURE_WORDS {
+        memory.insert_unigram(text, 0);
+    }
+    let decoder = Decoder::default();
+    for (key, _) in FIXTURE_KEYS {
+        let raw = key.replace('\'', "");
+        let request = DecodeRequest::new(raw.as_str());
+        let served = decoder.decode(&request, &lexicon, &NoUserFreq, &dictionary);
+        let expected = decoder.decode(&request, &lexicon, &NoUserFreq, &memory);
+        assert_eq!(served, expected, "{key}");
+    }
+}
+
+/// A user-frequency source that has recorded nothing.
+///
+/// The engine's own double lives in `ime-core`'s test tree, which is not compiled into
+/// this crate; the decode path needs one either way, and a source that answers zero is
+/// what a decode sees before the first commit.
+struct NoUserFreq;
+
+impl ime_types::UserFreqSource for NoUserFreq {
+    fn freq(&self, _key: &str) -> u32 {
+        0
+    }
+    fn record(&self, _key: &str, _weight_hint: u16) {}
+    fn is_user_word(&self, _key: &str) -> bool {
+        false
+    }
 }
 
 /// Cross-checks the lexicon against the reader over the development dictionary.

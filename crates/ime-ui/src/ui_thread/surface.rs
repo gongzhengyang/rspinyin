@@ -16,6 +16,7 @@
 use std::os::fd::BorrowedFd;
 use std::time::Instant;
 
+use ime_types::ui::OverlayFrame;
 use ime_types::{Anchor, HideReason, ImeError, ThemeSpec, UiCommand, UiFrame};
 
 use crate::channel::UiEventQueue;
@@ -33,6 +34,14 @@ pub enum SurfaceUpdate {
     Frame(Box<UiFrame>),
     /// Semantic theme tokens, which the surface resolves into colours.
     Theme(ThemeSpec),
+    /// The modal overlay the window draws, or `None` when none is open.
+    ///
+    /// An overlay is a mode rather than a frame: it arrives on a latest-wins slot, so the
+    /// newest value is the only one that describes what the user is looking at, and `None`
+    /// is a value of its own -- it is how an open panel is closed. The payload is an
+    /// [`OverlayFrame`], which carries data and no behaviour: the engine builds the table
+    /// from the active bindings and the surface draws it verbatim.
+    Overlay(Option<Box<OverlayFrame>>),
     /// The window should appear, anchored at the cursor.
     Show {
         /// Revision of the frame the anchor belongs to.
@@ -52,8 +61,11 @@ pub enum SurfaceUpdate {
 impl SurfaceUpdate {
     /// Converts a command that travelled on the ordered channel into an update.
     ///
-    /// Returns `None` for the commands that never travel that way, so the loop
-    /// can drain the ordered queue without an arm it can never reach.
+    /// Returns `None` for the commands that have a channel of their own, so the loop
+    /// can drain the ordered queue without an arm it can never reach. The overlay is the
+    /// one value that is answered from here as well as from its own slot: it belongs to
+    /// the latest-wins tier, and an overlay that did reach the ordered channel is applied
+    /// rather than dropped.
     ///
     /// # Panics
     ///
@@ -62,6 +74,7 @@ impl SurfaceUpdate {
         match command {
             UiCommand::Show { revision, anchor } => Some(Self::Show { revision, anchor }),
             UiCommand::Hide { revision, reason } => Some(Self::Hide { revision, reason }),
+            UiCommand::Overlay(frame) => Some(Self::Overlay(frame)),
             // Frames, themes and shutdown have their own channels; a value that
             // arrives on the ordered queue is a routing bug, and dropping it is
             // safer than applying it out of order.
@@ -151,6 +164,7 @@ pub trait UiSurface {
 
 #[cfg(test)]
 mod tests {
+    use ime_types::ui::OverlayKind;
     use ime_types::{Placement, RectI, ScreenId};
 
     use super::*;
@@ -234,5 +248,35 @@ mod tests {
         });
         assert_eq!(SurfaceUpdate::from_control(theme), None);
         assert_eq!(SurfaceUpdate::from_control(UiCommand::Shutdown), None);
+    }
+
+    /// One overlay frame, as the engine builds it: a title and no rows.
+    fn overlay() -> Box<OverlayFrame> {
+        Box::new(OverlayFrame {
+            kind: OverlayKind::CheatSheet,
+            title: String::from("快捷键"),
+            sections: Vec::new(),
+            selected: None,
+            query: String::new(),
+        })
+    }
+
+    #[test]
+    fn test_surface_update_from_control_carries_an_overlay_open_and_closed() {
+        assert_eq!(
+            SurfaceUpdate::from_control(UiCommand::Overlay(Some(overlay()))),
+            Some(SurfaceUpdate::Overlay(Some(overlay())))
+        );
+        assert_eq!(
+            SurfaceUpdate::from_control(UiCommand::Overlay(None)),
+            Some(SurfaceUpdate::Overlay(None)),
+            "closing an overlay is a value of its own rather than a missing one, which is \
+             what makes an open panel closable through a latest-wins slot"
+        );
+        assert_ne!(
+            SurfaceUpdate::Overlay(None),
+            SurfaceUpdate::Overlay(Some(overlay())),
+            "an open overlay and a closed one are different states"
+        );
     }
 }

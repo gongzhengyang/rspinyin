@@ -2,9 +2,10 @@
 //! the width estimator the truncation of 3.1.3 is computed with.
 //!
 //! `ui/candidate_grid.slint` draws one `CandidateData` per cell and decides nothing: the
-//! number label, the text that fits, the annotation and the state all arrive from here.
-//! That split is what lets every rule below be covered by a test that never opens a
-//! window, and it is what keeps a `.slint` source free of business logic.
+//! number label, the text that fits, the annotation and the state all arrive from here, and
+//! [`cell_data`] is the last step of that -- the model entry the component is handed. That
+//! split is what lets every rule below be covered by a test that never opens a window, and
+//! it is what keeps a `.slint` source free of business logic.
 //!
 //! # Where the state priority lives
 //!
@@ -27,8 +28,10 @@ mod tests;
 use std::collections::HashMap;
 
 use ime_types::{Candidate, CandidateSource, PageState};
+use slint::SharedString;
 
 use crate::layout::Metrics;
+use crate::ui_generated::CandidateData;
 
 /// The character a cut text ends with (3.1.3).
 const ELLIPSIS: char = '…';
@@ -246,9 +249,10 @@ pub struct CellGeometry {
     pub width: f32,
     /// What the annotation costs beside the text, in logical pixels; zero when none is
     /// drawn, which includes the gap before it.
+    ///
+    /// The zero carries the whole decision -- the layout's own switch and this cell's room
+    /// for a reading hint -- so nothing else has to know why an annotation is absent.
     pub annotation_width: f32,
-    /// Whether an annotation is drawn beside the candidate text.
-    pub show_annotation: bool,
     /// The component's constants, from [`crate::layout::metrics`].
     pub metrics: Metrics,
 }
@@ -405,9 +409,13 @@ fn write_label(target: &mut String, position: u16) -> bool {
     write_text(target, label)
 }
 
-/// The annotation a cell draws: the candidate's own, or nothing when it is not shown.
+/// The annotation a cell draws: the candidate's own, or nothing when the cell has no room
+/// for it.
+///
+/// The room is the whole test, because [`CellGeometry::annotation_width`] already carries
+/// both halves of the decision -- the layout's switch and this cell's width.
 fn annotation_of(candidate: &Candidate, geometry: CellGeometry) -> &str {
-    if geometry.show_annotation {
+    if geometry.annotation_width > 0.0 {
         candidate.annotation.as_deref().unwrap_or("")
     } else {
         ""
@@ -632,7 +640,11 @@ fn text_ems(text: &str) -> f32 {
 }
 
 /// The width of one character in ems.
-fn character_em(character: char) -> f32 {
+///
+/// Crate-visible rather than private because the preedit's cut walks a span a character at a
+/// time and must not spend a cache entry per character doing it; see
+/// [`super::preedit`].
+pub(crate) fn character_em(character: char) -> f32 {
     if character.is_ascii() {
         ASCII_EM
     } else {
@@ -660,4 +672,42 @@ fn write_cut(target: &mut String, text: &str, cut: usize) -> bool {
     target.push_str(&text[..cut]);
     target.push(ELLIPSIS);
     true
+}
+
+/// One cell, as the grid's model holds it.
+///
+/// The three state booleans are derived from the single state the ranking of 3.4 resolved, so
+/// they can never contradict each other, and the full text travels beside the text that is
+/// drawn: a cell cut with `…` still carries what a selection commits.
+pub(crate) fn cell_data(cell: &CellState) -> CandidateData {
+    CandidateData {
+        index: i32::from(cell.index),
+        label: SharedString::from(cell.label.as_str()),
+        text: SharedString::from(cell.text.as_str()),
+        display_text: SharedString::from(cell.display_text.as_str()),
+        annotation: SharedString::from(cell.annotation.as_str()),
+        source: source_code(cell.source),
+        is_highlighted: cell.state == VisualState::FocusRing,
+        is_hovered: cell.state == VisualState::Hover,
+        is_pressed: cell.state == VisualState::Active,
+        is_disabled: cell.state == VisualState::Disabled,
+    }
+}
+
+/// The number the grid carries a candidate's source as.
+///
+/// A `.slint` source has no enum of its own and `CandidateSource` is a frozen contract type,
+/// so the variant travels as its own number: the mapping is written out rather than derived
+/// from the discriminant, which makes a variant added later a compile error here instead of
+/// a silently renumbered source.
+fn source_code(source: CandidateSource) -> i32 {
+    match source {
+        CandidateSource::Dict => 0,
+        CandidateSource::UserDict => 1,
+        CandidateSource::Learned => 2,
+        CandidateSource::Passthrough => 3,
+        CandidateSource::Symbol => 4,
+        CandidateSource::Phrase => 5,
+        CandidateSource::Script => 6,
+    }
 }

@@ -37,6 +37,29 @@ const STRIDE_SLACK: usize = 2;
 /// Extra rows appended below every scratch frame, for the same reason as [`STRIDE_SLACK`].
 const ROW_SLACK: usize = 1;
 
+/// Frames a shrunk scratch must serve before its allocation is given back.
+///
+/// Shrinking on the first small frame would trade an allocation for a window resize -- a
+/// user dragging the scale factor, an output change, a candidate list that shrank -- which
+/// is exactly the churn the grow-only rule avoided. A sustained shrink is a different
+/// situation: the window is genuinely smaller now, and holding the peak allocation costs
+/// resident memory against `BUDGET-MEM-01` for the rest of the session.
+///
+/// The count is in frames the scratch actually served, not in wall-clock time. A frame the
+/// window did not have to redraw never reaches the scratch, and waking the UI thread to
+/// look at the allocation would be the polling timer `BUDGET-CPU-01` forbids. A window that
+/// shrank and then went completely idle therefore keeps the allocation until it is redrawn
+/// again -- the deliberate trade, since such a window pays for it only in resident bytes.
+pub(super) const SHRINK_AFTER_FRAMES: u32 = 3_600;
+
+/// How much of the allocation a frame may need and still count towards a shrink.
+///
+/// A quarter, written as a divisor so the comparison stays in integer arithmetic. A frame
+/// needing more than this is not evidence that the window has settled at a smaller size: a
+/// window whose size fluctuates around half the allocation must never give the peak away
+/// and then ask for it back.
+const SHRINK_DIVISOR: usize = 4;
+
 /// One premultiplied `Argb8888` pixel, in the byte order the surface buffers use.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Argb8888Pixel(u32);
@@ -106,6 +129,9 @@ pub(super) struct PixelScratch {
     pub(super) pixels: Vec<Argb8888Pixel>,
     /// Row length in pixels; never smaller than the surface width.
     pub(super) stride: usize,
+    /// Consecutive frames that fit in a quarter of the allocation, counted towards
+    /// [`SHRINK_AFTER_FRAMES`].
+    small_frames: u32,
 }
 
 impl PixelScratch {
@@ -114,24 +140,53 @@ impl PixelScratch {
         Self {
             pixels: Vec::new(),
             stride: 0,
+            small_frames: 0,
         }
     }
 
-    /// Grows the scratch to cover `width_px` by `height_px`, reporting whether it had to
-    /// reallocate.
+    /// Grows or shrinks the scratch to cover `width_px` by `height_px`, reporting whether
+    /// it reallocated.
     ///
-    /// The scratch only ever grows: a candidate window changes size when the layout or the
-    /// scale changes, and shrinking would hand the allocation back to the system only to
-    /// ask for it again. A reallocation means the previous frame's pixels are gone, which
-    /// is why the caller is told about it.
+    /// Growth is immediate: a frame that does not fit has to be served, so the allocation
+    /// happens on the spot. Shrinkage waits for [`SHRINK_AFTER_FRAMES`] consecutive frames
+    /// that need no more than a [`SHRINK_DIVISOR`]-th of the allocation, so a one-off
+    /// resize does not cause churn and a sustained one does not hold the peak allocation
+    /// for the rest of the session.
+    ///
+    /// # Returns
+    ///
+    /// Whether the buffer was reallocated, in either direction. The previous frame's
+    /// pixels are gone when it returns `true`, which is why the caller has to schedule a
+    /// full repaint. Forgetting that on a shrink is a correctness bug rather than a cost:
+    /// the surface still shows the frame the smaller scratch no longer holds, so a partial
+    /// copy would leave the rest of the window showing whatever the buffer happened to
+    /// contain.
     pub(super) fn ensure(&mut self, width_px: u32, height_px: u32) -> bool {
         self.stride = width_px as usize + STRIDE_SLACK;
         let rows = height_px as usize + ROW_SLACK;
         let needed = self.stride * rows;
-        if self.pixels.len() >= needed {
+        if self.pixels.len() < needed {
+            self.pixels.resize(needed, Argb8888Pixel::TRANSPARENT);
+            // A fresh allocation is not a candidate for being given back.
+            self.small_frames = 0;
+            return true;
+        }
+        // `saturating_mul`: the surface size is caller-supplied, and a size whose quarter
+        // overflows `usize` is one no scratch could hold. Saturating keeps it out of the
+        // shrink path rather than wrapping into it.
+        if needed.saturating_mul(SHRINK_DIVISOR) > self.pixels.len() {
+            self.small_frames = 0;
             return false;
         }
-        self.pixels.resize(needed, Argb8888Pixel::TRANSPARENT);
+        self.small_frames = self.small_frames.saturating_add(1);
+        if self.small_frames < SHRINK_AFTER_FRAMES {
+            return false;
+        }
+        self.small_frames = 0;
+        // Truncating the length is not enough: the memory budget counts the allocation, so
+        // the tail has to be handed back to the allocator.
+        self.pixels.truncate(needed);
+        self.pixels.shrink_to_fit();
         true
     }
 
@@ -222,6 +277,36 @@ pub(super) fn union_pair(left: RectI, right: RectI) -> RectI {
         w: (x1 - x0) as u32,
         h: (y1 - y0) as u32,
     }
+}
+
+/// Whether two rectangles share at least one pixel.
+///
+/// This is the predicate the damage merge uses: two regions that share a pixel are folded
+/// into their bounding box, while two that merely touch along an edge are left apart,
+/// because merging those would add area to the copy without removing a rectangle from the
+/// list.
+///
+/// # Why the arithmetic is widened
+///
+/// A rectangle may carry `i32::MIN` for its origin and `u32::MAX` for its extent -- the
+/// damage bookkeeping clips whatever a renderer reports -- so both far edges are computed
+/// in `i64` for the reason [`clip_rect`] gives.
+pub(super) fn overlaps(left: RectI, right: RectI) -> bool {
+    // An empty rectangle covers no pixel, so it cannot share one. The classic interval
+    // test below would answer "yes" for an empty rectangle whose origin falls inside the
+    // other, and the callers clip before they get here, so this is a guard rather than a
+    // case that occurs.
+    if left.w == 0 || left.h == 0 || right.w == 0 || right.h == 0 {
+        return false;
+    }
+    let left_right = i64::from(left.x) + i64::from(left.w);
+    let left_bottom = i64::from(left.y) + i64::from(left.h);
+    let right_right = i64::from(right.x) + i64::from(right.w);
+    let right_bottom = i64::from(right.y) + i64::from(right.h);
+    i64::from(left.x) < right_right
+        && i64::from(right.x) < left_right
+        && i64::from(left.y) < right_bottom
+        && i64::from(right.y) < left_bottom
 }
 
 /// The bounding box of a rectangle list, empty for an empty list.

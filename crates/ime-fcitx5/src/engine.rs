@@ -21,9 +21,7 @@
 //! # Layout
 //!
 //! * The routing table itself — [`translate_key`], [`claims_key`] and the keysym and
-//!   modifier constants they read — is this file. The bindings it branches on
-//!   ([`KeyBindings`], [`FlipSet`], [`HighlightSet`]) belong to `ime-config` and are
-//!   re-exported here, so the table and the configuration document cannot drift apart.
+//!   modifier constants they read — is this file, and its rows are the `rows` submodule.
 //! * [`context`] is the layered bus the table is read through: which layer of the plugin
 //!   owns a key, and whether the plugin may keep it.
 //! * [`modifier`] is the check that the host's modifier bits are the ones this build was
@@ -43,6 +41,24 @@
 //! stay in one place and this table follows them; [`router::RoutingConfig`] is the rest of
 //! what the routing layer acts on, projected from the document by
 //! [`router::RoutingConfig::from_config`].
+//!
+//! # The shape of the table
+//!
+//! Two tables, both data rather than control flow, so that one more key is a row and not a
+//! new branch:
+//!
+//! * `CHORDS` holds the keys whose modifiers are part of the key — `Ctrl+Space` and its
+//!   neighbours — and a chord matches only the exact modifier set it declares.
+//! * `rows` holds every other key, in evaluation order: the rows `keys.highlight_keys`
+//!   binds, then the rows `keys.flip_keys` binds, then the rows the configuration cannot
+//!   unbind.
+//!
+//! [`translate_key`] reads them in that order, and the predicates below it —
+//! [`is_shift_press`], [`is_syllable_separator`] and [`leaves_temp_english`] — are the
+//! questions about a key the table deliberately leaves open, because the answer is a fact
+//! about the session or about the host rather than about the key: a modifier's own press is
+//! the host's, an apostrophe pins a syllable boundary only inside a composition, and two of
+//! the keys of temporary English end a mode the table cannot see.
 
 use ime_types::KeyAction;
 
@@ -54,6 +70,8 @@ pub mod host;
 pub mod modifier;
 pub mod router;
 pub mod sequence;
+
+mod rows;
 
 pub use arbiter::{Executability, arbitrate, arbitrate_sequence, executability, is_mode_chord};
 pub use context::{Consumed, Dispatcher, KeyContext, KeyEvent, Overlay, SessionView};
@@ -68,6 +86,9 @@ pub use sequence::{
     KeySequence, MAX_SEQUENCE_STROKES, SEQUENCE_CONFLICT_CODE, SEQUENCE_TIMEOUT_MS,
     SEQUENCE_TOO_LONG_CODE, SequenceDecision, SequencePrefix, SequenceState, SequenceTable,
 };
+
+#[cfg(test)]
+mod binding_audit;
 
 #[cfg(test)]
 mod tests;
@@ -113,6 +134,13 @@ const NON_SHIFT_MODIFIERS: u32 = MODIFIER_MASK & !SHIFT;
 
 /// `FcitxKey_space`.
 const KEY_SPACE: u32 = 0x0020;
+/// `FcitxKey_apostrophe`, the syllable separator the input buffer accepts.
+const KEY_APOSTROPHE: u32 = 0x0027;
+/// The character the [`KEY_APOSTROPHE`] row produces.
+///
+/// Named rather than spelled out at each use so that the row, the guard that keeps the
+/// separator inside a composition and the tests all name the same character.
+const SYLLABLE_SEPARATOR: char = '\'';
 /// `FcitxKey_minus`.
 const KEY_MINUS: u32 = 0x002d;
 /// `FcitxKey_period`.
@@ -126,8 +154,10 @@ const KEY_1: u32 = 0x0031;
 const KEY_9: u32 = 0x0039;
 /// `FcitxKey_equal`.
 const KEY_EQUAL: u32 = 0x003d;
-/// `FcitxKey_E`, the uppercase shape a chord containing Shift may deliver.
-const KEY_E_UPPER: u32 = 0x0045;
+/// `FcitxKey_A`, the low end of the uppercase shape a host may deliver for `Shift+a`.
+const KEY_A_UPPER: u32 = 0x0041;
+/// `FcitxKey_Z`, the high end of that uppercase shape.
+const KEY_Z_UPPER: u32 = 0x005a;
 /// `FcitxKey_a`, the low end of the letter row.
 const KEY_A: u32 = 0x0061;
 /// `FcitxKey_e`, the letter of the temporary-English chord.
@@ -183,10 +213,10 @@ const KEY_SHIFT_R: u32 = 0xffe2;
 ///
 /// # Panics
 ///
-/// Never. The table and the lookups it delegates to read only the two integers in `event`
-/// and the four settings of `keys`: no indexing, no arithmetic that can overflow, no
-/// allocation. The guarantee matters because the caller is an FFI entry point, which must
-/// not unwind into C++.
+/// Never. The tables and the lookups they delegate to read only the two integers in
+/// `event` and the four settings of `keys`: no indexing, no arithmetic that can overflow,
+/// no allocation. The guarantee matters because the caller is an FFI entry point, which
+/// must not unwind into C++.
 ///
 /// # Examples
 ///
@@ -205,124 +235,152 @@ const KEY_SHIFT_R: u32 = 0xffe2;
 /// ```
 pub fn translate_key(event: &FcitxKeyEvent, keys: &KeyBindings) -> KeyAction {
     // A release is never ours: the host delivers both edges of every key, and consuming
-    // one would eat the application's key-up. The table below is a table of presses.
+    // one would eat the application's key-up. Both tables are tables of presses.
     if event.is_release {
         return KeyAction::Ignore;
     }
-    let sym = event.sym;
+    // A frontend that folds the case into the symbol delivers `Shift+a` as `A`, and one
+    // that does not delivers it as `a`. The tables must not see the difference: a key that
+    // means "type the letter a" is the same key whichever shape it arrives in, and a table
+    // that answered differently would make the plugin behave differently per frontend. The
+    // fold therefore runs before either table is read.
+    let sym = fold_shifted_letter(event.sym, event.state);
     let state = event.state;
 
     if let Some(action) = chord_action(sym, state) {
         return action;
     }
-    // The rows that tolerate a held Shift: a letter, because Shift is how its uppercase
-    // form is typed, and Tab, where Shift reverses the direction.
-    if (state & NON_SHIFT_MODIFIERS) == 0 {
-        if let Some(action) = shift_tolerant_action(sym, state, keys) {
-            return action;
-        }
-    }
-    // Every row below is a bare press: a surviving modifier belongs to somebody else.
-    if (state & MODIFIER_MASK) != 0 {
-        return KeyAction::Ignore;
-    }
-    bare_action(sym, keys)
+    rows::action(sym, state, keys).unwrap_or(KeyAction::Ignore)
 }
 
-/// The rows whose modifier is part of the key: the global mode chords.
+// ── The chords ───────────────────────────────────────────────────────────────────
+
+/// One global mode chord: a key plus the exact modifier set it requires.
+struct Chord {
+    /// XKB keysym of the chord's key.
+    sym: u32,
+    /// The modifier set, compared for equality against `state & MODIFIER_MASK`.
+    ///
+    /// Equality rather than a subset test: `Ctrl+Space` and `Ctrl+Shift+Space` are
+    /// different keys, and a chord that accepted a superset would take keys the desktop
+    /// environment owns.
+    mask: u32,
+    /// What the chord means.
+    action: KeyAction,
+}
+
+/// The global mode chords, in match order.
 ///
-/// Returns `None` when the key is not one of them, so the caller can go on with the rows
-/// that read a bare key. `Some(KeyAction::Ignore)` is a real answer here — the space bar
-/// with a modifier combination that is nobody's chord is the host's key.
+/// Every entry carries a modifier: a bare key is a row of the table rather than a chord,
+/// which is what lets the space bar be the commit key with nothing held and the language
+/// switch with `Ctrl` held.
+///
+/// `Shift_L` and `Shift_R` are deliberately absent. A modifier's own press is not a chord,
+/// and treating it as one made every capital letter toggle the input mode; the held key is
+/// the host's own temporary switch, and [`is_shift_press`] is what keeps the routing layer
+/// from taking it. The hold semantics that replaced the chord live in [`modifier`].
+const CHORDS: &[Chord] = &[
+    Chord {
+        sym: KEY_SPACE,
+        mask: CTRL,
+        action: KeyAction::ToggleLang,
+    },
+    Chord {
+        sym: KEY_SPACE,
+        mask: SHIFT,
+        action: KeyAction::ToggleFullWidth,
+    },
+    Chord {
+        sym: KEY_PERIOD,
+        mask: CTRL,
+        action: KeyAction::TogglePunct,
+    },
+    Chord {
+        sym: KEY_E,
+        mask: CTRL | SHIFT,
+        action: KeyAction::EnterTempEnglish,
+    },
+];
+
+/// The chord this key and these modifiers make, if any.
+///
+/// Returns `None` when no chord names the key with exactly these modifiers, so the caller
+/// goes on with the rows. A chord that does not match is not a claim on the key: the
+/// space bar with `Alt` held is nobody's chord and belongs to the host, which the rows
+/// answer because none of them accepts a modifier.
+///
+/// # Panics
+///
+/// Never.
 fn chord_action(sym: u32, state: u32) -> Option<KeyAction> {
-    if sym == KEY_SHIFT_L || sym == KEY_SHIFT_R {
-        return Some(KeyAction::ToggleLang);
-    }
-    if sym == KEY_SPACE {
-        return Some(match state & MODIFIER_MASK {
-            CTRL => KeyAction::ToggleLang,
-            SHIFT => KeyAction::ToggleFullWidth,
-            0 => KeyAction::CommitHighlighted,
-            _ => KeyAction::Ignore,
-        });
-    }
-    if sym == KEY_PERIOD && (state & MODIFIER_MASK) == CTRL {
-        return Some(KeyAction::TogglePunct);
-    }
-    if (sym == KEY_E || sym == KEY_E_UPPER) && (state & MODIFIER_MASK) == (CTRL | SHIFT) {
-        return Some(KeyAction::EnterTempEnglish);
-    }
-    None
-}
-
-/// The rows that tolerate a held Shift: a letter, and the Tab shapes.
-///
-/// Tab is the one key whose held Shift changes its meaning rather than blocking it, and the
-/// configuration names its two shapes apart (`keys.highlight_keys`): a document that binds
-/// only one of them leaves the other to the application. Returns `None` when the key is
-/// neither, so the caller can go on with the rows that require a bare press.
-fn shift_tolerant_action(sym: u32, state: u32, keys: &KeyBindings) -> Option<KeyAction> {
-    if (KEY_A..=KEY_Z).contains(&sym) {
-        // The range is ASCII, so the low byte is the character.
-        return Some(KeyAction::InputChar(char::from(sym as u8)));
-    }
-    if sym != KEY_TAB {
+    let held = state & MODIFIER_MASK;
+    if held == 0 {
+        // Every chord carries a modifier, so a bare press cannot be one. Answering here
+        // also keeps the scan off the path almost every key takes.
         return None;
     }
-    let (binding, delta) = if (state & SHIFT) == 0 {
-        (HighlightSet::TAB, 1)
-    } else {
-        (HighlightSet::SHIFT_TAB, -1)
-    };
-    keys.highlight_keys
-        .contains(binding)
-        .then_some(KeyAction::MoveHighlight(delta))
+    CHORDS
+        .iter()
+        .find(|chord| chord.sym == sym && chord.mask == held)
+        .map(|chord| chord.action)
 }
 
-/// The rows that require a bare press: the digits, the page keys, the arrows and the
-/// three editing keys. Anything else stays with the host.
-fn bare_action(sym: u32, keys: &KeyBindings) -> KeyAction {
-    // The highlight rows come first. The projection drops a page binding from a key both
-    // lists name, so a key the configuration bound twice moves the highlight here -- which
-    // is the precedence `ime-config` states when it reports the collision.
-    if let Some(action) = bare_highlight(sym, keys.highlight_keys) {
-        return action;
-    }
-    match sym {
-        KEY_0 if keys.digit_zero == DigitZero::Flip => KeyAction::PageNext,
-        KEY_0 => KeyAction::Ignore,
-        KEY_1..=KEY_9 => KeyAction::SelectIndex((sym - KEY_0) as u8),
-        KEY_MINUS if keys.flip_keys.contains(FlipSet::MINUS) => KeyAction::PagePrev,
-        KEY_EQUAL if keys.flip_keys.contains(FlipSet::EQUAL) => KeyAction::PageNext,
-        KEY_UP if keys.flip_keys.contains(FlipSet::UP) => KeyAction::PagePrev,
-        KEY_DOWN if keys.flip_keys.contains(FlipSet::DOWN) => KeyAction::PageNext,
-        KEY_PAGE_UP if keys.flip_keys.contains(FlipSet::PAGE_UP) => KeyAction::PagePrev,
-        KEY_PAGE_DOWN if keys.flip_keys.contains(FlipSet::PAGE_DOWN) => KeyAction::PageNext,
-        KEY_LEFT => KeyAction::MoveCaret(-1),
-        KEY_RIGHT => KeyAction::MoveCaret(1),
-        KEY_RETURN if keys.enter_commit_raw => KeyAction::CommitRaw,
-        KEY_RETURN => KeyAction::CommitHighlighted,
-        KEY_ESCAPE => KeyAction::Escape,
-        KEY_BACKSPACE => KeyAction::Backspace,
-        _ => KeyAction::Ignore,
-    }
-}
+// ── The two keys the table cannot answer for on its own ──────────────────────────
 
-/// The row a `keys.highlight_keys` binding names, or `None` when the key carries none.
+/// Folds a keysym a host may have case-folded back to its lowercase form.
 ///
-/// The four arrows are shared with the page and the caret rows: a key the configuration put
-/// in `highlight_keys` moves the highlight, and the row below it in [`bare_action`] is what
-/// answers when the configuration did not.
-fn bare_highlight(sym: u32, set: HighlightSet) -> Option<KeyAction> {
-    let (binding, delta) = match sym {
-        KEY_UP => (HighlightSet::UP, -1),
-        KEY_DOWN => (HighlightSet::DOWN, 1),
-        KEY_LEFT => (HighlightSet::LEFT, -1),
-        KEY_RIGHT => (HighlightSet::RIGHT, 1),
-        _ => return None,
-    };
-    set.contains(binding)
-        .then_some(KeyAction::MoveHighlight(delta))
+/// Fcitx5 folds the case into the symbol when Shift is held, so `Shift+a` can arrive as
+/// either `0x61` or `0x41` depending on the frontend. The routing table must not see the
+/// difference: a key that means "type the letter a" is the same key whichever shape it
+/// arrives in. The fold is applied only when Shift is actually held, so a bare uppercase
+/// symbol — which no keyboard produces — still falls through to the host.
+///
+/// # Arguments
+///
+/// * `sym` — the keysym as the host delivered it.
+/// * `state` — the modifier mask that arrived with it.
+///
+/// # Returns
+///
+/// The lowercase keysym when `sym` is an uppercase ASCII letter and Shift is held, and
+/// `sym` unchanged otherwise.
+///
+/// # Panics
+///
+/// Never: the range check is what keeps the subtraction inside `0x61..=0x7a`.
+fn fold_shifted_letter(sym: u32, state: u32) -> u32 {
+    if (state & SHIFT) != 0 && (KEY_A_UPPER..=KEY_Z_UPPER).contains(&sym) {
+        sym + (KEY_A - KEY_A_UPPER)
+    } else {
+        sym
+    }
+}
+
+/// Whether an action is the syllable separator the composing input accepts.
+///
+/// The apostrophe is the one key of the composing keymap that means nothing outside a
+/// composition. Inside one it pins a syllable boundary, and `ime-core`'s input alphabet
+/// accepts it, so a session with nothing composing would take it as the first character of
+/// a new composition and open a candidate window on a key the user typed for the
+/// application. The routing table cannot tell the two apart — it is a function of the key
+/// and the modifiers, never of the session — so it names the action here and the two layers
+/// that hold a session ask this before they keep the key.
+///
+/// # Arguments
+///
+/// * `action` — what [`translate_key`] made of the key.
+///
+/// # Returns
+///
+/// `true` for [`KeyAction::InputChar`] of the apostrophe and `false` for every other
+/// action, the letters included: a letter does start a composition with nothing composing,
+/// and that is the whole of how typing begins.
+///
+/// # Panics
+///
+/// Never.
+pub fn is_syllable_separator(action: KeyAction) -> bool {
+    matches!(action, KeyAction::InputChar(SYLLABLE_SEPARATOR))
 }
 
 /// Whether the routing table claims `action`, i.e. whether the key it came from must be
@@ -345,7 +403,8 @@ fn bare_highlight(sym: u32, set: HighlightSet) -> Option<KeyAction> {
 /// session the action has nowhere to go and the key must travel on. The engine's
 /// `keyEvent` turns a claimed, executable action into `filterAndAccept` and does nothing
 /// else, which is what keeps a key out of the "answered handled but did nothing" class the
-/// shortcut table forbids.
+/// shortcut table forbids. [`is_syllable_separator`] is the one action whose second
+/// condition is not the session's state alone.
 ///
 /// # Panics
 ///
@@ -356,15 +415,15 @@ pub fn claims_key(action: KeyAction) -> bool {
 
 /// Whether the event is a press of a Shift key itself.
 ///
-/// The routing table names a Shift press [`KeyAction::ToggleLang`], because the design's
-/// shortcut table lists the held Shift key as the temporary Chinese / English switch. The
-/// switch is not the plugin's to make: Fcitx5 delivers the modifier to the application and
-/// implements the temporary behaviour of its own, and an input method that consumed the
-/// press would take the first half of every capital letter away from the application. The
-/// routing layer therefore asks this and hands the press straight back, which leaves the
-/// table's meaning of the key intact for the chords that are the plugin's own — `Shift` in
-/// combination with a letter or with Space never reaches here, because those events carry
-/// the letter's or the space bar's symbol and not the modifier's.
+/// A modifier is never a key of the plugin's. Fcitx5 delivers it to the application and
+/// implements the held-`Shift` Chinese / English switch itself, and an input method that
+/// kept the press would take the first half of every capital letter away from the
+/// application. The routing table therefore has no row for `Shift_L` or `Shift_R` at all,
+/// and this predicate is how the layers that must still recognise the key — the hold
+/// machine that watches its release, and the bus that answers ahead of the walk — name it.
+///
+/// The answer is about the key rather than about the edge: a release answers `true` as
+/// well, even though [`translate_key`] claims no release at all.
 ///
 /// # Arguments
 ///
@@ -372,8 +431,7 @@ pub fn claims_key(action: KeyAction) -> bool {
 ///
 /// # Returns
 ///
-/// `true` for a press or a release of `Shift_L` or `Shift_R`. A release is not claimed by
-/// [`translate_key`] in the first place; the answer is about the key, not about the edge.
+/// `true` for `Shift_L` or `Shift_R`, on either edge.
 ///
 /// # Panics
 ///
@@ -392,11 +450,335 @@ pub fn claims_key(action: KeyAction) -> bool {
 ///     is_release: false,
 ///     time_ms: 0,
 /// };
-/// // The table names the key ...
-/// assert_eq!(translate_key(&shift, &KeyBindings::default()), KeyAction::ToggleLang);
-/// // ... and the routing layer still hands it back.
+/// // No row names the modifier, so the table hands it back ...
+/// assert_eq!(translate_key(&shift, &KeyBindings::default()), KeyAction::Ignore);
+/// // ... and the routing layer recognises it as the modifier it is.
 /// assert!(is_shift_press(&shift));
 /// ```
 pub fn is_shift_press(event: &FcitxKeyEvent) -> bool {
     event.sym == KEY_SHIFT_L || event.sym == KEY_SHIFT_R
+}
+
+// ── The keys that leave temporary English ────────────────────────────────────────
+
+/// Whether this key is one of the two that leave temporary English mode.
+///
+/// Temporary English hands every key to the application, the `Return` and `Escape` that
+/// leave it included: what ends the mode changes no other state and produces no effect, so
+/// taking the key would take a keystroke the user typed for the application. Which keys end
+/// it is therefore not something the routing table can say, because the two do not *mean*
+/// anything different from the keys that stay: the space bar and the `Return` of the
+/// shipped configuration are both [`KeyAction::CommitHighlighted`], and a mode whose exit
+/// was read out of the action ended on a space bar press — the one key the mode exists to
+/// pass through.
+///
+/// The predicate is the half of the pair that names the key; the other half is
+/// `Session::leave_temp_english`, which takes the mode off. Both are needed, because the
+/// mode lives in the session and the key lives here, and the pair is asked by the one layer
+/// that holds both. A layer that steps a session with the action a key was translated to —
+/// the layered bus, whose caller steps even the keys it declined — has to ask this first
+/// and take the mode off through the session, because the step alone cannot end the mode
+/// for the `Return` of a document that commits the highlighted candidate on it.
+///
+/// # Arguments
+///
+/// * `event` — the key as the host delivered it.
+///
+/// # Returns
+///
+/// `true` for a press of `Return` or `Escape`, and `false` for every other key and for
+/// every release. A release never changes the mode: the host delivers both edges of every
+/// key, and the application's key-up is not a second gesture.
+///
+/// # Panics
+///
+/// Never.
+///
+/// # Examples
+///
+/// ```
+/// use ime_types::KeyAction;
+/// use rspinyin::engine::{KeyBindings, leaves_temp_english, translate_key};
+/// use rspinyin::ffi::FcitxKeyEvent;
+///
+/// let space = FcitxKeyEvent { sym: 0x0020, state: 0, is_release: false, time_ms: 0 };
+/// let enter = FcitxKeyEvent { sym: 0xff0d, state: 0, is_release: false, time_ms: 0 };
+/// // The table reads the two keys as the same key ...
+/// assert_eq!(translate_key(&space, &KeyBindings::default()), KeyAction::CommitHighlighted);
+/// assert_eq!(translate_key(&enter, &KeyBindings::default()), KeyAction::CommitHighlighted);
+/// // ... and only one of them ends the mode.
+/// assert!(!leaves_temp_english(&space));
+/// assert!(leaves_temp_english(&enter));
+/// ```
+pub fn leaves_temp_english(event: &FcitxKeyEvent) -> bool {
+    !event.is_release && (event.sym == KEY_RETURN || event.sym == KEY_ESCAPE)
+}
+
+#[cfg(test)]
+mod temp_english_tests {
+    //! What the routing layer does with a key while temporary English is on.
+    //!
+    //! The mode is the one place where "what a key means" and "which key leaves the mode"
+    //! come apart: the space bar and the `Return` key of the shipped configuration are
+    //! translated to the same action, and only one of them ends the mode. These cases drive
+    //! [`KeyRouter::key_event`] end to end — the table, the mode and the session — and assert
+    //! the three properties that make the mode a mode: the chord that enters it is the
+    //! plugin's, every key inside it reaches the application untouched, and the two that
+    //! leave it end the mode *and* reach the application in the same stroke.
+    //!
+    //! The doubles are as small as the path allows: no key of the mode is decoded, so the
+    //! dictionary is empty and the host records nothing.
+
+    use ime_core::lm::InMemoryLm;
+    use ime_core::privacy::DefaultPolicy;
+    use ime_core::state::{SessionEnv, SessionState};
+    use ime_core::viterbi::Decoder;
+    use ime_types::{ImeError, Lexicon, SyllableId, UiCommand, UserFreqSource, WordIter};
+
+    use crate::engine::host::Host;
+    use crate::ffi::FcitxKeyEvent;
+    use crate::privacy_impl::{AppBlacklist, ContextPrivacy, ContextReport};
+
+    use super::{
+        CTRL, KEY_1, KEY_A, KEY_BACKSPACE, KEY_E, KEY_ESCAPE, KEY_RETURN, KEY_SPACE, KeyBindings,
+        KeyRouter, RoutingConfig, SHIFT,
+    };
+
+    /// The input context every case uses.
+    const IC: u64 = 1;
+
+    /// A dictionary with no entry at all.
+    ///
+    /// Not a shortcut: the mode is answered before any decode, so no key of it needs a
+    /// candidate, and a case that got as far as a decode would be exercising something other
+    /// than the mode.
+    struct EmptyLexicon;
+
+    impl Lexicon for EmptyLexicon {
+        fn lookup(&self, _key: &str) -> Result<WordIter<'_>, ImeError> {
+            Ok(WordIter::from_vec(Vec::new()))
+        }
+
+        fn prefix(&self, _prefix: &str, _limit: usize) -> Result<WordIter<'_>, ImeError> {
+            Ok(WordIter::from_vec(Vec::new()))
+        }
+
+        fn fallback_single(
+            &self,
+            _syl: SyllableId,
+            _limit: usize,
+        ) -> Result<WordIter<'_>, ImeError> {
+            Ok(WordIter::from_vec(Vec::new()))
+        }
+    }
+
+    /// A user-frequency source that answers nothing and records nothing.
+    struct SilentUser;
+
+    impl UserFreqSource for SilentUser {
+        fn freq(&self, _key: &str) -> u32 {
+            0
+        }
+
+        fn record(&self, _key: &str, _weight_hint: u16) {}
+
+        fn is_user_word(&self, _key: &str) -> bool {
+            false
+        }
+    }
+
+    /// A host that does nothing: no key of the mode reaches it, and a case that observed a
+    /// call would be a failure of the mode rather than of this double.
+    struct SilentHost;
+
+    impl Host for SilentHost {
+        fn commit(&mut self, _ic: u64, _text: &str) {}
+
+        fn set_preedit(&mut self, _ic: u64, _text: &str, _caret: u32) {}
+
+        fn clear_preedit(&mut self, _ic: u64) {}
+
+        fn post_ui(&mut self, _ic: u64, _command: UiCommand) {}
+
+        fn toggle_enabled(&mut self, _ic: u64) -> bool {
+            true
+        }
+
+        fn diagnose(&mut self, _ic: u64, _err: &ImeError) {}
+    }
+
+    /// The sources a router decodes against.
+    struct Fixture {
+        /// The dictionary the decode reads.
+        lexicon: EmptyLexicon,
+        /// The user frequencies the commit path writes to.
+        user: SilentUser,
+        /// The language model the ranking is scored with.
+        lm: InMemoryLm,
+        /// The decoder, built with the shipped configuration.
+        decoder: Decoder,
+    }
+
+    impl Fixture {
+        /// Builds the doubles.
+        fn new() -> Self {
+            Self {
+                lexicon: EmptyLexicon,
+                user: SilentUser,
+                lm: InMemoryLm::new(),
+                decoder: Decoder::default(),
+            }
+        }
+
+        /// The sources as the environment a session step reads.
+        fn env(&self) -> SessionEnv<'_> {
+            SessionEnv {
+                decoder: &self.decoder,
+                lexicon: &self.lexicon,
+                user_freq: &self.user,
+                lm: &self.lm,
+            }
+        }
+
+        /// A router with [`IC`] activated as an ordinary, learnable context.
+        fn router(&self, config: RoutingConfig) -> KeyRouter<'_> {
+            let mut router = KeyRouter::new(
+                self.env(),
+                ContextPrivacy::new(Box::new(DefaultPolicy::default()), AppBlacklist::default()),
+                config,
+            );
+            router.activate_reported(IC, ordinary_report());
+            router
+        }
+    }
+
+    /// What the host reports about an ordinary context: no program name, neither the
+    /// password nor the sensitive flag.
+    fn ordinary_report() -> ContextReport<'static> {
+        ContextReport::Reported {
+            program: None,
+            password: false,
+            sensitive: false,
+        }
+    }
+
+    /// A key press of `sym` with `state` held.
+    fn press(sym: u32, state: u32) -> FcitxKeyEvent {
+        FcitxKeyEvent {
+            sym,
+            state,
+            is_release: false,
+            time_ms: 0,
+        }
+    }
+
+    /// Whether the session of [`IC`] is in temporary English mode.
+    fn is_temp_english(router: &KeyRouter<'_>) -> bool {
+        router.session(IC).is_some_and(|session| session.temp_english)
+    }
+
+    #[test]
+    fn test_temp_english_chord_is_kept_and_the_mode_hands_every_key_back() {
+        // The two ends of the mode, in one session. The chord that enters it is the plugin's
+        // — turning the mode on is the whole of what it did, so the key is not one the user
+        // pressed and saw nothing happen on. Every key of the mode reaches the application,
+        // and the mode survives all of them.
+        let fixture = Fixture::new();
+        let mut router = fixture.router(RoutingConfig::default());
+        let mut host = SilentHost;
+
+        assert!(
+            router.key_event(IC, &press(KEY_E, CTRL | SHIFT), &mut host),
+            "the chord enters the mode, so it is the plugin's key"
+        );
+        assert!(is_temp_english(&router), "and the mode is on");
+
+        for sym in [KEY_A, KEY_SPACE, KEY_1, KEY_BACKSPACE] {
+            assert!(
+                !router.key_event(IC, &press(sym, 0), &mut host),
+                "sym {sym:#06x} must reach the application in temporary English"
+            );
+            assert!(is_temp_english(&router), "and must not end the mode");
+        }
+
+        assert!(
+            !router.key_event(IC, &press(KEY_RETURN, 0), &mut host),
+            "the return key that leaves the mode reaches the application too"
+        );
+        assert!(!is_temp_english(&router), "and leaves it");
+
+        assert!(
+            router.key_event(IC, &press(KEY_A, 0), &mut host),
+            "the plugin answers the next key again"
+        );
+    }
+
+    #[test]
+    fn test_temp_english_return_leaves_the_mode_in_both_configurations() {
+        // `Return` means "commit the raw input" in one document and "commit the highlighted
+        // candidate" in the other, and the space bar shares the second of those actions.
+        // Leaving the mode is a property of the key, so the answer is the same either way —
+        // and the key reaches the application in both.
+        let raw = RoutingConfig {
+            keys: KeyBindings {
+                enter_commit_raw: true,
+                ..KeyBindings::default()
+            },
+            ..RoutingConfig::default()
+        };
+        let documents = [
+            ("the shipped document", RoutingConfig::default()),
+            ("enter_commit_raw", raw),
+        ];
+        for (label, config) in documents {
+            let fixture = Fixture::new();
+            let mut router = fixture.router(config);
+            let mut host = SilentHost;
+            assert!(router.key_event(IC, &press(KEY_E, CTRL | SHIFT), &mut host));
+
+            assert!(
+                !router.key_event(IC, &press(KEY_RETURN, 0), &mut host),
+                "the return key reaches the application under {label}"
+            );
+            assert!(!is_temp_english(&router), "and leaves the mode under {label}");
+            assert_eq!(
+                router.session(IC).map(|session| session.state),
+                Some(SessionState::Idle),
+                "leaving the mode commits nothing under {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_temp_english_escape_ends_the_mode_and_is_handed_back() {
+        // The control key of the mode. It ends the mode and reaches the application in the
+        // same stroke, so neither half of the gesture is lost, and the session is left in a
+        // state the next key can act on rather than behind a mode nothing can leave.
+        let fixture = Fixture::new();
+        let mut router = fixture.router(RoutingConfig::default());
+        let mut host = SilentHost;
+        assert!(router.key_event(IC, &press(KEY_E, CTRL | SHIFT), &mut host));
+        // One key of the mode first, so the escape is not the stroke that entered it.
+        assert!(!router.key_event(IC, &press(KEY_A, 0), &mut host));
+
+        assert!(
+            !router.key_event(IC, &press(KEY_ESCAPE, 0), &mut host),
+            "the escape reaches the application"
+        );
+        assert!(!is_temp_english(&router), "and ends the mode");
+        assert_eq!(
+            router.session(IC).map(|session| session.state),
+            Some(SessionState::Idle),
+            "the mode holds no composition to cancel"
+        );
+        assert_eq!(
+            router.session(IC).map(|session| session.buf.raw()),
+            Some(""),
+            "and no input to take back"
+        );
+        assert!(
+            router.key_event(IC, &press(KEY_A, 0), &mut host),
+            "and the next key is the plugin's again"
+        );
+    }
 }

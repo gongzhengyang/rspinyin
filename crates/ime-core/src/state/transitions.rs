@@ -61,17 +61,55 @@ impl Session {
 
     /// Temporary English mode: every key reaches the application.
     ///
-    /// Enter and Escape are the two keys that leave the mode. They change no other
-    /// state and produce no effect, so the key that ended the mode is handed back to
+    /// The mode is left by `Return` and by `Escape`, and by nothing else. Leaving changes no
+    /// other state and produces no effect, so the key that ended the mode is handed back to
     /// the application as well -- which is what "every key passes through" means.
+    ///
+    /// This handler is given the action and never the key, and two of the keys that reach
+    /// the mode share one action: the space bar and the `Return` key are both
+    /// [`KeyAction::CommitHighlighted`] unless `[keys] enter_commit_raw` moves the latter to
+    /// [`KeyAction::CommitRaw`]. Reading the mode's exit out of the action therefore ended
+    /// the mode on a space bar press, which is the one key the mode exists to pass through.
+    /// Only the two actions that exactly one key produces are honoured here: `Escape` comes
+    /// from the `Escape` key alone and `CommitRaw` from `Return` alone, so a session driven
+    /// by nothing but actions still leaves the mode on the keys that mean to leave it. The
+    /// `Return` that arrives as `CommitHighlighted` cannot be told from the space bar here;
+    /// the layer that holds the key answers it through [`Session::leave_temp_english`],
+    /// which is the same transition reached the other way round.
     fn on_key_temp_english(&mut self, action: KeyAction) {
-        let leaves = matches!(
-            action,
-            KeyAction::Escape | KeyAction::CommitHighlighted | KeyAction::CommitRaw
-        );
-        if leaves {
+        if matches!(action, KeyAction::Escape | KeyAction::CommitRaw) {
             self.temp_english = false;
         }
+    }
+
+    /// Leaves temporary English mode, reporting whether the mode was on.
+    ///
+    /// The other half of `Session::on_key_temp_english`, for the layer that holds the key
+    /// rather than the action. The two keys that leave the mode are `Return` and `Escape`,
+    /// and one of them is translated to the same action as the space bar, so the action
+    /// cannot carry the intent: that layer names the key and takes the mode off through
+    /// here, clearing the same flag the handler above clears. One transition with two ways
+    /// to reach it, rather than two answers to which key leaves the mode.
+    ///
+    /// Nothing else is touched. The composition a temporary-English session held is already
+    /// gone -- entering the mode takes it back -- so there is no input to clear, no frame to
+    /// re-send and no effect to produce, and the key that left the mode travels on to the
+    /// application like every other key of the mode.
+    ///
+    /// # Returns
+    ///
+    /// Whether the mode was on and has now been left. `false` for a session that was not in
+    /// the mode, which makes a second call idempotent rather than a second transition.
+    ///
+    /// # Errors
+    ///
+    /// None: leaving the mode cannot fail.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn leave_temp_english(&mut self) -> bool {
+        core::mem::take(&mut self.temp_english)
     }
 
     /// Routes one key with nothing composing.

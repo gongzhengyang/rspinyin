@@ -48,6 +48,7 @@ pub mod memory;
 pub mod purity;
 pub mod review;
 pub mod sandbox;
+pub mod suite;
 pub mod ui_metrics;
 pub mod uiframe;
 pub mod x11;

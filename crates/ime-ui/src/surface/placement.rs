@@ -64,6 +64,12 @@ impl CandidateSurface {
         // flipped above the caret has to grow downwards, or the panel would slide out from
         // under the cursor.
         self.adapter.set_placement(geometry.placement);
+        // The caret arrow points from the panel's edge at the caret. Its position is a
+        // function of the geometry the placement just produced, so it is written here and
+        // nowhere else: a caller that recomputed it would be a second answer to the same
+        // question, and the two would drift the first time the geometry changed.
+        self.adapter
+            .set_arrow(crate::adapter::arrow_in_container(&geometry));
         let region = RectI {
             x: geometry.container_offset.0,
             y: geometry.container_offset.1,
@@ -72,6 +78,10 @@ impl CandidateSurface {
         };
         self.geometry = Some(geometry);
         self.region = Some(region);
+        // The router re-hit-tests a pointer that is not moving against the new cells, and it
+        // needs the event queue to report the hover that follows. This path has none, so the
+        // adoption is left for the next `drain_events`, which does.
+        self.adoption_pending = true;
         if self.platform.set_input_region(&[region]).is_err() {
             self.region_failures = self.region_failures.saturating_add(1);
         }

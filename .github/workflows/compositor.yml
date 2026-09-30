@@ -1,0 +1,363 @@
+# Compositor tier verification.
+#
+# rspinyin's candidate window positions itself differently on each display server: an
+# override-redirect window on X11, a `zwlr_layer_surface_v1` on wlroots, and an
+# `xdg_popup` with a positioner on KWin and Mutter. Those are four code paths in
+# `crates/ime-ui/src/platform/`, and the project's own specification records that none of
+# the Wayland ones can be exercised on the development machine: WSLg's compositor is
+# Weston, which `ASM-13` puts outside the four tiers, and `wlr-protocols` is not
+# installed there. `docs/dev/spikes/wayland-tiers.md` is where that is written down.
+#
+# This workflow is the external environment the specification asked for. Its contract is
+# that it never reports coverage it does not have:
+#
+#   * every tier job names its runner prerequisite in a comment, and the two tiers whose
+#     prerequisite a stock GitHub-hosted runner does not meet are gated behind a
+#     repository variable rather than left to fail or to be quietly dropped;
+#   * a gated-off tier is `skipped`, which is visible in the run summary, and the
+#     `coverage` job names it as uncovered rather than leaving the green run to be read
+#     as four covered tiers;
+#   * every tier script writes a coverage block -- what it asserted, what it did not, and
+#     why -- into the job summary and into a file the `coverage` job reads;
+#   * the `coverage` job fails when a tier the repository declares required did not
+#     succeed, so a tier cannot be covered by being deleted, gated off or renamed.
+#
+# What the tiers verify, and what they do not, is in the header of
+# `packaging/ci/compositor/common.sh`. In one line: the environment half -- the
+# compositor starts, it offers the protocols the tier's code path needs, and both addons
+# load into it -- is what the runners can answer today, and the window half is off until
+# the plugin presents a window at all. `RSPINYIN_COMPOSITOR_SCOPE` below is that switch,
+# and it is a line in this file rather than a hidden default so that widening the claim
+# is a reviewable change.
+#
+# Runner prerequisites, one row per tier:
+#
+#   x11              ubuntu-24.04 + xvfb. A complete X server, so the window half is
+#                    answerable; it has no compositing manager, so the ARGB transparency
+#                    path is not exercised and the check says so.
+#   wayland-wlroots  ubuntu-24.04 + sway. `WLR_BACKENDS=headless` still publishes
+#                    `zwlr_layer_shell_v1`, which is what this tier is about; there is no
+#                    GPU, no fractional scaling and no second output.
+#   wayland-kwin     a machine whose graphics stack KWin's virtual backend accepts, or a
+#                    real KDE session reached with `--attach`. Not a stock runner.
+#   wayland-mutter   a machine that can render a nested Mutter, or a real GNOME session
+#                    reached with `--attach`. Not a stock runner.
+#
+# The two Wayland popup tiers are the ones the project's risk register is about, so their
+# scripts are written and executable on any machine that meets the prerequisite -- the
+# gate is on the runner, not on the check. Set the matching repository variable to
+# `enabled` once such a runner exists, and add the tier to `RSPINYIN_COMPOSITOR_REQUIRED`
+# so the `coverage` job starts holding it to account.
+#
+# Network: the `apt-get install` steps below need one, as any CI job's setup does. That
+# is this workflow's business and not the artifact's -- the two cdylibs under test open no
+# socket at all (`BUDGET-NET-01`), the tier scripts fetch nothing, and no check here
+# grants the plugin a network capability it would not otherwise have.
+
+name: compositor
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '41 4 * * 3'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Which half of a tier is asserted. `environment` is what the runners in this file can
+  # answer today: the compositor starts, it offers the protocols that tier's code path
+  # needs, and both addons load into it. `window` adds the candidate window itself --
+  # that it exists, and that it never holds the keyboard, which is the project's
+  # highest-severity defect class.
+  #
+  # It is `environment` because the plugin's platform probe is still a pending
+  # initialisation step and nothing draws a window yet: the UI addon's own log says
+  # `lifecycle/pending: platform awaits the X11 / Wayland backend probe`. Turning the
+  # window half on now would turn every tier red for a reason no tier can fix; turning it
+  # on later without saying so would report coverage the project did not have while the
+  # switch was off. Widening this is one line, and it is the line to change when the
+  # probe lands.
+  RSPINYIN_COMPOSITOR_SCOPE: environment
+
+jobs:
+  x11:
+    name: x11
+    # A stock runner, and a complete X server on it. This is the one tier whose window
+    # half is answerable without a compositor: the backend is an override-redirect window
+    # and the server reports its placement and its input focus directly.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      COMPOSITOR_SCRATCH_DIR: ${{ runner.temp }}/rspinyin-compositor
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Fcitx5 development packages and a virtual X server
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev \
+            fcitx5 xvfb x11-utils xdotool dbus dbus-x11
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Check the X11 tier
+        # `--keep-scratch` because the session log is the evidence for everything the
+        # step asserts, and the next step uploads it. The staging directory is under
+        # `COMPOSITOR_SCRATCH_DIR` so the upload knows where to look.
+        run: |
+          bash packaging/ci/compositor/x11.sh \
+            --scope "$RSPINYIN_COMPOSITOR_SCOPE" --keep-scratch
+      - name: Upload the session log and the coverage block
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compositor-x11-logs
+          path: ${{ runner.temp }}/rspinyin-compositor/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  wlroots:
+    name: wayland-wlroots
+    # A stock runner with sway on it. `WLR_BACKENDS=headless` gives sway a virtual output
+    # and no GPU; `zwlr_layer_shell_v1` is a global of the compositor rather than of its
+    # backend, so the protocol this tier is defined by is still there to be asserted.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      COMPOSITOR_SCRATCH_DIR: ${{ runner.temp }}/rspinyin-compositor
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Fcitx5 development packages, sway and wayland-utils
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev \
+            fcitx5 sway wayland-utils dbus dbus-x11
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Check the Wayland/wlroots tier
+        run: |
+          bash packaging/ci/compositor/wlroots.sh \
+            --scope "$RSPINYIN_COMPOSITOR_SCOPE" --keep-scratch
+      - name: Upload the session log and the coverage block
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compositor-wlroots-logs
+          path: ${{ runner.temp }}/rspinyin-compositor/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  kwin:
+    name: wayland-kwin
+    # Gated, not run. KWin's virtual backend still allocates through the graphics stack,
+    # and a stock runner has no DRM device and no driver KWin accepts; the job would fail
+    # with `dist/verify/compositor-unavailable` on every push, which is a red run that
+    # says nothing about the plugin. Set the repository variable to `enabled` on a runner
+    # that meets the prerequisite -- or point the script at a real KDE session with
+    # `--attach`, which is the stronger reading of this tier -- and add `wayland-kwin` to
+    # `RSPINYIN_COMPOSITOR_REQUIRED` so the coverage job holds it to account.
+    if: vars.RSPINYIN_TIER_KWIN == 'enabled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      COMPOSITOR_SCRATCH_DIR: ${{ runner.temp }}/rspinyin-compositor
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Fcitx5 development packages, KWin and wayland-utils
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev \
+            fcitx5 kwin-wayland wayland-utils dbus dbus-x11
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Check the Wayland/KWin tier
+        run: |
+          bash packaging/ci/compositor/kwin.sh \
+            --scope "$RSPINYIN_COMPOSITOR_SCOPE" --keep-scratch
+      - name: Upload the session log and the coverage block
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compositor-kwin-logs
+          path: ${{ runner.temp }}/rspinyin-compositor/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  mutter:
+    name: wayland-mutter
+    # Gated for the same reason as KWin, and it is the tier the project's risk register
+    # (`R-02`) is most concerned about: Mutter clamps a popup positioner harder than KWin
+    # does, and the rung below the popup is a full-output parent surface it may refuse to
+    # map without taking the keyboard. Answering that needs a real GNOME session; a
+    # nested Mutter inside a virtual X server is a stand-in for it, not a substitute.
+    if: vars.RSPINYIN_TIER_MUTTER == 'enabled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      COMPOSITOR_SCRATCH_DIR: ${{ runner.temp }}/rspinyin-compositor
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Fcitx5 development packages, Mutter and a virtual X server
+        # The virtual X server is the parent the nested Mutter is a client of.
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev \
+            fcitx5 mutter xvfb x11-utils wayland-utils dbus dbus-x11
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Check the Wayland/Mutter tier
+        run: |
+          bash packaging/ci/compositor/mutter.sh \
+            --scope "$RSPINYIN_COMPOSITOR_SCOPE" --keep-scratch
+      - name: Upload the session log and the coverage block
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compositor-mutter-logs
+          path: ${{ runner.temp }}/rspinyin-compositor/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  coverage:
+    name: coverage
+    # Always, and after every tier: this job's whole purpose is to say what the run
+    # covered. A job that only ran when everything succeeded could not report the case it
+    # exists for.
+    needs: [x11, wlroots, kwin, mutter]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      X11_RESULT: ${{ needs.x11.result }}
+      WLROOTS_RESULT: ${{ needs.wlroots.result }}
+      KWIN_RESULT: ${{ needs.kwin.result }}
+      MUTTER_RESULT: ${{ needs.mutter.result }}
+      # The tiers this repository claims. A tier outside this list is reported as
+      # uncovered but does not fail the run; a tier inside it that did not succeed does,
+      # which is what stops a required tier from being covered by being gated off.
+      REQUIRED_TIERS: ${{ vars.RSPINYIN_COMPOSITOR_REQUIRED }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Self-test the tier parsers
+        # Cheap, and it runs on a machine with no compositor at all: the parsers that read
+        # Fcitx5's addon lines, the plugin's diagnostics and a compositor's globals are
+        # exercised against synthetic input. A parser that quietly matched nothing is the
+        # one failure that would make a tier report coverage it does not have, so it is
+        # proven before the table below is computed from what the tiers reported.
+        run: bash packaging/ci/compositor/self-test.sh
+      - name: Download the tier reports
+        # Not fatal when nothing arrives: a run where every tier failed before writing a
+        # report is exactly a run whose coverage table has to say so, and failing here
+        # would replace that table with a download error.
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: compositor-*-logs
+          path: tier-reports
+          merge-multiple: true
+      - name: Write the coverage table
+        run: |
+          set -euo pipefail
+
+          scope="${RSPINYIN_COMPOSITOR_SCOPE:-environment}"
+          # Spaces are stripped so that `x11, wayland-wlroots` and `x11,wayland-wlroots`
+          # mean the same thing: a list that silently matched nothing would make the
+          # required-tier check below vacuous.
+          required="${REQUIRED_TIERS:-x11,wayland-wlroots}"
+          required="${required// /}"
+
+          declare -A results=(
+            [x11]="${X11_RESULT:-unknown}"
+            [wayland-wlroots]="${WLROOTS_RESULT:-unknown}"
+            [wayland-kwin]="${KWIN_RESULT:-unknown}"
+            [wayland-mutter]="${MUTTER_RESULT:-unknown}"
+          )
+
+          is_required() {
+            case ",$required," in
+              *",$1,"*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          report_of() {
+            grep -h "^coverage tier=$1 " tier-reports/*/coverage.md 2>/dev/null | head -n 1 || true
+          }
+
+          failed=0
+          {
+            echo "### Compositor tier coverage"
+            echo
+            echo "Scope requested of every tier: \`$scope\`. Tiers this repository claims: \`$required\`."
+            echo
+            echo '| tier | job | required | coverage reported by the tier script |'
+            echo '|---|---|---|---|'
+            for tier in x11 wayland-wlroots wayland-kwin wayland-mutter; do
+              if is_required "$tier"; then mark="yes"; else mark="no"; fi
+              line="$(report_of "$tier")"
+              if [ -z "$line" ]; then
+                line="no report uploaded"
+              fi
+              printf '| %s | %s | %s | `%s` |\n' \
+                "$tier" "${results[$tier]:-unknown}" "$mark" "$line"
+            done
+            echo
+            if [ "$scope" = "environment" ]; then
+              echo '**The window half was not requested of any tier.** `RSPINYIN_COMPOSITOR_SCOPE`'
+              echo 'is `environment`, so nothing below asserted that the candidate window exists, that'
+              echo 'it is placed where the cursor is, or that it never takes the keyboard -- the'
+              echo 'highest-severity defect class this project has. The reason is on the plugin side:'
+              echo 'the platform probe is still a pending initialisation step and no window is drawn,'
+              echo 'so the half could not pass if it were requested. See'
+              echo '`docs/dev/spikes/wayland-tiers.md` section 7.4 for the reason and section 8 for'
+              echo 'the per-tier state.'
+              echo
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+          for tier in x11 wayland-wlroots wayland-kwin wayland-mutter; do
+            status="${results[$tier]:-unknown}"
+            if ! is_required "$tier"; then
+              if [ "$status" = "skipped" ]; then
+                echo "::notice::$tier is not covered by this run: its job is gated off."
+              elif [ "$status" != "success" ]; then
+                echo "::warning::$tier is not covered by this run: its job finished as '$status'."
+              fi
+              continue
+            fi
+            if [ "$status" != "success" ]; then
+              echo "::error::$tier is listed in RSPINYIN_COMPOSITOR_REQUIRED but its job finished as '$status'."
+              failed=1
+            fi
+            line="$(report_of "$tier")"
+            if [ -z "$line" ]; then
+              echo "::error::$tier succeeded but uploaded no coverage report, so there is no evidence of what it asserted."
+              failed=1
+            elif [ "$scope" != "environment" ] && [[ "$line" == *"window=skipped"* ]]; then
+              # The scope asked for the window half and the tier reports it did not run
+              # it. That is a tier quietly verifying less than it was asked to.
+              echo "::error::$tier was asked for scope '$scope' but reports \`$line\`."
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+          echo "every required tier reported its coverage"

@@ -1,0 +1,109 @@
+# Maintainer: rspinyin contributors <rspinyin@localhost>
+#
+# Arch installs Fcitx5 addons under /usr/lib/fcitx5 -- no triplet, no lib64.
+# That is the third of the three layouts `xtask install` derives from
+# pkg-config, and the one a hardcoded path would get wrong most visibly.
+#
+# Nothing in this recipe is architecture-specific: the addon directory is
+# resolved at build time from the target system's pkg-config, so the same file
+# serves x86_64 and aarch64. That is a statement about the recipe, not a
+# measurement -- no aarch64 build has been run yet, and `arch` below claims the
+# architecture the recipe is written for, which is what AUR's field means.
+
+pkgname=rspinyin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Offline-first Chinese pinyin input method for Fcitx5, with a self-drawn candidate window"
+arch=('x86_64' 'aarch64')
+url="https://github.com/gongzhengyang/rspinyin"
+license=('MIT' 'Apache')
+depends=('fcitx5>=5.1.0')
+# curl, python and unzip are what data/fetch.sh needs: curl to download, python
+# to normalise, unzip to integrity-check the Unihan archive. gcc carries g++,
+# which the C++ glue needs; pkgconf is what the addon build scripts probe
+# Fcitx5 with. binutils (`strip`, `nm`, `readelf`) comes from base-devel and is
+# what the install step and check() below run.
+makedepends=('cargo' 'gcc' 'pkgconf' 'git' 'curl' 'python' 'unzip')
+provides=('fcitx5-rspinyin')
+conflicts=('fcitx5-rspinyin')
+# Two options, neither of them optional.
+#
+# `!strip`: `xtask install` strips each addon with `strip --strip-unneeded` and
+# then re-reads the dynamic symbol table to confirm that
+# `fcitx_addon_factory_instance` -- the name Fcitx5 resolves with `dlsym` after
+# `dlopen` -- survived. makepkg's own stripping is `--strip-all` by default,
+# which is exactly the operation that removes that name and produces a library
+# Fcitx5 loads but finds no addon in.
+#
+# `!lto`: this turns off *makepkg's* LTO wrapper, not Cargo's. Arch's makepkg
+# injects `-flto` into CFLAGS/CXXFLAGS, which would land on the C++ glue and
+# stack on top of the `lto = "thin"` the release profile already applies to the
+# Rust side. The two together can change the ABI visibility of the C++ factory
+# symbol, and the symbol check would then fail for a reason unrelated to the
+# code.
+options=('!lto' '!strip')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+
+# NOT A PUBLISHABLE VALUE. AUR requires a real checksum for every source, and
+# `SKIP` is only acceptable for sources that cannot be pinned (VCS checkouts).
+# The tarball this pins does not exist yet, so the digest cannot be computed
+# here. Before the first upload, and again on every version bump:
+#
+#     updpkgsums && makepkg --printsrcinfo > .SRCINFO
+sha256sums=('SKIP')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    # The dictionary sources are not in the source archive: they are fetched
+    # from upstream and pinned by digest in data/sources.toml. makepkg runs in
+    # a network-enabled environment, so the fetch is done here rather than
+    # requiring the packager to have run it beforehand. data/fetch.sh verifies
+    # every source against its recorded digest and refuses to compile one that
+    # does not match, so the pinning survives the fetch.
+    bash data/fetch.sh
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    # SOURCE_DATE_EPOCH keeps the C++ glue's debug info and any __DATE__/__TIME__
+    # expansion stable. The fallback is the epoch the rest of the project's
+    # builds use, not the current time: a build stamped with the clock is one
+    # nobody can compare against another, which is the whole reason the variable
+    # exists.
+    export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1790899200}"
+    export CXXFLAGS="-ffile-prefix-map=$srcdir/$pkgname-$pkgver=. ${CXXFLAGS:-}"
+    # Both addons, not just the engine: ADR-0003 splits the plugin into an
+    # `InputMethod` addon and a `UI` addon, and the installer refuses to run
+    # when either library is missing rather than shipping half an input method.
+    cargo build --release --locked -p ime-fcitx5 --features fcitx5-host
+    cargo build --release --locked -p ime-ui-addon --features fcitx5-host
+    cargo run --release --locked -p xtask -- dictc
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    # These are the build outputs, before the installer strips them. What is
+    # asserted here is that the linker exported the addon factory at all --
+    # rustc's generated version script lists only the symbols Rust marks for
+    # export, so the C++ factory can disappear without a warning. The same
+    # assertion is made again on the stripped copy by `xtask install` in
+    # package() below, which refuses to place a library that lost the symbol;
+    # this is the earlier, cheaper half of the same promise.
+    for so in target/release/librspinyin.so target/release/librspinyin_ui.so; do
+        test -f "$so" \
+            || { echo "dist/verify/artifact-missing: $so" >&2; return 1; }
+        nm -D --defined-only "$so" | grep -q fcitx_addon_factory_instance \
+            || { echo "dist/verify/factory-symbol-missing: $so" >&2; return 1; }
+    done
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    DESTDIR="$pkgdir" PREFIX=/usr bash packaging/install.sh --no-sudo --skip-build
+    # The installer writes an install manifest so that its own uninstall can put
+    # back whatever a previous installation displaced. Every path in it is
+    # prefixed with "$pkgdir", so shipping it would put a record of this build
+    # machine's directory layout on the user's disk. Removal here belongs to
+    # pacman, not to the installer.
+    find "$pkgdir" -name install-manifest.json -delete
+}

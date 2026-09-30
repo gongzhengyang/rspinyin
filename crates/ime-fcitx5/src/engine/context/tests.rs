@@ -7,8 +7,9 @@
 //! to the table is exercised here without anybody remembering to add it.
 //!
 //! Two rules live ahead of the walk rather than in a layer — a release is never ours and
-//! a modifier press is never ours — so the per-layer tests assert what the layer says
-//! about such a key while the walk tests assert what `dispatch` answers. The two are
+//! a modifier press is never ours — and so do the chords that ask for a panel, which are the
+//! entry to the overlay layer and not a row of it. The per-layer tests assert what the layer
+//! says about such a key while the walk tests assert what `dispatch` answers. The two are
 //! different on purpose, and the difference is asserted rather than assumed.
 //!
 //! The layers that read the session answer through the arbitrator, so the sessions they are
@@ -23,6 +24,8 @@ use ime_types::{
 };
 
 use crate::engine::*;
+
+use super::panel::{KEY_P, KEY_P_UPPER, KEY_QUESTION, KEY_SLASH, UI_NOT_IMPLEMENTED_CODE};
 
 /// The modifier states the sweeps run over: a bare press and the four a user can hold.
 const STATES: [u32; 5] = [0, SHIFT, CTRL, CTRL | SHIFT, CTRL | SHIFT | ALT];
@@ -73,9 +76,25 @@ fn pseudo_random_syms(count: usize) -> Vec<u32> {
         .collect()
 }
 
-/// Whether the overlay layer owns this keysym: the four keys a panel's domain names.
-fn is_panel_key(sym: u32) -> bool {
-    matches!(sym, KEY_ESCAPE | KEY_UP | KEY_DOWN | KEY_RETURN)
+/// The modifier set every chord that asks for a panel carries.
+const CHORD_STATE: u32 = CTRL | SHIFT;
+
+/// The chords that ask for a panel, as the host spells them, and the panel each names.
+///
+/// Written out rather than read from the code under test: a keysym added to or dropped from
+/// the matcher has to be changed here too before the sweeps below agree with it.
+fn panel_chords() -> [(u32, Overlay); 4] {
+    [
+        (KEY_SLASH, Overlay::CommandPalette),
+        (KEY_QUESTION, Overlay::CommandPalette),
+        (KEY_P, Overlay::Diagnostics),
+        (KEY_P_UPPER, Overlay::Diagnostics),
+    ]
+}
+
+/// Whether this key is one of the chords that asks for a panel.
+fn is_panel_chord(sym: u32, state: u32) -> bool {
+    state == CHORD_STATE && panel_chords().iter().any(|(chord, _)| *chord == sym)
 }
 
 /// The layers in priority order, the host layer included.
@@ -584,29 +603,41 @@ fn is_engine_owned(dispatcher: &Dispatcher, event: &KeyEvent) -> bool {
     is_mode_chord(dispatcher.action_for(event))
 }
 
+/// Asserts the overlay layer hands one key back and leaves the panel as it was.
+fn assert_overlay_defers(sym: u32, view: &SessionView<'_>) {
+    let mut dispatcher = dispatcher_in(Setup::OverlayOverComposition);
+    assert_eq!(
+        dispatcher.dispatch_in(KeyContext::ModalOverlay, &press(sym, 0), view),
+        Consumed::Ignored,
+        "sym {sym:#06x} must reach the layers below"
+    );
+    assert_eq!(
+        dispatcher.overlay(),
+        Some(Overlay::CheatSheet),
+        "sym {sym:#06x} must leave the panel open"
+    );
+}
+
 #[test]
-fn test_dispatch_in_overlay_layer_takes_the_panel_keys_and_defers_the_rest() {
+fn test_dispatch_in_overlay_layer_takes_escape_alone_while_the_panel_is_empty() {
     let session = Setup::OverlayOverComposition.session();
     let view = view_of(session.as_ref());
-    // A fresh dispatcher per key: `Escape` closes the panel, and the layer below an open
-    // panel is a different layer.
-    for sym in [KEY_ESCAPE, KEY_UP, KEY_DOWN, KEY_RETURN] {
-        let mut dispatcher = dispatcher_in(Setup::OverlayOverComposition);
-        assert_eq!(
-            dispatcher.dispatch_in(KeyContext::ModalOverlay, &press(sym, 0), &view),
-            Consumed::Consumed,
-            "sym {sym:#06x} is the panel's"
-        );
+    let mut dispatcher = dispatcher_in(Setup::OverlayOverComposition);
+    assert_eq!(
+        dispatcher.dispatch_in(KeyContext::ModalOverlay, &press(KEY_ESCAPE, 0), &view),
+        Consumed::Consumed,
+        "Escape is the one key an empty panel owns"
+    );
+    assert_eq!(dispatcher.overlay(), None, "and it closes the panel");
+    // The keys a panel with content would navigate with are not an empty panel's either:
+    // taking them for a panel that draws nothing is a key the user pressed and saw nothing
+    // happen on, which is the defect this layer's design exists to avoid.
+    for sym in [KEY_UP, KEY_DOWN, KEY_RETURN] {
+        assert_overlay_defers(sym, &view);
     }
-    // The panel's domain is its four keys: a letter, a digit and the page keys reach the
-    // layers below, so a composition behind the panel keeps working.
-    for sym in [KEY_A, KEY_0, KEY_MINUS, KEY_SPACE, KEY_BACKSPACE] {
-        let mut dispatcher = dispatcher_in(Setup::OverlayOverComposition);
-        assert_eq!(
-            dispatcher.dispatch_in(KeyContext::ModalOverlay, &press(sym, 0), &view),
-            Consumed::Ignored,
-            "sym {sym:#06x} must reach the layers below"
-        );
+    // And neither is anything else: the composition behind the panel keeps working.
+    for sym in [KEY_TAB, KEY_A, KEY_0, KEY_MINUS, KEY_SPACE, KEY_BACKSPACE] {
+        assert_overlay_defers(sym, &view);
     }
 }
 
@@ -618,16 +649,227 @@ fn test_dispatch_in_overlay_layer_defers_when_no_overlay_is_open() {
 
 #[test]
 fn test_dispatch_closes_the_overlay_on_escape() {
-    let session = Setup::OverlayOverComposition.session();
+    // Every panel the bus can hold answers `Escape` the same way, the cheat sheet included,
+    // and the key does not reach the composition behind it.
+    for panel in [Overlay::CheatSheet, Overlay::CommandPalette, Overlay::Diagnostics] {
+        let session = Setup::Composing.session();
+        let view = view_of(session.as_ref());
+        let mut dispatcher = Dispatcher::new(KeyBindings::default());
+        dispatcher.open_overlay(panel);
+        let escape = press(KEY_ESCAPE, 0);
+        assert_eq!(
+            dispatcher.dispatch(&escape, &view),
+            Consumed::Consumed,
+            "{panel:?} is the panel's key"
+        );
+        assert_eq!(dispatcher.overlay(), None, "{panel:?} is closed");
+        // With the panel gone the same key is the layers' again, and it reaches the
+        // composition.
+        assert_eq!(dispatcher.dispatch(&escape, &view), Consumed::Consumed);
+        assert_eq!(dispatcher.overlay(), None);
+    }
+}
+
+#[test]
+fn test_dispatch_opens_the_panel_each_chord_names() {
+    // The two chords are the plugin's whether or not anything is composing: they open a
+    // host-layer mode, not something a composition owns.
+    for setup in [Setup::Composing, Setup::Idle] {
+        let session = setup.session();
+        let view = view_of(session.as_ref());
+        for (sym, panel) in panel_chords() {
+            let mut dispatcher = dispatcher_in(setup);
+            let event = press(sym, CHORD_STATE);
+            assert_eq!(
+                dispatcher.dispatch(&event, &view),
+                Consumed::Consumed,
+                "setup {setup:?} sym {sym:#06x}"
+            );
+            assert_eq!(dispatcher.overlay(), Some(panel), "sym {sym:#06x}");
+            // The key is kept and the request is recorded, so the caller can report that
+            // nothing draws the panel yet.
+            assert_eq!(
+                dispatcher.take_overlay_request(),
+                Some(panel),
+                "sym {sym:#06x}"
+            );
+            assert_eq!(
+                dispatcher.take_overlay_request(),
+                None,
+                "sym {sym:#06x}: a request is taken once"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_dispatch_replaces_the_open_panel_with_the_one_the_next_chord_names() {
+    let session = Setup::Composing.session();
     let view = view_of(session.as_ref());
-    let mut dispatcher = dispatcher_in(Setup::OverlayOverComposition);
-    let escape = press(KEY_ESCAPE, 0);
-    assert_eq!(dispatcher.dispatch(&escape, &view), Consumed::Consumed);
-    assert_eq!(dispatcher.overlay(), None, "Escape closes the panel");
-    // With the panel gone the same key is the layers' again, and it reaches the
-    // composition.
-    assert_eq!(dispatcher.dispatch(&escape, &view), Consumed::Consumed);
-    assert_eq!(dispatcher.overlay(), None);
+    // The cheat sheet stands for a panel another gesture opened.
+    let mut dispatcher = Dispatcher::new(KeyBindings::default());
+    dispatcher.open_overlay(Overlay::CheatSheet);
+    assert_eq!(
+        dispatcher.dispatch(&press(KEY_P, CHORD_STATE), &view),
+        Consumed::Consumed
+    );
+    assert_eq!(
+        dispatcher.overlay(),
+        Some(Overlay::Diagnostics),
+        "panels are replaced rather than stacked"
+    );
+    let asked = dispatcher.take_overlay_request();
+    assert_eq!(asked, Some(Overlay::Diagnostics));
+}
+
+#[test]
+fn test_dispatch_hands_the_panel_chords_back_with_an_extra_modifier() {
+    let session = Setup::Composing.session();
+    let view = view_of(session.as_ref());
+    // A chord is its whole modifier set: one extra modifier is another key, and one the
+    // desktop environment owns.
+    for (sym, _) in panel_chords() {
+        for extra in [ALT, SUPER, HYPER, META, SUPER2] {
+            let mut dispatcher = dispatcher_in(Setup::Composing);
+            let event = press(sym, CHORD_STATE | extra);
+            assert_eq!(
+                dispatcher.dispatch(&event, &view),
+                Consumed::Ignored,
+                "sym {sym:#06x} state {:#x}",
+                CHORD_STATE | extra
+            );
+            assert_eq!(dispatcher.overlay(), None, "sym {sym:#06x}");
+            let asked = dispatcher.take_overlay_request();
+            assert_eq!(asked, None, "sym {sym:#06x}");
+        }
+    }
+    // `Ctrl` or `Shift` alone is not the chord either, and the slash shapes carry nothing
+    // else on the routing table, so the whole key reaches the application.
+    for sym in [KEY_SLASH, KEY_QUESTION] {
+        for state in [CTRL, SHIFT, 0] {
+            let mut dispatcher = dispatcher_in(Setup::Composing);
+            assert_eq!(
+                dispatcher.dispatch(&press(sym, state), &view),
+                Consumed::Ignored,
+                "sym {sym:#06x} state {state:#x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_dispatch_hands_the_panel_chords_back_in_temporary_english() {
+    // Temporary English hands every key to the application, the chords included: that is the
+    // whole meaning of the mode, and a panel opening out of it would take a key the mode
+    // promised to pass on.
+    let session = Setup::TempEnglish.session();
+    let view = view_of(session.as_ref());
+    for (sym, _) in panel_chords() {
+        let mut dispatcher = dispatcher_in(Setup::TempEnglish);
+        assert_eq!(
+            dispatcher.dispatch(&press(sym, CHORD_STATE), &view),
+            Consumed::Ignored,
+            "sym {sym:#06x}"
+        );
+        assert_eq!(dispatcher.overlay(), None, "sym {sym:#06x}");
+        let asked = dispatcher.take_overlay_request();
+        assert_eq!(asked, None, "sym {sym:#06x}");
+    }
+}
+
+#[test]
+fn test_dispatch_hands_the_panel_chords_back_without_a_session() {
+    // A context the plugin was never activated in is not one to open a panel in.
+    let view = SessionView::absent();
+    for (sym, _) in panel_chords() {
+        let mut dispatcher = Dispatcher::new(KeyBindings::default());
+        assert_eq!(
+            dispatcher.dispatch(&press(sym, CHORD_STATE), &view),
+            Consumed::Ignored,
+            "sym {sym:#06x}"
+        );
+        assert_eq!(dispatcher.overlay(), None, "sym {sym:#06x}");
+        let asked = dispatcher.take_overlay_request();
+        assert_eq!(asked, None, "sym {sym:#06x}");
+    }
+}
+
+#[test]
+fn test_dispatcher_take_overlay_request_answers_once_and_keeps_the_newest() {
+    let mut dispatcher = Dispatcher::new(KeyBindings::default());
+    // Nothing has asked for a panel yet.
+    assert_eq!(dispatcher.take_overlay_request(), None);
+    // Two chords before the caller takes the first: the panel asked for last is the one
+    // worth opening, and a request is taken exactly once.
+    dispatcher.open_panel(Overlay::CommandPalette);
+    dispatcher.open_panel(Overlay::Diagnostics);
+    let asked = dispatcher.take_overlay_request();
+    assert_eq!(asked, Some(Overlay::Diagnostics));
+    assert_eq!(dispatcher.take_overlay_request(), None);
+}
+
+#[test]
+fn test_dispatch_marks_a_modifier_used_when_a_panel_chord_is_claimed() {
+    // A modifier the user pressed a chord with is not one they meant to hold, so the chord
+    // marks the hold the way a claimed key does and the release is a no-op.
+    let session = Setup::Composing.session();
+    let view = view_of(session.as_ref());
+    let mut dispatcher = Dispatcher::new(KeyBindings::default());
+    assert!(dispatcher.arm_hold(&press(KEY_SHIFT_L, SHIFT), true));
+    let chord = KeyEvent {
+        sym: KEY_SLASH,
+        state: CHORD_STATE,
+        is_release: false,
+        time_ms: 40,
+    };
+    assert_eq!(dispatcher.dispatch(&chord, &view), Consumed::Consumed);
+    let release = KeyEvent {
+        sym: KEY_SHIFT_L,
+        state: 0,
+        is_release: true,
+        time_ms: 600,
+    };
+    assert_eq!(dispatcher.dispatch(&release, &view), Consumed::Ignored);
+    assert_eq!(
+        dispatcher.take_hold_outcome(),
+        None,
+        "the modifier was typed with, so the release means nothing"
+    );
+}
+
+#[test]
+fn test_dispatch_leaves_the_composition_behind_a_panel_untouched() {
+    let session = Setup::Composing.session();
+    let view = view_of(session.as_ref());
+    let mut dispatcher = dispatcher_in(Setup::Composing);
+    assert_eq!(
+        dispatcher.dispatch(&press(KEY_SLASH, CHORD_STATE), &view),
+        Consumed::Consumed
+    );
+    // A panel that draws nothing must not stop the typing behind it: the composition is
+    // still live and still takes the next letter.
+    assert_eq!(session.as_ref().map(|s| s.state), Some(SessionState::Composing));
+    assert_eq!(
+        dispatcher.dispatch(&press(KEY_A, 0), &view),
+        Consumed::Consumed
+    );
+}
+
+#[test]
+fn test_overlay_name_and_not_implemented_code_are_stable() {
+    // The codes are matched by diagnostics and tests, so their spelling is pinned here.
+    assert_eq!(UI_NOT_IMPLEMENTED_CODE, "ui/not-implemented");
+    for (panel, name) in [
+        (Overlay::CheatSheet, "cheat-sheet"),
+        (Overlay::CommandPalette, "command-palette"),
+        (Overlay::Diagnostics, "diagnostics"),
+    ] {
+        assert_eq!(panel.name(), name);
+        assert_eq!(
+            panel.not_implemented_code(),
+            format!("{UI_NOT_IMPLEMENTED_CODE}: {name}")
+        );
+    }
 }
 
 #[test]
@@ -638,9 +880,9 @@ fn test_dispatch_returns_the_first_layer_that_claims_the_key() {
         for sym in corpus() {
             for state in STATES {
                 let event = press(sym, state);
-                if is_shift_press(&event.as_host_event()) {
-                    // The modifier-press rule is ahead of the walk, not in a layer; the
-                    // walk's answer for a modifier press is asserted on its own.
+                if is_shift_press(&event.as_host_event()) || is_panel_chord(sym, state) {
+                    // Both are rules ahead of the walk rather than layers in it — the
+                    // modifier press and the panel chords — and each has a test of its own.
                     continue;
                 }
                 let mut probe = dispatcher_in(setup);
@@ -683,9 +925,10 @@ fn test_dispatch_hands_a_key_back_only_after_every_layer_declined_it() {
 
 #[test]
 fn test_dispatch_without_an_overlay_matches_the_arbitrator_key_by_key() {
-    // The walk adds two rules ahead of the arbitration — a release and a modifier press are
-    // never the plugin's — and no decision of its own: for every other key it answers what
-    // the arbitrator answers about the action the table gave that key. The walk and the
+    // The walk adds three rules ahead of the arbitration — a release and a modifier press
+    // are never the plugin's, and the chords that ask for a panel are the bus's own rather
+    // than a session's — and no decision of its own: for every other key it answers what the
+    // arbitrator answers about the action the table gave that key. The walk and the
     // arbitration are therefore one answer, which is what keeps a second copy of the claim
     // decision from growing inside a layer.
     let cfg = SessionConfig::default();
@@ -697,12 +940,17 @@ fn test_dispatch_without_an_overlay_matches_the_arbitrator_key_by_key() {
     ] {
         let session = setup.session();
         let view = view_of(session.as_ref());
-        let mut dispatcher = dispatcher_in(setup);
+        let panels = !matches!(setup, Setup::Absent | Setup::TempEnglish);
         for sym in corpus() {
             for state in STATES {
                 let event = press(sym, state);
+                // A fresh dispatcher per key: a chord leaves a panel open behind it, and the
+                // question here is what one key answers.
+                let mut dispatcher = dispatcher_in(setup);
                 let expected = if is_shift_press(&event.as_host_event()) {
                     Consumed::Ignored
+                } else if panels && is_panel_chord(sym, state) {
+                    Consumed::Consumed
                 } else {
                     arbitrate(dispatcher.action_for(&event), session.as_ref(), &cfg)
                 };
@@ -717,28 +965,21 @@ fn test_dispatch_without_an_overlay_matches_the_arbitrator_key_by_key() {
 }
 
 #[test]
-fn test_dispatch_with_an_overlay_open_is_transparent_outside_the_panel_keys() {
-    // A panel is an overlay and not a keyboard grab: outside its four keys the walk with a
-    // panel open answers exactly what the walk without one answers.
+fn test_dispatch_with_an_empty_overlay_answers_what_the_bare_walk_answers() {
+    // An overlay with nothing behind it changes no answer: the layer owns the `Escape` that
+    // closes it and no other key, so every key reaches exactly the layer it would have
+    // reached with no panel open. Taking a key for a panel that does not exist is the
+    // swallowed-key defect, and this is the sweep that says so.
     let open = Setup::OverlayOverComposition.session();
     let bare = Setup::Composing.session();
     for sym in corpus() {
         for state in STATES {
             let event = press(sym, state);
-            let answer = dispatch_in_setup(Setup::OverlayOverComposition, open.as_ref(), &event);
-            if is_panel_key(sym) {
-                assert_eq!(
-                    answer,
-                    Consumed::Consumed,
-                    "sym {sym:#06x} is the panel's while it is open"
-                );
-            } else {
-                assert_eq!(
-                    answer,
-                    dispatch_in_setup(Setup::Composing, bare.as_ref(), &event),
-                    "sym {sym:#06x} state {state:#x} must reach the composition"
-                );
-            }
+            assert_eq!(
+                dispatch_in_setup(Setup::OverlayOverComposition, open.as_ref(), &event),
+                dispatch_in_setup(Setup::Composing, bare.as_ref(), &event),
+                "sym {sym:#06x} state {state:#x}"
+            );
         }
     }
 }

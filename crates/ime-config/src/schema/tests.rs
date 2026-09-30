@@ -24,6 +24,31 @@ fn tweaked(change: impl FnOnce(&mut Config)) -> Config {
     config
 }
 
+/// A configuration whose two key-binding lists are the given ones.
+fn with_lists(flip: Vec<KeyName>, highlight: Vec<KeyName>) -> Config {
+    tweaked(|c| {
+        c.keys.flip_keys = flip;
+        c.keys.highlight_keys = highlight;
+    })
+}
+
+/// The key-name whitelist, spelled out by hand.
+///
+/// Deliberately not derived from `KeyName`: a variant nobody adds here is exactly the drift
+/// these walks exist to catch, so deriving the list would defeat them.
+const WHITELIST: [&str; 10] = [
+    "minus",
+    "equal",
+    "up",
+    "down",
+    "left",
+    "right",
+    "tab",
+    "shift_tab",
+    "page_up",
+    "page_down",
+];
+
 /// The `config/invalid` key of each diagnostic.
 fn rejected(warnings: &[ImeError]) -> Vec<String> {
     warnings
@@ -105,8 +130,9 @@ fn test_repaired_repairs_the_key_binding_lists() {
     assert_eq!(repaired.keys.flip_keys, Config::default().keys.flip_keys);
     assert!(repaired.validate().is_empty());
 
-    // More entries than the bound allows: the surplus is dropped, as `ASM-19`
-    // requires, and what is left is still a usable list.
+    // More entries than the bound allows: the surplus is dropped and what is left is still
+    // a usable list. The bound is the number of keys the list can route, so the entry that
+    // goes is one that could never have done anything.
     let over = tweaked(|c| {
         c.keys.flip_keys = [
             KeyName::Minus,
@@ -115,8 +141,6 @@ fn test_repaired_repairs_the_key_binding_lists() {
             KeyName::Down,
             KeyName::Left,
             KeyName::Right,
-            KeyName::Tab,
-            KeyName::ShiftTab,
             KeyName::PageUp,
         ]
         .to_vec();
@@ -138,6 +162,129 @@ fn test_repaired_repairs_the_key_binding_lists() {
 }
 
 #[test]
+fn test_repaired_settles_a_key_both_lists_can_claim() {
+    // `up` and `down` are the two names the two whitelists share, so a document that writes
+    // one of them into both lists is the whole of this conflict. The page entry is the one
+    // that gives way, which is the direction the routing table applies as well.
+    for name in [KeyName::Up, KeyName::Down] {
+        let document = format!(
+            "[keys]\nflip_keys = [\"{}\"]\nhighlight_keys = [\"{}\"]\n",
+            name.as_str(),
+            name.as_str()
+        );
+        let (config, warnings) = parsed_document(&document);
+
+        assert_eq!(
+            rejected(&warnings),
+            [String::from(BINDING_CONFLICT_CODE)],
+            "one conflict, one diagnostic"
+        );
+        assert!(
+            config.keys.flip_keys.is_empty(),
+            "the page entry is the one that gives way"
+        );
+        assert_eq!(
+            config.keys.highlight_keys,
+            [name],
+            "the highlight entry stays"
+        );
+        assert!(
+            config.validate().is_empty(),
+            "the repair is idempotent: nothing is left to report"
+        );
+    }
+}
+
+#[test]
+fn test_repaired_reports_a_cross_list_conflict_only_when_both_lists_can_use_the_key() {
+    // The rule has a boundary: a name one of the two lists cannot route is that list's own
+    // mistake, which the projection reports as `keys/unroutable-binding`, and calling it a
+    // conflict would describe a clash that never happened. The walk covers the whole
+    // whitelist, so the boundary is pinned for every name rather than for the two that
+    // conflict today.
+    for spelling in WHITELIST {
+        let name = KeyName::parse(spelling, KEY_FLIP_KEYS).expect("the whitelist parses");
+        let claimed_twice = with_lists(vec![name], vec![name]);
+        let routable_in_both = both_lists_can_route(name, &claimed_twice.keys);
+
+        let (repaired, warnings) = claimed_twice.repaired();
+        let reported = rejected(&warnings) == [String::from(BINDING_CONFLICT_CODE)];
+
+        assert_eq!(
+            reported,
+            routable_in_both,
+            "{spelling}: a conflict is reported exactly when both lists can route the key"
+        );
+        if reported {
+            assert!(
+                repaired.keys.flip_keys.is_empty(),
+                "{spelling} leaves the page list"
+            );
+            assert_eq!(
+                repaired.keys.highlight_keys,
+                [name],
+                "{spelling} stays a highlight key"
+            );
+        } else {
+            assert_eq!(
+                repaired.keys.flip_keys,
+                [name],
+                "{spelling} keeps its page entry"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_repaired_names_the_page_list_and_keeps_the_highlight_entry() {
+    let conflict = with_lists(vec![KeyName::Minus, KeyName::Up], vec![KeyName::Up]);
+
+    let (repaired, warnings) = conflict.repaired();
+
+    assert_eq!(rejected(&warnings), [String::from(BINDING_CONFLICT_CODE)]);
+    assert_eq!(
+        repaired.keys.flip_keys,
+        [KeyName::Minus],
+        "only the shared key leaves the page list"
+    );
+    assert_eq!(repaired.keys.highlight_keys, [KeyName::Up]);
+
+    // The rendering is what a user reads, so it is pinned: the code under `config/invalid`,
+    // and a reason naming both lists and the key that was named twice.
+    let rendered = warnings
+        .first()
+        .map(|warning| warning.to_string())
+        .unwrap_or_default();
+    assert!(
+        rendered.starts_with("config/invalid: keys/binding-conflict"),
+        "{rendered}"
+    );
+    assert!(rendered.contains(KEY_FLIP_KEYS), "{rendered}");
+    assert!(rendered.contains(KEY_HIGHLIGHT_KEYS), "{rendered}");
+    assert!(rendered.contains("\"up\""), "{rendered}");
+}
+
+#[test]
+fn test_repaired_leaves_disjoint_binding_lists_alone() {
+    // The shipped defaults are disjoint, and so is a document that never names one key
+    // twice. A repair that reported anything here would put a diagnostic on a configuration
+    // nobody got wrong.
+    let (defaults, warnings) = Config::default().repaired();
+    assert!(warnings.is_empty(), "the defaults are disjoint: {warnings:?}");
+    assert_eq!(defaults, Config::default());
+
+    let disjoint = with_lists(
+        vec![KeyName::Minus, KeyName::PageUp],
+        vec![KeyName::Tab, KeyName::Right],
+    );
+    let (repaired, warnings) = disjoint.repaired();
+
+    assert!(warnings.is_empty(), "no overlap, no diagnostic: {warnings:?}");
+    assert_eq!(repaired.keys.flip_keys, [KeyName::Minus, KeyName::PageUp]);
+    assert_eq!(repaired.keys.highlight_keys, [KeyName::Tab, KeyName::Right]);
+}
+
+#[test]
 fn test_validate_leaves_the_configuration_alone() {
     let config = tweaked(|c| c.ui.max_per_row = 99);
     let before = config.clone();
@@ -149,23 +296,11 @@ fn test_validate_leaves_the_configuration_alone() {
 fn test_key_name_whitelist_round_trips_through_as_str() {
     // The whitelist and `as_str` are two halves of one mapping: pinning them
     // together means neither can be extended without the other.
-    let names = [
-        "minus",
-        "equal",
-        "up",
-        "down",
-        "left",
-        "right",
-        "tab",
-        "shift_tab",
-        "page_up",
-        "page_down",
-    ];
     assert!(
-        names.len() > MAX_KEY_BINDINGS,
+        WHITELIST.len() > MAX_KEY_BINDINGS,
         "the length bound is reachable only while the whitelist is longer than it"
     );
-    for name in names {
+    for name in WHITELIST {
         // An empty string is what a rejected name round-trips to, so the
         // assertion below fails rather than silently passing.
         let written = KeyName::parse(name, KEY_FLIP_KEYS)

@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metadata for the rspinyin Fcitx5 addon.
+
+  The component type is `addon` and it extends the Fcitx5 desktop component:
+  rspinyin has no launcher of its own, so listing it as a standalone desktop
+  application would put a non-launchable entry in application menus.
+
+  The `extends` value must match the component ID Fcitx5 itself publishes.
+  Verify it against the installed package before changing anything here:
+      appstreamcli search fcitx5
+  A wrong ID makes the addon invisible to software centres without any error.
+
+  `project_license` states the licence the *project* grants: MIT or Apache-2.0,
+  the recipient's choice, which is what Cargo.toml, README.md and the two
+  LICENSE files all say. Writing `AND` would claim both licences apply at once,
+  which is not what the project offers. Slint, which is statically linked into
+  the UI addon, is deliberately absent from this field: its SPDX identifier is a
+  `LicenseRef-`, and both AppStream's catalogue and Fedora's licensing rules
+  accept only recognised identifiers here. Its licence text ships as a `%license`
+  file and is described in debian/copyright and docs/dev/NOTICE instead.
+
+  The metadata itself is CC0-1.0, which is the licence AppStream expects for a
+  file that exists to be copied into other people's catalogues.
+-->
+<component type="addon">
+  <id>org.fcitx.Fcitx5.Addon.rspinyin</id>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+
+  <name>Rust Pinyin</name>
+  <summary>Offline-first Chinese pinyin input method</summary>
+
+  <!-- AppStream 1.0 wants the developer named rather than inferred from the URLs.
+       The id is the reverse-DNS form of the project's home, which is what the
+       specification asks for and what makes the entry mergeable with the same
+       component published from anywhere else. -->
+  <developer id="com.github.gongzhengyang">
+    <name>rspinyin contributors</name>
+  </developer>
+
+  <description>
+    <p>
+      rspinyin is a Chinese pinyin input method for Fcitx5 that draws its own
+      candidate window instead of delegating to ClassicUI. The window has rounded
+      corners, layered shadows, a translucent background where the compositor
+      supports it, spring-physics transitions and automatic light/dark theming.
+    </p>
+    <p>
+      Decoding is a k-best Viterbi search over a compiled FST dictionary, with the
+      user's own word frequency folded into the ranking. The candidate window is
+      rendered by a software rasteriser into a shared-memory buffer, so it needs
+      no GPU and no display-server-specific toolkit.
+    </p>
+    <p>
+      The input method never opens a network socket. There is no cloud input, no
+      dictionary update channel and no telemetry; user frequency data stays in the
+      user's own home directory.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">org.fcitx.Fcitx5.desktop</launchable>
+
+  <url type="homepage">https://github.com/gongzhengyang/rspinyin</url>
+  <url type="bugtracker">https://github.com/gongzhengyang/rspinyin/issues</url>
+
+  <translation type="gettext">rspinyin</translation>
+
+  <provides>
+    <binary>librspinyin.so</binary>
+    <binary>librspinyin_ui.so</binary>
+  </provides>
+
+  <extends>org.fcitx.Fcitx5</extends>
+
+  <languages>
+    <lang>zh_CN</lang>
+  </languages>
+
+  <releases>
+    <release version="0.1.0" date="2026-09-29" type="stable">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+
+  <content_rating type="oars-1.1"/>
+
+  <keywords>
+    <keyword>pinyin</keyword>
+    <keyword>input method</keyword>
+    <keyword>chinese</keyword>
+    <keyword>ime</keyword>
+  </keywords>
+</component>

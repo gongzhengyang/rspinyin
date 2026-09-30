@@ -162,13 +162,16 @@
   - 代码落地锚点：`crates/ime-core/src/segment/syllable.rs`
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core segment::syllable`
 - **操作步骤**：
-  1. 对 `nv` / `nü` / `nu:` / `nv3` 四种写法调用规范化 -> 触发存盘：`<RUN>/core/TC-CORE-02/assertions.json`
-  2. 断言全部归一为 `nv`。
-  3. 断言 `ju` / `qu` / `xu` / `yu` 中的 `u` 被归一为 `ü`（`ju` → `jü`）。
+  1. 对 `lv` / `lü` / `nv` / `nü` / `lve` / `nve` / `jv` / `ju` / `jü` 这些写法调用规范化 -> 触发存盘：`<RUN>/core/TC-CORE-02/assertions.json`
+  2. 断言它们各自归一到**音节表实际存储的那个拼写**：`v` 变成 `ü`（`nv` → `nü`、`lv` → `lü`），而 `j`/`q`/`x`/`y` 之后的 `u` **或** `ü` 一律折回 `u`（`jv` → `ju`、`jü` → `ju`、`yüe` → `yue`）。
+  3. 断言归一化后的每个结果都能在音节表里 `lookup` 命中。
   4. 断言大小写混合输入 `NiHao` 归一为 `nihao`。
 - **通过标准 (Pass Criteria)**：
-  - **功能逻辑**：四种 `ü` 写法归一一致；`j/q/x/y` 后的 `u` 正确转为 `ü`；大小写归一。
+  - **功能逻辑**：`ü` 音的每一种输入形态都折叠到音节表存储的那一个拼写上（`v` → `ü`；`j/q/x/y` 后折回 `u`）；大小写归一。
   - **边界**：`v` 出现在非 `ü` 位置的输入不 panic（如 `vvv`）。
+
+> **本用例于 2026-09-30 被主 Agent 修正，方向与原文相反。** 原文要求「`nv`/`nü`/`nu:`/`nv3` 四种写法全部归一为 `nv`」且「`ju` 中的 `u` 被归一为 `ü`（`ju` → `jü`）」。两处都与**标准汉语拼音正词法**相反：`v` 是键盘上 `ü` 的输入别名，所以规范化的方向是 `v` → `ü`；而 `j`/`q`/`x`/`y` 之后的 `ü` 音在正词法里**写作 `u`**（`ju`/`que`/`xuan`/`yu` 才是正确拼写），所以方向是 `ü` → `u`。`nu:` 也不是 `nü` 的写法——`:` 是声调标记，剥掉之后是 `nu`（怒），与 `nü`（女）是**两个不同的音节**，因此「四种写法归一一致」这条在实现上不可能成立。
+> 判定依据是 `crates/ime-core/src/segment/syllable.rs` 的模块文档（「Canonical spelling」一节）与 `test_normalize_folds_every_umlaut_input_form_onto_the_table_spelling`（16 组用例逐条断言）。按 `AGENTS.md` §7「当文档与代码不一致时，以代码为准修正文档」，此处改文档。
 
 ### TC-CORE-03 规范化丢弃非法字符并记录诊断（`REQ-CORE-01`）
 
@@ -206,7 +209,7 @@
   - 可执行性：`[可执行]`
   - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-01` ｜ 模块与类别：`core` | 全键盘流 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/segment/syllable.rs`、`crates/ime-types/src/key.rs`
-- **前置条件与沙盒状态**：`FEAT-TEST-P0.03.01` 的引擎直驱通道就绪。场景文件 `tests/fixtures/scenarios/syllable_traverse.toml`
+- **前置条件与沙盒状态**：`FEAT-TEST-P0.03.01` 的引擎直驱通道就绪。场景文件 `tests/fixtures/scenarios/syllable_traverse.toml` ｜ 命令：`cargo nextest run -p ime-core segment::dag::tests::test_build_finds_a_path_for_every_table_syllable segment::syllable::tests::test_lookup_finds_every_table_entry_by_its_index`
 - **操作步骤**：
   1. 对 411 个音节逐个构造 `KeyAction::InputChar` 序列 -> 触发存盘：`<RUN>/core/TC-CORE-05/assertions.json`
   2. 断言每个音节序列都能产出一个合法切分（`has_path() == true`）。
@@ -355,7 +358,7 @@
   - 可执行性：`[可执行]`
   - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-03` ｜ 模块与类别：`core` | 全键盘流 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/input/buffer.rs`、`crates/ime-types/src/key.rs`
-- **前置条件与沙盒状态**：无。
+- **前置条件与沙盒状态**：无。 ｜ 命令：`cargo nextest run -p ime-core test_move_caret`
 - **操作步骤**：
   1. 构造 `InputChar('n')`/`InputChar('i')`/`Backspace`/`MoveCaret(-1)`/`MoveCaret(1)` 序列 -> 触发存盘：`<RUN>/core/TC-CORE-15/assertions.json`
   2. 断言 `MoveCaret` 只移动到音节边界（Phase 1 限制）。
@@ -384,7 +387,7 @@
   - 可执行性：`[可执行]`
   - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-04` ｜ 模块与类别：`core` | 全状态防御与骨架屏 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/viterbi/decoder.rs`
-- **前置条件与沙盒状态**：`MockLexicon` 的所有 `lookup` 返回空迭代器。
+- **前置条件与沙盒状态**：`MockLexicon` 的所有 `lookup` 返回空迭代器。 ｜ 命令：`cargo nextest run -p ime-core viterbi::tests::test_decode_without_a_usable_word_degrades_to_passthrough`
 - **操作步骤**：
   1. 用空词库解码 `nihao` -> 触发存盘：`<RUN>/core/TC-CORE-17/assertions.json`
   2. 断言候选列表**非空**（走 `fallback_single` 或 `Passthrough`）。
@@ -399,7 +402,7 @@
   - 可执行性：`[可执行]`
   - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-04` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/viterbi/decoder.rs`、`crates/ime-types/src/ui.rs`
-- **前置条件与沙盒状态**：`MockLexicon` 对某个 key 返回 200 个词。
+- **前置条件与沙盒状态**：`MockLexicon` 对某个 key 返回 200 个词。 ｜ 命令：`cargo nextest run -p ime-core viterbi::tests::test_decode_keeps_the_list_inside_the_page_budget state::paging::tests::test_page_count_rounds_up_and_caps_at_five_pages`
 - **操作步骤**：
   1. 解码该 key -> 触发存盘：`<RUN>/core/TC-CORE-18/assertions.json`
   2. 断言候选数 ≤ 45（`ASM-T-10`：5 页 × 9）。
@@ -428,7 +431,7 @@
   - 可执行性：`[可执行]`
   - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-04` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/benches/`、`docs/dev/budgets.json`
-- **前置条件与沙盒状态**：**必须在空闲机器上采集**（`ASM-T-11`；`FEAT-TEST-P0.05.06` 的 `is_clean()` 为真）。`just bench` + `cargo run -p xtask -- budget --validate`
+- **前置条件与沙盒状态**：**必须在空闲机器上采集**（`ASM-T-11`）。`just bench`（= `cargo bench --workspace` + `xtask budget --check`；**是 `--check` 而不是 `--validate`**——后者只做 `budgets.json` 与 `features.md` 0.5.3 的文档交叉校验，**不读任何测量值**，故不构成判据）。**已知缺口**：判据里"不洁净时拒采"没有实现——`FEAT-TEST-P0.05.06` 的 `is_clean()` 在 `xtask/src/testd/env.rs` 里不存在，该文件头部自述环境门禁与纯度守卫尚未落地；`xtask/src/budget/meta.rs` 只把 CPU 型号 / governor / RUSTFLAGS 写进 `meta.json`，缺失值记 `null` 而不失败
 - **操作步骤**：
   1. 跑 12 音节基准用例（`decode/12syl`）-> 触发存盘：`<RUN>/core/TC-CORE-20/assertions.json`（附 criterion 输出与 `PurityReport`）
   2. 以 `mean + 3σ` 作为 P99 估计，与 `budgets.json` 的 `decode_p99 = 3.0` 比对。
@@ -456,7 +459,7 @@
   - 可执行性：`[可执行]`
   - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-05` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/lm/score.rs`
-- **前置条件与沙盒状态**：`MockUserFreq` 可注入任意频次。
+- **前置条件与沙盒状态**：`MockUserFreq` 可注入任意频次。 ｜ 命令：`cargo nextest run -p ime-core lm::score::tests::test_edge_score_clamps_the_user_term_at_a_million_hits lm::score::tests::test_user_term_starts_at_zero_and_scales_with_the_count`
 - **操作步骤**：
   1. 注入 `freq = 1`、`freq = 8`、`freq = 1_000_000` 三档 -> 触发存盘：`<RUN>/core/TC-CORE-22/assertions.json`
   2. 断言用户频次项被钳制在 `λ_user · 2` 上限内。
@@ -470,7 +473,7 @@
   - 可执行性：`[可执行]`
   - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-05` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/lm/score.rs`、`crates/ime-types/src/error.rs`
-- **前置条件与沙盒状态**：无。
+- **前置条件与沙盒状态**：无。 ｜ 命令：`cargo nextest run -p ime-core lm::score::tests::test_scorer_new`
 - **操作步骤**：
   1. 构造含负值的 `ScoreWeights` -> 触发存盘：`<RUN>/core/TC-CORE-23/assertions.json`
   2. 断言构造失败并返回 `config/invalid`，携带 `key` 与 `reason`。
@@ -484,7 +487,7 @@
   - 可执行性：`[可执行]`
   - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-05` ｜ 模块与类别：`core` | 全状态防御与骨架屏 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/lm/ngram.rs`
-- **前置条件与沙盒状态**：`MockLm` 的 `bigram` 表为空。
+- **前置条件与沙盒状态**：`MockLm` 的 `bigram` 表为空。 ｜ 命令：`cargo nextest run -p ime-core lm::ngram::tests::test_bigram_falls_back_to_the_unigram_plus_the_fixed_penalty`
 - **操作步骤**：
   1. 对任意词对调用 `bigram` -> 触发存盘：`<RUN>/core/TC-CORE-24/assertions.json`
   2. 断言退化为 `unigram - 64`（固定常数）。
@@ -499,7 +502,7 @@
   - 可执行性：`[可执行]`
   - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-05` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/tests/fixtures/lm_holdout.tsv`（86.7KB）、`lm_golden.tsv`（7.1KB）
-- **前置条件与沙盒状态**：`xtask tune` 的求值器（`xtask/src/tune/eval.rs`）。
+- **前置条件与沙盒状态**：`xtask tune` 的求值器（`xtask/src/tune/eval.rs`）。 ｜ 命令：`cargo nextest run -p xtask tune::tests::test_rank_and_evaluate_count_the_first_choice_and_the_reachable_rows tune::tests::test_generate_holdout_writes_rows_that_avoid_the_evaluation_set`
 - **操作步骤**：
   1. 在 `lm_holdout.tsv`（≥ 5000 条）上跑全量解码 -> 触发存盘：`<RUN>/core/TC-CORE-25/assertions.json`
   2. 记录两个指标：**首选词命中率**（排序质量）与**目标词是否出现在前 9 候选内**（可达性）。
@@ -529,7 +532,7 @@
   - 可执行性：`[可执行]`
   - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-06` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/passthrough.rs`
-- **前置条件与沙盒状态**：无。
+- **前置条件与沙盒状态**：无。 ｜ 命令：`cargo nextest run -p ime-core passthrough::tests::test_classify_rule_table_returns_the_expected_decision`
 - **操作步骤**：
   1. 对 `http://`、`www.`、`@`、`.com` 四类特征输入调用 `classify` -> 触发存盘：`<RUN>/core/TC-CORE-27/assertions.json`
   2. 断言返回 `HostHandles`。
@@ -544,7 +547,7 @@
   - 可执行性：`[可执行]`
   - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-06` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/passthrough.rs`
-- **前置条件与沙盒状态**：无。
+- **前置条件与沙盒状态**：无。 ｜ 命令：`cargo nextest run -p ime-core passthrough::tests::test_classify_rule_table_returns_the_expected_decision passthrough::tests::test_classify_punctuation_table_maps_the_twelve_ascii_marks`
 - **操作步骤**：
   1. 对 12 个 ASCII 标点逐个在 `punct_mode = chinese` 下调用 `classify` -> 触发存盘：`<RUN>/core/TC-CORE-28/assertions.json`
   2. 断言映射为 `，。；：？！（）【】“”`。
@@ -559,7 +562,7 @@
   - 可执行性：`[可执行]`
   - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-06` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/passthrough.rs`
-- **前置条件与沙盒状态**：无。
+- **前置条件与沙盒状态**：无。 ｜ 命令：`cargo nextest run -p ime-core passthrough::tests::test_to_full_width`
 - **操作步骤**：
   1. 对 `0x21..=0x7E` 全部 94 个字符与空格调用全角映射 -> 触发存盘：`<RUN>/core/TC-CORE-29/assertions.json`
   2. 断言映射到 `0xFF01..=0xFF5E`，空格映射到 `U+3000`。
@@ -573,7 +576,7 @@
   - 可执行性：`[可执行]`
   - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-06` ｜ 模块与类别：`core` | 全键盘流 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/passthrough.rs`、`crates/ime-types/src/key.rs`
-- **前置条件与沙盒状态**：`PassthroughFlags.temp_english = true`。
+- **前置条件与沙盒状态**：`PassthroughFlags.temp_english = true`。 ｜ 命令：`cargo nextest run -p ime-core temp_english passthrough::tests::test_classify_rule_table_returns_the_expected_decision`
 - **操作步骤**：
   1. 在临时英文模式下输入含**大写首字母**的串 -> 触发存盘：`<RUN>/core/TC-CORE-30/assertions.json`
   2. 断言返回 `HostHandles`（**不是** `CommitDirectly`）。

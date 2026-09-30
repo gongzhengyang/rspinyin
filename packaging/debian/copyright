@@ -1,0 +1,50 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: rspinyin
+Source: https://github.com/gongzhengyang/rspinyin
+
+Files: *
+Copyright: 2026 rspinyin contributors
+License: MIT or Apache-2.0
+ This project is dual-licensed under the MIT License and the Apache License,
+ Version 2.0. You may use it under either, at your option.
+ .
+ On Debian systems the full texts of these licences are available at
+ /usr/share/common-licenses/MIT and /usr/share/common-licenses/Apache-2.0.
+
+Files: base.dict
+Copyright: 2026 rspinyin contributors
+License: MIT or Apache-2.0
+ The compiled dictionary is derived exclusively from sources carrying
+ permissive licences, registered with their SHA256 digests in
+ data/sources.toml. The allowlist is enforced by
+ scripts/check-dict-sources.sh.
+Comment:
+ The dictionary is a derived database, not a redistribution of any single
+ upstream file: it is compiled from mozillazg/pinyin-data (MIT), Unicode
+ Unihan (Unicode-3.0) and fxsjy/jieba (MIT). None of those licences impose a
+ copyleft obligation on the derived database.
+ .
+ It is a build product rather than a file in the source package: debian/rules
+ compiles it from the digest-pinned sources and it ships as
+ /usr/share/rspinyin/base.dict. The path above is the name the compiler writes
+ it under, which is what the pattern has to match.
+
+Files: LICENSES/LicenseRef-Slint-Royalty-free-2.0.md
+Copyright: 2026 SixtyFPS GmbH
+License: LicenseRef-Slint-Royalty-free-2.0
+ Slint is used under the Slint Royalty-free Desktop, Mobile, and Web
+ Applications License, Version 2.0. Attribution: this software uses Slint --
+ https://slint.dev
+ .
+ The licence does NOT cover embedded systems (appliance displays, point of
+ sale terminals, in-car instrumentation). Such deployments require a
+ GPL-3.0 or commercial licence obtained separately.
+ .
+ Slint is statically linked into librspinyin_ui.so and is not distributed on
+ its own: the package ships no Slint library, no Slint header and no
+ programmable Slint surface.
+
+Files: debian/*
+Copyright: 2026 rspinyin contributors
+License: MIT or Apache-2.0
+ The Debian packaging is released under the same terms as the project itself.

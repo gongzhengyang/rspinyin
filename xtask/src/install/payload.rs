@@ -114,6 +114,13 @@ pub(super) const PAYLOADS: &[Payload] = &[
         optional: false,
         budget: None,
     },
+    Payload {
+        name: "org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml",
+        artifact: &["packaging/metainfo/org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml"],
+        destination: Destination::MetaInfo,
+        optional: false,
+        budget: None,
+    },
 ];
 
 /// One file an install will copy, once both of its paths are known.

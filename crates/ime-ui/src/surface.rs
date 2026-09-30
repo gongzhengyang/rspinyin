@@ -1,9 +1,10 @@
 //! The candidate window as the UI thread's surface.
 //!
 //! Responsibility: hold the Slint platform, the component binding, the placement result and
-//! the frame being drawn, and drive them from the loop's calls. It owns no input state of its
-//! own -- a pointer event becomes a hover or a selection and is posted straight back -- and it
-//! decides nothing about what a candidate is worth.
+//! the frame being drawn, and drive them from the loop's calls. Input is routed rather than
+//! interpreted here: a pointer event is handed to `crate::interaction::route::PointerRouter`,
+//! which decides what it means and which channel it travels on, and the surface only applies
+//! the pointer state it reports back. It decides nothing about what a candidate is worth.
 //!
 //! # Per-frame order
 //!
@@ -40,11 +41,13 @@ mod tests;
 use std::os::fd::BorrowedFd;
 use std::time::{Duration, Instant};
 
+use ime_types::ui::OverlayFrame;
 use ime_types::{Anchor, ImeError, RectI, SurfaceBackend, SurfaceEvent, ThemeSpec, UiFrame};
 
 use crate::adapter::Adapter;
 use crate::channel::UiEventQueue;
 use crate::geometry::Geometry;
+use crate::interaction::PointerRouter;
 use crate::layout::{self, Metrics};
 use crate::slint_platform::RspinyinPlatform;
 use crate::theme::{BlurNegotiation, ThemeResolution};
@@ -66,6 +69,27 @@ pub struct CandidateSurface {
     geometry: Option<Geometry>,
     /// Backend events a call has not consumed yet; the loop drains them on its next pass.
     pending: Vec<SurfaceEvent>,
+    /// The one place a backend event becomes a host event.
+    ///
+    /// The router owns the pointer state across the whole event stream, so a press is
+    /// remembered until its release arrives and a hover is only reported when the candidate
+    /// under the pointer changes.
+    router: PointerRouter,
+    /// Whether a placement has been produced that the router has not been told about.
+    ///
+    /// Placing runs on the `apply` path, which has no event queue, and re-adopting a frame
+    /// can produce a hover. The flag defers that to the next `drain_events`, which does have
+    /// one. It is a flag rather than a revision because the placement pass can produce a new
+    /// geometry for the frame the surface already holds, and a revision-keyed check would
+    /// miss exactly the change that moves the cells.
+    adoption_pending: bool,
+    /// The overlay the engine last asked for, or `None` when none is open.
+    ///
+    /// Retained rather than drawn: the component declares no overlay surface yet, so the
+    /// window keeps showing the candidate panel instead of blanking itself. Holding the
+    /// frame is what lets the overlay be drawn the moment the component can, and it keeps
+    /// the value observable rather than silently discarded.
+    overlay: Option<Box<OverlayFrame>>,
     /// The panel's rectangle, as the interactive region last applied.
     region: Option<RectI>,
     /// Failures of the interactive-region call, which are reported rather than fatal.
@@ -137,6 +161,9 @@ impl CandidateSurface {
             anchor: None,
             geometry: None,
             pending: Vec::new(),
+            router: PointerRouter::new(),
+            adoption_pending: false,
+            overlay: None,
             region: None,
             region_failures: 0,
             theme_codes: [None; 2],
@@ -170,6 +197,14 @@ impl CandidateSurface {
             }
             SurfaceUpdate::Theme(spec) => {
                 self.apply_theme(&spec);
+                Ok(())
+            }
+            // The overlay is a mode of the window rather than part of the frame, and the
+            // component declares no surface to draw it into yet. The frame is therefore
+            // retained and reported through [`Self::overlay`]; blanking the window instead
+            // would take the candidate panel away from a user who is still typing.
+            SurfaceUpdate::Overlay(frame) => {
+                self.overlay = frame;
                 Ok(())
             }
             SurfaceUpdate::Show { anchor, .. } => {
@@ -294,6 +329,24 @@ impl CandidateSurface {
     /// Never panics.
     pub fn theme_diagnostics(&self) -> [Option<&'static str>; 2] {
         self.theme_codes
+    }
+
+    /// The overlay the engine last asked for, or `None` when none is open.
+    ///
+    /// The frame is carried rather than drawn: the component declares no overlay surface
+    /// yet, so this is what a caller observes until it does. A closed overlay and one that
+    /// was never opened are the same value, which is the contract's own reading of the
+    /// latest-wins channel (`UiCommand::Overlay(None)` means "close it").
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn overlay(&self) -> Option<&OverlayFrame> {
+        self.overlay.as_deref()
     }
 
     /// Draws one frame, dropping it when the window already draws something newer.

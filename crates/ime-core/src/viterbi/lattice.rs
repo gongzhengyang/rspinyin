@@ -553,7 +553,7 @@ impl Builder<'_, '_, '_> {
             self.lattice.edges.push(LatticeEdge {
                 end: edge.end,
                 syllables,
-                characters: u16::try_from(word.text.chars().count()).unwrap_or(u16::MAX),
+                characters: chars::count_characters(word.text),
                 source,
                 word,
                 penalty_q8: 0,
@@ -586,8 +586,7 @@ impl Builder<'_, '_, '_> {
                         self.lattice.edges.push(LatticeEdge {
                             end: single.end,
                             syllables: 1,
-                            characters: u16::try_from(word.text.chars().count())
-                                .unwrap_or(u16::MAX),
+                            characters: chars::count_characters(word.text),
                             source,
                             word,
                             penalty_q8: 0,
@@ -615,6 +614,13 @@ impl Builder<'_, '_, '_> {
     }
 
     /// Answers where one word came from.
+    ///
+    /// `is_user_word` runs once per edge. It is free today -- the shipped implementation
+    /// answers `false` for every word -- but it is a query the user database owns, and
+    /// the phase that lets a user coin a word turns it into a store read on the decode
+    /// path. Whoever lands that has to keep this call as cheap as the rest of the edge
+    /// construction: read a flag the entry already carries, or resolve the answer once
+    /// per lookup, rather than let a storage read appear here once per span.
     fn source_of(&self, word: WordRef<'_>) -> CandidateSource {
         let coined = word.flags.contains(WordFlags::USER) || self.user.is_user_word(word.text);
         if coined {
@@ -624,6 +630,9 @@ impl Builder<'_, '_, '_> {
         }
     }
 }
+
+/// The character count an edge carries, and why it is a byte scan rather than a decode.
+mod chars;
 
 /// The abbreviation walk: the extra edges an input reaches when a syllable may be
 /// typed as its initial alone.

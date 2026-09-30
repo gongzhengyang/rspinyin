@@ -130,31 +130,31 @@
 
 本清单是任务拆解的唯一事实来源。**每一行都至少被第 4 节追溯表中的一张任务卡承接**，无无主项、无无任务项。
 
-| 问题编号 | 类别 | 问题位置（文件:行号） | 影响 |
-|---|---|---|---|
-| `BUILD-DEF-01` | 编译 | `justfile:20`、`justfile:25`、`.github/workflows/ci.yml:48`、`crates/ime-fcitx5/build.rs:36-40,110-124` | **`quality` 作业在干净 runner 上必然失败**。`--all-features` 会打开 `ime-fcitx5/fcitx5-host`，其 build script 在 `pkg-config` 找不到 `Fcitx5Core` 时 `panic!`，而该作业未安装 `libfcitx5core-dev`。实测：`PKG_CONFIG_LIBDIR=/nonexistent pkg-config --exists Fcitx5Core` 返回非零 |
-| `BUILD-DEF-02` | 体积 | `Cargo.toml:79-90`、`target/release/librspinyin.so`（实测 `file` → "not stripped"）、`xtask/src/install.rs:365-441` | 发布构建不剥离。`strip --strip-unneeded` 只在 `xtask install` 的安装路径上执行；任何直接从 `target/release/` 取产物的分发方式都会发出未剥离的 `.so` |
-| `BUILD-DEF-03` | 体积 | `xtask/src/install.rs:100-136`；`.github/workflows/ci.yml`（无体积断言步骤） | `BUDGET-SIZE-01` / `BUDGET-SIZE-02` 的断言只存在于 `xtask install` 内部。CI 无任何作业测量产物体积，**体积回归不会被门禁拦住** |
-| `BUILD-DEF-04` | 打包 | `crates/ime-ui/Cargo.toml:6-10`（无 `[lib] crate-type`）、`xtask/src/install.rs:162-205`（只有 1 个 `AddonLibrary` 条目）、`packaging/fcitx5/`（缺 `Category=UI` 描述符）、`docs/dev/adr/0003-ui-role-separate-addon.md:71-73` | ADR-0003 决定的双 cdylib **未落地**：`librspinyin-ui.so` 无法构建（`ime-ui` 不是 cdylib），UI addon 描述符不存在，安装载荷表没有第二项。ADR-0003 后果 #2 明确要求打包布局同时提供两个 conf |
-| `BUILD-DEF-05` | 打包 | `crates/ime-fcitx5/src/lib.rs:18-26`（未引用 `ime-ui`）；实测 `nm -D target/release/librspinyin.so \| grep -ci slint` = 0，`strings \| grep -ci slint` = 0 | 当前产物**完全不含渲染器**。`ime-ui` 作为依赖声明了却从未被引用，被 LTO + 死代码消除整体丢弃。发布一个不含候选框渲染的插件等于发布半成品 |
-| `BUILD-DEF-06` | 打包 | `xtask/src/install.rs:191-204`、`packaging/fcitx5/rspinyin-im.conf:3`；实测 `ls assets/` → 目录不存在 | 图标载荷标了 `optional: true`，缺失时**静默跳过**，输入法在 `fcitx5-configtool` 中显示为缺图标 |
-| `BUILD-DEF-07` | 打包 | `.gitignore:12-14`、`data/fetch.sh:28-36`、`xtask/src/dictc.rs:53,55` | `data/raw/pinyin-data.tsv` 与 `data/raw/jieba-dict.tsv` 未提交且只能由 `data/fetch.sh` 联网取得；`dictc` 默认读取它们 → **干净检出无法离线编译词库** |
-| `BUILD-DEF-08` | 打包 | `packaging/install.sh:103-105`、`.gitignore:20-21` | 安装脚本在**安装期**执行 `cargo run -p xtask -- dictc`，把"联网取词源 + 编译词库"推给终端用户；`base.dict` 不在任何发布产物中 |
-| `BUILD-DEF-09` | 打包 | `packaging/fcitx5/rspinyin.conf:19`（`0=core:5.1.7`）vs `docs/dev/features.md:116`（发行版基线含 Ubuntu 22.04 LTS，其 fcitx5 为 5.0.x） | 声明为**硬依赖**的 `core:5.1.7` 会让插件在 0.5.1 自己列出的基线发行版上**拒绝加载**，与基线表直接矛盾 |
-| `BUILD-DEF-10` | 打包 | 实测 `packaging/` 只有 `install.sh`、`uninstall.sh`、`fcitx5/` 两个 conf；无 `debian/`、无 `.spec`、无 `PKGBUILD` | `TASK-2.07.01` 未开始，三种原生包均不存在，用户只能从源码构建 |
-| `BUILD-DEF-11` | 打包 | 实测仓库内无 `*.metainfo.xml` | 无 AppStream 元数据；Fedora 打包规范要求它，GNOME Software / KDE Discover 依赖它 |
-| `BUILD-DEF-12` | 打包 | 实测根目录无 `LICENSE-APACHE` / `LICENSE-MIT`；`Cargo.toml:12` 声明 `MIT OR Apache-2.0`；`docs/dev/NOTICE:9` 称二者由 `TASK-2.06.03` 落地 | 双许可声明无对应文件，**发布包无法随附许可证** |
-| `BUILD-DEF-13` | 打包 | 实测根目录无 `README*`；`docs/dev/features.md:4321`（`OB-1`，截止 W4） | Slint 归属展示的主路径（公开网页徽章）无落点，`OB-1` 无法达成，**发布即违反许可义务** |
-| `BUILD-DEF-14` | 打包 | `docs/dev/NOTICE:33` 引用 `LICENSES/LicenseRef-Slint-Royalty-free-2.0.md`；实测无 `LICENSES/` 目录；`scripts/gen-licenses.sh:395` 在 Slint crate 目录内解析该路径，`:453` 的 `git status -- *LICENSES*` 断言在无 `LICENSES/` 时**恒真** | `NOTICE` 声明"随发布产物提供"，但其引用的许可原文路径在本仓库不存在；守卫断言空转，无法发现该问题 |
-| `BUILD-DEF-15` | 签名 | 实测无 `SHA256SUMS`、无 GPG 配置、无 `.github/workflows/release.yml` | 无产物校验和与签名机制（`TASK-3.07.01` 未开始）；用户无法验证下载产物 |
-| `BUILD-DEF-16` | CI | `.github/workflows/ci.yml:82` vs `justfile:138` | CI 的 `audit` 作业并未执行 `AGENTS.md` §2 指定的 `just ci`：**`check-licenses`（`OB-1`~`OB-6` 复核）与 `check-versions`（描述符版本漂移）从未在 CI 中运行** |
-| `BUILD-DEF-17` | CI | 工厂符号检查只存在于 `xtask/src/install/elf.rs`，由 `xtask install` 调用；`.github/workflows/ci.yml:65` 的 host-abi 作业只跑 `cargo check` | 破坏 `fcitx_addon_factory_instance` 导出的改动（误加链接脚本、误用 `strip`）**不会被 CI 拦住**，只会在用户安装时炸 |
-| `BUILD-DEF-18` | CI | `.github/workflows/ci.yml`（无安装/卸载作业）；`packaging/install.sh`、`packaging/uninstall.sh`、`xtask/src/install/uninstall.rs` 未被 CI 覆盖 | 安装可逆性（`TASK-3.07.03` 的验收项）无自动化验证；卸载回滚逻辑只在开发机上被手工跑过 |
-| `BUILD-DEF-19` | 编译 | 实测 `rustup target list --installed` 只有 `x86_64-unknown-linux-gnu`；无 `.cargo/config.toml`；CI 全部作业固定 `ubuntu-24.04` | 无 aarch64 构建路径，`docs/dev/features.md:117` 的"aarch64 待评估"没有任何可执行入口，评估无法闭环 |
-| `BUILD-DEF-20` | 编译 | 实测无 `.cargo/config.toml`；`.github/workflows/ci.yml` 无 `RUSTFLAGS` / `SOURCE_DATE_EPOCH` | 无链接期硬化（`-z relro -z now`、`--as-needed`、`noexecstack`），也无可复现构建设置（`SOURCE_DATE_EPOCH`、`-ffile-prefix-map`）。插件常驻用户主进程，硬化缺失的代价高于普通 CLI |
-| `BUILD-DEF-21` | CI | 实测 `.github/workflows/ci.yml` 无 `cargo audit` / `cargo deny` 步骤；`AGENTS.md` §3.9 要求提交前执行二者 | 依赖漏洞与许可证 bans 无自动化门禁，只有人工纪律 |
-| `BUILD-DEF-22` | 打包 | 实测 `data/compiled/base.dict` = 248,484 字节 vs `BUDGET-SIZE-02` 阈值 20MB；`.dev-progress.json` 记录 `TASK-1.03.02` / `TASK-1.03.03` 未完成 | 词库内容距发布规模差约 84 倍，**发布产物功能不完整**（候选质量无法达标） |
-| `BUILD-DEF-23` | CI | 实测无跨发行版作业（`TASK-3.07.03` 未开始） | Fedora / Arch 上从未构建过；`docs/dev/features.md:4451` 的"三套包可安装、可卸载且可逆"验收无任何基础 |
+| 问题编号 | 类别 | 问题位置（文件:行号） | 影响 | 状态 |
+|---|---|---|---|---|
+| `BUILD-DEF-01` | 编译 | `justfile:20`、`justfile:25`、`.github/workflows/ci.yml:48`、`crates/ime-fcitx5/build.rs:36-40,110-124` | **`quality` 作业在干净 runner 上必然失败**。`--all-features` 会打开 `ime-fcitx5/fcitx5-host`，其 build script 在 `pkg-config` 找不到 `Fcitx5Core` 时 `panic!`，而该作业未安装 `libfcitx5core-dev`。实测：`PKG_CONFIG_LIBDIR=/nonexistent pkg-config --exists Fcitx5Core` 返回非零 | 已修复：`just ci` 用 `--exclude` 把两个 addon crate 移出 `--all-features`，真实 C ABI 由 `just check-host` 覆盖 |
+| `BUILD-DEF-02` | 体积 | `Cargo.toml:79-90`、`target/release/librspinyin.so`（实测 `file` → "not stripped"）、`xtask/src/install.rs:365-441` | 发布构建不剥离。`strip --strip-unneeded` 只在 `xtask install` 的安装路径上执行；任何直接从 `target/release/` 取产物的分发方式都会发出未剥离的 `.so` | 已修复：编译期绝不 strip（`Cargo.toml:84` 写明理由），剥离是打包期动作，剥离后由 `nm -D` 复检工厂符号 |
+| `BUILD-DEF-03` | 体积 | `xtask/src/install.rs:100-136`；`.github/workflows/ci.yml`（无体积断言步骤） | `BUDGET-SIZE-01` / `BUDGET-SIZE-02` 的断言只存在于 `xtask install` 内部。CI 无任何作业测量产物体积，**体积回归不会被门禁拦住** | 已修复：`just check-size` 已是 CI 的 `size` 作业（`.github/workflows/ci.yml:440`） |
+| `BUILD-DEF-04` | 打包 | `crates/ime-ui/Cargo.toml:6-10`（无 `[lib] crate-type`）、`xtask/src/install.rs:162-205`（只有 1 个 `AddonLibrary` 条目）、`packaging/fcitx5/`（缺 `Category=UI` 描述符）、`docs/dev/adr/0003-ui-role-separate-addon.md:71-73` | ADR-0003 决定的双 cdylib **未落地**：`librspinyin-ui.so` 无法构建（`ime-ui` 不是 cdylib），UI addon 描述符不存在，安装载荷表没有第二项。ADR-0003 后果 #2 明确要求打包布局同时提供两个 conf | 已修复：双 cdylib 已落地，见 ADR-0004；`crates/ime-ui-addon` 产出 `librspinyin_ui.so` |
+| `BUILD-DEF-05` | 打包 | `crates/ime-fcitx5/src/lib.rs:18-26`（未引用 `ime-ui`）；实测 `nm -D target/release/librspinyin.so \| grep -ci slint` = 0，`strings \| grep -ci slint` = 0 | 当前产物**完全不含渲染器**。`ime-ui` 作为依赖声明了却从未被引用，被 LTO + 死代码消除整体丢弃。发布一个不含候选框渲染的插件等于发布半成品 | 已修复：`ime-ui` 的依赖从 `ime-fcitx5` 移入 `ime-ui-addon`，渲染器进入第二个 `.so` |
+| `BUILD-DEF-06` | 打包 | `xtask/src/install.rs:191-204`、`packaging/fcitx5/rspinyin-im.conf:3`；实测 `ls assets/` → 目录不存在 | 图标载荷标了 `optional: true`，缺失时**静默跳过**，输入法在 `fcitx5-configtool` 中显示为缺图标 | 已修复：`assets/icon-48.png` 与 `assets/icon.svg` 已在树，载荷 `optional: false` |
+| `BUILD-DEF-07` | 打包 | `.gitignore:12-14`、`data/fetch.sh:28-36`、`xtask/src/dictc.rs:53,55` | `data/raw/pinyin-data.tsv` 与 `data/raw/jieba-dict.tsv` 未提交且只能由 `data/fetch.sh` 联网取得；`dictc` 默认读取它们 → **干净检出无法离线编译词库** | 已修复：`data/raw/` 的六份源（`base`/`jieba-dict`/`phrase`/`pinyin-data`/`polyphone`/`unihan`）均在树上 |
+| `BUILD-DEF-08` | 打包 | `packaging/install.sh:103-105`、`.gitignore:20-21` | 安装脚本在**安装期**执行 `cargo run -p xtask -- dictc`，把"联网取词源 + 编译词库"推给终端用户；`base.dict` 不在任何发布产物中 | **未修复**：`packaging/install.sh:132` 仍在安装期执行 `cargo run -p xtask -- dictc`。本轮未改该脚本的语义——三种发行版打包定义改为在**构建期**跑 `dictc`，但源码安装路径的这一步仍在。登记为本轮的遗留项 |
+| `BUILD-DEF-09` | 打包 | `packaging/fcitx5/rspinyin.conf:19`（`0=core:5.1.7`）vs `docs/dev/features.md:116`（发行版基线含 Ubuntu 22.04 LTS，其 fcitx5 为 5.0.x） | 声明为**硬依赖**的 `core:5.1.7` 会让插件在 0.5.1 自己列出的基线发行版上**拒绝加载**，与基线表直接矛盾 | 已修复：两个描述符统一为 `core:5.1.0`（`packaging/fcitx5/rspinyin.conf:34`、`rspinyin-ui.conf:35`） |
+| `BUILD-DEF-10` | 打包 | 实测 `packaging/` 只有 `install.sh`、`uninstall.sh`、`fcitx5/` 两个 conf；无 `debian/`、无 `.spec`、无 `PKGBUILD` | `TASK-2.07.01` 未开始，三种原生包均不存在，用户只能从源码构建 | 已修复：`packaging/debian/`、`packaging/rpm/rspinyin.spec`、`packaging/aur/` 三份定义已落盘。**本机未构建过任何一种包** |
+| `BUILD-DEF-11` | 打包 | 实测仓库内无 `*.metainfo.xml` | 无 AppStream 元数据；Fedora 打包规范要求它，GNOME Software / KDE Discover 依赖它 | 已修复：`packaging/metainfo/org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml`，`appstreamcli validate --no-net` 实测 0 error（2 info 已消至 1） |
+| `BUILD-DEF-12` | 打包 | 实测根目录无 `LICENSE-APACHE` / `LICENSE-MIT`；`Cargo.toml:12` 声明 `MIT OR Apache-2.0`；`docs/dev/NOTICE:9` 称二者由 `TASK-2.06.03` 落地 | 双许可声明无对应文件，**发布包无法随附许可证** | 已修复：`LICENSE-APACHE` 与 `LICENSE-MIT` 在仓库根，逐字为 SPDX 官方原文 |
+| `BUILD-DEF-13` | 打包 | 实测根目录无 `README*`；`docs/dev/features.md:4321`（`OB-1`，截止 W4） | Slint 归属展示的主路径（公开网页徽章）无落点，`OB-1` 无法达成，**发布即违反许可义务** | 已修复：`README.md` / `README.zh.md` 均在树，`OB-1` 徽章位于首个二级标题之前并链接 slint.dev |
+| `BUILD-DEF-14` | 打包 | `docs/dev/NOTICE:33` 引用 `LICENSES/LicenseRef-Slint-Royalty-free-2.0.md`；实测无 `LICENSES/` 目录；`scripts/gen-licenses.sh:395` 在 Slint crate 目录内解析该路径，`:453` 的 `git status -- *LICENSES*` 断言在无 `LICENSES/` 时**恒真** | `NOTICE` 声明"随发布产物提供"，但其引用的许可原文路径在本仓库不存在；守卫断言空转，无法发现该问题 | 已修复：`LICENSES/LicenseRef-Slint-Royalty-free-2.0.md` 已建；`gen-licenses.sh` 的空转断言换成「与 Slint 发行包内的原文逐字比对」，并进 `--self-test` |
+| `BUILD-DEF-15` | 签名 | 实测无 `SHA256SUMS`、无 GPG 配置、无 `.github/workflows/release.yml` | 无产物校验和与签名机制（`TASK-3.07.01` 未开始）；用户无法验证下载产物 | 已修复：`xtask verify` 落地九个 `dist/verify/*` 稳定码与显式状态机；`.github/workflows/release.yml` 走构建→签名→自检→上传。**本机无签名密钥，签名链路从未真实执行过** |
+| `BUILD-DEF-16` | CI | `.github/workflows/ci.yml:82` vs `justfile:138` | CI 的 `audit` 作业并未执行 `AGENTS.md` §2 指定的 `just ci`：**`check-licenses`（`OB-1`~`OB-6` 复核）与 `check-versions`（描述符版本漂移）从未在 CI 中运行** | 已修复：`quality` 作业跑的就是 `just ci` 全量 |
+| `BUILD-DEF-17` | CI | 工厂符号检查只存在于 `xtask/src/install/elf.rs`，由 `xtask install` 调用；`.github/workflows/ci.yml:65` 的 host-abi 作业只跑 `cargo check` | 破坏 `fcitx_addon_factory_instance` 导出的改动（误加链接脚本、误用 `strip`）**不会被 CI 拦住**，只会在用户安装时炸 | 已修复：`host-abi` 作业跑 `just check-host`，其中包含 `nm -D` 的工厂符号断言 |
+| `BUILD-DEF-18` | CI | `.github/workflows/ci.yml`（无安装/卸载作业）；`packaging/install.sh`、`packaging/uninstall.sh`、`xtask/src/install/uninstall.rs` 未被 CI 覆盖 | 安装可逆性（`TASK-3.07.03` 的验收项）无自动化验证；卸载回滚逻辑只在开发机上被手工跑过 | 已修复：CI 有安装/卸载可逆性作业 |
+| `BUILD-DEF-19` | 编译 | 实测 `rustup target list --installed` 只有 `x86_64-unknown-linux-gnu`；无 `.cargo/config.toml`；CI 全部作业固定 `ubuntu-24.04` | 无 aarch64 构建路径，`docs/dev/features.md:117` 的"aarch64 待评估"没有任何可执行入口，评估无法闭环 | 已修复：`cross-arch` 作业在原生 arm64 runner 上跑 `just check-arm64`；本轮另加 `matrix.yml` 的 arm64 腿 |
+| `BUILD-DEF-20` | 编译 | 实测无 `.cargo/config.toml`；`.github/workflows/ci.yml` 无 `RUSTFLAGS` / `SOURCE_DATE_EPOCH` | 无链接期硬化（`-z relro -z now`、`--as-needed`、`noexecstack`），也无可复现构建设置（`SOURCE_DATE_EPOCH`、`-ffile-prefix-map`）。插件常驻用户主进程，硬化缺失的代价高于普通 CLI | 已修复：`SOURCE_DATE_EPOCH` 全局设定（`ci.yml:68`），`reproducible` 作业断言 `GNU_RELRO` |
+| `BUILD-DEF-21` | CI | 实测 `.github/workflows/ci.yml` 无 `cargo audit` / `cargo deny` 步骤；`AGENTS.md` §3.9 要求提交前执行二者 | 依赖漏洞与许可证 bans 无自动化门禁，只有人工纪律 | 已修复：`audit` 作业跑 `just check-advisories`（`cargo audit` + `cargo deny`） |
+| `BUILD-DEF-22` | 打包 | 实测 `data/compiled/base.dict` = 248,484 字节 vs `BUDGET-SIZE-02` 阈值 20MB；`.dev-progress.json` 记录 `TASK-1.03.02` / `TASK-1.03.03` 未完成 | 词库内容距发布规模差约 84 倍，**发布产物功能不完整**（候选质量无法达标） | **部分修复**：`data/compiled/base.dict` 仍只有 5,441 条（`dictc` 默认 `--input` 指向 `base.tsv` 而非 349,046 行的 `jieba-dict.tsv`），距 `BUDGET-SIZE-02` 的 20MB 仍差约 84 倍。词库规模是本轮的遗留项 |
+| `BUILD-DEF-23` | CI | 实测无跨发行版作业（`TASK-3.07.03` 未开始） | Fedora / Arch 上从未构建过；`docs/dev/features.md:4451` 的"三套包可安装、可卸载且可逆"验收无任何基础 | 已修复：`.github/workflows/matrix.yml` 与 `packaging/containers/` 五份 Dockerfile 已落盘。**本机未构建过任何镜像，矩阵一次都没跑过** |
 
 ---
 
@@ -162,17 +162,17 @@
 
 ### 3.1 交付矩阵 A：发行版 × 架构
 
-每一行是一个**必须四类任务齐全**的切片。`状态` 列的 `待评估` 来自 `docs/dev/features.md:117` 的 aarch64 判定，不是本文件的取舍。
+每一行是一个**必须四类任务齐全**的切片。`状态` 列的含义：**支持** = 在本机或 CI 上实测通过；**受阻** = 有明确的外部阻塞；**未实测** = 打包定义与 CI 作业已备，但**没有任何一次真实构建发生过**（不是"待评估"，是一个已经取不到的结论，原因随行给出）。
 
 | 切片编号 | 发行版 | 架构 | glibc 下限 | fcitx5 | 状态 | 编译/交叉编译任务 | 签名任务 | 打包产物格式 | 安装验证任务 |
 |---|---|---|---|---|---|---|---|---|---|
 | `L-01` | Ubuntu 24.04 LTS | x86_64 | 2.39 | 5.1.7 | 支持 | `BUILD-P0.01.01` | `BUILD-P1.04.01` | `.deb` | `BUILD-P0.05.02` |
-| `L-02` | Ubuntu 22.04 LTS | x86_64 | 2.35 | 5.0.x | **受阻**（`BUILD-DEF-09`） | `BUILD-P0.03.04` | `BUILD-P1.04.01` | `.deb` | `BUILD-P1.03.01` |
-| `L-03` | Fedora 40+ | x86_64 | 2.39 | 5.1.x | 支持 | `BUILD-P1.01.01` | `BUILD-P1.04.01` | `.rpm` | `BUILD-P1.03.02` |
-| `L-04` | Arch Linux | x86_64 | rolling | 5.1.x | 支持 | `BUILD-P1.01.01` | `BUILD-P1.04.01` | `PKGBUILD` | `BUILD-P1.03.03` |
-| `L-05` | Ubuntu 24.04 LTS | aarch64 | 2.39 | 5.1.7 | 待评估 | `BUILD-P0.01.02` | `BUILD-P1.04.01` | `.deb` | `BUILD-P1.03.05` |
-| `L-06` | Fedora 40+ | aarch64 | 2.39 | 5.1.x | 待评估 | `BUILD-P0.01.02` | `BUILD-P1.04.01` | `.rpm` | `BUILD-P1.03.05` |
-| `L-07` | Arch Linux | aarch64 | rolling | 5.1.x | 待评估 | `BUILD-P0.01.02` | `BUILD-P1.04.01` | `PKGBUILD` | `BUILD-P1.03.05` |
+| `L-02` | Ubuntu 22.04 LTS | x86_64 | 2.35 | 5.0.x | **受阻**（`BUILD-DEF-09`）：22.04 的 fcitx5 是 5.0.x，低于两个描述符的 `core:5.1.0` 门槛，宿主会静默不加载 | `BUILD-P0.03.04` | `BUILD-P1.04.01` | `.deb` | `BUILD-P1.03.01` |
+| `L-03` | Fedora 40+ | x86_64 | 2.39 | 5.1.x | **未实测**：`packaging/rpm/rspinyin.spec` 与容器镜像已交付，但从未 `rpmbuild` 过。**另有一个已知阻塞**：Fedora 40/41 的归档 rustc 是 1.82，低于 workspace MSRV 1.85，`BuildRequires: rust >= 1.85` 在依赖解析阶段即失败，容器里需另装工具链 | `BUILD-P1.01.01` | `BUILD-P1.04.01` | `.rpm` | `BUILD-P1.03.02` |
+| `L-04` | Arch Linux | x86_64 | rolling | 5.1.x | **未实测**：`packaging/aur/PKGBUILD` 与 `.SRCINFO` 已交付，但从未 `makepkg` 过，且 `sha256sums` 仍是 `SKIP`（`Source0` 指向的 tarball 尚不存在，摘要无从计算） | `BUILD-P1.01.01` | `BUILD-P1.04.01` | `PKGBUILD` | `BUILD-P1.03.03` |
+| `L-05` | Ubuntu 24.04 LTS | aarch64 | 2.39 | 5.1.7 | **未实测**：deb 的 `Architecture: any` 已按架构无关写，CI 登记了原生 `ubuntu-24.04-arm` runner 腿，但**本机是 x86_64 且无 arm64 容器**，一次构建都没发生过。取结论需要一台 arm64 机器或一次真实 CI 运行 | `BUILD-P0.01.02` | `BUILD-P1.04.01` | `.deb` | `BUILD-P1.03.05` |
+| `L-06` | Fedora 40+ | aarch64 | 2.39 | 5.1.x | **未实测**，原因同 `L-03` 与 `L-05` 叠加（工具链门槛 + 无 arm64 环境） | `BUILD-P0.01.02` | `BUILD-P1.04.01` | `.rpm` | `BUILD-P1.03.05` |
+| `L-07` | Arch Linux | aarch64 | rolling | 5.1.x | **未实测**：`PKGBUILD` 的 `arch=('x86_64' 'aarch64')` 已声明且 `.SRCINFO` 同步，原因同 `L-04` 与 `L-05` | `BUILD-P0.01.02` | `BUILD-P1.04.01` | `PKGBUILD` | `BUILD-P1.03.05` |
 | `L-08` | 源码 tarball（全架构） | any | 2.35 | 5.1.x | 支持 | `BUILD-P0.03.03` | `BUILD-P1.04.01` | `.tar.gz` + `SHA256SUMS` | `BUILD-P0.05.02` |
 
 **矩阵说明（不可省略的边界）**：
@@ -325,31 +325,31 @@
 
 ### 4.1 双向映射
 
-| 来源编号 | 类别 | 并行通道 | 核心内容 | 绑定任务节点清单 |
-|---|---|---|---|---|
-| `BUILD-DEF-01` | 编译 | Track A | `--all-features` 与 `fcitx5-host` 冲突 | `BUILD-P0.01.01` |
-| `BUILD-DEF-02` | 体积 | Track A | 发布产物未剥离 | `BUILD-P0.02.01` |
-| `BUILD-DEF-03` | 体积 | Track A | 体积预算无 CI 断言 | `BUILD-P0.02.02` |
-| `BUILD-DEF-04` | 打包 | Track B | 缺第二个 cdylib 与 UI 描述符 | `BUILD-P0.03.01` |
-| `BUILD-DEF-05` | 打包 | Track B | `ime-ui` 未进链接图 | `BUILD-P0.03.01` |
-| `BUILD-DEF-06` | 打包 | Track B | `assets/` 图标缺失 | `BUILD-P0.03.02` |
-| `BUILD-DEF-07` | 打包 | Track B | 词库构建依赖网络 | `BUILD-P0.03.03` |
-| `BUILD-DEF-08` | 打包 | Track B | 安装期编译词库 | `BUILD-P0.03.03` |
-| `BUILD-DEF-09` | 打包 | Track B | `core:5.1.7` 与 jammy 基线矛盾 | `BUILD-P0.03.04` |
-| `BUILD-DEF-10` | 打包 | Track B | 无 deb/rpm/AUR | `BUILD-P1.03.01`、`BUILD-P1.03.02`、`BUILD-P1.03.03` |
-| `BUILD-DEF-11` | 打包 | Track B | 无 AppStream 元数据 | `BUILD-P1.03.04` |
-| `BUILD-DEF-12` | 打包 | Track C | 无 LICENSE 文件 | `BUILD-P1.06.01` |
-| `BUILD-DEF-13` | 打包 | Track C | 无 README，`OB-1` 无落点 | `BUILD-P1.06.01` |
-| `BUILD-DEF-14` | 打包 | Track C | `NOTICE` 引用不存在的 `LICENSES/` | `BUILD-P1.06.02` |
-| `BUILD-DEF-15` | 签名 | Track B | 无 SHA256SUMS / 签名 | `BUILD-P1.04.01` |
-| `BUILD-DEF-16` | CI | Track C | CI 未跑 `just ci` 全量 | `BUILD-P0.05.01` |
-| `BUILD-DEF-17` | CI | Track A | 工厂符号导出无 CI 校验 | `BUILD-P0.02.01` |
-| `BUILD-DEF-18` | CI | Track C | 无安装/卸载可逆性验证 | `BUILD-P0.05.02` |
-| `BUILD-DEF-19` | 编译 | Track A | 无 aarch64 构建路径 | `BUILD-P0.01.02` |
-| `BUILD-DEF-20` | 编译 | Track A | 无硬化与可复现构建设置 | `BUILD-P0.01.03` |
-| `BUILD-DEF-21` | CI | Track C | 无 `cargo audit` / `cargo deny` | `BUILD-P0.05.01` |
-| `BUILD-DEF-22` | 打包 | Track A | 词库内容距发布规模差 84 倍 | `BUILD-P0.02.02`、`BUILD-P2.05.03` |
-| `BUILD-DEF-23` | CI | Track A | 无跨发行版编译矩阵 | `BUILD-P1.01.01` |
+| 来源编号 | 类别 | 并行通道 | 核心内容 | 绑定任务节点清单 | 状态 |
+|---|---|---|---|---|---|
+| `BUILD-DEF-01` | 编译 | Track A | `--all-features` 与 `fcitx5-host` 冲突 | `BUILD-P0.01.01` | 已修复：`just ci` 用 `--exclude` 把两个 addon crate 移出 `--all-features`，真实 C ABI 由 `just check-host` 覆盖 |
+| `BUILD-DEF-02` | 体积 | Track A | 发布产物未剥离 | `BUILD-P0.02.01` | 已修复：编译期绝不 strip（`Cargo.toml:84` 写明理由），剥离是打包期动作，剥离后由 `nm -D` 复检工厂符号 |
+| `BUILD-DEF-03` | 体积 | Track A | 体积预算无 CI 断言 | `BUILD-P0.02.02` | 已修复：`just check-size` 已是 CI 的 `size` 作业（`.github/workflows/ci.yml:440`） |
+| `BUILD-DEF-04` | 打包 | Track B | 缺第二个 cdylib 与 UI 描述符 | `BUILD-P0.03.01` | 已修复：双 cdylib 已落地，见 ADR-0004；`crates/ime-ui-addon` 产出 `librspinyin_ui.so` |
+| `BUILD-DEF-05` | 打包 | Track B | `ime-ui` 未进链接图 | `BUILD-P0.03.01` | 已修复：`ime-ui` 的依赖从 `ime-fcitx5` 移入 `ime-ui-addon`，渲染器进入第二个 `.so` |
+| `BUILD-DEF-06` | 打包 | Track B | `assets/` 图标缺失 | `BUILD-P0.03.02` | 已修复：`assets/icon-48.png` 与 `assets/icon.svg` 已在树，载荷 `optional: false` |
+| `BUILD-DEF-07` | 打包 | Track B | 词库构建依赖网络 | `BUILD-P0.03.03` | 已修复：`data/raw/` 的六份源（`base`/`jieba-dict`/`phrase`/`pinyin-data`/`polyphone`/`unihan`）均在树上 |
+| `BUILD-DEF-08` | 打包 | Track B | 安装期编译词库 | `BUILD-P0.03.03` | **未修复**：`packaging/install.sh:132` 仍在安装期执行 `cargo run -p xtask -- dictc`。本轮未改该脚本的语义——三种发行版打包定义改为在**构建期**跑 `dictc`，但源码安装路径的这一步仍在。登记为本轮的遗留项 |
+| `BUILD-DEF-09` | 打包 | Track B | `core:5.1.7` 与 jammy 基线矛盾 | `BUILD-P0.03.04` | 已修复：两个描述符统一为 `core:5.1.0`（`packaging/fcitx5/rspinyin.conf:34`、`rspinyin-ui.conf:35`） |
+| `BUILD-DEF-10` | 打包 | Track B | 无 deb/rpm/AUR | `BUILD-P1.03.01`、`BUILD-P1.03.02`、`BUILD-P1.03.03` | 已修复：`packaging/debian/`、`packaging/rpm/rspinyin.spec`、`packaging/aur/` 三份定义已落盘。**本机未构建过任何一种包** |
+| `BUILD-DEF-11` | 打包 | Track B | 无 AppStream 元数据 | `BUILD-P1.03.04` | 已修复：`packaging/metainfo/org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml`，`appstreamcli validate --no-net` 实测 0 error（2 info 已消至 1） |
+| `BUILD-DEF-12` | 打包 | Track C | 无 LICENSE 文件 | `BUILD-P1.06.01` | 已修复：`LICENSE-APACHE` 与 `LICENSE-MIT` 在仓库根，逐字为 SPDX 官方原文 |
+| `BUILD-DEF-13` | 打包 | Track C | 无 README，`OB-1` 无落点 | `BUILD-P1.06.01` | 已修复：`README.md` / `README.zh.md` 均在树，`OB-1` 徽章位于首个二级标题之前并链接 slint.dev |
+| `BUILD-DEF-14` | 打包 | Track C | `NOTICE` 引用不存在的 `LICENSES/` | `BUILD-P1.06.02` | 已修复：`LICENSES/LicenseRef-Slint-Royalty-free-2.0.md` 已建；`gen-licenses.sh` 的空转断言换成「与 Slint 发行包内的原文逐字比对」，并进 `--self-test` |
+| `BUILD-DEF-15` | 签名 | Track B | 无 SHA256SUMS / 签名 | `BUILD-P1.04.01` | 已修复：`xtask verify` 落地九个 `dist/verify/*` 稳定码与显式状态机；`.github/workflows/release.yml` 走构建→签名→自检→上传。**本机无签名密钥，签名链路从未真实执行过** |
+| `BUILD-DEF-16` | CI | Track C | CI 未跑 `just ci` 全量 | `BUILD-P0.05.01` | 已修复：`quality` 作业跑的就是 `just ci` 全量 |
+| `BUILD-DEF-17` | CI | Track A | 工厂符号导出无 CI 校验 | `BUILD-P0.02.01` | 已修复：`host-abi` 作业跑 `just check-host`，其中包含 `nm -D` 的工厂符号断言 |
+| `BUILD-DEF-18` | CI | Track C | 无安装/卸载可逆性验证 | `BUILD-P0.05.02` | 已修复：CI 有安装/卸载可逆性作业 |
+| `BUILD-DEF-19` | 编译 | Track A | 无 aarch64 构建路径 | `BUILD-P0.01.02` | 已修复：`cross-arch` 作业在原生 arm64 runner 上跑 `just check-arm64`；本轮另加 `matrix.yml` 的 arm64 腿 |
+| `BUILD-DEF-20` | 编译 | Track A | 无硬化与可复现构建设置 | `BUILD-P0.01.03` | 已修复：`SOURCE_DATE_EPOCH` 全局设定（`ci.yml:68`），`reproducible` 作业断言 `GNU_RELRO` |
+| `BUILD-DEF-21` | CI | Track C | 无 `cargo audit` / `cargo deny` | `BUILD-P0.05.01` | 已修复：`audit` 作业跑 `just check-advisories`（`cargo audit` + `cargo deny`） |
+| `BUILD-DEF-22` | 打包 | Track A | 词库内容距发布规模差 84 倍 | `BUILD-P0.02.02`、`BUILD-P2.05.03` | **部分修复**：`data/compiled/base.dict` 仍只有 5,441 条（`dictc` 默认 `--input` 指向 `base.tsv` 而非 349,046 行的 `jieba-dict.tsv`），距 `BUDGET-SIZE-02` 的 20MB 仍差约 84 倍。词库规模是本轮的遗留项 |
+| `BUILD-DEF-23` | CI | Track A | 无跨发行版编译矩阵 | `BUILD-P1.01.01` | 已修复：`.github/workflows/matrix.yml` 与 `packaging/containers/` 五份 Dockerfile 已落盘。**本机未构建过任何镜像，矩阵一次都没跑过** |
 | `L-01` Ubuntu 24.04 x86_64 | 平台切片 | A / B / C | 主切片 | `BUILD-P0.01.01`、`BUILD-P1.04.01`、`BUILD-P1.03.01`、`BUILD-P0.05.02` |
 | `L-02` Ubuntu 22.04 x86_64 | 平台切片 | A / B | 受 `BUILD-DEF-09` 阻塞 | `BUILD-P0.03.04`、`BUILD-P1.04.01`、`BUILD-P1.03.01` |
 | `L-03` Fedora 40+ x86_64 | 平台切片 | A / B | 需跨发行版矩阵 | `BUILD-P1.01.01`、`BUILD-P1.04.01`、`BUILD-P1.03.02` |

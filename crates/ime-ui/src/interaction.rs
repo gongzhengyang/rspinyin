@@ -54,6 +54,17 @@
 //! performs to timestamp a click, and [`InteractionState::translate_at`] takes that
 //! instant as an argument so the debounce is testable without sleeping. Nothing here
 //! blocks, allocates or takes a lock, and nothing here touches the host thread.
+//!
+//! # From a gesture to a host event
+//!
+//! This module decides what an input means; [`route::PointerRouter`] decides which channel
+//! the answer travels on and owns the state across a whole event stream. A surface uses the
+//! router, never the state directly, so that the contract's overflow rules -- a click is
+//! never dropped, a hover is throttled, a page turn is ordered -- are applied in one place.
+
+pub mod route;
+
+pub use self::route::{PointerRouter, RouteRequest};
 
 #[cfg(test)]
 mod tests;

@@ -118,7 +118,6 @@ CONSTANT_BUDGET = 2
 # when a name becomes live, which keeps the list from outliving its reason.
 DEFERRED_TOKENS = {
     "accent-on": "3.2 marks it reserved: text on a solid accent fill, which no surface draws yet",
-    "text-separator": "the header draws one string, so the span-level separator of 3.1.1 has no host",
 }
 
 # Constants of `CandidateMetrics` that neither the window nor a Rust module

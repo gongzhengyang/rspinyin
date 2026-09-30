@@ -43,6 +43,7 @@ use crate::segment::abbrev::{
 };
 
 use super::MAX_WORD_SYLLABLES;
+use super::chars::count_characters;
 
 use super::{Builder, LatticeEdge, MAX_KEYS_PER_NODE, MAX_TOTAL_EDGES, WORDS_PER_KEY};
 
@@ -163,7 +164,7 @@ impl Builder<'_, '_, '_> {
             self.lattice.edges.push(LatticeEdge {
                 end,
                 syllables,
-                characters: u16::try_from(word.text.chars().count()).unwrap_or(u16::MAX),
+                characters: count_characters(word.text),
                 source,
                 word,
                 penalty_q8: ABBREV_PENALTY_Q8,

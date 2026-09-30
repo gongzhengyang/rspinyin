@@ -18,7 +18,7 @@ use std::path::Path;
 use anyhow::Result;
 use ime_dict::format::{
     DictEntry, ENTRY_SIZE, MAX_SYL_COUNT, MAX_WORDS_PER_KEY, PROB_Q12_MAX, UNIGRAM_ENTRY_SIZE,
-    hash_word, pack_fst_value,
+    find_colliding_hashes, hash_word, pack_fst_value,
 };
 
 use super::source::Word;
@@ -120,6 +120,12 @@ pub(crate) fn compile(
             .cmp(&hash_word(&right.text))
             .then_with(|| left.text.cmp(&right.text))
     });
+    // The unigram table is searched by hash alone, so two words sharing one would take
+    // each other's score; the format layer owns the check because it owns the hash.
+    let texts: Vec<&str> = ordered.iter().map(|word| word.text.as_str()).collect();
+    if let Some((hash, left, right)) = find_colliding_hashes(&texts) {
+        anyhow::bail!("dict/unigram/collision: {left:?} and {right:?} share hash {hash:#010x}");
+    }
 
     let mut stats = Stats {
         words: ordered.len() as u64,
@@ -212,6 +218,10 @@ pub(crate) fn compile(
         let offset = strpool.len() as u32;
         strpool.extend_from_slice(word.text.as_bytes());
         let syllables = word.key.matches('\'').count() + 1;
+        // The count travels with the record: deriving it costs a full UTF-8 scan, and the
+        // decode path asks for the same word's count once per span the word covers. A word
+        // in contract is at most `MAX_WORD_LEN` bytes, so the count always fits the field.
+        let characters = u8::try_from(word.text.chars().count()).unwrap_or(u8::MAX);
         entries.extend_from_slice(
             &DictEntry::new(
                 offset,
@@ -220,6 +230,7 @@ pub(crate) fn compile(
                 word.flags,
                 word.weight,
             )
+            .with_characters(characters)
             .encode(),
         );
         unigram.extend_from_slice(&hash_word(&word.text).to_le_bytes());
@@ -450,6 +461,12 @@ mod tests {
             vec!["行长"]
         );
         assert!(reader.unigram_lookup("银行").expect("unigram").is_some());
+        // Every record carries the character count, which is not the byte length.
+        for index in 0..reader.entry_count() {
+            let entry = reader.entry(index).expect("the record");
+            let text = reader.word(&entry).expect("the text");
+            assert_eq!(usize::from(entry.char_count), text.chars().count(), "{text}");
+        }
     }
 
     #[test]

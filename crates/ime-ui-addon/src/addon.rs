@@ -26,11 +26,14 @@
 //! `BUDGET-LAT-05` gives the synchronous part of [`on_addon_init`] 120 ms, and Fcitx5
 //! runs it on the main loop, so nothing here may block on work that belongs to another
 //! thread. The UI thread, the pre-created window and the font warm-up are therefore
-//! started in the background. A frame that arrives before that start-up reports ready
-//! commits its text and draws no candidate window, which is what
-//! [`candidate_window_available`] answers and what the `ui/not-ready` diagnostic
-//! records — at most one line per second, because the throttle in [`crate::ffi`] counts
-//! the repeats instead of writing one line per keystroke.
+//! started in the background — with one bounded exception, [`SURFACE_READY_DEADLINE`],
+//! which waits for the window to exist before the sequence ends. That wait is what makes
+//! the takeover reachable: the host reads `UserInterface::available()` after the addon is
+//! constructed, and a window that exists by then is a window the host can choose. A frame
+//! that arrives before the start-up reports ready commits its text and draws no candidate
+//! window, which is what [`candidate_window_available`] answers and what the `ui/not-ready`
+//! diagnostic records — at most one line per second, because the throttle in [`crate::ffi`]
+//! counts the repeats instead of writing one line per keystroke.
 //!
 //! # Degradation
 //!
@@ -42,12 +45,13 @@
 //! anything else — and it is the only path that returns `false`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Mutex, MutexGuard};
-use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use ime_types::ImeError;
+use ime_types::{ImeError, SurfaceBackend};
+use ime_ui::surface::CandidateSurface;
+use ime_ui::ui_thread::{UiSurface, UiThread, UiThreadConfig};
 
 use crate::ffi::emit_diagnostic;
 use crate::ui_impl;
@@ -65,6 +69,20 @@ const UI_THREAD_NAME: &str = "rspinyin-ui";
 /// for the flush that has to happen before it.
 const UI_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(200);
 
+/// How long the load sequence waits for the candidate window to exist.
+///
+/// `BUDGET-LAT-05` gives the whole synchronous part of the load 120 ms, and the probe, the
+/// configuration and the diagnostics have to fit in what this wait leaves. The wait earns
+/// its place because of *when* the host reads the readiness state: it evaluates
+/// `UserInterface::available()` after the addon is constructed, so a window that exists by
+/// then is a window the host can choose. A window that appears later is only reachable if
+/// something asks the host to look again, and nothing in this library can: asking is
+/// `UserInterfaceManager::updateAvailability()`, which belongs on the host thread, and the
+/// one host-thread callback this addon receives while it is inactive — `available()` — is a
+/// query it has to answer without side effects. A start-up that misses this deadline still
+/// raises the flag when it finishes; what it loses is the host's first look.
+const SURFACE_READY_DEADLINE: Duration = Duration::from_millis(80);
+
 /// Diagnostic code recorded when a frame arrives before the candidate window can be
 /// drawn.
 ///
@@ -73,7 +91,12 @@ const UI_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(200);
 /// grep for it has to match every line either path produced.
 pub const UI_NOT_READY_CODE: &str = "ui/not-ready";
 
-/// Recorded when the UI thread outlived its shutdown deadline and had to be detached.
+/// Recorded when the UI thread did not stop inside its shutdown deadline.
+///
+/// Two ways of missing it share the code, because both leave the same state behind — a
+/// thread that is still running while the addon is being unloaded: a stop request that
+/// could not be delivered, and a thread that was asked and did not answer in time. In both
+/// cases the thread is detached rather than waited for.
 const UI_SHUTDOWN_TIMEOUT_CODE: &str = "ui/shutdown-timeout";
 
 /// One step of the synchronous initialisation sequence.
@@ -103,15 +126,17 @@ impl InitStep {
 ///
 /// The engine addon's sequence covers the dictionary and the session; this one covers
 /// only what a candidate window needs, and the two run in their own processes' addon
-/// load order. Most steps' subsystems are still documentation-only, so their bodies
-/// record the gap and report success — the degraded state the module documentation
-/// describes. When a subsystem lands, its step body calls into it and reports the
-/// outcome; the table itself does not change.
+/// load order. The order below is load-bearing in one place: the platform probe runs
+/// before the UI start-up, because the start-up builds the window into the surface the
+/// probe constructed and has nothing to build without it. The remaining steps' subsystems
+/// are still documentation-only, so their bodies record the gap and report success — the
+/// degraded state the module documentation describes. When such a subsystem lands, its
+/// step body calls into it and reports the outcome; the table itself does not change.
 const INIT_STEPS: &[InitStep] = &[
     InitStep::new("diagnostics", true, init_diagnostics),
     InitStep::new("config", false, load_config),
-    InitStep::new("ui-startup", false, start_ui_startup),
     InitStep::new("platform", false, probe_platform),
+    InitStep::new("ui-startup", false, start_ui_startup),
     InitStep::new("ui-registration", false, register_ui),
 ];
 
@@ -148,25 +173,39 @@ fn load_config() -> Result<(), ImeError> {
     Ok(())
 }
 
-/// Starts the UI thread, the window and the font warm-up in the background.
+/// Starts the UI thread, the pre-created window and the font warm-up.
 ///
-/// The step itself is cheap — one thread spawn — which is what keeps it inside the load
-/// budget; everything expensive runs on the worker. A thread that cannot be created is
-/// the only failure here, and it leaves the addon unavailable so the host keeps drawing
-/// the candidates itself.
+/// The step takes the backend the platform probe constructed. Without one there is no
+/// surface to build and no thread to own one, and the probe has already recorded why, so
+/// the step returns success rather than repeating the reason under a second code.
+///
+/// The thread starts in the background and the step waits for the window for at most
+/// [`SURFACE_READY_DEADLINE`], which is the sequence's one bounded wait on another thread's
+/// work; that constant records why the wait is what makes the takeover reachable.
+///
+/// # Errors
+///
+/// Returns [`ImeError::UiChannelClosed`] when the thread cannot be created. The UI channel
+/// never opens in that case, which leaves the addon unavailable: the host keeps drawing the
+/// candidates itself, and typing is unaffected.
 fn start_ui_startup() -> Result<(), ImeError> {
-    set_ui_startup(spawn_ui_startup()?);
+    let Some(backend) = crate::platform::take_backend() else {
+        return Ok(());
+    };
+    set_ui_startup(spawn_ui_startup(backend)?);
     Ok(())
 }
 
-/// Probes the platform backend.
+/// Probes the platform backend and constructs it.
 ///
-/// Integration point: the X11 / Wayland probe and the backend ladder belong to the
-/// platform work. A session that offers neither leaves the backend flag clear, so
-/// `available()` answers `false` and ClassicUI keeps the candidates rather than the
-/// plugin suppressing them with nothing to draw in their place.
+/// The probe's outcome is recorded by [`crate::platform::install`], which owns the
+/// diagnostic and the availability flag the host reads: a session that can host no window
+/// gets `platform/compositor/unsupported` with the tier it offered, and the host keeps
+/// drawing the candidates. The step itself never fails — "no backend" is the answer to the
+/// question the probe asks rather than a step that went wrong, and reporting it as a failed
+/// step would name the same condition under two codes.
 fn probe_platform() -> Result<(), ImeError> {
-    pending_step("platform", "the X11 / Wayland backend probe");
+    crate::platform::install(crate::platform::probe_from_process());
     Ok(())
 }
 
@@ -185,6 +224,15 @@ fn probe_platform() -> Result<(), ImeError> {
 /// reentrant. A thread that notices a change in the state the takeover reads — the UI
 /// start-up reporting ready, the platform probe answering — has to get back onto the
 /// host loop before re-running it, rather than calling it from where the change happened.
+///
+/// The attempt is therefore made once per load, after both facts it reads are known: the
+/// probe has answered, and the start-up has had [`SURFACE_READY_DEADLINE`] to produce the
+/// window. A window that appears after that is not retried from here, and cannot be — the
+/// only host-thread callback this addon receives while it is inactive is `available()`,
+/// which is a query it has to answer without side effects, so a later attempt needs an
+/// entry point that posts `updateAvailability()` onto the host's own loop, which this
+/// library does not have. What a late window still changes is `available()` itself, which
+/// the host reads the next time it re-evaluates.
 fn register_ui() -> Result<(), ImeError> {
     let outcome = ui_impl::register_takeover();
     emit_diagnostic(&outcome.diagnostic());
@@ -224,18 +272,31 @@ pub fn on_addon_init() -> bool {
 /// Stops the UI thread and releases what the start-up took.
 ///
 /// Runs on the host thread during unload, so the wait is bounded by
-/// [`UI_SHUTDOWN_TIMEOUT`]; a worker that outlives it is detached and recorded rather
-/// than blocking the host.
+/// [`UI_SHUTDOWN_TIMEOUT`]; a thread that outlives it is detached and recorded rather than
+/// blocking the host.
+///
+/// Both readiness flags are cleared afterwards. The window and the backend go away with the
+/// addon, so a host that asks in between — a reload that re-evaluates availability before
+/// the next initialisation has run — has to be told there is no window rather than be routed
+/// input-panel updates into one that no longer exists.
 pub fn on_addon_destroy() {
     let started = std::time::Instant::now();
     let stopped_cleanly = stop_ui();
+    clear_ui_ready();
+    ui_impl::set_window_backend_available(false);
     report_destroy_outcome(started.elapsed(), stopped_cleanly);
 }
 
 /// Records the outcome of the initialisation sequence.
+///
+/// The backend is named here rather than in a line of its own: which surface serves the
+/// window is part of the same "did the load work" summary, and a code of its own would be a
+/// second name for something this line already carries. `none` means the probe found no
+/// backend, whose reason was recorded by the platform layer when it looked.
 fn report_init_outcome(is_usable: bool, elapsed: Duration) {
+    let backend = crate::platform::backend_id().unwrap_or("none");
     emit_diagnostic(&format!(
-        "lifecycle/init: usable={is_usable} elapsed_ms={}",
+        "lifecycle/init: usable={is_usable} backend={backend} elapsed_ms={}",
         elapsed.as_millis()
     ));
 }
@@ -254,20 +315,25 @@ fn report_destroy_outcome(elapsed: Duration, stopped_cleanly: bool) {
 /// availability every time it re-evaluates which user interface is active, and
 /// [`candidate_window_available`] records a diagnostic each time it answers "not
 /// ready", which would fill the log with one line per query.
+///
+/// The UI thread raises the flag when the surface exists and [`on_addon_destroy`] clears it
+/// again, so the answer follows the window rather than the process: `true` while there is a
+/// surface to draw into, `false` before one exists and after one has been released.
 pub fn candidate_window_ready() -> bool {
     UI_READY.load(Ordering::Acquire)
 }
 
 /// Whether a frame built now may be drawn into the candidate window.
 ///
-/// Answers `false` until the background start-up reports ready — the first few hundred
-/// milliseconds of the process, and the whole of a start-up that failed. A caller that
-/// receives `false` must still commit the text it holds: only the window is skipped,
-/// never the input. Each declined frame records `ui/not-ready`, the diagnostic that
-/// explains a candidate window which is briefly absent; the throttle behind it writes
-/// that code once per second and carries the count of what it swallowed on the next
-/// line, so a session that never becomes ready costs a rate rather than a line per
-/// keystroke.
+/// Answers `false` until the surface exists: a start-up that failed answers `false` for the
+/// rest of the session, and a start-up that is merely slow answers `false` until it
+/// finishes, which is at most [`SURFACE_READY_DEADLINE`] of the load and the whole of a
+/// first frame that arrives during it. A caller that receives `false` must still commit the
+/// text it holds: only the window is skipped, never the input. Each declined frame records
+/// `ui/not-ready`, the diagnostic that explains a candidate window which is briefly absent;
+/// the throttle behind it writes that code once per second and carries the count of what it
+/// swallowed on the next line, so a session that never becomes ready costs a rate rather
+/// than a line per keystroke.
 pub fn candidate_window_available() -> bool {
     match gate_candidate_window(candidate_window_ready()) {
         Ok(()) => true,
@@ -289,6 +355,9 @@ fn gate_candidate_window(is_ui_ready: bool) -> Result<(), &'static str> {
 }
 
 /// Whether the candidate window can be drawn into.
+///
+/// Raised by the UI thread once the surface exists ([`mark_ui_ready`]) and cleared by the
+/// host thread when the addon is released ([`clear_ui_ready`]).
 static UI_READY: AtomicBool = AtomicBool::new(false);
 
 /// The background start-up, or `None` before it starts and after it is stopped.
@@ -298,75 +367,87 @@ static UI_READY: AtomicBool = AtomicBool::new(false);
 /// test that drives the lifecycle itself.
 static UI_STARTUP: Mutex<Option<UiStartup>> = Mutex::new(None);
 
-/// The deferred part of the UI start-up.
+/// The deferred part of the UI start-up: the thread, and the signal that the window exists.
 struct UiStartup {
-    /// The worker running the start-up.
-    worker: JoinHandle<()>,
-    /// Reports that the worker has finished.
+    /// The thread that owns the window.
+    thread: UiThread,
+    /// Reports that the surface was built, and disconnects when the build failed.
     ///
-    /// A channel rather than the handle itself: a thread handle has no timed join, and
-    /// blocking the host for as long as the UI thread lives would break the destroy
-    /// budget.
-    finished: Receiver<()>,
+    /// A channel rather than the thread handle: [`UiThread::shutdown`] takes a timeout of
+    /// its own, but the host has to learn that the window exists *before* it decides
+    /// whether to take the candidates over, which is a wait on a signal rather than on a
+    /// thread.
+    ready: Receiver<()>,
 }
 
 impl UiStartup {
-    /// Pairs a worker with the channel that reports it finished.
-    fn new(worker: JoinHandle<()>, finished: Receiver<()>) -> Self {
-        Self { worker, finished }
+    /// Pairs the thread with the signal that reports the window.
+    fn new(thread: UiThread, ready: Receiver<()>) -> Self {
+        Self { thread, ready }
+    }
+
+    /// Waits up to `deadline` for the candidate window to exist.
+    ///
+    /// The outcome is deliberately not a return value: readiness is the flag the rest of
+    /// the plugin reads, the takeover reports `ui/not-ready` when the window is not there,
+    /// and a wait that ran out is not a condition to act on — the thread keeps building,
+    /// and the flag it raises on the way is what the host will read next time.
+    fn await_window(&self, deadline: Duration) {
+        // A disconnect means the build failed, which is the same answer as a wait that ran
+        // out: no window, and nothing different to do about it.
+        let _ = self.ready.recv_timeout(deadline);
     }
 }
 
-/// Spawns the worker that starts the UI thread, the window and the font warm-up.
+/// Starts the UI thread and waits, bounded, for the candidate window to exist.
+///
+/// The factory runs on the UI thread because that is where the Slint platform has to be
+/// installed; it builds the surface, raises the readiness flag and reports back. Raising
+/// the flag there rather than in the waiter is what makes a start-up that misses the
+/// deadline still count: the thread that built the window is the one that knows it exists.
 ///
 /// # Errors
 ///
-/// Returns [`ImeError::UiChannelClosed`] when the thread cannot be created. The UI
-/// channel never opens in that case, which is the same reduced state as a window that
-/// failed to appear: text still commits, the window is simply absent.
-fn spawn_ui_startup() -> Result<UiStartup, ImeError> {
-    let (finished_tx, finished) = channel();
-    let worker = thread::Builder::new()
-        .name(String::from(UI_THREAD_NAME))
-        .spawn(move || {
-            if ui_startup_body().is_ok() {
-                mark_ui_ready();
-            }
-            // A send that fails means nobody is waiting, which is what happens when the
-            // host stopped the worker by dropping its handle.
-            let _ = finished_tx.send(());
-        })
-        .map_err(|_| ImeError::UiChannelClosed)?;
-    Ok(UiStartup::new(worker, finished))
-}
-
-/// The body of the UI start-up worker.
-///
-/// Integration point: the UI thread, the pre-created window and the font warm-up belong
-/// to the candidate-window work, and the backend they need comes from the platform
-/// probe. Until both land there is no window to report, so the start-up fails the way a
-/// session without a usable backend would — `ui/channel-closed` is the frozen code for
-/// "the UI is not ready" — and the readiness flag stays clear, which keeps the host on
-/// ClassicUI rather than suppressing it with nothing to draw.
-///
-/// # Errors
-///
-/// Always [`ImeError::UiChannelClosed`] while the integration point stands. The body
-/// reports success once the window exists, and that is when readiness is raised.
-fn ui_startup_body() -> Result<(), ImeError> {
-    pending_step("ui-startup", "the UI thread and the pre-created window");
-    Err(ImeError::UiChannelClosed)
+/// Returns [`ImeError::UiChannelClosed`] when the thread cannot be created. The UI channel
+/// never opens in that case, which is the same reduced state as a window that failed to
+/// appear: text still commits, the window is simply absent.
+fn spawn_ui_startup(backend: Box<dyn SurfaceBackend>) -> Result<UiStartup, ImeError> {
+    let (ready_tx, ready) = channel();
+    let config = UiThreadConfig {
+        thread_name: UI_THREAD_NAME,
+        ..UiThreadConfig::default()
+    };
+    let thread = UiThread::spawn(config, move |_context| {
+        let surface = CandidateSurface::new(backend)?;
+        mark_ui_ready();
+        // A failed send means nobody is waiting any more, which is what a start-up that
+        // outlived its deadline looks like; the flag above is the answer either way.
+        let _ = ready_tx.send(());
+        let surface: Box<dyn UiSurface> = Box::new(surface);
+        Ok(surface)
+    })?;
+    let startup = UiStartup::new(thread, ready);
+    startup.await_window(SURFACE_READY_DEADLINE);
+    Ok(startup)
 }
 
 /// Records that the candidate window may be drawn into.
+///
+/// Called on the UI thread, once the surface exists. The host thread clears it again in
+/// [`on_addon_destroy`], because the window goes away with the addon.
 fn mark_ui_ready() {
     UI_READY.store(true, Ordering::Release);
+}
+
+/// Records that the candidate window is gone.
+fn clear_ui_ready() {
+    UI_READY.store(false, Ordering::Release);
 }
 
 /// Stores the background start-up, stopping a previous one first.
 ///
 /// A host that initialises the addon twice without destroying it in between would
-/// otherwise leave the first worker running with nothing holding its handle.
+/// otherwise leave the first UI thread running with nothing holding it.
 fn set_ui_startup(startup: UiStartup) {
     if let Some(previous) = take_ui_startup() {
         stop_ui_startup(previous);
@@ -401,34 +482,24 @@ fn lock_ui_startup() -> MutexGuard<'static, Option<UiStartup>> {
     }
 }
 
-/// Stops the background start-up, waiting at most [`UI_SHUTDOWN_TIMEOUT`].
+/// Stops the UI thread, waiting at most [`UI_SHUTDOWN_TIMEOUT`].
 ///
-/// Returns whether the worker stopped inside the deadline. A worker that outlived it is
-/// detached: dropping its handle leaves it to finish on its own, which is the only
-/// option left once the host is tearing the process down. Stopping the real UI thread
-/// means delivering a shutdown command to the channel its poll loop waits on; that
-/// command is an integration point for the candidate-window work, so today the worker
-/// is a start-up sequence that ends by itself.
+/// Returns whether it stopped inside the deadline. The stop request travels on the channel
+/// the UI thread's `poll` loop waits on, and the loop wakes on it, closes the surface and
+/// exits, so a window with nothing to draw is stopped rather than waited out. A thread that
+/// outlived the deadline — or that could not be asked at all — is detached and reported
+/// under [`UI_SHUTDOWN_TIMEOUT_CODE`]: dropping its handle leaves it to finish on its own,
+/// which is the only option left once the host is tearing the process down.
 fn stop_ui_startup(startup: UiStartup) -> bool {
-    let UiStartup { worker, finished } = startup;
-    match finished.recv_timeout(UI_SHUTDOWN_TIMEOUT) {
-        Ok(()) => {
-            let _ = worker.join();
-            true
-        }
-        Err(RecvTimeoutError::Timeout) => {
-            emit_diagnostic(UI_SHUTDOWN_TIMEOUT_CODE);
-            // Dropping the handle detaches the worker; it ends when the process does.
-            drop(worker);
-            false
-        }
-        Err(RecvTimeoutError::Disconnected) => {
-            // The worker went away without reporting. It cannot be waited for, but it is
-            // also no longer running, so this is not a clean stop.
-            let _ = worker.join();
-            false
-        }
+    let UiStartup { thread, .. } = startup;
+    let delivered = thread.shutdown(UI_SHUTDOWN_TIMEOUT).is_ok();
+    // The thread counts a join that ran out in its own statistics, because a shutdown that
+    // gives up is still a successful call: the request was delivered, the answer was not.
+    let timed_out = thread.stats().shutdown_timeouts > 0;
+    if !delivered || timed_out {
+        emit_diagnostic(UI_SHUTDOWN_TIMEOUT_CODE);
     }
+    delivered && !timed_out
 }
 
 #[cfg(test)]

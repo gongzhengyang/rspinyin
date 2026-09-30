@@ -19,11 +19,12 @@
 //!
 //! # Where the real model comes from
 //!
-//! The dictionary-backed `UnigramBigram` is built by `ime-dict` from the compiled
-//! dictionary's unigram and word-list sections. It implements the same frozen
+//! The dictionary-backed model is `ime_dict::fst_index::DictLm`: it reads the
+//! compiled dictionary's `UNIGRAM` section straight out of the mapping, so it holds
+//! no table of its own and allocates nothing. It implements the same frozen
 //! `LanguageModel` trait as [`InMemoryLm`], so the decoder never learns which of
 //! the two it is holding, and a test written against the double keeps its meaning
-//! when the real model is swapped in.
+//! when the real model is assembled in its place.
 
 pub mod ngram;
 pub mod score;

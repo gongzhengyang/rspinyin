@@ -31,20 +31,11 @@
 //! paging state holds the highlight, not the frame -- so it is an adapter input rather than
 //! a field of the snapshot.
 
-use ime_types::{Candidate, UiFrame};
+use ime_types::{Candidate, StatusStrip, UiFrame};
 
 use super::cell::{CellGeometry, CellState, Measure, PointerState, replace, write_text};
+use super::preedit::PreeditLayout;
 use crate::layout::{self, GridLayout, Metrics};
-
-/// The longest preedit the adapter hands to the component, in characters.
-///
-/// A bound rather than a measurement. The preedit is one line of the header and the widest
-/// panel holds roughly fifty glyphs at the header font size, so sixty-four characters is more
-/// than any container can draw, and the string the component is handed stays bounded however
-/// long the composing session runs. The cut is on the left, which is 3.1.3's rule: the newest
-/// input stays visible while the head scrolls away. The component elides as well, as the
-/// last-resort guard.
-pub const PREEDIT_MAX_CHARS: usize = 64;
 
 /// The window's drawable state, as the component's properties hold it.
 ///
@@ -53,8 +44,9 @@ pub const PREEDIT_MAX_CHARS: usize = 64;
 /// instance.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DrawState {
-    /// The preedit line, already cut on the left so the newest input stays visible.
-    pub preedit_text: String,
+    /// The preedit line: its runs, already cut on the left so the newest input stays visible,
+    /// split around the caret and carrying the two facts about the cut the header draws with.
+    pub preedit: PreeditLayout,
     /// The mode strip's label, in the language the scheme uses.
     pub mode_label: String,
     /// Candidates on the page being drawn.
@@ -77,6 +69,12 @@ pub struct DrawState {
     pub header_height: f32,
     /// Whether a candidate's annotation is drawn beside it, from `layout.show_annotation`.
     pub show_annotation: bool,
+    /// Whether the status strip reports full-width input (3.1.1's second marker).
+    pub full_width: bool,
+    /// Whether the status strip reports Chinese punctuation (3.1.1's third marker).
+    pub punctuation_full: bool,
+    /// Whether the status strip reports read-only mode (3.6's lock).
+    pub readonly: bool,
     /// The cells of the page, in the order the frame holds them.
     ///
     /// Empty for a frame with no candidate, which is what makes the grid take no height and
@@ -96,8 +94,8 @@ pub struct DrawState {
 /// visible -- from spending a `SharedString` per candidate text.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DrawDelta {
-    /// The preedit line changed.
-    pub preedit_text: bool,
+    /// What the preedit line draws changed.
+    pub preedit: bool,
     /// The mode strip's label changed.
     pub mode_label: bool,
     /// The number of candidates on the page changed.
@@ -116,6 +114,8 @@ pub struct DrawDelta {
     pub header_height: bool,
     /// Whether an annotation is drawn changed.
     pub show_annotation: bool,
+    /// One of the status strip's three flags changed.
+    pub status: bool,
     /// What a cell draws changed: a candidate, its text or its state.
     pub cells: bool,
 }
@@ -135,7 +135,7 @@ impl DrawDelta {
     ///
     /// Never panics.
     pub fn is_empty(self) -> bool {
-        !(self.preedit_text
+        !(self.preedit
             || self.mode_label
             || self.item_count
             || self.max_per_row
@@ -145,6 +145,7 @@ impl DrawDelta {
             || self.container_height
             || self.header_height
             || self.show_annotation
+            || self.status
             || self.cells)
     }
 }
@@ -233,12 +234,17 @@ impl DrawState {
             position: 0,
             width: cell.width,
             annotation_width: 0.0,
-            show_annotation,
             metrics: *metrics,
         };
-        let cells = self.write_cells(frame, geometry, measure);
+        let cells = self.write_cells(frame, geometry, show_annotation, measure);
+        // Laid out after the panel is sized, because the preedit's budget is what the panel's
+        // width leaves once the strip's own chrome has taken its share of it.
+        let available = preedit_budget(container.width, &frame.status, metrics, measure);
+        let preedit = self
+            .preedit
+            .update(&frame.preedit, available, metrics.font_size_header, measure);
         DrawDelta {
-            preedit_text: write_preedit(&mut self.preedit_text, &frame.preedit.text),
+            preedit,
             mode_label: write_text(&mut self.mode_label, &frame.status.mode_label),
             item_count: replace(&mut self.item_count, count(frame.candidates.len())),
             max_per_row: replace(&mut self.max_per_row, i32::from(columns)),
@@ -248,6 +254,7 @@ impl DrawState {
             container_height: replace(&mut self.container_height, container.height),
             header_height: replace(&mut self.header_height, header_height(&grid, metrics)),
             show_annotation: replace(&mut self.show_annotation, show_annotation),
+            status: self.write_status(&frame.status),
             cells,
         }
     }
@@ -281,6 +288,34 @@ impl DrawState {
         changed
     }
 
+    /// Writes the status strip's three flags into this state.
+    ///
+    /// The strip carries a mode label, four booleans and a script. The header draws the label
+    /// as text and three of the four booleans as markers -- the mode dot reads the label, so
+    /// it needs no boolean of its own. `has_user_dict_hit` is the fourth and is deliberately
+    /// not drawn: 3.1.1 gives the cluster four fixed slots and names them mode, full-width,
+    /// punctuation and read-only, so the fifth has no slot to take. It travels in the frame
+    /// and is drawn nowhere rather than inventing a marker the fixed-width contract has no
+    /// room for.
+    ///
+    /// # Returns
+    ///
+    /// Whether any of the three changed.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    fn write_status(&mut self, status: &StatusStrip) -> bool {
+        let mut changed = replace(&mut self.full_width, status.full_width);
+        changed |= replace(&mut self.punctuation_full, status.punctuation_full);
+        changed |= replace(&mut self.readonly, status.readonly);
+        changed
+    }
+
     /// Rebuilds the cells of the page from `frame`, reusing the buffers already held.
     ///
     /// The vector is grown and truncated rather than rebuilt, so a frame that redraws the
@@ -289,7 +324,13 @@ impl DrawState {
     /// # Returns
     ///
     /// Whether anything a cell draws changed.
-    fn write_cells(&mut self, frame: &UiFrame, base: CellGeometry, measure: &mut Measure) -> bool {
+    fn write_cells(
+        &mut self,
+        frame: &UiFrame,
+        base: CellGeometry,
+        show_annotation: bool,
+        measure: &mut Measure,
+    ) -> bool {
         let count = frame.candidates.len();
         let mut changed = false;
         if self.cells.len() < count {
@@ -309,7 +350,7 @@ impl DrawState {
             let mut geometry = base;
             geometry.position = position;
             geometry.annotation_width =
-                annotation_width(candidate, base.show_annotation, &base.metrics, measure);
+                annotation_width(candidate, show_annotation, &base.metrics, measure);
             changed |= cell.write(candidate, geometry, measure);
             changed |= cell.resolve(position, self.pointer);
         }
@@ -501,9 +542,18 @@ fn natural_cell_width(
 
 /// What a candidate's annotation costs beside its text, in logical pixels.
 ///
-/// Zero when there is nothing to draw or the layout turned the annotation off, which is what
-/// keeps a cell without one from reserving room for it. The gap before the annotation is part
-/// of the cost, so the caller can subtract the whole value from the text's budget.
+/// Zero when there is nothing to draw, when the layout turned the annotation off, or when
+/// this cell cannot afford it -- which is what keeps a cell without one from reserving room
+/// for it. The gap before the annotation is part of the cost, so the caller can subtract the
+/// whole value from the text's budget.
+///
+/// 3.1.3 caps the text at `max_text_width`, and an annotation is dropped whole rather than
+/// allowed to squeeze the text: a candidate whose text has been elided to make room for a
+/// reading hint is worse than one with no hint at all. The test is what the layout
+/// arithmetic makes it -- a cell is never wider than `max_text_width + cell_chrome_width`,
+/// so text, gap and hint have to fit inside `max_text_width` together, and a cell that keeps
+/// its hint is then never one the cap has to cut. The decision is made here, once, so the
+/// component never has to branch on a measurement.
 fn annotation_width(
     candidate: &Candidate,
     show_annotation: bool,
@@ -513,39 +563,50 @@ fn annotation_width(
     if !show_annotation {
         return 0.0;
     }
-    match candidate.annotation.as_deref() {
-        Some(annotation) if !annotation.is_empty() => {
-            metrics.annotation_gap + measure.width(annotation, metrics.font_size_small)
-        }
-        _ => 0.0,
+    let Some(annotation) = candidate.annotation.as_deref() else {
+        return 0.0;
+    };
+    if annotation.is_empty() {
+        return 0.0;
     }
+    let text = measure.width(&candidate.text, metrics.font_size_cell);
+    let reading = measure.width(annotation, metrics.font_size_small);
+    if text + metrics.annotation_gap + reading > metrics.max_text_width {
+        return 0.0;
+    }
+    metrics.annotation_gap + reading
 }
 
-/// Writes the preedit, cut on the left, into a buffer the state already holds.
+/// The width the preedit has in the header, in logical pixels.
 ///
-/// Returns whether the buffer changed.
-fn write_preedit(target: &mut String, text: &str) -> bool {
-    let start = truncation_start(text, PREEDIT_MAX_CHARS);
-    write_text(target, &text[start..])
+/// Everything the strip draws beside the preedit comes off the panel's width: the two
+/// insets, the gap either side of the status text, the text's own estimated width and the
+/// status cluster's fixed width. The cluster's width is the *full* one, because this is
+/// asked before the preedit's layout decides whether the two secondary markers are worth
+/// their room -- and that layout adds the room back when it drops them, which is what makes
+/// the two halves one decision rather than two.
+fn preedit_budget(
+    container_width: f32,
+    status: &StatusStrip,
+    metrics: &Metrics,
+    measure: &mut Measure,
+) -> f32 {
+    let chrome = metrics.container_padding
+        + metrics.header_padding_h
+        + 2.0 * metrics.header_text_gap
+        + measure.width(&status.mode_label, metrics.font_size_small)
+        + status_cluster_width(metrics);
+    (container_width - chrome).max(0.0)
 }
 
-/// The byte offset at which the tail of `text` that fits `max_chars` characters begins.
+/// The width of the header's status cluster, in logical pixels.
 ///
-/// Always a character boundary, so the slice it indexes is a valid `str` however the input
-/// mixes scripts. A text that already fits keeps all of it.
-fn truncation_start(text: &str, max_chars: usize) -> usize {
-    if max_chars == 0 {
-        return text.len();
-    }
-    let characters = text.chars().count();
-    if characters <= max_chars {
-        return 0;
-    }
-    // `char_indices` is the only source of a byte offset guaranteed to sit on a character
-    // boundary, which is what makes the slice this indexes a valid `str`.
-    text.char_indices()
-        .nth(characters - max_chars)
-        .map_or(0, |(index, _)| index)
+/// `4 * icon + 3 * gap`, the expression `ui/candidate.slint` declares for the component
+/// itself. The cluster is a fixed-size block so that toggling a mode cannot reflow the
+/// preedit, which is what makes its width a constant of the layout rather than a function of
+/// the frame.
+fn status_cluster_width(metrics: &Metrics) -> f32 {
+    4.0 * metrics.header_icon_size + 3.0 * metrics.header_icon_gap
 }
 
 /// A candidate count as the component's integer property type.

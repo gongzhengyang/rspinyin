@@ -121,7 +121,7 @@ cargo test --workspace --doc                        # doctest 单独补跑
 | 维度 | 基线 | 说明 |
 |---|---|---|
 | 发行版 | Ubuntu 24.04 LTS、Fedora 40+、Arch Linux。**Ubuntu 22.04 LTS 不支持** | 22.04 的 fcitx5 是 5.0.x，低于两个 addon 描述符声明的 `core:5.1.0` 门槛。`[Addon/Dependencies]` 的每一项都是**必需**依赖，所以 Fcitx5 会因依赖不满足而**静默不加载该 addon**——用户看到的是"输入法不在列表里"，没有任何诊断。低于基线不做部分降级，也不产出兼容构建（`R-06` 待评估）。其余档位见 0.5.2 |
-| 架构 | x86_64 优先；aarch64 待评估 | 纯 Rust + 无 SIMD 内在函数的首版实现天然可移植 |
+| 架构 | x86_64 已实测；aarch64 **已交付构建路径，本机不可验证** | 纯 Rust + 无 SIMD 内在函数的实现天然可移植，三份打包定义也都按架构无关写（deb `Architecture: any`、rpm `%{_libdir}`、PKGBUILD `arch=('x86_64' 'aarch64')`），CI 的跨发行版矩阵登记了原生 `ubuntu-24.04-arm` runner 腿。**但本机是 x86_64 且无 arm64 容器**，`just check-arm64` 在非 arm64 上会主动拒绝运行，因此**没有任何一次 aarch64 构建或安装在本机发生过**——该列不是"支持"也不是"待评估"，而是"路径已备、结论未取"。取结论需要一个 arm64 机器或一次真实的 CI 运行 |
 | glibc | 2.35+ | 与 Ubuntu 22.04 对齐 |
 | Rust 工具链 | 1.98.0（本机实测版本） | `rust-version = "1.85"` 作为 workspace MSRV，CI 用 1.98 稳定版构建 |
 | Fcitx5 | 5.1.x（`Fcitx5Core` / `Fcitx5Utils` / `Fcitx5Config` 开发包） | 运行时校验的是**本插件自己的 C ABI 版本**（`ime_types::version::check_abi`，`RSPINYIN_ABI_VERSION`），不是 fcitx5 的版本号：两个 cdylib 各自编译自己的 C++ 胶水，握手失败时报 `platform/fcitx5/version-mismatch` 并禁用自绘 UI。**fcitx5 自身的版本门槛由 addon 描述符的 `core:` 依赖表达、由宿主在加载期判定**（见上一行的发行版说明），代码里没有 `fcitx::Instance::version()` 调用 |
@@ -169,7 +169,7 @@ cargo test --workspace --doc                        # doctest 单独补跑
 | 词库/主题自动更新 | 不支持：v1 无更新通道，升级随包管理器 | 不支持：同 X11 口径 | 不支持：同 X11 口径 | 不支持：同 X11 口径 | P2 | TASK-3.07.02 |
 | 遥测与崩溃上报 | 不支持：零遥测，崩溃数据仅本地留存 | 不支持：同 X11 口径 | 不支持：同 X11 口径 | 不支持：同 X11 口径 | P2（能力本身不进首版；"零遥测"约束由 P0 的 TASK-1.06.03 强制） | TASK-1.06.03、TASK-3.08.02 |
 | **嵌入式 / 自助终端 / 车机部署** | 不支持：Slint 的 Royalty-free 2.0 授权**明确排除嵌入式系统**（`OB-3`），此类部署需自行取得 GPL-3.0 或商业许可 | 不支持：同 X11 口径 | 不支持：同 X11 口径 | 不支持：同 X11 口径 | P0（**许可红线**，由 TASK-1.06.03 在 `docs/dev/licenses.md` 显式声明） | TASK-1.06.03、[ADR-0000](adr/0000-upstream-decisions.md) |
-| Slint 归属展示（`OB-1`） | 支持：README / 项目页的 Slint 徽章（主路径）；Phase 2 起命令面板内提供 `AboutSlint` 组件（补充路径） | 支持：同 X11 口径 | 支持：同 X11 口径 | 支持：同 X11 口径 | P0（**许可义务**，Phase 1 出口准则之一） | TASK-1.06.03、TASK-2.03.03 |
+| Slint 归属展示（`OB-1`） | 支持：README / 项目页的 Slint 徽章（主路径）；Phase 2 起命令面板内提供 `AboutSlint` 组件（补充路径） | 支持：同 X11 口径 | 支持：同 X11 口径 | 支持：同 X11 口径 | P0（**许可义务**，Phase 1 出口准则之一） | TASK-1.06.03、TASK-2.03.03、BUILD-P1.06.01（公开页面的可达性：`Cargo.toml` 的 `repository` 与两份 README 的徽章同指 https://github.com/gongzhengyang/rspinyin，该地址实测 HTTP 200） |
 
 #### 0.5.3 性能与资源预算（唯一权威数值）
 
@@ -569,6 +569,7 @@ pub struct Rgba8 { pub r: u8, pub g: u8, pub b: u8, pub a: u8 }
 | `UiCommand::Frame` | 单槽覆盖（latest-wins） | 1 | 覆盖旧帧，丢弃计数写入探针 `ui.frame.coalesced` |
 | `UiCommand::Show/Hide` | 有序环形队列 | 8 | 宿主线程最多自旋 200µs 等待；仍满则合并为最新 `Show`/`Hide` 并计数 `ui.control.dropped` |
 | `UiCommand::Theme` | 单槽覆盖 | 1 | 覆盖旧值 |
+| `UiCommand::Overlay` | 单槽覆盖（latest-wins） | 1 | 覆盖旧值；载荷是 `Option<Box<OverlayFrame>>`，`None` 表示关闭浮层，因此"已关闭"与"从未投递"可区分。ADR-0006 追加；浮层是模式而非内容，故不并入 `UiFrame`（后者是候选框的完整快照，且受 `size_of ≤ 256` 约束） |
 | `UiEvent::Select` | SPSC 有界队列 | 64 | **绝不丢弃**：UI 线程自旋等待 ≤ 500µs，超时则放弃本次点击并报 `ui/select/timeout` |
 | `UiEvent::Hover` | 单槽覆盖 + 16ms 节流 | 1 | 仅在悬停索引变化时投递，天然不溢出 |
 | `UiEvent::Page` | 有序环形队列 | 16 | 同 `Show/Hide` |
@@ -791,6 +792,9 @@ pub enum ConfigError {
 | `ui/layout/metric-missing` | `ime-ui` 的布局度量 | 本模块要用到的某个度量常量没有在 `.slint` 里声明 | 是（同上，reason 里点名缺失的常量） |
 | `ui/layout/metric-malformed` | `ime-ui` 的布局度量 | 某个度量常量的值解析不出来（含写成表达式的情形） | 是（同上，reason 里给出 `name=value`） |
 | `crash/panic` | `ime-diag` 的崩溃记录 | 崩溃文件本身写失败时的兜底通道 | 是（常量 `CRASH_PANIC_CODE`） |
+| `ui/channel/config-invalid` | `ime-ui` 的通道构造 | `ChannelConfig` 破坏了 2.2.1 / 2.2.2 的通道契约（控制队列深度 < 2 会把有序的 `Show`/`Hide` 对坍缩成 latest-wins 槽；任一容量为 0 的通道会静默丢弃一切；控制通道的自旋预算超过 200µs 的宿主回调上限） | 是（常量 `channel::CONFIG_INVALID_CODE`，内嵌在 `config/invalid: ui.channel.<字段> (...)` 的 reason 里） |
+| `budget/memory-exceeded` | `xtask budget --memory` | 某个内存窗口（插件 / UI / 词库 mmap）相对基线的增长超过 `budgets.json` 的 `memory_mb.*` 上限 | 是（`xtask` 的退出码与违规清单，不经 `ImeError`） |
+| `budget/memory-unmeasured` | `xtask budget --memory` | 快照里缺少该窗口的读数或基线（内核读不到 `/proc`，或探针没在该窗口打点）。**缺读数按失败处理，不按 0 通过** | 是（同上；消息点名缺失的字段与需要的打点调用） |
 
 **FFI 层的诊断码（v1.3 新增登记）**：`TASK-1.04.01` 的 C ABI 边界在 `ime-fcitx5` 内直接产生一批诊断码。它们**不是** `ImeError` 的变体（跨 FFI 边界的失败无法用 Rust 错误类型表达），但同样遵循 `领域/动作/原因` 的稳定字符串约定，写入崩溃/诊断通道，且不得改写：
 

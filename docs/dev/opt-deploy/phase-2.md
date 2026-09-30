@@ -289,9 +289,9 @@ Build-Depends:
  rustc (>= 1.85),
 Standards-Version: 4.7.0
 Rules-Requires-Root: no
-Homepage: https://github.com/rspinyin/rspinyin
-Vcs-Git: https://github.com/rspinyin/rspinyin.git
-Vcs-Browser: https://github.com/rspinyin/rspinyin
+Homepage: https://github.com/gongzhengyang/rspinyin
+Vcs-Git: https://github.com/gongzhengyang/rspinyin.git
+Vcs-Browser: https://github.com/gongzhengyang/rspinyin
 
 Package: rspinyin
 Architecture: any
@@ -405,7 +405,7 @@ rspinyin (0.1.0-1) unstable; urgency=medium
 ```
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: rspinyin
-Source: https://github.com/rspinyin/rspinyin
+Source: https://github.com/gongzhengyang/rspinyin
 
 Files: *
 Copyright: rspinyin contributors
@@ -505,7 +505,7 @@ Release:        1%{?dist}
 Summary:        Offline-first Chinese pinyin input method for Fcitx5
 
 License:        MIT AND Apache-2.0
-URL:            https://github.com/rspinyin/rspinyin
+URL:            https://github.com/gongzhengyang/rspinyin
 Source0:        %{url}/archive/v%{version}/rspinyin-%{version}.tar.gz
 
 BuildRequires:  cargo
@@ -668,7 +668,7 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc="Offline-first Chinese pinyin input method for Fcitx5, with a self-drawn candidate window"
 arch=('x86_64' 'aarch64')
-url="https://github.com/rspinyin/rspinyin"
+url="https://github.com/gongzhengyang/rspinyin"
 license=('MIT' 'Apache')
 depends=('fcitx5>=5.1.0')
 makedepends=('cargo' 'gcc' 'pkgconf' 'git')
@@ -800,8 +800,8 @@ package() {
 
   <launchable type="desktop-id">org.fcitx.Fcitx5.desktop</launchable>
 
-  <url type="homepage">https://github.com/rspinyin/rspinyin</url>
-  <url type="bugtracker">https://github.com/rspinyin/rspinyin/issues</url>
+  <url type="homepage">https://github.com/gongzhengyang/rspinyin</url>
+  <url type="bugtracker">https://github.com/gongzhengyang/rspinyin/issues</url>
 
   <translation type="gettext">rspinyin</translation>
 

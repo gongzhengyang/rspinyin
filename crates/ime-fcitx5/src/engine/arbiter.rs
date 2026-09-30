@@ -41,15 +41,28 @@
 //! back in temporary English, where the mode's whole meaning is that every key reaches the
 //! application.
 //!
+//! # The one key that needs a composition behind it
+//!
+//! The syllable separator is the single action the session would act on and the plugin
+//! still must not take. Its row is named in every context, because the routing table sees a
+//! key and its modifiers and never the session; the apostrophe pins a syllable boundary
+//! inside a composition, and the input alphabet accepts it, so a session with nothing
+//! composing would take it as the first character of a new composition and open a candidate
+//! window on a character the user typed for the application.
+//! [`is_syllable_separator`] names the action and [`arbitrate`] hands it back outside a
+//! composition. The rule sits here rather than in [`executability`] because that function
+//! mirrors the step and the step really would compose — the two answers differ, and the
+//! difference is the whole point.
+//!
 //! # What the arbitrator does not decide
 //!
 //! It answers about an *action*, so three things stay with the caller, all of them
 //! properties of the key rather than of the action:
 //!
-//! * A modifier press. The table names a `Shift` press [`KeyAction::ToggleLang`], and the
-//!   held `Shift` is the host's own temporary switch: a plugin that kept the press would
-//!   take the first half of every capital letter from the application.
-//!   [`is_shift_press`](super::is_shift_press) is the predicate the caller asks first.
+//! * A modifier press. The held `Shift` is the host's own temporary switch: a plugin that
+//!   kept the press would take the first half of every capital letter from the
+//!   application. [`is_shift_press`](super::is_shift_press) is the predicate the caller
+//!   asks first.
 //! * A key release. Both edges of every key reach the host, and keeping one would eat the
 //!   application's key-up; the one release the plugin watches is the edge that ends a held
 //!   modifier, and [`ModifierHold`](super::modifier::ModifierHold) answers for it.
@@ -68,9 +81,9 @@ use ime_core::segment::MAX_RAW_LEN;
 use ime_core::state::{Session, SessionConfig, SessionState};
 use ime_types::{KeyAction, PageDir};
 
-use super::claims_key;
 use super::context::Consumed;
 use super::sequence::SequenceDecision;
+use super::{claims_key, is_syllable_separator};
 
 #[cfg(test)]
 mod tests;
@@ -117,7 +130,9 @@ impl Executability {
 ///
 /// [`Consumed::Consumed`] when both conditions hold — the caller calls `filterAndAccept`
 /// and the application never sees the key — and [`Consumed::Ignored`] otherwise, which
-/// includes the case the table names a key nothing can act on.
+/// includes the case the table names a key nothing can act on and the case of the syllable
+/// separator outside a composition: that one the session would act on, and taking it is
+/// still the wrong answer. See the module documentation.
 ///
 /// # Errors
 ///
@@ -158,6 +173,15 @@ pub fn arbitrate(action: KeyAction, session: Option<&Session>, cfg: &SessionConf
         // key would take a keystroke the user typed for the application.
         return Consumed::Ignored;
     }
+    if is_syllable_separator(action) && session.state != SessionState::Composing {
+        // The one action the session would act on and the plugin still must not take. The
+        // apostrophe pins a syllable boundary inside a composition, and the input alphabet
+        // accepts it, so an idle session would start a composition on it and open a
+        // candidate window over a character the user typed for the application.
+        // `executability` keeps mirroring the step -- the step really would compose -- which
+        // is why the rule is stated here rather than there.
+        return Consumed::Ignored;
+    }
     if is_mode_chord(action) {
         // The engine's own bits, answered before the session is asked at all: they act with
         // nothing composing, and they still act while the host is finishing a commit or a
@@ -175,8 +199,12 @@ pub fn arbitrate(action: KeyAction, session: Option<&Session>, cfg: &SessionConf
 ///
 /// The session half of [`arbitrate`], and the mirror of the guards in the state machine's
 /// transitions: a key may only be kept when the step it stands for changes something. The
-/// two exceptions the caller adds on top are the engine's own mode bits and temporary
-/// English; see the module documentation.
+/// exceptions the caller adds on top are the engine's own mode bits, temporary English and
+/// the syllable separator outside a composition; see the module documentation.
+///
+/// This function answers what the *step* would do and nothing else, so it is the one the
+/// mirror test compares against the step. A caller that wants to know whether a key may be
+/// kept asks [`arbitrate`], which is this answer plus the exceptions.
 ///
 /// # Arguments
 ///

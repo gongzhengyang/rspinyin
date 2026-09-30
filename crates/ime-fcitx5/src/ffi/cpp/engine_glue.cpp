@@ -25,6 +25,17 @@
 // handshake state and the lifecycle sequence; this file reaches that sequence through
 // the free functions declared below.
 //
+// # The other direction
+//
+// The callback table is what the host calls. Once a session has decided that text is
+// committed, or that the client's preedit area should hold something, the plugin calls
+// back — and those calls are the exported functions at the end of this file. They are
+// exports rather than table slots because the table is frozen: appending a slot is an ABI
+// break, adding an export is not (the same reasoning ADR-0003 records for the second
+// addon's symbols). A call names its input context by the numeric id the table carries,
+// so the pointer has to travel beside the callback; `rspinyin::CurrentContext` is what
+// carries it, and it is installed by every override below that can lead to such a call.
+//
 // The struct definitions mirror the `#[repr(C)]` declarations in `src/ffi/abi.rs`, and
 // only the engine's own table is mirrored here: the two payloads that left this table at
 // ABI version 2 -- `FcitxCursorRect` and `UiPanelSnapshot` -- are the user-interface
@@ -34,7 +45,9 @@
 // callback behind it at the wrong offset. See `addon_glue.cpp` for why there is no shared
 // header.
 
+#include <cstddef>
 #include <cstdint>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -45,6 +58,7 @@
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputmethodengine.h>
 #include <fcitx/inputmethodentry.h>
+#include <fcitx/text.h>
 
 // ── Mirrored C ABI contract ──────────────────────────────────────────────────────
 struct FcitxKeyEvent {
@@ -98,6 +112,63 @@ void startPlugin();
 
 /// Releases everything `startPlugin` took.
 void stopPlugin();
+
+// The rest of this namespace is defined here rather than in `addon_glue.cpp`: it is the
+// carrier the callbacks below install and the host calls at the end of this file resolve
+// against, so it belongs beside them.
+
+/// The input context the callback currently being served belongs to.
+///
+/// The calls Rust makes back into this library — committing text, filling the client's
+/// preedit area — name the context by the numeric id the callback table carries, and that
+/// table has no slot for the pointer. So the pointer travels *beside* the callback rather
+/// than through it: every callback below installs the context it was given for the length
+/// of its body, and a host call resolves the id against it.
+///
+/// A thread-local is exactly the right carrier. Every one of these callbacks runs on the
+/// Fcitx5 main loop, the pointer is valid for the whole of the callback, and the guard
+/// clears it on the way out — so a call that arrives outside a callback, or one naming a
+/// different context, is refused rather than followed. It is also allocation-free and
+/// lock-free, which the key path requires.
+thread_local fcitx::InputContext *currentContext_ = nullptr;
+
+/// Serves one callback with `inputContext` installed as the current one.
+///
+/// A guard rather than a pair of assignments: every exit path — the early returns that
+/// skip the Rust call included — has to leave the thread-local as it found it.
+class CurrentContext {
+public:
+    explicit CurrentContext(fcitx::InputContext *inputContext)
+        : previous_(currentContext_) {
+        currentContext_ = inputContext;
+    }
+    ~CurrentContext() { currentContext_ = previous_; }
+    CurrentContext(const CurrentContext &) = delete;
+    CurrentContext &operator=(const CurrentContext &) = delete;
+
+private:
+    /// The context installed by whatever called this callback, so that a nested call
+    /// (Fcitx5 dispatching from inside a callback) restores the right one.
+    fcitx::InputContext *previous_;
+};
+
+/// Resolves the context a host call names, or null when it does not match the callback
+/// being served.
+///
+/// The id is checked rather than trusted: it comes across the ABI as a plain number, and
+/// the digest is what the Rust side built its session key from, so a mismatch means the
+/// call and the callback disagree about which context they are working on. Refusing is
+/// the only safe answer — the alternative is committing text into somebody else's window.
+///
+/// The parameter is named `context_id` rather than `ic_id` because the digest function of
+/// that name is what the body has to call: a parameter of the same name would shadow it.
+fcitx::InputContext *resolveContext(std::uint64_t context_id) {
+    fcitx::InputContext *inputContext = currentContext_;
+    if (inputContext == nullptr || ic_id(inputContext) != context_id) {
+        return nullptr;
+    }
+    return inputContext;
+}
 
 } // namespace rspinyin
 
@@ -156,6 +227,10 @@ public:
         if (vt == nullptr || vt->on_key_event == nullptr) {
             return;
         }
+        // The pointer travels beside the callback: the table's slot carries the context's
+        // numeric id, and the calls Rust makes back need the object. See
+        // `rspinyin::CurrentContext`.
+        rspinyin::CurrentContext current{event.inputContext()};
         FcitxKeyEvent key{};
         key.sym = static_cast<std::uint32_t>(event.key().sym());
         key.state = static_cast<std::uint32_t>(event.key().states().toInteger());
@@ -171,11 +246,17 @@ public:
     }
 
     /// An input context switched to this input method.
+    ///
+    /// The context is installed for the length of the call because the activation is what
+    /// creates the session, and a session that is created has nothing to say to the host
+    /// yet; the guard is here so that a later change to what activation does cannot reach
+    /// a host call with no context installed.
     void activate(const fcitx::InputMethodEntry &, fcitx::InputContextEvent &event) override {
         const RspinyinVtable *vt = rspinyin::vtable();
         if (vt == nullptr || vt->on_activate == nullptr) {
             return;
         }
+        rspinyin::CurrentContext current{event.inputContext()};
         // The virtual returns void, so a `false` answer from the engine can only mean
         // "no session is active"; there is nothing for this layer to decline.
         vt->on_activate(rspinyin::context(), rspinyin::ic_id(event.inputContext()));
@@ -190,15 +271,22 @@ public:
         if (vt == nullptr || vt->on_deactivate == nullptr) {
             return;
         }
+        // Ending a session hides the candidate window and empties the client's preedit
+        // area, so the host calls Rust makes from inside this callback need the context.
+        rspinyin::CurrentContext current{event.inputContext()};
         vt->on_deactivate(rspinyin::context(), rspinyin::ic_id(event.inputContext()));
     }
 
     /// An input context needs its state reset.
+    ///
+    /// Like a deactivation, this ends the composition without committing it, so the same
+    /// host calls follow and the context is installed the same way.
     void reset(const fcitx::InputMethodEntry &, fcitx::InputContextEvent &event) override {
         const RspinyinVtable *vt = rspinyin::vtable();
         if (vt == nullptr || vt->on_reset == nullptr) {
             return;
         }
+        rspinyin::CurrentContext current{event.inputContext()};
         vt->on_reset(rspinyin::context(), rspinyin::ic_id(event.inputContext()));
     }
 
@@ -258,3 +346,71 @@ fcitx::AddonInstance *createAddonInstance(fcitx::AddonManager *manager) {
 }
 
 } // namespace rspinyin
+
+// ── Host calls made from Rust ────────────────────────────────────────────────────
+//
+// The other direction of the ABI. The table above is what the host calls; these are what
+// the plugin calls back on, once a session has decided that text is committed or that the
+// client's preedit area should hold something. They are plain exported functions rather
+// than table slots because the table is frozen and these travel the other way: appending a
+// slot would be an ABI break, adding an export is not.
+//
+// Each one resolves the context it was told to work on and refuses the call when the id
+// does not match the callback being served — see `rspinyin::resolveContext`. A refusal is
+// a `false` return, which the Rust side turns into a diagnostic rather than into a silent
+// loss of the user's text.
+
+/// Inserts `text` into the client's text field, at its caret.
+///
+/// The client owns the string it is given, so this is the one call in this section that
+/// copies: Fcitx5's own signature takes a `std::string`. The buffer Rust hands over is a
+/// live slice for the length of the call and is not retained.
+extern "C" bool rspinyin_host_commit(std::uint64_t ic_id, const char *text, std::size_t len) {
+    if (text == nullptr) {
+        return false;
+    }
+    fcitx::InputContext *inputContext = rspinyin::resolveContext(ic_id);
+    if (inputContext == nullptr) {
+        return false;
+    }
+    inputContext->commitString(std::string(text, len));
+    return true;
+}
+
+/// Writes `text` into the client's own preedit area, with its caret.
+///
+/// The preedit shown inside the client window, not the candidate window's header: which of
+/// the two carries the composing text is the `[ui] client_preedit` policy, decided above
+/// this layer.
+extern "C" bool rspinyin_host_set_preedit(std::uint64_t ic_id, const char *text, std::size_t len,
+                                          std::uint32_t caret) {
+    if (text == nullptr) {
+        return false;
+    }
+    fcitx::InputContext *inputContext = rspinyin::resolveContext(ic_id);
+    if (inputContext == nullptr) {
+        return false;
+    }
+    // Fcitx5 takes the cursor as a signed byte offset. An offset past the end of the text
+    // is clamped to it rather than wrapped into a negative one, which Fcitx5 would read as
+    // "at the end" — the same place, reached without a cast that could turn 4 GiB into a
+    // cursor near the start of the line.
+    const std::size_t bounded = caret < len ? static_cast<std::size_t>(caret) : len;
+    fcitx::Text preedit(std::string(text, len));
+    preedit.setCursor(static_cast<int>(bounded));
+    inputContext->inputPanel().setPreedit(preedit);
+    return true;
+}
+
+/// Empties the client's own preedit area.
+///
+/// Called when a composition ends and when the client-preedit policy is off, in which case
+/// the area has to stay empty rather than hold what an earlier configuration put there.
+extern "C" bool rspinyin_host_clear_preedit(std::uint64_t ic_id) {
+    fcitx::InputContext *inputContext = rspinyin::resolveContext(ic_id);
+    if (inputContext == nullptr) {
+        return false;
+    }
+    inputContext->inputPanel().setPreedit(fcitx::Text());
+    return true;
+}

@@ -1,0 +1,280 @@
+# Long-run stability and artifact regression.
+#
+# Two different cadences in one file, because they answer two different questions:
+#
+#   soak        continuous input for hours, on a real Fcitx5 with both addons loaded.
+#               Runs weekly and on demand. This is BUDGET-ROB-01, and it is the only
+#               check that can catch a leak or a slow resource accumulation -- every
+#               other gate is a snapshot of a process that has just started.
+#   regression  a short budget pass on every pull request. Catches a size or latency
+#               regression while the change that caused it is still open.
+#
+# The soak job asserts RSS drift rather than just "did not crash". A plugin that stays
+# alive while leaking 50MB an hour passes a crash check and fails the budget, which is why
+# the report keeps the whole sample series and why the verdict is a separate step: a run
+# that went badly still publishes the curve that says how it went badly.
+#
+# The budget step is deliberately not folded into the soak step. `xtask soak` exits
+# non-zero only when it could not run at all; a run that started and then went wrong writes
+# its report and exits zero, so the gate below is what turns observations into a verdict,
+# and a job that failed early still has an artifact to read. The verdict is the soak tool's
+# own -- `xtask soak --assert`, reached here through `budget --soak-report` -- so the numbers
+# this job prints and the numbers the tool prints come from one implementation rather than
+# two that can drift.
+#
+# NOT RUN IS NOT A PASS. That is the rule the rest of this file is arranged around, and it
+# has three consequences:
+#
+#   * the soak job does not run on a pull request, so a green pull request says nothing
+#     about BUDGET-ROB-01. The `not-run` job says so in the run summary rather than leaving
+#     the absence to be inferred from a check that is not there.
+#   * a run that produced no report fails the gate; an absent report is never read as a run
+#     in which nothing went wrong.
+#   * a manual dispatch with fewer than eight hours is a smoke run. The gate rejects it with
+#     `soak/short-run` rather than passing it, so a short run cannot be mistaken for the
+#     budget's evidence.
+#
+# What the session does and does not cover is printed into the run summary by the session
+# script and repeated by a step below: one virtual X server, no compositor, no second
+# output, no fractional scaling, and no readback of what the host committed into the client.
+# None of those is claimed by this workflow.
+#
+# `paths` on the pull-request trigger is what keeps the regression pass off changes that
+# cannot move a size or a latency: the four crates whose code is on a budgeted path, and
+# the document that states the budgets.
+
+name: soak
+
+on:
+  schedule:
+    # Weekly, at a time chosen to be far from the other scheduled work.
+    - cron: '23 2 * * 6'
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: 'Soak duration in hours; below 8 this is a smoke run the gate rejects'
+        required: false
+        default: '8'
+  pull_request:
+    paths:
+      - 'crates/ime-core/**'
+      - 'crates/ime-dict/**'
+      - 'crates/ime-ui/**'
+      - 'crates/ime-fcitx5/**'
+      - 'docs/dev/budgets.json'
+
+concurrency:
+  # A soak is not cancelled by a newer push: half an hour of samples that were thrown away
+  # is half an hour of runner time that bought nothing, and the run is not what a push
+  # invalidates.
+  group: soak-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # The epoch `xtask package` stamps the release manifest with, kept equal to the value the
+  # release jobs use so the two records of when a build happened cannot disagree.
+  SOURCE_DATE_EPOCH: 1790899200
+
+jobs:
+  soak:
+    name: soak
+    # Only the schedule and a manual dispatch: a soak that ran on every pull request would
+    # occupy a runner for eight hours per push.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    # The nominal duration plus setup, with the ceiling deliberately above it so that a hung
+    # run is reported as a failure rather than killed at the moment it would have finished.
+    timeout-minutes: 600
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Fcitx5 development packages, Xvfb and the X11 tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev \
+            fcitx5 xvfb x11-utils xdotool xterm dbus-x11
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Build the addons and install them
+        run: |
+          set -eu
+          bash data/fetch.sh
+          cargo run --quiet -p xtask -- dictc
+          cargo build --release -p ime-fcitx5 --features fcitx5-host
+          cargo build --release -p ime-ui-addon --features fcitx5-host
+          cargo build --quiet -p xtask
+          # `packaging/install.sh` is deliberately not used here. It runs `cargo` for its
+          # own steps, and `cargo` under `sudo` leaves parts of `target/` owned by root,
+          # which breaks the next cargo invocation that runs as the runner user -- which is
+          # the soak itself. Both of the script's steps that need the toolchain, building
+          # the addons and staging the dictionary, are the lines above; what is left is the
+          # file copy, and that is what the escalation wraps.
+          sudo target/debug/xtask install --no-sudo --prefix /usr
+      - name: Run the soak
+        # Everything a session needs lives in the script rather than here: the virtual X
+        # server, the private Fcitx5 profile, the client to type into, and the two
+        # assertions the run's own report cannot make -- that both addon libraries are
+        # mapped into the daemon, and that the candidate window is mapped when the run
+        # returns.
+        #
+        # This runner is not an idle machine. The drift measured here is therefore a number
+        # taken under load, and the report records the load average at both ends so that a
+        # reader can see it. The idle-machine requirement is stated in
+        # `docs/dev/features-add/phase-3.md`; a run on a quiet machine is a separate piece
+        # of evidence that this job cannot produce.
+        run: |
+          set -eu
+          hours="${{ github.event.inputs.hours || '8' }}"
+          bash packaging/ci/soak/run.sh "${hours}" /tmp/soak.json
+      - name: Assert the robustness budget
+        # `always()` so that a run which failed still gets its numbers judged: a crash is
+        # an observation the report describes, and skipping the gate because the step
+        # before it failed would throw away the only artifact that says why.
+        #
+        # The verdict is the soak tool's own, reached through the budget gate, so the
+        # numbers this job prints and the numbers `xtask soak --assert` prints come from one
+        # implementation rather than two that can drift.
+        if: always()
+        run: |
+          set -eu
+          if [ ! -f /tmp/soak.json ]; then
+            echo "dist/verify/soak-report-missing: the run produced no report; the step above failed before it started" >&2
+            echo "dist/verify/soak-report-missing: an absent report is not a run in which nothing went wrong" >&2
+            exit 1
+          fi
+          cargo run --quiet -p xtask -- budget --soak-report /tmp/soak.json
+      - name: Record what this run did not cover
+        # The list is the point of the step. A soak that passed on this runner is evidence
+        # about one X11 session on a shared machine, and the summary has to say so rather
+        # than leaving a green check to be read as a general claim.
+        if: always()
+        run: |
+          {
+            echo "### What this run did not cover"
+            echo
+            echo "A pass here is not a pass of every compositor tier the product supports."
+            echo "Not covered:"
+            echo
+            echo "| not covered | why |"
+            echo "|---|---|"
+            echo "| any Wayland compositor (wlroots / KWin / Mutter) | Xvfb only; \`wlr-layer-shell\` and the two positioning paths need a real compositor |"
+            echo "| real transparency and background blur | no compositing manager on the virtual server |"
+            echo "| fractional scaling and multi-output placement | one virtual output at scale 1.0 |"
+            echo "| the text the host committed into the client | that readback channel is a separate task's |"
+            echo "| decode latency, idle redraws and poll timers during the run | the plugin's own probe counters, which need a snapshot this job does not take |"
+            echo "| a run on an otherwise idle machine | a shared runner is not idle; the report records the load average at both ends |"
+            echo
+            echo "An eight-hour pass is also not a substitute for the short budget pass: the"
+            echo "\`regression\` job is what runs on a pull request."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish the soak report
+        if: always()
+        run: |
+          {
+            echo "### Soak report"
+            echo
+            echo '```json'
+            cat /tmp/soak.json 2> /dev/null || echo '{"error":"no report produced"}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the report
+        # Ninety days rather than the five the build jobs keep: the point of the series is
+        # to compare this run with the next one, and a report that has been swept is a
+        # baseline nobody can look at.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-report
+          path: /tmp/soak.json
+          retention-days: 90
+
+  not-run:
+    name: soak not run
+    # A pull request never runs the soak, so a green check on one must not be read as a pass
+    # of BUDGET-ROB-01. This job exists to say that in the run summary, in the place a
+    # reviewer looks, rather than leaving the claim to be inferred from a job that is not
+    # there.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Say so
+        run: |
+          {
+            echo "### BUDGET-ROB-01 was not evaluated"
+            echo
+            echo "The long-run budget is asserted by an eight-hour soak, which this workflow"
+            echo "runs on a schedule and on demand. It did not run for this pull request, and"
+            echo "this job is here so that its absence is not read as a pass."
+            echo
+            echo "What did run on this pull request: the \`regression\` job -- the size budgets"
+            echo "over the packaged artifacts, and the decode latency budget over a criterion"
+            echo "run. Both are snapshots of a process that has just started, and neither says"
+            echo "anything about sustained behaviour."
+            echo
+            echo "To take the long-run evidence for a branch, dispatch this workflow on it with"
+            echo "\`hours: 8\`. A shorter dispatch is a smoke run, and the gate rejects it with"
+            echo "\`soak/short-run\` rather than passing it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  regression:
+    name: regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Fcitx5 development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: Cache the cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Fetch the dictionary sources
+        run: bash data/fetch.sh
+      - name: Build the dictionary
+        run: cargo run --quiet -p xtask -- dictc
+      - name: Package the release
+        run: just package
+      - name: Assert every size budget
+        # The recipe rather than the `cargo run` behind it: a gate this file spells out for
+        # itself is a second definition of the gate, and the two drift.
+        run: just check-size
+      - name: Run the decode benchmarks
+        # Decode latency is the one budget measurable without a live session, and it is the
+        # one most likely to regress from an ordinary change to the engine. `--quick` keeps
+        # the pass inside a pull request's patience; the estimate it produces is read at
+        # mean plus three sigma, which is what makes a short run usable.
+        run: cargo bench -p ime-core --bench decode -- --quick
+      - name: Assert the decode budget
+        # The gate, not the benchmark: criterion measures and asserts nothing, so a step
+        # that stopped at the line above would report a number nobody had judged.
+        run: cargo run --quiet -p xtask -- budget --check --bench decode
+      - name: Record the measured values
+        run: |
+          {
+            echo "### Regression pass"
+            echo
+            echo 'A size budget is a ceiling, not a target. `base.dict` measures the'
+            echo 'dictionary content, which is still being filled in: a value far below'
+            echo 'the ceiling means the dictionary is incomplete, not that the artifact'
+            echo 'is small.'
+            echo
+            echo '| file | bytes |'
+            echo '|---|---|'
+            find dist -maxdepth 1 -type f -printf '| %f | %s |\n' | sort
+            printf '| data/compiled/base.dict | %s |\n' "$(stat -c%s data/compiled/base.dict)"
+            echo
+            echo 'BUDGET-ROB-01 (the long-run budget) is not evaluated here; the `not-run`'
+            echo 'job says why.'
+          } >> "$GITHUB_STEP_SUMMARY"

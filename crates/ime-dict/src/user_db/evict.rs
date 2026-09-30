@@ -17,6 +17,8 @@ use redb::ReadOnlyTable;
 
 use super::*;
 
+use super::cache::lock_cache;
+
 /// The idle sweep thread, when one could be started.
 ///
 /// The thread holds only a weak handle, so it can never keep the store alive: the last
@@ -209,11 +211,13 @@ impl Inner {
 
     /// Removes `keys` from the store, from the in-memory counts and from the cache.
     ///
-    /// Both memories hold totals for the keys just removed, so they have to go: a later
-    /// `freq` of an evicted key must answer zero, not a count the store no longer holds.
-    /// Each lock is taken once per key rather than once per batch, so that a record
-    /// arriving while the sweep runs never waits behind the whole batch. The metadata row
-    /// goes with the record: it is keyed by the same key, and a row left behind would be
+    /// Both memories hold values for the keys just removed, so they have to go: a later
+    /// `freq` of an evicted key must answer zero, not a count the store no longer holds. The
+    /// loaded counts are dropped one key at a time, so that a record arriving while the sweep
+    /// runs never waits behind the whole batch; the cache is dropped in one pass instead,
+    /// because the record path no longer touches it -- the delta map is the only lock a record
+    /// takes -- and there is nothing left for the per-key rule to protect there. The metadata
+    /// row goes with the record: it is keyed by the same key, and a row left behind would be
     /// read by the next record that takes that key, giving it a creation time and a pin
     /// that belonged to the word the user had before.
     fn delete_batch(&self, keys: &[Box<str>]) -> Result<(), ImeError> {
@@ -241,7 +245,11 @@ impl Inner {
             .map_err(|error| store_error(&self.path, &error))?;
         for key in keys {
             self.forget_committed(key);
-            lock(&self.cache).remove(key);
+        }
+        if let Some(mut cache) = lock_cache(&self.cache) {
+            for key in keys {
+                cache.remove(key);
+            }
         }
         Ok(())
     }

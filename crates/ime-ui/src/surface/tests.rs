@@ -275,16 +275,77 @@ fn test_surface_without_a_frame_has_no_region_and_no_hit_map() {
     );
 }
 
-/// Pushes a left button press at a window-relative position.
+/// Pushes a left button press and its release at a window-relative position.
+///
+/// The pair rather than the press alone: a click is a gesture, and the selection is the
+/// release that completes it on the cell the press started on. A press on its own draws the
+/// `Active` state and is deliberately not an event.
 fn click(state: &Arc<Mutex<MockState>>, x: i32, y: i32) {
+    let mut state = state.lock().expect("the mock is not poisoned");
+    for pressed in [true, false] {
+        state.pending.push(SurfaceEvent::PointerButton {
+            x,
+            y,
+            button: 1,
+            pressed,
+        });
+    }
+}
+
+/// Pushes a pointer motion to a window-relative position.
+fn motion(state: &Arc<Mutex<MockState>>, x: i32, y: i32) {
     state
         .lock()
         .expect("the mock is not poisoned")
         .pending
-        .push(SurfaceEvent::PointerButton {
-            x,
-            y,
-            button: 1,
-            pressed: true,
-        });
+        .push(SurfaceEvent::PointerMotion { x, y });
+}
+
+#[test]
+fn test_surface_hover_repaints_the_window() {
+    // The defect this pins is one only real rendering can catch: a hover that is written
+    // into the grid's model but never drawn leaves the user with no feedback at all, and
+    // "the frame was drawn" is not the same claim as "this frame differs from the last".
+    let (before, after, hovered) = with_surface(|surface, state| {
+        show_and_draw(surface, 3);
+        // The appear motion is run out first: a panel still growing changes every pixel, and
+        // the comparison would then be about the motion rather than about the hover.
+        let settled = settle(surface);
+        let before = state.lock().expect("the mock is not poisoned").pixels.clone();
+        let events = UiEventQueue::new(&ChannelConfig::default());
+        let region = surface.input_region().expect("the panel was placed");
+        // The second cell, because the first carries the keyboard highlight: the design
+        // ranks the focus ring above a hover, so hovering the highlighted cell would draw
+        // nothing new.
+        let (cell, index) = surface.hit_map()[1];
+        let x = region.x + cell.x + cell.w as i32 / 2;
+        let y = region.y + cell.y + cell.h as i32 / 2;
+        motion(&state, x, y);
+        surface
+            .drain_events(&events, 8)
+            .expect("the motion is delivered");
+        let hovered = events.poll(Duration::ZERO);
+        surface
+            .render(settled + Duration::from_millis(16))
+            .expect("the hovered frame is drawn");
+        let after = state.lock().expect("the mock is not poisoned").pixels.clone();
+        (before, after, (hovered, index))
+    });
+    assert_eq!(
+        hovered.0,
+        Some(UiEvent::Hover {
+            revision: 1,
+            index: Some(hovered.1)
+        }),
+        "the motion reaches the host as a hover on the cell it landed on"
+    );
+    assert!(
+        !before.is_empty(),
+        "the window drew a frame for the comparison to be about"
+    );
+    assert_eq!(before.len(), after.len(), "the panel did not change size");
+    assert_ne!(
+        before, after,
+        "a hover changes the pixels the window draws, rather than only the model behind them"
+    );
 }

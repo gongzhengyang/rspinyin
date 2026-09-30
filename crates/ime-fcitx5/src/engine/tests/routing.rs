@@ -6,7 +6,7 @@
 //! composition is live, and a key release.
 
 use ime_core::state::{SessionConfig, SessionState};
-use ime_types::{Anchor, HideReason, KeyAction, Placement, RectI, ScreenId};
+use ime_types::{Anchor, HideReason, KeyAction, Placement, RectI, ScreenId, SpanKind};
 
 use crate::engine::*;
 
@@ -14,6 +14,12 @@ use super::{
     Fixture, IC, IC2, KEY_I, KEY_N, RecordingHost, activate_ordinary, keysym_stream, press,
     release, type_n,
 };
+
+/// `FcitxKey_h`.
+const KEY_H: u32 = 0x0068;
+
+/// `FcitxKey_o`.
+const KEY_O: u32 = 0x006f;
 
 #[test]
 fn test_key_event_letter_while_idle_starts_a_composition_and_claims_the_key() {
@@ -91,6 +97,7 @@ fn test_key_event_named_keys_while_idle_are_handed_back() {
 
     let bare_presses = [
         KEY_SPACE,
+        KEY_APOSTROPHE,
         KEY_0,
         KEY_MINUS,
         KEY_EQUAL,
@@ -113,6 +120,91 @@ fn test_key_event_named_keys_while_idle_are_handed_back() {
     assert_eq!(
         router.session(IC).map(|session| session.state),
         Some(SessionState::Idle)
+    );
+}
+
+#[test]
+fn test_key_event_apostrophe_while_idle_is_handed_back() {
+    // The separator is the one key of the composing keymap the table names in every context
+    // and the plugin still must not take: the input alphabet accepts it, so a session with
+    // nothing composing would read it as the first character of a new composition and open a
+    // candidate window over a character the user typed for the application.
+    let fixture = Fixture::new();
+    let mut router = fixture.router();
+    activate_ordinary(&mut router, IC);
+    let mut host = RecordingHost::default();
+
+    assert!(
+        !router.key_event(IC, &press(KEY_APOSTROPHE, 0), &mut host),
+        "an apostrophe with nothing composing belongs to the application"
+    );
+    assert!(!host.acted(), "the window must not appear");
+    assert!(
+        host.ui_kinds().is_empty(),
+        "nothing reached the candidate window"
+    );
+    assert_eq!(
+        router.session(IC).map(|session| session.state),
+        Some(SessionState::Idle),
+        "no composition was started"
+    );
+}
+
+#[test]
+fn test_key_event_apostrophe_while_composing_extends_the_input() {
+    // Inside a composition the same key pins a syllable boundary, which is the only way to
+    // spell an input the segmenter would otherwise cut somewhere else.
+    let fixture = Fixture::new();
+    let mut router = fixture.router();
+    activate_ordinary(&mut router, IC);
+    let mut host = RecordingHost::default();
+
+    for sym in [KEY_N, KEY_I] {
+        assert!(
+            router.key_event(IC, &press(sym, 0), &mut host),
+            "sym {sym:#06x} is the plugin's inside a composition"
+        );
+    }
+    assert!(
+        router.key_event(IC, &press(KEY_APOSTROPHE, 0), &mut host),
+        "the separator is the plugin's inside a composition"
+    );
+    assert_eq!(
+        router.session(IC).map(|session| session.buf.raw()),
+        Some("ni'"),
+        "the separator reaches the tail of the input"
+    );
+
+    for sym in [KEY_H, KEY_A, KEY_O] {
+        assert!(router.key_event(IC, &press(sym, 0), &mut host));
+    }
+    let session = router.session(IC).expect("the context is active");
+    assert_eq!(session.state, SessionState::Composing);
+    assert_eq!(session.buf.raw(), "ni'hao", "the whole input is kept");
+
+    // The window draws the boundary the user spelled out rather than the one the segmenter
+    // would have chosen, which is what makes the character visible in the header.
+    let frame = host.last_frame().expect("the window has a frame");
+    assert_eq!(frame.preedit.text, "ni'hao");
+    assert!(
+        frame
+            .preedit
+            .spans
+            .iter()
+            .any(|span| span.kind == SpanKind::Separator),
+        "the boundary is segmented as a separator"
+    );
+    // And the boundary reached the decode: the two-syllable reading the fixture declares for
+    // this input is on the list, which it could not be for an input the segmenter had cut
+    // anywhere else. The whole list rather than the page on show, so the assertion does not
+    // depend on where the ranking put the word.
+    assert!(
+        session
+            .decoded()
+            .candidates
+            .iter()
+            .any(|held| held.text == "你好"),
+        "the pinned boundary reaches the decode"
     );
 }
 

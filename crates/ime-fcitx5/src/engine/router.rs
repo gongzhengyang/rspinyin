@@ -23,6 +23,24 @@
 //! the session never sees. A key release is never claimed, and neither is a key the table
 //! does not name.
 //!
+//! One action is claimed only inside a composition, and the reason is a property of the
+//! session rather than of the step: the syllable separator pins a boundary in the composing
+//! input, and `ime-core`'s input alphabet accepts it, so an idle session would take it as
+//! the first character of a new composition. [`is_syllable_separator`] names that action
+//! and the guard in [`KeyRouter::key_event`] hands it back while nothing is composing.
+//!
+//! # Temporary English
+//!
+//! One mode is answered before any of that. Temporary English hands every key to the
+//! application, so the branch in [`KeyRouter::key_event`] claims none of them — the two
+//! keys that leave the mode included, because leaving it changes nothing else and the key
+//! the user pressed to leave is still a key they pressed for the application. Leaving goes
+//! through the session, which is where the mode's flag lives: [`leaves_temp_english`] names
+//! the two keys and [`Session::leave_temp_english`] takes the mode off. Which keys they are
+//! cannot be read out of the routing table, because the space bar and the `Return` of the
+//! shipped configuration are the same action; see [`leaves_temp_english`] for why that
+//! makes the table the wrong place to ask.
+//!
 //! # Layout
 //!
 //! This file holds [`KeyRouter`] itself and the per-context state it keeps: one
@@ -47,11 +65,13 @@
 use std::collections::HashMap;
 
 use ime_core::privacy::InputContextKind;
-use ime_core::state::{FrameContext, Session, SessionEnv, SessionEvent};
+use ime_core::state::{FrameContext, Session, SessionEnv, SessionEvent, SessionState};
 use ime_types::{Anchor, UiEvent};
 
 use crate::engine::host::Host;
-use crate::engine::{claims_key, is_shift_press, translate_key};
+use crate::engine::{
+    claims_key, is_shift_press, is_syllable_separator, leaves_temp_english, translate_key,
+};
 use crate::ffi::{FcitxKeyEvent, emit_diagnostic};
 use crate::privacy_impl::{ContextPrivacy, ContextReport, report_suppression};
 
@@ -395,9 +415,29 @@ impl<'a> KeyRouter<'a> {
             return false;
         };
         if ctx.session.temp_english {
-            // Temporary English hands every key back to the application. The session is
-            // still stepped, because Enter and Escape are what leaves the mode.
-            ctx.run(SessionEvent::Key(action), &step, host);
+            // Temporary English hands every key back to the application, the two that leave
+            // the mode included: what ends the mode changes nothing else, so taking the key
+            // would take a keystroke the user typed for the application.
+            //
+            // The session is not stepped here, because the mode's only transition is the one
+            // that leaves it and which key leaves it is a fact about the key rather than
+            // about the action the table made of it. The space bar and the `Return` key are
+            // both `CommitHighlighted` unless the document moves `Return` to `CommitRaw`, so
+            // an action that ended the mode ended it on a space bar press. Asking
+            // `leaves_temp_english` and taking the mode off through the session keeps the
+            // two answers from being able to disagree.
+            if leaves_temp_english(key) {
+                ctx.session.leave_temp_english();
+            }
+            return false;
+        }
+        // The apostrophe pins a syllable boundary inside a composition and is an ordinary
+        // character outside one. The session would take it as the first character of a new
+        // composition -- the input alphabet accepts it, which is what makes `ni'hao`
+        // typeable -- and opening a candidate window on it would take a key the user typed
+        // for the application. The table is a function of the key and the modifiers and
+        // cannot see the session, so the guard lives here, where the session is.
+        if is_syllable_separator(action) && ctx.session.state != SessionState::Composing {
             return false;
         }
         // The mode bits go into the session before the step, so the frame a mode key

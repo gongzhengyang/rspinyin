@@ -8,8 +8,10 @@ Slint Royalty-free 2.0 六项义务（`OB-1`~`OB-6`）的复核结论见 `docs/d
 ## 1. 本项目
 
 rspinyin 以 **MIT OR Apache-2.0** 双许可发布，版权归 rspinyin 贡献者所有；两份许可的
-完整文本随仓库提供，见 `LICENSE-APACHE` 与 `LICENSE-MIT`。用户数据的存放位置、权限与
-脱敏规则见 `docs/dev/privacy.md`。
+完整文本随仓库提供，见 `LICENSE-APACHE` 与 `LICENSE-MIT`。第三方组件的许可原文随发布
+产物提供，见 `LICENSES/`；Slint 的原文为
+`LICENSES/LicenseRef-Slint-Royalty-free-2.0.md`。用户数据的存放位置、权限与脱敏规则见
+`docs/dev/privacy.md`。
 
 ## 2. Slint（`LicenseRef-Slint-Royalty-free-2.0`）
 
@@ -27,7 +29,7 @@ Slint 1.13.1（SixtyFPS GmbH，<https://slint.dev>）依据 **Slint Royalty-free
 Desktop, Mobile, and Web Applications License, Version 2.0**（SPDX：
 `LicenseRef-Slint-Royalty-free-2.0`）使用。归属声明：本程序使用 Slint 构建。
 
-许可原文（`LICENSES/LicenseRef-Slint-Royalty-free-2.0.md`，SHA256 `5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe`）：
+随本发布产物一同提供的许可原文（`LICENSES/LicenseRef-Slint-Royalty-free-2.0.md`，SHA256 `5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe`）：
 
 # Slint Royalty-free Desktop, Mobile, and Web Applications License
 
@@ -79,9 +81,9 @@ Unless required by law, SixtyFPS won't be liable for any direct, indirect, incid
 | `pinyin-data`（https://github.com/mozillazg/pinyin-data） | MIT | L1 单字读音（主源） |
 | `unihan`（https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip） | Unicode License | L1 单字读音交叉校验 |
 | `jieba-dict`（https://github.com/fxsjy/jieba） | MIT | L2 词条与 L4 词频 |
-| `base`（https://github.com/rspinyin/rspinyin） | Project-owned (MIT OR Apache-2.0) | 本项目生成的衍生词库 |
-| `polyphone`（https://github.com/rspinyin/rspinyin） | Project-owned (MIT OR Apache-2.0) | 本项目生成的多音字权重校正表 |
-| `phrase`（https://github.com/rspinyin/rspinyin） | Project-owned (MIT OR Apache-2.0) | L5 |
+| `base`（https://github.com/gongzhengyang/rspinyin） | Project-owned (MIT OR Apache-2.0) | 本项目生成的衍生词库 |
+| `polyphone`（https://github.com/gongzhengyang/rspinyin） | Project-owned (MIT OR Apache-2.0) | 本项目生成的多音字权重校正表 |
+| `phrase`（https://github.com/gongzhengyang/rspinyin） | Project-owned (MIT OR Apache-2.0) | L5 |
 
 <!-- END GENERATED: slint licence and data sources -->
 

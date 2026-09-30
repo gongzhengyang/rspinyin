@@ -6,8 +6,8 @@
 //! the key alone. The host asks a second question the table cannot see: *may I keep this
 //! key?* The answer depends on what is live. A `Space` with a composition in flight
 //! commits the highlighted candidate and is the plugin's; the same `Space` with nothing
-//! composing belongs to the application; a `Space` with a panel open belongs to the panel.
-//! [`Dispatcher`] gives that answer, and the claim decision it rests on is
+//! composing belongs to the application; the `Escape` that closes an open panel is the
+//! panel's. [`Dispatcher`] gives that answer, and the claim decision it rests on is
 //! [`arbitrate`](super::arbitrate)'s alone.
 //!
 //! # The tree
@@ -15,7 +15,7 @@
 //! Four layers, tried highest priority first. The first layer that claims a key ends the
 //! walk, so a key a higher layer took never reaches a lower one:
 //!
-//! * [`KeyContext::ModalOverlay`] — a panel owns the keyboard while it is open.
+//! * [`KeyContext::ModalOverlay`] — a panel is open: it owns the key that closes it.
 //! * [`KeyContext::Composition`] — a composition is live: the composing keymap applies.
 //! * [`KeyContext::Session`] — a session exists but nothing is composing: the mode
 //!   chords, and the two actions an idle session acts on.
@@ -48,7 +48,7 @@
 //! all go through [`Host`](super::host::Host), and the session is stepped by the caller
 //! that owns it, with the action [`Dispatcher::action_for`] hands back.
 //!
-//! # The three rules ahead of the walk
+//! # The rules ahead of the walk
 //!
 //! A key release is not a layer's key: the host delivers both edges of every key, and
 //! taking one would eat the application's key-up. The one release the plugin watches is the
@@ -56,8 +56,10 @@
 //! [`ModifierHold`](super::modifier::ModifierHold) tracks — so it is answered by the hold
 //! rather than by a layer, and every other release travels on. A modifier press is not the
 //! plugin's either, because taking it would take the first half of every capital letter
-//! from the application. None of the three is a property of one layer, so all of them live
-//! in [`Dispatcher::dispatch`], ahead of the walk.
+//! from the application. The two chords that ask for a panel are the entry to the overlay
+//! layer rather than a row of it — a panel is a host-layer mode and not something a session
+//! does — so they are answered ahead of the walk as well. None of these is a property of one
+//! layer, so all of them live in [`Dispatcher::dispatch`], ahead of the walk.
 //!
 //! # Temporary English, the one state where the two decisions differ
 //!
@@ -67,14 +69,29 @@
 //! The walk therefore answers [`Consumed::Ignored`] for every key in that state, and the
 //! caller steps the session with the action [`Dispatcher::action_for`] gives it even
 //! though the walk declined the key — without that step the mode could never be left.
+//!
+//! # The panel a chord asks for
+//!
+//! Two chords ask for a panel rather than acting on a composition, and neither of them is a
+//! [`KeyAction`]: the action enum is the session's vocabulary, and a panel is a host-layer
+//! mode. They are answered in `panel` and open an [`Overlay`], which the walk then puts
+//! ahead of every other layer. Nothing draws a panel yet, so a chord records the request and
+//! the caller takes it with [`Dispatcher::take_overlay_request`] and reports
+//! [`UI_NOT_IMPLEMENTED_CODE`]. An overlay with nothing behind it owns the `Escape` that
+//! closes it and no other key, because a key taken for a panel that does not exist is a key
+//! the user pressed and saw nothing happen on.
 
 use ime_core::state::{Session, SessionConfig, SessionState};
 use ime_types::KeyAction;
 
 use super::arbiter;
 use super::modifier::{HoldOutcome, ModifierHold, ModifierKey};
-use super::{KEY_DOWN, KEY_ESCAPE, KEY_RETURN, KEY_UP, KeyBindings, is_shift_press, translate_key};
+use super::{KEY_ESCAPE, KeyBindings, is_shift_press, translate_key};
 use crate::ffi::FcitxKeyEvent;
+
+mod panel;
+
+pub use panel::{Overlay, UI_NOT_IMPLEMENTED_CODE};
 
 #[cfg(test)]
 mod tests;
@@ -164,21 +181,6 @@ impl From<FcitxKeyEvent> for KeyEvent {
             time_ms: event.time_ms,
         }
     }
-}
-
-/// A modal overlay: a panel that owns the keyboard while it is open.
-///
-/// The three the design names. Which one is open changes nothing about *whether* a key is
-/// the overlay's — the panel key domain is the same for all three — so the bus keeps the
-/// identity for the layer that draws the panel rather than branching on it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Overlay {
-    /// The keyboard cheat sheet.
-    CheatSheet,
-    /// The command palette.
-    CommandPalette,
-    /// The diagnostics panel.
-    Diagnostics,
 }
 
 /// What the bus may read about the live session of one input context.
@@ -336,6 +338,10 @@ pub struct Dispatcher {
     session: SessionConfig,
     /// The overlay that owns the keyboard, if one is open.
     overlay: Option<Overlay>,
+    /// The panel the last chord asked for, waiting for the caller to take it. A chord is the
+    /// plugin's key from the moment it is answered, and what it *asked for* needs a place of
+    /// its own to travel to the layer that can draw the panel or report that nothing does.
+    pending_overlay: Option<Overlay>,
     /// The modifier the user is holding, if any.
     hold: ModifierHold,
     /// What the last modifier release meant, waiting for the caller to take it. The walk
@@ -365,6 +371,7 @@ impl Dispatcher {
             bindings,
             session: SessionConfig::default(),
             overlay: None,
+            pending_overlay: None,
             hold: ModifierHold::new(),
             pending_hold: None,
         }
@@ -402,45 +409,6 @@ impl Dispatcher {
     /// Never.
     pub fn set_session_config(&mut self, session: SessionConfig) {
         self.session = session;
-    }
-
-    /// The overlay that owns the keyboard, if one is open.
-    ///
-    /// # Returns
-    ///
-    /// The open overlay, or `None` when the keyboard belongs to the layers below.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub const fn overlay(&self) -> Option<Overlay> {
-        self.overlay
-    }
-
-    /// Gives the keyboard to a modal overlay.
-    ///
-    /// The layer that draws the panel is the one that opens it, and it is also the one
-    /// that executes what the overlay layer decides: the bus only answers whether a key is
-    /// the panel's.
-    ///
-    /// # Arguments
-    ///
-    /// * `overlay` — the panel that is now open.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub fn open_overlay(&mut self, overlay: Overlay) {
-        self.overlay = Some(overlay);
-    }
-
-    /// Takes the keyboard back from the overlay, if one is open.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub fn close_overlay(&mut self) {
-        self.overlay = None;
     }
 
     /// Records a modifier press, so that its release can be answered.
@@ -531,9 +499,11 @@ impl Dispatcher {
     ///
     /// [`Consumed::Consumed`] or [`Consumed::ChainPending`] when a layer claimed the key
     /// — the two answers that mean the caller keeps it — and [`Consumed::Ignored`] when
-    /// every layer declined it and the key belongs to the application. One release can be
-    /// claimed as well: the edge that ends a modifier the hold is tracking, whose meaning
-    /// the caller takes from [`Dispatcher::take_hold_outcome`].
+    /// every layer declined it and the key belongs to the application. Two things besides a
+    /// layer can claim a key: the release that ends a modifier the hold is tracking, whose
+    /// meaning the caller takes from [`Dispatcher::take_hold_outcome`], and a chord that asks
+    /// for a panel, whose meaning the caller takes from
+    /// [`Dispatcher::take_overlay_request`].
     ///
     /// A layer that reads the session claims a key only when the arbitration says the
     /// session would act on the action the table gave the key, so a routed key nothing can
@@ -562,6 +532,17 @@ impl Dispatcher {
         // take the first half of every capital letter.
         if is_shift_press(&event.as_host_event()) {
             return Consumed::Ignored;
+        }
+        // The chords that ask for a panel. They are the entry to the overlay layer rather
+        // than a row of it, so they are answered here: a panel that is already open is
+        // replaced rather than stacked, and the chord has to work with nothing composing as
+        // well as with a composition in flight.
+        if let Some(overlay) = panel::chord(event, session) {
+            self.open_panel(overlay);
+            // The same bookkeeping the walk does for a key it claimed: a modifier the user
+            // pressed a chord with is not one they meant to hold.
+            self.hold.mark_used();
+            return Consumed::Consumed;
         }
         for context in self.active_contexts() {
             match self.dispatch_in(context, event, session) {
@@ -663,22 +644,24 @@ impl Dispatcher {
         }
     }
 
-    /// The overlay layer: the keys a panel owns while it is open.
+    /// The overlay layer: the key that closes a panel, and nothing else.
     ///
-    /// The panel's domain is the four keys the design gives it — `Escape` closes it, the
-    /// arrows move inside it and `Return` confirms it — and every other key falls through
-    /// to the layers below, because a panel is an overlay and not a keyboard grab. What
-    /// the four keys *do* inside the panel is the panel's own state machine; this layer
-    /// only answers that they are not the application's.
+    /// A panel is an overlay and not a keyboard grab, and while there is nothing behind it it
+    /// owns exactly one key: the `Escape` that closes it. The keys a panel with content would
+    /// navigate with — the arrows, the `Return` that confirms — arrive with that panel,
+    /// because taking them for a panel that does not exist is a key the user pressed and saw
+    /// nothing happen on. That is the swallowed-key defect this layer's design exists to
+    /// avoid, so an empty overlay is transparent for every key but its own.
+    ///
+    /// `Escape` is worth a layer of its own for a reason beyond the panel: with one open it
+    /// closes the panel instead of cancelling the composition behind it, so a user who opened
+    /// a panel by mistake loses the panel and not their typing.
     fn dispatch_in_overlay(&mut self, event: &KeyEvent) -> Consumed {
         if self.overlay.is_none() {
             return Consumed::Ignored;
         }
         if event.sym == KEY_ESCAPE {
             self.close_overlay();
-            return Consumed::Consumed;
-        }
-        if matches!(event.sym, KEY_UP | KEY_DOWN | KEY_RETURN) {
             return Consumed::Consumed;
         }
         Consumed::Ignored

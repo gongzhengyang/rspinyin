@@ -19,12 +19,19 @@
 //! so an artifact that grew is a gate failure rather than something a reviewer has to
 //! notice.
 //!
+//! Judging a running plugin's memory readings against the three memory thresholds is
+//! [`memory`]'s: it reads the snapshot the plugin wrote, which carries the process's
+//! resident memory beside the latencies, and fails on a budget that is past its ceiling
+//! or that nothing measured.
+//!
 //! The module is split by responsibility: this root holds the document types, the
 //! binding table and the entry points, [`schema`] turns the document's text into
-//! those types, [`spec`] reads the spec's cells and compares the two, and [`bench`]
-//! turns a criterion run into a verdict.
+//! those types, [`spec`] reads the spec's cells and compares the two, [`bench`]
+//! turns a criterion run into a verdict, and [`memory`] turns a plugin's readings into
+//! one.
 
 mod bench;
+mod memory;
 mod meta;
 mod schema;
 mod spec;
@@ -37,6 +44,10 @@ use anyhow::{Context, Result, ensure};
 use self::SpecCell::{MetricAfter, ThresholdAfter, ThresholdFirst, ThresholdZero};
 pub(crate) use self::bench::{SIGMAS, owner};
 pub(crate) use self::spec::{Spec, compare};
+pub(crate) use self::memory::run as run_memory;
+
+#[cfg(test)]
+mod memory_tests;
 
 #[cfg(test)]
 mod tests;

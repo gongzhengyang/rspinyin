@@ -1,16 +1,18 @@
 //! Criterion benchmarks for the user frequency store.
 //!
-//! The budgets these exist for are the interactive ones: `record` stays inside 5us, a
+//! The budgets these exist for are the interactive ones: the record path stays inside 5us, a
 //! lookup the store answers from memory inside 100ns, and a flush of a full batch inside
 //! 1.5ms. Every case runs against a store in a directory of its own under the system temp
 //! directory, driven by a clock the benchmark owns, so what is measured is the store and
 //! not the wall clock. Those figures are budgets stated by the project, not measurements:
 //! nothing here records a number, and a run on a loaded machine is not evidence about one.
 //!
-//! `record` and `record_flush` are deliberately two cases. The budget is stated for the
-//! record path alone, and the flush a full batch earns is budgeted separately, so the
-//! first case keeps fewer keys pending than the batch trigger and the second cycles past
-//! it: their difference is the flush, amortized over the records that earned it.
+//! `record_existing_key` and `record_new_key` are deliberately two cases. The budget is stated
+//! for the record path alone, and the two differ in what that path itself costs: a key the
+//! delta map already holds, and a key it has not seen -- which pays one `Box<str>` and one
+//! insert, and earns the one request per batch that hands the flush to the store's own thread.
+//! Neither case contains a write transaction, which is the point of the deferral: the disk is
+//! reached from `commit`, and that is where the flush is measured.
 //!
 //! The three `freq` cases are the read path. `freq_hit` and `freq_miss` are the decode
 //! path -- a word the store knows and one it does not, both answered from the counts held
@@ -106,30 +108,28 @@ fn unloaded(fixture: Option<(UserDb, PathBuf)>) -> Option<(UserDb, PathBuf)> {
 fn userdb_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("userdb");
 
-    // The fast path the 5us budget is stated for: a key already recorded, and fewer keys
-    // pending than the batch trigger, so no flush is due.
-    if let Some((db, dir)) = fixture("record", &[], HYDRATE_CAP) {
-        let hot = keys("hot", 8);
-        let mut cursor = 0usize;
-        group.bench_function("record", |bencher| {
-            bencher.iter(|| {
-                let key = &hot[cursor % hot.len()];
-                cursor = cursor.wrapping_add(1);
-                db.record(black_box(key), 0);
-            });
+    // The steady state the 5us budget is stated for: one key already in the delta map, and no
+    // trigger due -- a still clock keeps the interval quiet, and one key never reaches the
+    // batch size. Nothing in this closure touches the disk.
+    if let Some((db, dir)) = fixture("record-existing", &[], HYDRATE_CAP) {
+        db.record("hot", 0);
+        group.bench_function("record_existing_key", |bencher| {
+            bencher.iter(|| db.record(black_box("hot"), 0));
         });
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // The same path with the flush it earns: every thirty-second distinct key starts one,
-    // so the reported cost is the record path plus its share of the flush budget.
-    if let Some((db, dir)) = fixture("record-flush", &[], HYDRATE_CAP) {
-        let many = keys("many", COMMIT_BATCH * 2);
+    // A key the delta map has not seen: one `Box<str>` and one insert. The key set cycles past
+    // the batch size on purpose, so the case also pays the one request per batch that hands the
+    // flush to the store's thread -- which is the shape of a burst of new words rather than the
+    // shape of one word repeated.
+    if let Some((db, dir)) = fixture("record-new", &[], HYDRATE_CAP) {
+        let fresh = keys("fresh", COMMIT_BATCH * 4);
         let mut cursor = 0usize;
-        group.bench_function("record_flush", |bencher| {
+        group.bench_function("record_new_key", |bencher| {
             bencher.iter(|| {
-                let key = &many[cursor % many.len()];
+                let key = &fresh[cursor % fresh.len()];
                 cursor = cursor.wrapping_add(1);
                 db.record(black_box(key), 0);
             });
@@ -183,7 +183,9 @@ fn userdb_bench(c: &mut Criterion) {
     }
 
     // A flush of one record fewer than the batch trigger, so that the measured flush is
-    // the only flush the iteration causes and the record cost stays out of the number.
+    // the only flush the iteration causes and the record cost stays out of the number. This
+    // is the explicit path -- the one a shutdown takes -- so it also pays for holding the
+    // store's flush thread aside, which is what makes the reported flush the flush that ran.
     if let Some((mut db, dir)) = fixture("commit", &[], HYDRATE_CAP) {
         let batch = keys("batch", COMMIT_BATCH);
         group.bench_function("commit", |bencher| {

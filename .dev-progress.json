@@ -1,12 +1,12 @@
 {
-  "total": 103,
+  "total": 188,
   "completed": 103,
   "is_workspace": true,
-  "ledger_revision": 24,
+  "ledger_revision": 27,
   "reconciled_at": "2026-09-30",
-  "reconcile_basis": "green `just ci` run on the working tree (fmt, clippy -D warnings on the main workspace and both addons, 2430 + 346 nextest cases, doctests, ten audit scripts with their self-tests, the host-ABI gate), plus a per-card acceptance record in the manifest that names the files and test cases each one's DoD is met by",
+  "reconcile_basis": "Round 1 closed the 103 cards of the seven Hub documents and set ALL_COMPLETED. That was a false completion: opt-deploy/keymap/perf/ui are Hub & Spoke documents whose P1/P2 cards live in opt-<name>/phase-{2,3}.md, and the run only ever read the Hubs. This round scans the shards too (53 open cards) plus docs/dev/tests.md (30 cases still 未通过). The 103 round-1 cards stay COMPLETED and are not re-opened.",
   "wave_plan": "W0=1.01.01-03 | W1=1.02.01,1.03.01-03,1.04.01 | W2=1.02.02-07,1.03.04-07,1.04.02-05 | W3=1.04.06-07,1.05.01-08 | W4=1.06.01-03,1.07.01,1.08.01-03",
-  "wave_plan_actual": "W0 done. W1 done except 1.03.02/1.03.03. W2 partially landed ahead of schedule (1.04.02, 1.04.05). Session wave A = 1.02.02, 1.02.03, 1.02.06, 1.03.02, 1.04.03. | M0 契约冻结已落地（ADR-0005）。Session wave B = 12 agents: ADD-FEAT-P0.05.01+02, TASK-1.02.04, TASK-1.02.05, TASK-1.03.03, TASK-1.02.07, TASK-1.04.04, TASK-1.05.04, TASK-1.05.06, PERF-P0.02.01, BUILD-P0.01.01, UI-OPT-P0.02.02, FEAT-TEST-P0.01.01. | Session wave C (7 agents): FEAT-TEST-P0.01.02+03, FEAT-TEST-P0.02.03+04, ADD-FEAT-P0.02.03, ADD-FEAT-P0.01.04, UI-OPT-P0.01.02+02.01, plus two follow-up agents closing gaps earlier cards flagged (the phrase document writer and its host wiring; the getrandom feature rule in check-no-network.sh). | Session wave D (20 agents): the contract, decoding, dictionary, configuration, engine, UI and diagnostics cards whose implementations were merged but whose cards were still open, plus the test platform's remaining channels. Session wave E (18 agents): the cards that needed new code -- script conversion, abbreviation in the lattice, the engine's configuration projection, the animation wiring, the placement and material work -- and the five files that were over the 800-line limit. Session wave F (9 agents): the audit passes that turned each remaining card's DoD into file:line and test-case evidence.",
+  "wave_plan_actual": "W0 done. W1 done except 1.03.02/1.03.03. W2 partially landed ahead of schedule (1.04.02, 1.04.05). Session wave A = 1.02.02, 1.02.03, 1.02.06, 1.03.02, 1.04.03. | M0 契约冻结已落地（ADR-0005）。Session wave B = 12 agents: ADD-FEAT-P0.05.01+02, TASK-1.02.04, TASK-1.02.05, TASK-1.03.03, TASK-1.02.07, TASK-1.04.04, TASK-1.05.04, TASK-1.05.06, PERF-P0.02.01, BUILD-P0.01.01, UI-OPT-P0.02.02, FEAT-TEST-P0.01.01. | Session wave C (7 agents): FEAT-TEST-P0.01.02+03, FEAT-TEST-P0.02.03+04, ADD-FEAT-P0.02.03, ADD-FEAT-P0.01.04, UI-OPT-P0.01.02+02.01, plus two follow-up agents closing gaps earlier cards flagged (the phrase document writer and its host wiring; the getrandom feature rule in check-no-network.sh). | Session wave D (20 agents): the contract, decoding, dictionary, configuration, engine, UI and diagnostics cards whose implementations were merged but whose cards were still open, plus the test platform's remaining channels. Session wave E (18 agents): the cards that needed new code -- script conversion, abbreviation in the lattice, the engine's configuration projection, the animation wiring, the placement and material work -- and the five files that were over the 800-line limit. Session wave F (9 agents): the audit passes that turned each remaining card's DoD into file:line and test-case evidence. | Round 2 (this session): stage 1 found 83 open cards the Hub-only scan had missed -- 9 BUILD-P1 + 4 BUILD-P2 in opt-deploy shards, 13 KEY-P1 + 8 KEY-P2 in opt-keymap shards, 7 PERF-P1 + 4 PERF-P2 in opt-perf shards, 4 UI-OPT-P1 + 4 UI-OPT-P2 in opt-ui shards, and TC-CORE-01..30 in tests.md.",
   "stub_convention": "The codebase contains zero todo!()/unimplemented!(). Unfinished bodies are marked with an explicit `// Stub:` comment naming the replacing work (crates/ime-fcitx5/src/ffi/abi.rs, ffi/cpp/ui_glue.cpp) or a `pending_step(...)` call naming the awaited subsystem (crates/ime-fcitx5/src/addon.rs). Each such marker is owned by a later task card and must be closed by it.",
   "cross_task_notes": {
     "InputBuffer::push_char": "TASK-1.02.02 chose 'append at end + caret follows to end'. Phase 1 defers character-level caret editing, so insertion never happens at the caret. If TASK-1.03.07 wants insertion-at-caret, that is an interface decision (~5 lines).",
@@ -1111,10 +1111,915 @@
       "depends_on": [
         "UI-OPT-P0.02.02"
       ]
+    },
+    {
+      "id": "TASK-104",
+      "task_id": "BUILD-P1.01.01",
+      "file": "./docs/dev/opt-deploy/phase-2.md",
+      "title": "跨发行版编译矩阵",
+      "wave": "W1",
+      "track": "D",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-105",
+      "task_id": "BUILD-P1.03.01",
+      "file": "./docs/dev/opt-deploy/phase-2.md",
+      "title": "Debian 包与安装可逆性",
+      "wave": "W1",
+      "track": "D",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-106",
+      "task_id": "BUILD-P1.03.02",
+      "file": "./docs/dev/opt-deploy/phase-2.md",
+      "title": "Fedora 包与安装可逆性",
+      "wave": "W1",
+      "track": "D",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-107",
+      "task_id": "BUILD-P1.03.03",
+      "file": "./docs/dev/opt-deploy/phase-2.md",
+      "title": "Arch 包与安装可逆性",
+      "wave": "W1",
+      "track": "D",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-108",
+      "task_id": "BUILD-P1.03.04",
+      "file": "./docs/dev/opt-deploy/phase-2.md",
+      "title": "AppStream 元数据",
+      "wave": "W1",
+      "track": "D",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-109",
+      "task_id": "BUILD-P1.03.05",
+      "file": "./docs/dev/opt-deploy/phase-2.md",
+      "title": "aarch64 交叉编译",
+      "wave": "W1",
+      "track": "D",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-110",
+      "task_id": "BUILD-P1.04.01",
+      "file": "./docs/dev/opt-deploy/phase-2.md",
+      "title": "产物签名与校验闭环",
+      "wave": "W1",
+      "track": "D",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-111",
+      "task_id": "BUILD-P1.06.01",
+      "file": "./docs/dev/opt-deploy/phase-2.md",
+      "title": "许可与归属文件落地（LICENSE / 徽章 / NOTICE）",
+      "wave": "W1",
+      "track": "D",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-112",
+      "task_id": "BUILD-P1.06.02",
+      "file": "./docs/dev/opt-deploy/phase-2.md",
+      "title": "`NOTICE` 生成与依赖许可清单",
+      "wave": "W1",
+      "track": "D",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-113",
+      "task_id": "BUILD-P2.05.01",
+      "file": "./docs/dev/opt-deploy/phase-3.md",
+      "title": "tag 触发的全量发布闭环",
+      "wave": "W1",
+      "track": "D",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-114",
+      "task_id": "BUILD-P2.05.02",
+      "file": "./docs/dev/opt-deploy/phase-3.md",
+      "title": "合成器四档验证矩阵",
+      "wave": "W1",
+      "track": "D",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-115",
+      "task_id": "BUILD-P2.05.03",
+      "file": "./docs/dev/opt-deploy/phase-3.md",
+      "title": "长稳与产物回归",
+      "wave": "W1",
+      "track": "D",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-116",
+      "task_id": "BUILD-P2.06.01",
+      "file": "./docs/dev/opt-deploy/phase-3.md",
+      "title": "分发与安装文档",
+      "wave": "W1",
+      "track": "D",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-117",
+      "task_id": "KEY-P1.02.01",
+      "file": "./docs/dev/opt-keymap/phase-2.md",
+      "title": "路由表补齐：`highlight_keys` 生效",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-118",
+      "task_id": "KEY-P1.02.02",
+      "file": "./docs/dev/opt-keymap/phase-2.md",
+      "title": "路由表补齐：翻页键全集与音节分隔符",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-119",
+      "task_id": "KEY-P1.02.03",
+      "file": "./docs/dev/opt-keymap/phase-2.md",
+      "title": "大写字母形态归一",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-120",
+      "task_id": "KEY-P1.02.04",
+      "file": "./docs/dev/opt-keymap/phase-2.md",
+      "title": "修饰键自身行与和弦消歧",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-121",
+      "task_id": "KEY-P1.02.05",
+      "file": "./docs/dev/opt-keymap/phase-2.md",
+      "title": "`apply_effects`：Effect → 宿主调用",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-122",
+      "task_id": "KEY-P1.02.06",
+      "file": "./docs/dev/opt-keymap/phase-2.md",
+      "title": "会话生命周期接线",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P1.02.05"
+      ]
+    },
+    {
+      "id": "TASK-123",
+      "task_id": "KEY-P1.02.07",
+      "file": "./docs/dev/opt-keymap/phase-2.md",
+      "title": "临时英文模式的键位语义修正",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P1.02.04"
+      ]
+    },
+    {
+      "id": "TASK-124",
+      "task_id": "KEY-P1.02.08",
+      "file": "./docs/dev/opt-keymap/phase-2.md",
+      "title": "命令面板与诊断面板的键位预留",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-125",
+      "task_id": "KEY-P1.03.01",
+      "file": "./docs/dev/opt-keymap/phase-2.md",
+      "title": "白名单与路由表一致性断言",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-126",
+      "task_id": "KEY-P1.03.02",
+      "file": "./docs/dev/opt-keymap/phase-2.md",
+      "title": "跨列表键位冲突校验与诊断",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P1.03.01"
+      ]
+    },
+    {
+      "id": "TASK-127",
+      "task_id": "KEY-P1.03.03",
+      "file": "./docs/dev/opt-keymap/phase-2.md",
+      "title": "候选网格数字标签与高亮态渲染",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-128",
+      "task_id": "KEY-P1.03.04",
+      "file": "./docs/dev/opt-keymap/phase-2.md",
+      "title": "鼠标路径与键盘路径同源",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P1.03.03",
+        "KEY-P1.02.05"
+      ]
+    },
+    {
+      "id": "TASK-129",
+      "task_id": "KEY-P1.03.05",
+      "file": "./docs/dev/opt-keymap/phase-2.md",
+      "title": "键位映射的端到端表驱动测试",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P1.02.01",
+        "KEY-P1.02.02",
+        "KEY-P1.02.03",
+        "KEY-P1.02.04",
+        "KEY-P1.02.05",
+        "KEY-P1.02.06",
+        "KEY-P1.02.07",
+        "KEY-P1.02.08"
+      ]
+    },
+    {
+      "id": "TASK-130",
+      "task_id": "KEY-P2.01.01",
+      "file": "./docs/dev/opt-keymap/phase-3.md",
+      "title": "焦点生命周期与会话回收",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P1.02.06"
+      ]
+    },
+    {
+      "id": "TASK-131",
+      "task_id": "KEY-P2.01.02",
+      "file": "./docs/dev/opt-keymap/phase-3.md",
+      "title": "输入态与命令态隔离的运行时断言",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P2.01.01"
+      ]
+    },
+    {
+      "id": "TASK-132",
+      "task_id": "KEY-P2.01.03",
+      "file": "./docs/dev/opt-keymap/phase-3.md",
+      "title": "应用切换与焦点竞态的幂等性",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P2.01.01"
+      ]
+    },
+    {
+      "id": "TASK-133",
+      "task_id": "KEY-P2.02.01",
+      "file": "./docs/dev/opt-keymap/phase-3.md",
+      "title": "`UiCommand` 扩展：速查面板帧（需 ADR）",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P2.01.02"
+      ]
+    },
+    {
+      "id": "TASK-134",
+      "task_id": "KEY-P2.02.02",
+      "file": "./docs/dev/opt-keymap/phase-3.md",
+      "title": "速查面板的唤出与消散",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P2.02.01"
+      ]
+    },
+    {
+      "id": "TASK-135",
+      "task_id": "KEY-P2.02.03",
+      "file": "./docs/dev/opt-keymap/phase-3.md",
+      "title": "状态条按键徽章提示",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P2.02.01"
+      ]
+    },
+    {
+      "id": "TASK-136",
+      "task_id": "KEY-P2.03.01",
+      "file": "./docs/dev/opt-keymap/phase-3.md",
+      "title": "用户自定义键位的持久化与回写",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P1.03.02"
+      ]
+    },
+    {
+      "id": "TASK-137",
+      "task_id": "KEY-P2.03.02",
+      "file": "./docs/dev/opt-keymap/phase-3.md",
+      "title": "纯键盘端到端走查",
+      "wave": "W1",
+      "track": "K",
+      "status": "PENDING",
+      "depends_on": [
+        "KEY-P2.02.02",
+        "KEY-P2.02.03",
+        "KEY-P2.03.01"
+      ]
+    },
+    {
+      "id": "TASK-138",
+      "task_id": "PERF-P1.01.01",
+      "file": "./docs/dev/opt-perf/phase-2.md",
+      "title": "语言模型 mmap 直读（消除字符串键 B 树）",
+      "wave": "W1",
+      "track": "P",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-139",
+      "task_id": "PERF-P1.01.02",
+      "file": "./docs/dev/opt-perf/phase-2.md",
+      "title": "Lattice 边表结构瘦身与字符计数下沉",
+      "wave": "W1",
+      "track": "P",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-140",
+      "task_id": "PERF-P1.02.01",
+      "file": "./docs/dev/opt-perf/phase-2.md",
+      "title": "词频写入路径批量合并与去锁",
+      "wave": "W1",
+      "track": "P",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-141",
+      "task_id": "PERF-P1.02.02",
+      "file": "./docs/dev/opt-perf/phase-2.md",
+      "title": "跨线程通道契约固化（容量·背压·语义分类）",
+      "wave": "W1",
+      "track": "P",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-142",
+      "task_id": "PERF-P1.03.01",
+      "file": "./docs/dev/opt-perf/phase-2.md",
+      "title": "动画期差量渲染与 damage 合并",
+      "wave": "W1",
+      "track": "P",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-143",
+      "task_id": "PERF-P1.03.02",
+      "file": "./docs/dev/opt-perf/phase-2.md",
+      "title": "像素暂存池化与窗口回缩",
+      "wave": "W1",
+      "track": "P",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-144",
+      "task_id": "PERF-P1.04.01",
+      "file": "./docs/dev/opt-perf/phase-2.md",
+      "title": "内存峰值与 RSS 预算断言",
+      "wave": "W1",
+      "track": "P",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-145",
+      "task_id": "PERF-P2.01.01",
+      "file": "./docs/dev/opt-perf/phase-3.md",
+      "title": "解码分配次数常量断言（分配预算门禁）",
+      "wave": "W1",
+      "track": "P",
+      "status": "PENDING",
+      "depends_on": [
+        "PERF-P1.01.01"
+      ]
+    },
+    {
+      "id": "TASK-146",
+      "task_id": "PERF-P2.03.01",
+      "file": "./docs/dev/opt-perf/phase-3.md",
+      "title": "Slint 局部重绘边界调优",
+      "wave": "W1",
+      "track": "P",
+      "status": "PENDING",
+      "depends_on": [
+        "PERF-P1.03.01"
+      ]
+    },
+    {
+      "id": "TASK-147",
+      "task_id": "PERF-P2.04.01",
+      "file": "./docs/dev/opt-perf/phase-3.md",
+      "title": "长稳 RSS 漂移与 8 小时 soak 门禁",
+      "wave": "W1",
+      "track": "P",
+      "status": "PENDING",
+      "depends_on": [
+        "PERF-P1.04.01"
+      ]
+    },
+    {
+      "id": "TASK-148",
+      "task_id": "PERF-P2.04.02",
+      "file": "./docs/dev/opt-perf/phase-3.md",
+      "title": "性能预算 CI 门禁（回归阈值与报告）",
+      "wave": "W1",
+      "track": "P",
+      "status": "PENDING",
+      "depends_on": [
+        "PERF-P1.04.01"
+      ]
+    },
+    {
+      "id": "TASK-149",
+      "task_id": "UI-OPT-P1.05.01",
+      "file": "./docs/dev/opt-ui/phase-2.md",
+      "title": "候选网格骨架：文本、数字快捷键标签、注音与截断",
+      "wave": "W1",
+      "track": "U",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-150",
+      "task_id": "UI-OPT-P1.02.01",
+      "file": "./docs/dev/opt-ui/phase-2.md",
+      "title": "Header 状态簇、preedit 切分高亮、光标与左截断",
+      "wave": "W1",
+      "track": "U",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-151",
+      "task_id": "UI-OPT-P1.02.02",
+      "file": "./docs/dev/opt-ui/phase-2.md",
+      "title": "光标指示箭头",
+      "wave": "W1",
+      "track": "U",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-152",
+      "task_id": "UI-OPT-P1.05.02",
+      "file": "./docs/dev/opt-ui/phase-2.md",
+      "title": "行内宽度分配与容器填充",
+      "wave": "W1",
+      "track": "U",
+      "status": "PENDING",
+      "depends_on": [
+        "UI-OPT-P1.05.01"
+      ]
+    },
+    {
+      "id": "TASK-153",
+      "task_id": "UI-OPT-P2.05.01",
+      "file": "./docs/dev/opt-ui/phase-3.md",
+      "title": "指针命中、悬停、点击、滚轮与输入区域塑形",
+      "wave": "W1",
+      "track": "U",
+      "status": "PENDING",
+      "depends_on": [
+        "UI-OPT-P1.05.02"
+      ]
+    },
+    {
+      "id": "TASK-154",
+      "task_id": "UI-OPT-P2.03.01",
+      "file": "./docs/dev/opt-ui/phase-3.md",
+      "title": "候选单元五态与键盘 Focus Ring",
+      "wave": "W1",
+      "track": "U",
+      "status": "PENDING",
+      "depends_on": [
+        "UI-OPT-P1.05.01",
+        "UI-OPT-P2.05.01"
+      ]
+    },
+    {
+      "id": "TASK-155",
+      "task_id": "UI-OPT-P2.07.01",
+      "file": "./docs/dev/opt-ui/phase-3.md",
+      "title": "降级态、加载占位与状态反馈",
+      "wave": "W1",
+      "track": "U",
+      "status": "PENDING",
+      "depends_on": [
+        "UI-OPT-P1.02.01"
+      ]
+    },
+    {
+      "id": "TASK-156",
+      "task_id": "UI-OPT-P2.01.01",
+      "file": "./docs/dev/opt-ui/phase-3.md",
+      "title": "主题 crossfade 与光学微调",
+      "wave": "W1",
+      "track": "U",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-157",
+      "task_id": "TC-CORE-01",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-01",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-158",
+      "task_id": "TC-CORE-02",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-02",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-159",
+      "task_id": "TC-CORE-03",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-03",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-160",
+      "task_id": "TC-CORE-04",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-04",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-161",
+      "task_id": "TC-CORE-05",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-05",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-162",
+      "task_id": "TC-CORE-06",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-06",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-163",
+      "task_id": "TC-CORE-07",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-07",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-164",
+      "task_id": "TC-CORE-08",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-08",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-165",
+      "task_id": "TC-CORE-09",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-09",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-166",
+      "task_id": "TC-CORE-10",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-10",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-167",
+      "task_id": "TC-CORE-11",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-11",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-168",
+      "task_id": "TC-CORE-12",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-12",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-169",
+      "task_id": "TC-CORE-13",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-13",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-170",
+      "task_id": "TC-CORE-14",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-14",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-171",
+      "task_id": "TC-CORE-15",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-15",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-172",
+      "task_id": "TC-CORE-16",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-16",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-173",
+      "task_id": "TC-CORE-17",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-17",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-174",
+      "task_id": "TC-CORE-18",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-18",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-175",
+      "task_id": "TC-CORE-19",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-19",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-176",
+      "task_id": "TC-CORE-20",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-20",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-177",
+      "task_id": "TC-CORE-21",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-21",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-178",
+      "task_id": "TC-CORE-22",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-22",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-179",
+      "task_id": "TC-CORE-23",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-23",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-180",
+      "task_id": "TC-CORE-24",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-24",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-181",
+      "task_id": "TC-CORE-25",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-25",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-182",
+      "task_id": "TC-CORE-26",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-26",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-183",
+      "task_id": "TC-CORE-27",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-27",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-184",
+      "task_id": "TC-CORE-28",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-28",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-185",
+      "task_id": "TC-CORE-29",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-29",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-186",
+      "task_id": "TC-CORE-30",
+      "file": "./docs/dev/tests.md",
+      "title": "P0 核心基线用例 TC-CORE-30",
+      "wave": "W1",
+      "track": "T",
+      "status": "PENDING",
+      "depends_on": []
+    },
+    {
+      "id": "TASK-187",
+      "task_id": "ENGINE-WIRE-01",
+      "file": "./docs/dev/features.md",
+      "title": "引擎 addon 的初始化步骤落地：把 5 处 pending_step 换成真实调用，并装配 SessionEnv",
+      "wave": "W2",
+      "track": "E",
+      "status": "PENDING",
+      "depends_on": [],
+      "note": "`crates/ime-fcitx5/src/addon.rs` 的 `init_diagnostics` / `prepare_data_dirs` / `load_config` / `start_config_watch` / `diagnostics-close` 五步都只调 `pending_step(...)` 然后 `Ok(())`，而它们 awaiting 的东西（`ime_diag::log::init_logging`、`ime_dict::paths::ensure_dirs`、`ime_config::ConfigStore`）都已经落地。后果：插件从不初始化日志、从不建数据目录、从不读配置文件（`with_config_store` 恒为 None，路由表恒为默认值）。 | `load_lexicon` 同样是 `pending_step(\"lexicon\", ...)`，且 `session_host::install(env, ...)` 在生产代码里没有任何调用点 —— 引擎没有 decoder、没有词库、没有语言模型、没有用户词频，因此**不会产生任何候选**。 | `grep -rn 'session_host::install' crates/` 只命中测试；`grep -rn 'FstLexicon::load' crates/ime-fcitx5/` 无命中。两个独立 agent 分别报告了同一处缺口。"
+    },
+    {
+      "id": "TASK-188",
+      "task_id": "UI-WIRE-01",
+      "file": "./docs/dev/features.md",
+      "title": "UI addon 的 platform / ui-startup 两步接线：构造 X11Backend、起 UI 线程、置位 WINDOW_BACKEND_AVAILABLE",
+      "wave": "W2",
+      "track": "E",
+      "status": "PENDING",
+      "depends_on": [],
+      "note": "`crates/ime-ui-addon/src/addon.rs:169` 的 `pending_step(\"platform\", \"the X11 / Wayland backend probe\")` 与 `:357` 的 `pending_step(\"ui-startup\", \"the UI thread and the pre-created window\")` 都是占位。 | `WINDOW_BACKEND_AVAILABLE`（`ui_impl/availability.rs:60`）有一个 setter 但**没有任何调用点**，所以它恒为 false，`register_takeover()` 永远报 Unsupported，候选框永远不会出现。 | `platform/mod.rs` 之外没有任何代码构造 `X11Backend`；`ProtocolClient` 只有测试替身。合成器验证 agent 因此只能跑 environment 半，window 半全部 skipped。"
     }
   ],
-  "concurrency": 10,
-  "concurrency_note": "The harness caps concurrent subagents at 20 (CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS); the requested 50 cannot be reached from inside the session.",
+  "concurrency": 20,
+  "concurrency_note": "run invoked with 最大20个子agent; slots are bounded by file ownership, not by the raw card count -- 24 of the 53 shard cards share a file with a sibling card and are therefore serialized behind it.",
   "scopes": [
     "docs/dev/features.md (39 engineering cards)",
     "docs/dev/features-test.md (20 test-platform cards)",
@@ -1122,14 +2027,17 @@
     "docs/dev/opt-deploy.md (11 build/distribution cards)",
     "docs/dev/opt-keymap.md (5 key-binding cards)",
     "docs/dev/opt-perf.md (8 performance cards)",
-    "docs/dev/opt-ui.md (7 UI-craft cards)"
+    "docs/dev/opt-ui.md (7 UI-craft cards)",
+    "docs/dev/opt-{deploy,keymap,perf,ui}/phase-{2,3}.md (53 P1/P2 shard cards)",
+    "docs/dev/tests.md (30 P0 baseline cases, 用例状态 field)"
   ],
   "blockers": [
     "no benchmark has been run on an idle machine - every number taken so far is under 20 concurrent agents and untrustworthy. `cargo bench --workspace` must be taken when the tree compiles and no agent is running, then `xtask budget --check` decides.",
     "the `.slint` sources have not been rendered in a real session. The pixel tests run against the mock surface, and they found a real defect on 2026-09-30: `request_redraw` was never called, so the window would have drawn its first frame and never updated. Fixed, but a live session is still what would confirm the rest of the window.",
     "the system-installed librspinyin.so is the pre-fix build that segfaults; a lab run without FCITX_ADDON_DIRS reproduces it. `bash packaging/install.sh` after a release build replaces it.",
     "Wayland cannot be exercised on this machine at all: WSLg's compositor is Weston, which ASM-13 places outside all four tiers, and wlr-protocols is not installed. Every tier-1..3 acceptance item is 'not verifiable here', recorded in docs/dev/spikes/wayland-tiers.md.",
-    "AGENTS.md section 2 still names `cargo check -p ime-fcitx5 --features fcitx5-host` as the host-ABI gate; the gate is now `just check-host`, which covers BOTH addon crates. AGENTS.md requires user confirmation to edit, so the back-write is pending."
+    "AGENTS.md section 2 still names `cargo check -p ime-fcitx5 --features fcitx5-host` as the host-ABI gate; the gate is now `just check-host`, which covers BOTH addon crates. AGENTS.md requires user confirmation to edit, so the back-write is pending.",
+    "ROUND 2 CRITICAL FINDING: the two addons are skeletons. crates/ime-fcitx5/src/addon.rs's init steps (diagnostics, data-dirs, config, config-watch, lexicon, diagnostics-close) are `pending_step(...); Ok(())` bodies whose 'awaiting' text names crates that have since landed, and session_host::install has no production caller -- so the plugin never loads a dictionary, never reads its config file, and produces no candidates. The UI addon's `platform` and `ui-startup` steps are the same shape, and WINDOW_BACKEND_AVAILABLE has a setter no one calls, so the candidate window can never appear. Round 1 marked every card over this code [x]."
   ],
   "scopes_note": "features-add.md / opt-deploy.md / opt-keymap.md / opt-perf.md / opt-ui.md each carry P1/P2 continuation shards in a sibling directory (docs/dev/<name>/phase-*.md). Those shards are NOT matched by the default globs `docs/dev/features-*.md` and `docs/dev/opt-*.md` (they are files inside a subdirectory, not files directly under docs/dev/), so they are out of scope for this round and remain unregistered. Registering them is a follow-up decision, not an oversight. | 2026-09-29 session: the four gate commands and every audit script in `just ci` are green (1264 tests: 1118 workspace + 146 host-feature, plus doctests). 19 of 103 cards are `[x]` with a written acceptance record. The remaining 84 are unstarted or partial; the ledger's statuses are read back out of the task documents, which are the authority.",
   "milestones": {
@@ -1149,5 +2057,15 @@
       ]
     }
   },
-  "status": "ALL_COMPLETED"
+  "status": "IN_PROGRESS",
+  "scope_decision_round_2": {
+    "effective_manifest_set": [
+      "docs/dev/features*.md and docs/dev/opt-*.md (the default globs; all 103 cards already closed in round 1)",
+      "docs/dev/opt-{deploy,keymap,perf,ui}/phase-{2,3}.md (the Hub & Spoke shards those Hubs delegate their P1/P2 cards to -- 53 open cards + 23 section-exit checkboxes)",
+      "docs/dev/tests.md (the test-case suite; 30 TC-CORE cases still marked 用例状态：[ ] 未通过)"
+    ],
+    "why_the_shards_are_in_scope": "opt-deploy.md and its three siblings are Hub & Spoke documents. Their Living Header says P1/P2 cards are saved to opt-<name>/phase-{2,3}.md and are not repeated in the Hub. Round 1 scanned only the Hubs, marked the P0 cards [x], and set ALL_COMPLETED -- so 53 cards that belong to those same manifests were never read. Scanning the shards is reading the manifest, not widening it.",
+    "why_tests_md_is_in_scope": "docs/dev/tests.md carries the 用例状态 field, which is one of the four status field names the run recognises. Its 30 P0 baseline cases have never been executed by anything. Declaring the run complete with 30 unchecked markers in docs/dev/ would be the same false completion this round exists to correct.",
+    "round_1_cards": "the 103 cards from round 1 stay COMPLETED and are not re-opened"
+  }
 }

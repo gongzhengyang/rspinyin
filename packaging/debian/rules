@@ -1,0 +1,191 @@
+#!/usr/bin/make -f
+#
+# Debian packaging rules for rspinyin.
+#
+# This drives cargo directly rather than using the `cargo` debhelper buildsystem
+# from dh-cargo. dh-cargo is built around Debian's vendored-crates model: it
+# expects a `debian/cargo-checksum.json` and a `vendor/` tree produced by
+# `cargo vendor`, and it builds library crates for other packages to link
+# against. rspinyin ships a cdylib that nothing links against, and its
+# Cargo.lock is committed, so the vendoring step buys nothing here and would
+# have to be re-run on every dependency bump.
+#
+# For an upload to Debian main the vendored path is the compliant one and this
+# file must be replaced by `dh $@ --buildsystem=cargo` plus the vendor tree.
+# For a PPA, a self-hosted repository or an internal build, this is the
+# shorter correct answer.
+#
+# The dictionary is compiled at build time and shipped in the package. It is
+# NOT compiled on the user's machine: that would require the raw upstream TSVs
+# and therefore network access during install.
+#
+# Every override below replaces a step outright and none of them calls the
+# command it replaces: the two that have work to do run the build and the
+# installer directly, and the rest are deliberate no-ops. `dh_installdocs`,
+# `dh_compress`, `dh_fixperms`, `dh_icons`, `dh_shlibdeps` and `dh_builddeb` are
+# left to run normally.
+#
+# ---------------------------------------------------------------------------
+# Why the build dependencies in debian/control are what they are
+#
+#   binutils    a real dependency, not a transitive one. The installer strips
+#               each shared object with `strip --strip-unneeded` and then
+#               re-reads its dynamic symbol table to confirm
+#               `fcitx_addon_factory_instance` survived; it refuses to run at
+#               all when `strip` is missing.
+#   curl,       what data/fetch.sh needs: curl to download, python3 to
+#   python3,    normalise, unzip to integrity-check the Unihan archive.
+#   unzip
+#   rustc       the workspace MSRV. Edition 2024 needs 1.85, and Cargo refuses
+#   (>= 1.85)   to build a member whose rust-version is above the toolchain's.
+#               The bound is stated so that a distribution whose archive Rust is
+#               older fails at dependency resolution, naming the version, rather
+#               than minutes into a compile.
+#
+# ---------------------------------------------------------------------------
+# Decisions recorded against the fields of debian/control
+#
+# Architecture: any, not a list. The build resolves Fcitx5's addon directory
+# from the target system's own pkg-config, so the plugin lands under
+# lib/x86_64-linux-gnu/fcitx5 on amd64 and under the arm64 triplet on arm64
+# without an architecture being named anywhere. The two shared objects are
+# addons, not libraries anything links against, so there is no ABI that would
+# make a foreign-architecture build wrong.
+#
+# `fcitx5 (>= 5.1.0)` is the same floor the addon descriptors declare as
+# `0=core:5.1.0`, and the two must not drift. Fcitx5 treats every entry in
+# [Addon/Dependencies] as a *required* dependency and suppresses the whole
+# addon when one is unmet, so a package installable on a host the plugin
+# refuses to load on would leave the user with an input method that silently
+# is not there. The floor is 5.1.0 rather than the development machine's 5.1.7
+# for the same reason, and Ubuntu 22.04 LTS (Fcitx5 5.0.x) is deliberately
+# outside this package's installable set.
+#
+# ---------------------------------------------------------------------------
+# Why the addon libraries are never stripped by dh_strip
+#
+# Fcitx5 resolves `fcitx_addon_factory_instance` with `dlsym` after `dlopen`.
+# `strip --strip-all` is the operation that can take that name out of the
+# dynamic symbol table and leave a library that loads and contains no addon.
+# Stripping is therefore a packaging-time action performed in exactly one
+# place -- `xtask install`, with `--strip-unneeded`, which re-reads the dynamic
+# symbol table of the copy it is about to hand on -- and dh_strip, whose
+# default is `--strip-all`, must not run on top of it. This is the contract the
+# project calls ASM-13: never strip at compile time, strip once at packaging
+# time, and verify the symbol afterwards. The assertion at the end of
+# `override_dh_auto_install` is what checks the promise rather than assuming it.
+
+export DH_VERBOSE = 1
+
+# Reproducible builds. SOURCE_DATE_EPOCH keeps the timestamp embedded in the C++
+# glue's debug info -- and any __DATE__/__TIME__ expansion -- from depending on
+# when the build ran, and is left overridable so a caller that sets it wins.
+SOURCE_DATE_EPOCH ?= 1790899200
+export SOURCE_DATE_EPOCH
+
+# The prefix maps rewrite the absolute build path to a stable token, which is
+# what makes two builds of the same source tree produce identical debug info in
+# the glue. Appended rather than assigned outright, so whatever the caller put
+# in CXXFLAGS -- a distribution's hardening flags, typically -- is kept.
+CXXFLAGS := -ffile-prefix-map=$(CURDIR)=. -fdebug-prefix-map=$(CURDIR)=. $(CXXFLAGS)
+export CXXFLAGS
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	# Nothing to configure: there is no autotools/cmake/meson build system, and
+	# cargo reads its configuration from Cargo.toml and .cargo/config.toml.
+	:
+
+override_dh_auto_build:
+	# The raw upstream dictionary sources are not committed; data/sources.toml
+	# pins them by digest instead. A tree that has never fetched them cannot
+	# compile the dictionary this package ships, so fetch the missing ones --
+	# and only then. A packager who has already run data/fetch.sh, or a source
+	# package that ships them, builds without touching the network at all,
+	# which is what the digest pinning is for.
+	set -eu; \
+	for source in pinyin-data jieba-dict unihan; do \
+	    if [ ! -f "data/raw/$$source.tsv" ]; then bash data/fetch.sh; break; fi; \
+	done
+	# Both addons, not just the engine: ADR-0003 splits the plugin into an
+	# `InputMethod` addon and a `UI` addon, and the installer refuses to run
+	# when either library is missing rather than shipping half an input method.
+	cargo build --release --locked -p ime-fcitx5 --features fcitx5-host
+	cargo build --release --locked -p ime-ui-addon --features fcitx5-host
+	cargo run --release --locked -p xtask -- dictc
+
+override_dh_auto_test:
+	# The test suite needs cargo-nextest, which is not in Debian's archive.
+	# Tests run in CI on every commit; repeating them here would only re-assert
+	# what the source archive was built from. What this build asserts instead is
+	# the one thing a distribution build is uniquely placed to check -- that the
+	# files it is about to package still export the addon factory after the
+	# installer stripped them -- and that assertion needs the staged tree, so it
+	# lives at the end of `override_dh_auto_install`.
+	:
+
+override_dh_auto_install:
+	# `xtask install` resolves the destination directories from the *target*
+	# system's pkg-config, so this works unchanged on Debian (lib/x86_64-linux-gnu)
+	# and on any derivative that uses a different triplet.
+	DESTDIR=$(CURDIR)/debian/rspinyin PREFIX=/usr \
+	  bash packaging/install.sh --no-sudo --skip-build
+	# The installer writes an install manifest so that its own uninstall can put
+	# back whatever a previous installation displaced. Every path in it is
+	# prefixed with the staging directory it was written in, so shipping it
+	# would put a record of this build machine's directory layout on the user's
+	# disk. Removal here belongs to dpkg, not to the installer.
+	find debian/rspinyin -name install-manifest.json -delete
+	# The third-party notices: Slint (statically linked into the UI addon),
+	# Fcitx5 (dynamically linked and not redistributed) and the dictionary
+	# sources. debian/copyright states the licences; this is the attribution
+	# that goes with them, and it is written before `dh_installdocs` runs so
+	# that the file lands in the directory that command owns.
+	install -D -m 0644 docs/dev/NOTICE \
+	    debian/rspinyin/usr/share/doc/rspinyin/NOTICE
+	# The assertions, made on the tree the package is about to be built from.
+	# Neither of them is implied by the build having succeeded:
+	#
+	#   * the addon factory symbol, read back from the file that will be
+	#     packaged. The installer checked it on the copy it staged; this checks
+	#     it on the copy the package carries. `strip --strip-all` anywhere
+	#     between the two would take the name out and leave a library Fcitx5
+	#     loads and finds no addon in.
+	#   * the absence of a static symbol table, which is what says the library
+	#     really was stripped rather than merely reported as such.
+	#   * both libraries are present. A package with only the engine installs
+	#     and gives the user an input method with no candidate window at all.
+	#
+	# The libraries are found rather than spelled out because the addon
+	# directory is whatever the target system's pkg-config reported.
+	set -eu; \
+	found=0; \
+	for so in $$(find debian/rspinyin -type f -name 'librspinyin*.so'); do \
+	    found=$$((found + 1)); \
+	    nm -D --defined-only "$$so" | grep -q fcitx_addon_factory_instance \
+	        || { echo "dist/verify/factory-symbol-missing: $$so" >&2; exit 1; }; \
+	    if readelf -SW "$$so" | grep -q '\.symtab'; then \
+	        echo "dist/verify/not-stripped: $$so" >&2; exit 1; \
+	    fi; \
+	done; \
+	test "$$found" -eq 2 \
+	    || { echo "dist/verify/artifact-missing: expected two addon libraries, found $$found" >&2; exit 1; }
+
+override_dh_strip:
+	# The addon libraries are stripped by `xtask install` with
+	# `strip --strip-unneeded`, and the symbol table is re-read afterwards to
+	# confirm `fcitx_addon_factory_instance` survived. Running dh_strip on top
+	# would re-strip them, and dh_strip's default is `--strip-all`, which is
+	# exactly the operation that removes that symbol and produces a library
+	# Fcitx5 loads but finds no addon in.
+	#
+	# There is no ELF in this package that dh_strip should touch: the two .so
+	# files are addon plugins, not libraries anything links against.
+	:
+
+override_dh_makeshlibs:
+	# Same reason: these are dlopen'd plugins with a private C ABI, not shared
+	# libraries, so they must not contribute a shlibs entry.
+	:

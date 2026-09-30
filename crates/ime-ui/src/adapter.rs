@@ -34,16 +34,21 @@
 
 use std::rc::Rc;
 
-use ime_types::{CandidateSource, ImeError, PageDir, Placement, Rgba8, ThemeSpec, UiFrame};
+use ime_types::{ImeError, PageDir, Placement, Rgba8, ThemeSpec, UiFrame};
 use slint::{Color, ComponentHandle as _, SharedString, VecModel};
 
 use crate::layout::{self, Metrics};
-use crate::spring::{AnimationSet, FrameMotion, HighlightRect, MotionConfig};
+use crate::spring::{AnimationSet, FrameMotion, MotionConfig};
 use crate::theme::{self, ThemeSink, ThemeTokens};
 use crate::ui_generated::{CandidateData, CandidateWindow, Theme};
 
+use self::cell::cell_data;
+
+mod arrow;
 mod cell;
 mod frame;
+mod highlight;
+mod preedit;
 
 #[cfg(test)]
 // Crate-visible rather than private: `surface`'s tests drive the same frames, and the
@@ -51,9 +56,13 @@ mod frame;
 // The `#[cfg(test)]` keeps the module out of the shipped library entirely.
 pub(crate) mod tests;
 
+pub use self::arrow::arrow_in_container;
 pub use self::cell::{CellState, Measure, PointerState, VisualState, local_position};
-pub use self::frame::{
-    DrawDelta, DrawState, PREEDIT_MAX_CHARS, RevisionGate, container_cap, draw_state,
+pub use self::frame::{DrawDelta, DrawState, RevisionGate, container_cap, draw_state};
+pub use self::highlight::highlight_rect;
+pub use self::preedit::{
+    MIN_PREEDIT_WIDTH_DP, PREEDIT_MAX_CHARS, PreeditLayout, PreeditRun, RunKind,
+    SECONDARY_STATUS_WIDTH_DP, layout_preedit,
 };
 
 /// Recorded when the candidate window's component cannot be created.
@@ -91,6 +100,16 @@ pub struct Adapter {
     /// replacing it on every frame would rebuild the model and re-notify the view for a page
     /// that did not change.
     items: Rc<VecModel<CandidateData>>,
+    /// The preedit's runs left of the caret, as the header's model.
+    ///
+    /// Two models rather than one with a split index: the component draws them on either
+    /// side of the caret, and a single model would make it slice on every frame.
+    before: Rc<VecModel<crate::ui_generated::PreeditRun>>,
+    /// The preedit's runs right of the caret.
+    after: Rc<VecModel<crate::ui_generated::PreeditRun>>,
+    /// The caret indicator's top-left corner in container-relative logical pixels, or `None`
+    /// when the placement pass drew no arrow. See [`Adapter::set_arrow`].
+    arrow: Option<(f32, f32)>,
     /// The width estimator, kept across frames so a candidate text is measured once rather
     /// than once per keystroke.
     measure: Measure,
@@ -137,6 +156,10 @@ impl Adapter {
         let window = CandidateWindow::new().map_err(|_| component_error())?;
         let items: Rc<VecModel<CandidateData>> = Rc::new(VecModel::default());
         window.set_items(items.clone().into());
+        let before: Rc<VecModel<crate::ui_generated::PreeditRun>> = Rc::new(VecModel::default());
+        let after: Rc<VecModel<crate::ui_generated::PreeditRun>> = Rc::new(VecModel::default());
+        window.set_preedit_before(before.clone().into());
+        window.set_preedit_after(after.clone().into());
         Ok(Self {
             window,
             metrics: layout::metrics()?,
@@ -144,6 +167,9 @@ impl Adapter {
             gate: RevisionGate::default(),
             visible: false,
             items,
+            before,
+            after,
+            arrow: None,
             measure: Measure::default(),
             motion: AnimationSet::new(MotionConfig::default()),
             drawn_motion: None,
@@ -230,6 +256,9 @@ impl Adapter {
             return false;
         }
         self.write_items();
+        // A model change does not reach the window's dirty flag on this platform, for the
+        // same reason `apply_frame` and `advance` request the repaint themselves.
+        self.request_repaint();
         true
     }
 
@@ -439,6 +468,46 @@ impl Adapter {
             .set_grows_upward(matches!(placement, Placement::Above));
     }
 
+    /// Records where the caret indicator goes, in container-relative logical pixels.
+    ///
+    /// Called by the placement pass with [`arrow_in_container`]'s answer. The pass is the
+    /// only layer that knows whether an arrow may be drawn at all -- a window flipped above
+    /// the caret or pushed sideways has no straight line back to it, and the pass answers
+    /// `None` for those -- but the component's vocabulary stays in this module, so the pass
+    /// hands over a pair of numbers and this writes them.
+    ///
+    /// # Parameters
+    ///
+    /// * `arrow` -- the arrow's top-left corner in container-relative logical pixels, or
+    ///   `None` when no arrow is drawn. The two coordinates are meaningless while it is
+    ///   `None`.
+    ///
+    /// # Returns
+    ///
+    /// Whether what the component draws changed. A placement that lands the arrow where the
+    /// previous one did writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn set_arrow(&mut self, arrow: Option<(f32, f32)>) -> bool {
+        if self.arrow == arrow {
+            return false;
+        }
+        self.arrow = arrow;
+        self.window.set_arrow_visible(arrow.is_some());
+        if let Some((x, y)) = arrow {
+            self.window.set_arrow_x(x);
+            self.window.set_arrow_y(y);
+        }
+        self.request_repaint();
+        true
+    }
+
     /// The state the component is drawing.
     ///
     /// The placement pass sizes the panel from these numbers rather than recomputing them, so
@@ -470,9 +539,11 @@ impl Adapter {
 
     /// Writes the properties a frame changed.
     fn write(&mut self, delta: &DrawDelta) {
-        if delta.preedit_text {
-            self.window
-                .set_preedit_text(SharedString::from(self.state.preedit_text.as_str()));
+        if delta.preedit {
+            self.write_preedit();
+        }
+        if delta.status {
+            self.write_status();
         }
         if delta.mode_label {
             self.window
@@ -506,6 +577,33 @@ impl Adapter {
         if delta.cells {
             self.write_items();
         }
+    }
+
+    /// Writes the preedit's runs and the three facts the header draws them with.
+    ///
+    /// The two models are replaced rather than patched, for the reason the cells' model is:
+    /// a frame that reaches here has already changed what the preedit draws, and one
+    /// `set_vec` is a single notification instead of one per run.
+    fn write_preedit(&self) {
+        let before: Vec<crate::ui_generated::PreeditRun> =
+            self.state.preedit.before.iter().map(run_data).collect();
+        let after: Vec<crate::ui_generated::PreeditRun> =
+            self.state.preedit.after.iter().map(run_data).collect();
+        self.before.set_vec(before);
+        self.after.set_vec(after);
+        self.window.set_caret_visible(self.state.preedit.caret_visible);
+        self.window
+            .set_preedit_truncated(self.state.preedit.truncated);
+        self.window
+            .set_show_secondary_status(self.state.preedit.show_secondary_status);
+    }
+
+    /// Writes the three status flags the header's marker cluster draws.
+    fn write_status(&self) {
+        self.window.set_full_width(self.state.full_width);
+        self.window
+            .set_punctuation_full(self.state.punctuation_full);
+        self.window.set_readonly(self.state.readonly);
     }
 
     /// Writes the page's cells into the grid's model.
@@ -591,47 +689,15 @@ impl Adapter {
     }
 }
 
-/// The rectangle the highlight box rests on, in the candidate grid's own coordinates.
+/// One preedit run, as the header's model holds it.
 ///
-/// The grid's origin is the candidate area's top-left corner, inside the container padding and
-/// below the header: the window adds both when it draws the box, which is the only place the
-/// two spaces meet. The arithmetic is the hit map's (`crate::geometry`), restated in logical
-/// pixels, so the box the user sees and the cell the pointer hits cannot drift apart.
-///
-/// # Parameters
-///
-/// * `state` -- the state the component is drawing, which fixes the cell width, the columns
-///   per row and the gaps the grid draws with.
-/// * `position` -- the candidate's zero-based position within the page, which is what
-///   [`PointerState`] holds and what the grid numbers its cells by.
-/// * `metrics` -- the component's constants, from [`crate::layout::metrics`].
-///
-/// # Returns
-///
-/// The cell's rectangle in logical pixels, relative to the candidate grid's origin. A position
-/// past the last cell of the page still lands on the grid, which is what keeps a stale
-/// highlight visible instead of collapsing it onto the origin.
-///
-/// # Errors
-///
-/// This function is infallible: it returns no `Result`.
-///
-/// # Panics
-///
-/// Never panics: the column count is kept away from zero and the arithmetic is `f32`.
-pub fn highlight_rect(state: &DrawState, position: u16, metrics: &Metrics) -> HighlightRect {
-    // A page with no column -- an empty state -- still has one, which is what the grid itself
-    // clamps to when it lays its rows out.
-    let columns = state.max_per_row.max(1);
-    let position = i32::from(position);
-    let column = position % columns;
-    let row = position / columns;
-    HighlightRect::new(
-        column as f32 * (state.cell_width + metrics.grid_gap),
-        row as f32 * (metrics.cell_height + metrics.grid_gap),
-        state.cell_width.max(0.0),
-        metrics.cell_height.max(0.0),
-    )
+/// The kind travels as its wire value, because a `.slint` source has no enum of its own;
+/// [`RunKind::code`] is the one place the mapping is written out.
+fn run_data(run: &PreeditRun) -> crate::ui_generated::PreeditRun {
+    crate::ui_generated::PreeditRun {
+        text: SharedString::from(run.text.as_str()),
+        kind: run.kind.code(),
+    }
 }
 
 /// The component's theme global, as [`ThemeSink`] sees it.
@@ -667,44 +733,6 @@ impl ThemeSink for WindowTheme<'_> {
     }
 }
 
-/// One cell, as the grid's model holds it.
-///
-/// The three state booleans are derived from the single state the ranking of 3.4 resolved, so
-/// they can never contradict each other, and the full text travels beside the text that is
-/// drawn: a cell cut with `…` still carries what a selection commits.
-fn cell_data(cell: &CellState) -> CandidateData {
-    CandidateData {
-        index: i32::from(cell.index),
-        label: SharedString::from(cell.label.as_str()),
-        text: SharedString::from(cell.text.as_str()),
-        display_text: SharedString::from(cell.display_text.as_str()),
-        annotation: SharedString::from(cell.annotation.as_str()),
-        source: source_code(cell.source),
-        is_highlighted: cell.state == VisualState::FocusRing,
-        is_hovered: cell.state == VisualState::Hover,
-        is_pressed: cell.state == VisualState::Active,
-        is_disabled: cell.state == VisualState::Disabled,
-    }
-}
-
-/// The number the grid carries a candidate's source as.
-///
-/// A `.slint` source has no enum of its own and `CandidateSource` is a frozen contract type,
-/// so the variant travels as its own number: the mapping is written out rather than derived
-/// from the discriminant, which makes a variant added later a compile error here instead of
-/// a silently renumbered source.
-fn source_code(source: CandidateSource) -> i32 {
-    match source {
-        CandidateSource::Dict => 0,
-        CandidateSource::UserDict => 1,
-        CandidateSource::Learned => 2,
-        CandidateSource::Passthrough => 3,
-        CandidateSource::Symbol => 4,
-        CandidateSource::Phrase => 5,
-        CandidateSource::Script => 6,
-    }
-}
-
 /// The error a component that cannot be created reports.
 fn component_error() -> ImeError {
     ImeError::CompositorUnsupported {
@@ -716,58 +744,5 @@ fn component_error() -> ImeError {
 fn surface_error() -> ImeError {
     ImeError::CompositorUnsupported {
         detail: String::from(SURFACE_FAILED_CODE),
-    }
-}
-
-#[cfg(test)]
-// Inline rather than in `adapter/tests.rs`, and the split is by what a test needs: this one
-// covers a pure function of the drawn state, so it needs no component, no platform and no
-// fixtures, and a unit test belongs beside the code it covers. The tests that drive a live
-// window stay in `adapter/tests.rs`, where the fixtures they share live.
-mod highlight_tests {
-    use crate::layout::{self, Metrics};
-
-    use super::{DrawState, highlight_rect};
-
-    /// The width of one candidate cell: two CJK glyphs and the chrome around them, which is
-    /// what the frames the adapter maps carry.
-    fn cell_width(metrics: &Metrics) -> f32 {
-        2.0 * metrics.font_size_cell + metrics.cell_chrome_width
-    }
-
-    #[test]
-    fn test_highlight_rect_of_a_degenerate_state_stays_on_the_grid() {
-        let metrics = layout::metrics().expect("ui/candidate.slint declares its constants");
-        // An empty state has no column count and no cell width, which is what a page drawn
-        // before its first frame holds. The column count is kept away from zero and the
-        // position is still placed on the grid rather than dropped.
-        let empty = highlight_rect(&DrawState::default(), 3, metrics);
-        assert_eq!(
-            empty.x, 0.0,
-            "a page with no column must not divide by zero"
-        );
-        assert_eq!(empty.w, 0.0, "and a cell with no width draws nothing");
-        assert_eq!(
-            empty.y,
-            3.0 * (metrics.cell_height + metrics.grid_gap),
-            "the position is placed on the grid, one row step per row"
-        );
-
-        // A position past the last row still lands on the grid rather than off it.
-        let state = DrawState {
-            max_per_row: 5,
-            cell_width: cell_width(metrics),
-            ..DrawState::default()
-        };
-        let past = highlight_rect(&state, 12, metrics);
-        let step_x = cell_width(metrics) + metrics.grid_gap;
-        let step_y = metrics.cell_height + metrics.grid_gap;
-        assert_eq!(
-            (past.x, past.y),
-            (2.0 * step_x, 2.0 * step_y),
-            "the thirteenth candidate is two columns right and two rows down"
-        );
-        assert_eq!(past.w, cell_width(metrics), "and it is one cell wide");
-        assert_eq!(past.h, metrics.cell_height, "and one cell tall");
     }
 }

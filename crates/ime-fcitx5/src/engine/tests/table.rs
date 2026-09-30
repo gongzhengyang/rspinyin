@@ -26,6 +26,13 @@ fn assert_rows(cases: &[(FcitxKeyEvent, KeyAction)], keys: &KeyBindings) {
     }
 }
 
+/// `FcitxKey_E`, the uppercase shape a host that folds the case into the symbol delivers
+/// for `Shift+e`.
+///
+/// Derived from the two range ends rather than written as `0x45`, so the test names the
+/// letter it means and the fold's arithmetic stays in one place.
+const KEY_E_UPPER: u32 = KEY_A_UPPER + (KEY_E - KEY_A);
+
 /// The default bindings with only the two punctuation keys paging the list.
 fn punctuation_flip_bindings() -> KeyBindings {
     KeyBindings {
@@ -38,10 +45,13 @@ fn punctuation_flip_bindings() -> KeyBindings {
 ///
 /// The "never swallow" test asserts that nothing outside this set is ever claimed, so
 /// a table edit that starts claiming an unrelated key fails here instead of silently
-/// removing that key from the application's input.
-fn is_routed(sym: u32) -> bool {
-    const NAMED: [u32; 17] = [
+/// removing that key from the application's input. The uppercase letters are in the set
+/// only because the fold turns a shifted one back into its lowercase shape: a bare
+/// uppercase keysym has no row, and the sweep below asserts that it stays with the host.
+fn is_routed(sym: u32, state: u32) -> bool {
+    const NAMED: [u32; 15] = [
         KEY_SPACE,
+        KEY_APOSTROPHE,
         KEY_PERIOD,
         KEY_MINUS,
         KEY_EQUAL,
@@ -55,11 +65,11 @@ fn is_routed(sym: u32) -> bool {
         KEY_DOWN,
         KEY_PAGE_UP,
         KEY_PAGE_DOWN,
-        KEY_SHIFT_L,
-        KEY_SHIFT_R,
-        KEY_E_UPPER,
     ];
-    (KEY_A..=KEY_Z).contains(&sym) || (KEY_0..=KEY_9).contains(&sym) || NAMED.contains(&sym)
+    let read = fold_shifted_letter(sym, state);
+    (KEY_A..=KEY_Z).contains(&read)
+        || (KEY_0..=KEY_9).contains(&read)
+        || NAMED.contains(&read)
 }
 
 #[test]
@@ -284,6 +294,153 @@ fn test_translate_key_moves_the_highlight_with_the_configured_highlight_keys() {
 }
 
 #[test]
+fn test_translate_key_routes_the_six_keys_the_highlight_list_can_name() {
+    // The whole matrix of `keys.highlight_keys`, four configurations by six keys. Every one
+    // of the six is a name the configuration's whitelist accepts, and the row each key falls
+    // through to when the list does not name it is what makes the setting mean something:
+    // before the table read the list, all six were decided by hard-coded rows and a user who
+    // wrote `highlight_keys = ["up", "down"]` got the page keys they had removed.
+    //
+    // `Up` moves the highlight backwards and `Down` forwards, which is the direction the
+    // page rows they displace already had: `Up` turns to the previous page.
+    let tab = KeyBindings::default();
+    let arrows = KeyBindings {
+        highlight_keys: HighlightSet::UP | HighlightSet::DOWN,
+        ..KeyBindings::default()
+    };
+    let sideways = KeyBindings {
+        highlight_keys: HighlightSet::LEFT | HighlightSet::RIGHT,
+        ..KeyBindings::default()
+    };
+    let none = KeyBindings {
+        highlight_keys: HighlightSet::empty(),
+        ..KeyBindings::default()
+    };
+    // `Tab` and `Shift+Tab`, then the four arrows, in the order the design's matrix lists
+    // them.
+    let columns: [(u32, u32); 6] = [
+        (KEY_TAB, 0),
+        (KEY_TAB, SHIFT),
+        (KEY_UP, 0),
+        (KEY_DOWN, 0),
+        (KEY_LEFT, 0),
+        (KEY_RIGHT, 0),
+    ];
+    let configs: [(&str, &KeyBindings, [KeyAction; 6]); 4] = [
+        (
+            "tab and shift_tab",
+            &tab,
+            [
+                KeyAction::MoveHighlight(1),
+                KeyAction::MoveHighlight(-1),
+                KeyAction::PagePrev,
+                KeyAction::PageNext,
+                KeyAction::MoveCaret(-1),
+                KeyAction::MoveCaret(1),
+            ],
+        ),
+        (
+            "up and down",
+            &arrows,
+            [
+                KeyAction::Ignore,
+                KeyAction::Ignore,
+                KeyAction::MoveHighlight(-1),
+                KeyAction::MoveHighlight(1),
+                KeyAction::MoveCaret(-1),
+                KeyAction::MoveCaret(1),
+            ],
+        ),
+        (
+            "left and right",
+            &sideways,
+            [
+                KeyAction::Ignore,
+                KeyAction::Ignore,
+                KeyAction::PagePrev,
+                KeyAction::PageNext,
+                KeyAction::MoveHighlight(-1),
+                KeyAction::MoveHighlight(1),
+            ],
+        ),
+        (
+            "nothing",
+            &none,
+            [
+                KeyAction::Ignore,
+                KeyAction::Ignore,
+                KeyAction::PagePrev,
+                KeyAction::PageNext,
+                KeyAction::MoveCaret(-1),
+                KeyAction::MoveCaret(1),
+            ],
+        ),
+    ];
+    let mut checked = 0;
+    for (name, keys, expected) in &configs {
+        for ((sym, state), want) in columns.iter().zip(expected) {
+            assert_eq!(
+                translate_key(&press(*sym, *state), keys),
+                *want,
+                "highlight_keys = {name}: {sym:#06x} with {state:#x}"
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 24, "the whole matrix must have run");
+}
+
+#[test]
+fn test_translate_key_prefers_the_highlight_binding_over_the_page_binding() {
+    // A document that names one key in both lists is reported by the configuration layer and
+    // dropped from `flip_keys` there, so a projection never produces this table. The router
+    // still has to answer the same way the report says it will, because the precedence is
+    // the run-time backstop for a table that reached it by another route.
+    let both = KeyBindings {
+        flip_keys: FlipSet::UP | FlipSet::DOWN,
+        highlight_keys: HighlightSet::UP | HighlightSet::DOWN,
+        ..KeyBindings::default()
+    };
+    assert_rows(
+        &[
+            (press(KEY_UP, 0), KeyAction::MoveHighlight(-1)),
+            (press(KEY_DOWN, 0), KeyAction::MoveHighlight(1)),
+        ],
+        &both,
+    );
+}
+
+#[test]
+fn test_translate_key_pages_with_every_flip_key_the_whitelist_names() {
+    // The six names `keys.flip_keys` accepts, all bound at once. The four-field struct the
+    // set replaced could carry four of them, so `page_up` and `page_down` were accepted by
+    // the configuration and then read by no row at all.
+    let all = KeyBindings {
+        flip_keys: FlipSet::all(),
+        ..KeyBindings::default()
+    };
+    assert_rows(
+        &[
+            (press(KEY_MINUS, 0), KeyAction::PagePrev),
+            (press(KEY_EQUAL, 0), KeyAction::PageNext),
+            (press(KEY_UP, 0), KeyAction::PagePrev),
+            (press(KEY_DOWN, 0), KeyAction::PageNext),
+            (press(KEY_PAGE_UP, 0), KeyAction::PagePrev),
+            (press(KEY_PAGE_DOWN, 0), KeyAction::PageNext),
+        ],
+        &all,
+    );
+    // Binding them all does not make them shift-tolerant: the page rows are bare presses.
+    assert_rows(
+        &[
+            (press(KEY_MINUS, SHIFT), KeyAction::Ignore),
+            (press(KEY_PAGE_UP, SHIFT), KeyAction::Ignore),
+        ],
+        &all,
+    );
+}
+
+#[test]
 fn test_translate_key_moves_the_highlight_and_the_caret() {
     let keys = KeyBindings::default();
     assert_rows(
@@ -337,8 +494,6 @@ fn test_translate_key_maps_the_global_mode_chords() {
     let keys = KeyBindings::default();
     assert_rows(
         &[
-            (press(KEY_SHIFT_L, SHIFT), KeyAction::ToggleLang),
-            (press(KEY_SHIFT_R, SHIFT), KeyAction::ToggleLang),
             (press(KEY_SPACE, CTRL), KeyAction::ToggleLang),
             (press(KEY_SPACE, SHIFT), KeyAction::ToggleFullWidth),
             (press(KEY_PERIOD, CTRL), KeyAction::TogglePunct),
@@ -354,24 +509,159 @@ fn test_translate_key_maps_the_global_mode_chords() {
 }
 
 #[test]
+fn test_translate_key_has_no_row_for_a_modifier_press() {
+    // A modifier's own press is not a chord and not a row. Treating it as one is what made
+    // every capital letter toggle the input mode: the press was translated before the
+    // letter that followed it, so a user typing `Nihao` switched modes twice on the way.
+    let keys = KeyBindings::default();
+    assert_rows(
+        &[
+            (press(KEY_SHIFT_L, SHIFT), KeyAction::Ignore),
+            (press(KEY_SHIFT_R, SHIFT), KeyAction::Ignore),
+            // The key is the same with nothing held; no keyboard produces that either.
+            (press(KEY_SHIFT_L, 0), KeyAction::Ignore),
+        ],
+        &keys,
+    );
+    // The predicate the routing layer uses to recognise the key still names it, because the
+    // hold machine has to watch the release that ends the gesture.
+    assert!(is_shift_press(&press(KEY_SHIFT_L, SHIFT)));
+}
+
+#[test]
+fn test_translate_key_matches_every_chord_it_declares() {
+    // Written out rather than read from `CHORDS`, so that a chord added to the table has to
+    // be added here too: the table is data, and a data edit nobody exercised is how a key
+    // silently changes meaning.
+    let rows = [
+        (KEY_SPACE, CTRL, KeyAction::ToggleLang),
+        (KEY_SPACE, SHIFT, KeyAction::ToggleFullWidth),
+        (KEY_PERIOD, CTRL, KeyAction::TogglePunct),
+        (KEY_E, CTRL | SHIFT, KeyAction::EnterTempEnglish),
+    ];
+    let keys = KeyBindings::default();
+    for (sym, mask, expected) in rows {
+        assert_eq!(
+            translate_key(&press(sym, mask), &keys),
+            expected,
+            "{sym:#06x} with {mask:#x}"
+        );
+    }
+    assert_eq!(rows.len(), CHORDS.len(), "every chord has a case here");
+}
+
+#[test]
+fn test_translate_key_requires_a_chords_whole_modifier_set() {
+    // One modifier more than a chord declares is a different key, and the desktop
+    // environment's rather than the plugin's. `Ctrl+Shift+Space`, `Ctrl+Alt+Space` and
+    // `Ctrl+Shift+.` all have to reach the application.
+    let keys = KeyBindings::default();
+    let chords = [
+        (KEY_SPACE, CTRL),
+        (KEY_SPACE, SHIFT),
+        (KEY_PERIOD, CTRL),
+        (KEY_E, CTRL | SHIFT),
+    ];
+    for (sym, mask) in chords {
+        for extra in [SHIFT, CTRL, ALT, SUPER] {
+            if (mask & extra) != 0 {
+                continue;
+            }
+            let state = mask | extra;
+            assert_eq!(
+                translate_key(&press(sym, state), &keys),
+                KeyAction::Ignore,
+                "{sym:#06x} with {state:#x} is not the chord"
+            );
+        }
+    }
+}
+
+#[test]
 fn test_translate_key_enters_temporary_english_on_ctrl_shift_e() {
     let keys = KeyBindings::default();
     assert_rows(
         &[
             (press(KEY_E, CTRL | SHIFT), KeyAction::EnterTempEnglish),
-            // A chord containing Shift may arrive with the uppercase symbol, because
-            // the host folds the case into the symbol; the row matches both shapes.
-            (
-                press(KEY_E_UPPER, CTRL | SHIFT),
-                KeyAction::EnterTempEnglish,
-            ),
+            // A host that folds the case into the symbol delivers the chord with the
+            // uppercase shape; the fold turns it back before the table is read, so the
+            // chord's row names the lowercase keysym alone.
+            (press(KEY_E_UPPER, CTRL | SHIFT), KeyAction::EnterTempEnglish),
             // Either modifier alone is not the chord.
             (press(KEY_E, CTRL), KeyAction::Ignore),
             (press(KEY_E, SHIFT), KeyAction::InputChar('e')),
-            (press(KEY_E_UPPER, SHIFT), KeyAction::Ignore),
         ],
         &keys,
     );
+}
+
+#[test]
+fn test_translate_key_folds_the_uppercase_shape_of_every_letter() {
+    // The two shapes a frontend may deliver for `Shift+<letter>` have to produce the same
+    // action, or the plugin's behaviour would depend on which frontend is in use.
+    let keys = KeyBindings::default();
+    for offset in 0..26u32 {
+        let lower = KEY_A + offset;
+        let upper = KEY_A_UPPER + offset;
+        let expected = KeyAction::InputChar(char::from(lower as u8));
+        assert_eq!(
+            translate_key(&press(lower, SHIFT), &keys),
+            expected,
+            "the lowercase shape of {lower:#06x}"
+        );
+        assert_eq!(
+            translate_key(&press(upper, SHIFT), &keys),
+            expected,
+            "the folded shape of {upper:#06x}"
+        );
+    }
+    // A bare uppercase symbol is not a key any keyboard produces, so it stays with the host
+    // rather than being read as its lowercase letter.
+    for offset in 0..26u32 {
+        let upper = KEY_A_UPPER + offset;
+        assert_eq!(
+            translate_key(&press(upper, 0), &keys),
+            KeyAction::Ignore,
+            "{upper:#06x} with nothing held is nobody's key"
+        );
+    }
+}
+
+#[test]
+fn test_fold_shifted_letter_folds_only_a_shifted_uppercase_letter() {
+    assert_eq!(fold_shifted_letter(KEY_A_UPPER, SHIFT), KEY_A);
+    assert_eq!(fold_shifted_letter(KEY_Z_UPPER, SHIFT), KEY_Z);
+    assert_eq!(fold_shifted_letter(KEY_A_UPPER, CTRL | SHIFT), KEY_A);
+    // Without Shift there is nothing to fold.
+    assert_eq!(fold_shifted_letter(KEY_A_UPPER, 0), KEY_A_UPPER);
+    assert_eq!(fold_shifted_letter(KEY_Z_UPPER, CTRL), KEY_Z_UPPER);
+    // The keysyms one step outside the range are not letters, and the fold is a no-op on
+    // them whatever the modifiers say.
+    assert_eq!(fold_shifted_letter(KEY_A_UPPER - 1, SHIFT), KEY_A_UPPER - 1);
+    assert_eq!(fold_shifted_letter(KEY_Z_UPPER + 1, SHIFT), KEY_Z_UPPER + 1);
+    // A lowercase keysym is already folded; the fold must not move it.
+    assert_eq!(fold_shifted_letter(KEY_A, SHIFT), KEY_A);
+}
+
+#[test]
+fn test_translate_key_routes_the_syllable_separator() {
+    let keys = KeyBindings::default();
+    assert_rows(
+        &[
+            (press(KEY_APOSTROPHE, 0), KeyAction::InputChar('\'')),
+            // Every modifier makes it somebody else's key, Shift included: `"` is a
+            // different keysym and this row does not cover it.
+            (press(KEY_APOSTROPHE, SHIFT), KeyAction::Ignore),
+            (press(KEY_APOSTROPHE, CTRL), KeyAction::Ignore),
+        ],
+        &keys,
+    );
+    // The action is the one the layers that hold a session have to guard, and no other
+    // character needs the guard: a letter is what starts a composition with nothing
+    // composing.
+    assert!(is_syllable_separator(KeyAction::InputChar('\'')));
+    assert!(!is_syllable_separator(KeyAction::InputChar('a')));
+    assert!(!is_syllable_separator(KeyAction::Ignore));
 }
 
 #[test]
@@ -414,7 +704,7 @@ fn test_translate_key_never_claims_a_key_the_table_does_not_name() {
         for state in states {
             let action = translate_key(&press(sym, state), &keys);
             assert!(
-                !claims_key(action) || is_routed(sym),
+                !claims_key(action) || is_routed(sym, state),
                 "sym {sym:#010x} state {state:#x} claimed as {action:?} without a row"
             );
             checked += 1;

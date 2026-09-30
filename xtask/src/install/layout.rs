@@ -72,6 +72,12 @@ pub enum Destination {
     InputMethodDescriptor,
     /// Plugin data, under `<datadir>/rspinyin`.
     Data,
+    /// AppStream metadata, under `<datadir>/metainfo`.
+    ///
+    /// Separate from [`Destination::Data`] because the directory is shared with every
+    /// other AppStream component on the system, which is also why uninstall must not
+    /// remove it: only the file this plugin put there is the plugin's to delete.
+    MetaInfo,
     /// Application icons, under `<datadir>/icons/hicolor/<size>/apps`.
     Icon {
         /// Icon size directory: `48x48` for the bitmap, `scalable` for the vector.
@@ -94,6 +100,8 @@ pub struct Layout {
     pub input_method_dir: PathBuf,
     /// `<datadir>/rspinyin`.
     pub data_dir: PathBuf,
+    /// `<datadir>/metainfo`.
+    pub metainfo_dir: PathBuf,
     /// `<datadir>/icons/hicolor`.
     pub icon_dir: PathBuf,
 }
@@ -183,6 +191,7 @@ impl Layout {
             addon_conf_dir: place(datadir.join(ADDON_SUBDIR).join("addon")),
             input_method_dir: place(datadir.join(ADDON_SUBDIR).join("inputmethod")),
             data_dir: place(datadir.join(PROGRAM_DIR)),
+            metainfo_dir: place(datadir.join("metainfo")),
             icon_dir: place(icon_dir.join(ICON_THEME)),
             destdir,
             prefix,
@@ -196,6 +205,7 @@ impl Layout {
             Destination::AddonDescriptor => self.addon_conf_dir.clone(),
             Destination::InputMethodDescriptor => self.input_method_dir.clone(),
             Destination::Data => self.data_dir.clone(),
+            Destination::MetaInfo => self.metainfo_dir.clone(),
             Destination::Icon { size } => self.icon_dir.join(size).join("apps"),
         }
     }
@@ -215,6 +225,7 @@ impl Layout {
             Destination::AddonDescriptor,
             Destination::InputMethodDescriptor,
             Destination::Data,
+            Destination::MetaInfo,
             Destination::Icon { size: "48x48" },
             Destination::Icon { size: "scalable" },
         ]
@@ -355,6 +366,7 @@ mod tests {
             addon_conf_dir: place("/usr/share/fcitx5/addon"),
             input_method_dir: place("/usr/share/fcitx5/inputmethod"),
             data_dir: place("/usr/share/rspinyin"),
+            metainfo_dir: place("/usr/share/metainfo"),
             icon_dir: place("/usr/share/icons/hicolor"),
         }
     }

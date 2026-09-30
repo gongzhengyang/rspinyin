@@ -15,6 +15,9 @@ use std::collections::BinaryHeap;
 
 use super::*;
 
+use super::cache::lock_cache;
+use super::flush::Delta;
+
 // The parent module imports `Ordering` for its atomics; this module orders records. An
 // explicit import wins over a glob, so the name below means the comparison here and the
 // one atomic load that needs the other one spells it out in full.
@@ -139,8 +142,12 @@ impl Inner {
             known || pending.entries.contains_key(key)
         } else {
             // The cache is consulted before the delta map rather than inside it, so that the
-            // two are never held at once: the module's lock order keeps `cache` a leaf.
-            let cached = lock(&self.cache).get(key).is_some_and(|held| held > 0);
+            // two are never held at once: the module's lock order keeps `cache` a leaf. What
+            // an entry holds is the file's value, so a positive one is a word the file has.
+            let cached = match lock_cache(&self.cache) {
+                Some(mut cache) => cache.get(key).is_some_and(|held| held > 0),
+                None => false,
+            };
             let pending = lock(&self.pending);
             pending.entries.contains_key(key) || cached
         };
@@ -156,10 +163,11 @@ impl Inner {
             pending.removed.len() >= PENDING_CAPACITY
         };
         if due {
-            // The flush runs on the caller's thread for the reason `record`'s does: the
-            // store's order is the order the user's actions arrived in. The failure is not
-            // swallowed either -- it flips the store to read-only, which the caller polls.
-            let _ = self.flush(Durability::Eventual);
+            // The write is the flush thread's, for the reason `record`'s is: a tombstone
+            // reaches the disk in a write transaction, and this runs inside a key callback.
+            // The failure is not swallowed either -- it flips the store to read-only, which
+            // the caller polls.
+            self.request_flush();
         }
         if present {
             ForgetOutcome::Removed
@@ -185,7 +193,8 @@ impl Inner {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let (removed, mut unclaimed) = self.pending_snapshot();
+        let (removed, unclaimed) = self.pending_snapshot();
+        let mut unclaimed = self.stamp_snapshot(unclaimed);
         let skip = usize::try_from(offset).unwrap_or(usize::MAX);
         let asked = offset.saturating_add(u64::try_from(limit).unwrap_or(u64::MAX));
         let mut kept = TopRows::new(usize::try_from(asked).unwrap_or(usize::MAX));
@@ -230,7 +239,7 @@ impl Inner {
     fn scan_records(
         &self,
         removed: &HashSet<Box<str>>,
-        unclaimed: &mut HashMap<Box<str>, Pending>,
+        unclaimed: &mut HashMap<Box<str>, Delta>,
         kept: &mut TopRows,
     ) -> Result<(), ImeError> {
         let txn = self

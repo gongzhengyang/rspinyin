@@ -30,6 +30,22 @@
 //! the same argument the pending-list collapse already relies on. Only the copy is merged:
 //! what the compositor is told is still this frame's damage alone.
 //!
+//! Within one frame, the regions the renderer reports are merged as they are recorded, so a
+//! frame's damage is a short list of disjoint places rather than one entry per rectangle the
+//! renderer happened to emit. An animation is where this pays: the highlight damages the
+//! same neighbourhood every frame, and the merge keeps that a handful of rectangles instead
+//! of a list that has to be folded -- with a bounding box that is far larger than the
+//! motion -- every time it grows past [`PENDING_COLLAPSE_LIMIT`].
+//!
+//! # The scratch
+//!
+//! A frame is rasterized into a scratch this crate owns -- the pixel format and the reason
+//! for the extra buffer are in [`raster`] -- and the scratch grows to the largest surface
+//! the window has had. That allocation is given back only once the window has stayed small
+//! long enough for the new size to be a settled one rather than a drag, and the frame that
+//! gives it back is a full repaint, because the smaller buffer no longer holds what the
+//! surface is showing.
+//!
 //! # The licence boundary
 //!
 //! `SlintWindowAdapter` implements Slint's `WindowAdapter` and is therefore private: an
@@ -54,7 +70,9 @@ use slint::platform::software_renderer::{PhysicalRegion, RepaintBufferType, Soft
 use slint::platform::{Renderer, WindowAdapter, WindowEvent};
 use slint::{PhysicalSize, PlatformError as SlintError, Window};
 
-use self::raster::{BYTES_PER_PIXEL, PixelScratch, clip_rect, union_pair, union_rect};
+use self::raster::{
+    BYTES_PER_PIXEL, PixelScratch, clip_rect, overlaps, union_pair, union_rect,
+};
 
 pub use self::probe::{CJK_FAMILIES, FontChoice, FontStatus, probe_font_choice, probe_fonts};
 
@@ -66,7 +84,9 @@ pub use self::probe::{CJK_FAMILIES, FontChoice, FontStatus, probe_font_choice, p
 ///
 /// This is also the point the damage bookkeeping saturates at: past it a frame's pending
 /// list is one rectangle however long the streak runs, which is what bounds the fold the
-/// copy performs. The saturation benchmark runs one case on either side of it.
+/// copy performs. With the merge below, a list this long is a frame whose damage does not
+/// share a pixel with itself -- a scene that changed all over the surface -- because
+/// overlapping damage is folded on insert and never accumulates.
 pub const PENDING_COLLAPSE_LIMIT: usize = 8;
 
 /// What one call to `render_if_dirty` did.
@@ -88,6 +108,14 @@ pub enum RenderOutcome {
         /// frame's.
         bounding: RectI,
         /// How many rectangles the damage was reported as.
+        ///
+        /// This counts the damage *after* it was merged on insert: regions that share a
+        /// pixel are folded into their bounding box as they are recorded, so the number
+        /// describes how many separate places the frame changed rather than how many
+        /// rectangles the renderer happened to hand over. It is therefore lower than the
+        /// count an append-only list reported for the same frame -- a frame's shape, not a
+        /// fixed property of the renderer's output -- and a budget that pins it has to name
+        /// the frame it is pinning.
         rectangles: u32,
         /// How many copies of the scratch into the surface buffer this frame cost: one for a
         /// frame with anything to carry over, zero for one that had nothing.
@@ -134,7 +162,8 @@ impl SurfaceGeometry {
 struct FrameState {
     /// The buffer a frame is rasterized into before it is copied to the surface.
     scratch: PixelScratch,
-    /// Regions rendered into the scratch since the last successful commit.
+    /// Regions rendered into the scratch since the last successful commit, merged as they
+    /// are recorded.
     pending: Vec<RectI>,
     /// Regions of the last committed frame: what the surface is showing.
     shown: Vec<RectI>,
@@ -153,8 +182,67 @@ impl FrameState {
         }
     }
 
-    /// Records what this frame changed into the pending list.
+    /// Grows or shrinks the scratch to the surface size, scheduling the full repaint a
+    /// reallocation needs.
+    ///
+    /// # Returns
+    ///
+    /// Whether the scratch was reallocated, which is what tells the caller to hand Slint a
+    /// `NewBuffer` for this frame.
+    ///
+    /// The `full` flag is set here rather than at the call site so that the two cannot
+    /// drift apart. A reallocation means the scratch no longer holds the frame the surface
+    /// is showing, and a frame that then copied only its own damage would write a *partial*
+    /// frame out of content that is no longer valid -- the defect this method exists to make
+    /// impossible, and the one a shrink would introduce if it were treated as a mere
+    /// bookkeeping change.
+    fn resize_scratch(&mut self, width_px: u32, height_px: u32) -> bool {
+        let reallocated = self.scratch.ensure(width_px, height_px);
+        if reallocated {
+            self.full = true;
+        }
+        reallocated
+    }
+
+    /// Records what this frame changed, merging into the list as it goes.
+    ///
+    /// The previous form appended every region and only folded the list once it grew past
+    /// [`PENDING_COLLAPSE_LIMIT`], which left an animation -- where the motion damages the
+    /// same neighbourhood frame after frame -- carrying a list of separate rectangles into
+    /// both the copy and the report to the compositor. Merging on insert keeps the list
+    /// short by construction, and the bounding box of two overlapping regions is a superset,
+    /// so the copy stays correct.
+    ///
+    /// # Why the region still comes from the renderer
+    ///
+    /// The motion layer knows how far the highlight moved, so it could in principle predict
+    /// the damage without asking the renderer. It deliberately does not: the renderer's
+    /// region is what was actually drawn, and a prediction that disagreed with it would be a
+    /// correctness risk taken in exchange for understanding Slint's own repaint boundaries,
+    /// which are a moving target. What this method bounds is the *cost* of the region the
+    /// renderer reports, not where that region comes from.
     fn record_damage(&mut self, region: &PhysicalRegion, width_px: u32, height_px: u32) {
+        let rects = region
+            .iter()
+            .map(|(position, size)| RectI {
+                x: position.x,
+                y: position.y,
+                w: size.width,
+                h: size.height,
+            })
+            .collect::<Vec<_>>();
+        self.record_damage_rects(&rects, width_px, height_px);
+    }
+
+    /// Keeps the damage list short, given the rectangles the renderer reported.
+    ///
+    /// Split from [`Self::record_damage`] because a [`PhysicalRegion`] cannot be built
+    /// outside the renderer -- its fields are private and the only constructor is
+    /// `SoftwareRenderer::render`. That makes the *source* of the region untestable by
+    /// construction and the *bookkeeping* over it entirely testable, and the bookkeeping is
+    /// where the merging rules live. The split is the difference between a rule that can be
+    /// pinned by a test and one that can only be checked by watching a window.
+    fn record_damage_rects(&mut self, rects: &[RectI], width_px: u32, height_px: u32) {
         if self.full {
             self.pending.clear();
             let whole = RectI {
@@ -166,20 +254,35 @@ impl FrameState {
             if let Some(rect) = clip_rect(whole, width_px, height_px) {
                 self.pending.push(rect);
             }
-        } else {
-            for (position, size) in region.iter() {
-                let rect = RectI {
-                    x: position.x,
-                    y: position.y,
-                    w: size.width,
-                    h: size.height,
-                };
-                if let Some(clipped) = clip_rect(rect, width_px, height_px) {
-                    self.pending.push(clipped);
-                }
+            return;
+        }
+        for rect in rects {
+            if let Some(clipped) = clip_rect(*rect, width_px, height_px) {
+                self.merge_into_pending(clipped);
             }
         }
         self.collapse_pending();
+    }
+
+    /// Adds `rect` to the pending list, merging it into an overlapping entry when one
+    /// exists.
+    ///
+    /// Merging is a bounding-box union rather than a rectangle subtraction: the result is a
+    /// superset, which is safe for a copy, and it keeps the list short without allocating,
+    /// which the per-frame path may not do.
+    ///
+    /// Only the first overlap is merged. Growing an entry can make it overlap a later one,
+    /// and that is left to [`Self::collapse_pending`]: rescanning the list after every
+    /// insert would cost more than the extra rectangle it might remove, and the list is
+    /// bounded either way.
+    fn merge_into_pending(&mut self, rect: RectI) {
+        for slot in self.pending.iter_mut() {
+            if overlaps(*slot, rect) {
+                *slot = union_pair(*slot, rect);
+                return;
+            }
+        }
+        self.pending.push(rect);
     }
 
     /// Folds the pending list into its bounding box once it has grown past
@@ -187,7 +290,9 @@ impl FrameState {
     ///
     /// Kept apart from [`Self::record_damage`] so that the saturation point can be asserted
     /// without a Slint region to feed it: the collapse is what bounds the fold the copy
-    /// performs, however many rectangles a starvation streak has accumulated.
+    /// performs, however many rectangles a starvation streak has accumulated. With the merge
+    /// above, a list this long means the frame damaged that many regions which do not share
+    /// a pixel -- a streak of skipped frames, or a scene that changed all over.
     fn collapse_pending(&mut self) {
         if self.pending.len() > PENDING_COLLAPSE_LIMIT {
             let bounding = union_rect(&self.pending);
@@ -414,12 +519,14 @@ impl SlintWindowAdapter {
 
     /// Rasterizes the scene into the scratch and returns the region that changed.
     fn rasterize(&self, state: &mut FrameState, width_px: u32, height_px: u32) -> PhysicalRegion {
-        let reallocated = state.scratch.ensure(width_px, height_px);
+        // A reallocation in either direction -- a growth, or the shrink a window that has
+        // stayed small long enough is given back -- invalidates the frame the surface is
+        // showing, and `resize_scratch` has already scheduled the full repaint that goes
+        // with it.
+        let reallocated = state.resize_scratch(width_px, height_px);
         if reallocated {
-            // The scratch no longer holds the frame the surface is showing, so this frame
-            // has to be a full redraw. `NewBuffer` tells the renderer to ignore its
-            // partial-rendering cache for exactly this frame.
-            state.full = true;
+            // `NewBuffer` tells the renderer to ignore its partial-rendering cache for
+            // exactly this frame.
             self.renderer
                 .set_repaint_buffer_type(RepaintBufferType::NewBuffer);
         }

@@ -18,6 +18,19 @@
 - Slint：依据 ADR-0000 决策 1 主张 `LicenseRef-Slint-Royalty-free-2.0` 分支，`OB-1`~`OB-6`
   逐条复核见第 5 节。
 
+### 1.1 随仓库与发布产物分发的许可原文
+
+| 文件 | 内容 | 断言 |
+|---|---|---|
+| `LICENSE-APACHE`、`LICENSE-MIT` | 本项目 `MIT OR Apache-2.0` 双许可的两份 SPDX 原文 | 两份文件都存在，且各自含一段只属于它自己的原文（`Apache License` 与 `Version 2.0, January 2004`；`MIT License` 与 `Permission is hereby granted, free of charge`），由 `scripts/gen-licenses.sh --check` 断言。只断言"存在"会放过两份文件被互换的情况，而那正是打包时最难靠肉眼发现的一类错误 |
+| `LICENSES/LicenseRef-Slint-Royalty-free-2.0.md` | Slint 1.13.1 发行包内同名文件的逐字副本（路径见第 5 节） | 与发行包内的原文逐字一致（只忽略行尾换行），且 `docs/dev/NOTICE` 引用的每个 `LICENSES/` 路径都真实存在；缺失或被改动都会让 `--check` 失败 |
+
+`OB-1` 的落地位置是本仓库公开页面（`Cargo.toml` 的 `repository` 字段所指的
+<https://github.com/gongzhengyang/rspinyin>）上的 `README.md` 与 `README.zh.md`：两份 README 的
+第一个二级标题之前都有 Slint 归属徽章并链接 <https://slint.dev>，`--check` 断言其位置与
+链接，`--check-links` 另做可达性探测。`LICENSES/` 必须随发布产物一同分发：`docs/dev/NOTICE`
+随包提供并指向它，两者分开发布就是一条悬空引用，而这正是上面那条断言要拦住的情形。
+
 ## 2. 许可证判定口径
 
 - SPDX 表达式按语义求值：`A OR B` 表示可选择，只要有一个分支在允许清单内即通过，并**主张**
@@ -119,11 +132,11 @@
 
 | 义务 | 条款依据（许可原文摘录） | 核对方式 | 复核结论 |
 |---|---|---|---|
-| `OB-1` 归属展示 | (b) Display the [Slint attribution badge](https://github.com/slint-ui/slint/tree/master/logo/MadeWithSlint-logo-whitebg.png) on a public webpage, preferably where the binaries of your Application can be downloaded from, in such a way that it can be easily found by any visitor to that page. | 断言 `README.md` 与 `README.zh.md` 含 Slint 归属徽章与 `https://slint.dev` 链接（`--check-links` 时另做可达性探测） | 已达成（README.md 与 README.zh.md 均含徽章与 slint.dev 链接） |
+| `OB-1` 归属展示 | (b) Display the [Slint attribution badge](https://github.com/slint-ui/slint/tree/master/logo/MadeWithSlint-logo-whitebg.png) on a public webpage, preferably where the binaries of your Application can be downloaded from, in such a way that it can be easily found by any visitor to that page. | 断言 `README.md` 与 `README.zh.md` 含 Slint 归属徽章与 `https://slint.dev` 链接（`--check-links` 时另做可达性探测） | 已达成（README.md 与 README.zh.md 的第一个二级标题之前均含 Slint 归属徽章，链接 https://slint.dev；公开页面 https://github.com/gongzhengyang/rspinyin） |
 | `OB-2` 不得单独分发 Slint | The License does not permit to distribute or make the Software publicly available alone and without integration into an Application. For this purpose you may use the Software under the GNU General Public License, version 3. | 扫描 `packaging/` 与构建产物，断言不存在独立的 Slint 库文件（只允许 `librspinyin.so`） | 已达成（`packaging/` 与构建产物中均无独立 Slint 库） |
 | `OB-3` 不得用于嵌入式系统 | The License does not permit the use of the Software within Embedded Systems. An **Embedded System** is a computer system designed to perform a specific task within a larger mechanical or electrical system. | 断言本文件第 6 节含显式的嵌入式/自助终端/车机排除声明 | 已达成（第 6 节声明） |
 | `OB-4` 不得暴露 Slint API | The License does not permit the distribution of Application that exposes the APIs, in part or in total, of the Software. | 由 `scripts/check-slint-leak.sh` 解析 `cargo public-api -p ime-ui` 强制（0.4 规则 11） | 已达成（`scripts/check-slint-leak.sh` 强制） |
-| `OB-5` 不得移除许可声明 | You may not remove or alter any license notices (including copyright notices, disclaimers of warranty, or limitations of liability) contained within the source code form of the Software. | 断言 `git status` 无 `LICENSES/` 下的改动，且许可原文的 SHA256 与本文件登记值一致 | 已达成（LICENSES/ 下无改动） |
+| `OB-5` 不得移除许可声明 | You may not remove or alter any license notices (including copyright notices, disclaimers of warranty, or limitations of liability) contained within the source code form of the Software. | 断言 `LICENSES/` 存在且非空、其中的许可原文与 Slint 发行包内的同名原文逐字一致、`docs/dev/NOTICE` 引用的每个 `LICENSES/` 路径都真实存在，并断言 `git status` 无 `LICENSES/` 下的改动 | 已达成（LICENSES/ 下 `LicenseRef-Slint-Royalty-free-2.0.md` 与 Slint 发行包内的原文一致，且无本地改动） |
 | `OB-6` 按现状提供、无担保 | SixtyFPS is only liable for conflicting rights of third parties if SixtyFPS was aware of these rights without informing you. Unless required by applicable law or agreed to in writing, SixtyFPS provides the Software on an "as is" basis, without warranties or conditions of any kind, either express or implied, including, without limitation, any warranties or conditions of merchantability, or fitness for a particular purpose. | 断言本文件第 7 节与 `README` 许可段含“按现状提供、无担保”的转述 | 已达成（第 7 节转述） |
 
 <!-- END GENERATED: slint obligations -->
@@ -153,7 +166,8 @@ Slint 按**"现状"提供、无担保**：除法律要求或书面约定外，Si
 | `scripts/check-dict-sources.sh` | 词源许可与 SHA256（ADR-0000 决策 2） | `just check-dict` |
 | `scripts/check-no-network.sh` | 依赖闭包中不存在网络能力（0.4 规则 6） | `just check-net` |
 | `deny.toml` + `cargo deny check` | 同一批决策的机器可读形式：RustSec 通告、许可证允许清单、网络 crate 禁用、依赖源锁定 | `just check-advisories` |
-| `git status -- '*LICENSES*'` | `OB-5`（不得篡改许可声明） | 本脚本的 `OB-5` 核对 |
+| `LICENSES/` 的存在与内容比对（对照 Slint 发行包内的原文）＋ `git status -- LICENSES/` | `OB-5`（不得篡改许可声明） | 本脚本的 `OB-5` 核对 |
+| `LICENSE-APACHE` / `LICENSE-MIT` 的存在与内容抽查 | `Cargo.toml` 的 `MIT OR Apache-2.0` 声明；发布产物必须随附两份原文 | 本脚本的项目许可原文核对 |
 
 `deny.toml` 不是本文件之外的第二套口径，而是同一批决策在 `cargo deny check` 中的表达：
 许可证允许清单与第 2 节的判定口径一致，`LicenseRef-Slint-Royalty-free-2.0` 是唯一被列入的
@@ -186,3 +200,12 @@ bash scripts/gen-licenses.sh --check --check-links   # 附加 https://slint.dev 
 
 上游条款、依赖或词源变动后必须重新运行 `--write` 并提交结果；`--check` 会在依赖清单、词源清单
 或义务登记缺失时失败，并在许可原文的 SHA256 与登记值不一致时失败（`OB-5`）。
+
+`--check` 还守着两处仓库自身的许可文件，它们的失败不需要重新生成任何文档，需要的是改文件：
+
+- `LICENSE-APACHE` / `LICENSE-MIT` 缺失，或某一份不含它自己那段原文时失败（`Cargo.toml`
+  声明了双许可，发布产物就要随附两份原文）。
+- `LICENSES/` 不存在、为空、缺少 `docs/dev/NOTICE` 引用的文件、其副本与 Slint 发行包内的
+  原文不一致，或 `git status` 报告该目录下有未提交的改动时失败。最后一条意味着**新增或改动
+  `LICENSES/` 后必须先提交再跑 `--check`**：`--write` 只刷新文档里的生成块，不会替你提交
+  许可原文。

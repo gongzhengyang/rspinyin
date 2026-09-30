@@ -25,6 +25,13 @@
 # read `cargo metadata`, never Cargo.lock, because the lockfile hides renamed and
 # optional dependencies.
 #
+# The files the repository itself has to carry are asserted here rather than in a
+# workflow: the two texts the workspace manifest publishes under (LICENSE-APACHE,
+# LICENSE-MIT) and LICENSES/, whose copies of third-party licence texts are what
+# docs/dev/NOTICE points a release's user at. A notice that names a path the
+# repository does not have ships a dangling reference, which is what the LICENSES/
+# half exists to make impossible.
+#
 # Exit codes: 0 = pass, 1 = violation, 2 = usage or environment error. The self-test
 # injects one violating package at a time into the real resolve graph, asserts each
 # is rejected, then exercises the source rules and the document pipeline in a
@@ -162,6 +169,14 @@ REVIEWED = {
 # A crate whose licence field is missing is a blocker, not a warning: an
 # unattributed dependency cannot be redistributed.
 UNKNOWN = "（缺失）"
+# The two licence texts the workspace manifest publishes the project under, each
+# with a phrase that identifies it. A file that exists but holds the other licence
+# is exactly the mistake a presence check misses, and a release archive, a `.deb`
+# and an `.rpm` all carry both files.
+PROJECT_LICENCES = (
+    ("LICENSE-APACHE", ("Apache License", "Version 2.0, January 2004")),
+    ("LICENSE-MIT", ("MIT License", "Permission is hereby granted, free of charge")),
+)
 TOKEN = re.compile(r"\(|\)|\bAND\b|\bOR\b|[^\s()]+")
 # Generated blocks. licenses.md and NOTICE are hand-maintained documents and the
 # script owns only what lies between these markers, so a reviewer reads the
@@ -191,7 +206,9 @@ OBLIGATIONS = (
     ("OB-4", "不得暴露 Slint API", "exposes the APIs, in part or in total",
      "由 `scripts/check-slint-leak.sh` 解析 `cargo public-api -p ime-ui` 强制（0.4 规则 11）"),
     ("OB-5", "不得移除许可声明", "remove or alter any license notices",
-     "断言 `git status` 无 `LICENSES/` 下的改动，且许可原文的 SHA256 与本文件登记值一致"),
+     "断言 `LICENSES/` 存在且非空、其中的许可原文与 Slint 发行包内的同名原文逐字一致、"
+     "`docs/dev/NOTICE` 引用的每个 `LICENSES/` 路径都真实存在，并断言 `git status` 无 "
+     "`LICENSES/` 下的改动"),
     ("OB-6", "按现状提供、无担保", 'on an "as is" basis, without warranties',
      "断言本文件第 7 节与 `README` 许可段含“按现状提供、无担保”的转述"),
 )
@@ -408,8 +425,23 @@ def paragraph_with(text, anchor):
     return None
 
 
+def public_page():
+    """The project's public web page: the manifest's `repository` field, or ""."""
+    try:
+        manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
+        return str(manifest["workspace"]["package"]["repository"])
+    except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError):
+        return ""
+
+
 def readme_conclusion():
-    """OB-1: the attribution badge on a public page (ADR-0000 §2(b))."""
+    """OB-1: the attribution badge on a public page (ADR-0000 §2(b)).
+
+    The badge has to sit above the first section heading. The licence asks for an
+    attribution a visitor cannot miss, and a badge below three screens of prose is
+    one a visitor has to look for -- so where it sits is part of the assertion, not
+    a matter of taste.
+    """
     failures = []
     for name in ("README.md", "README.zh.md"):
         if not (readme_dir / name).is_file():
@@ -418,13 +450,19 @@ def readme_conclusion():
         text = (readme_dir / name).read_text(encoding="utf-8", errors="replace")
         if not re.search(r"https?://(www\.)?slint\.dev", text, re.IGNORECASE):
             failures.append(f"{name} 缺少 https://slint.dev 链接")
-        elif not re.search(r"!\[[^\]]*\]\([^)]*slint[^)]*\)|<img[^>]*slint", text, re.I):
-            failures.append(f"{name} 缺少 Slint 归属徽章")
+            continue
+        preamble = text.split("\n## ", 1)[0]
+        if not re.search(r"!\[[^\]]*\]\([^)]*slint[^)]*\)|<img[^>]*slint", preamble, re.I):
+            failures.append(f"{name} 的第一个二级标题之前没有 Slint 归属徽章")
     for detail in failures:
-        report(f"{detail}；OB-1 要求 README 含 Slint 徽章与 https://slint.dev 链接（ADR-0000 §2(b)）")
+        report(f"{detail}；OB-1 要求 README 首屏含 Slint 徽章与 https://slint.dev 链接"
+               f"（ADR-0000 §2(b)）")
     if failures:
         return "未达成：" + "；".join(failures)
-    return "已达成（README.md 与 README.zh.md 均含徽章与 slint.dev 链接）"
+    page = public_page()
+    where = f"；公开页面 {page}" if page else ""
+    return ("已达成（README.md 与 README.zh.md 的第一个二级标题之前均含 Slint 归属徽章，"
+            f"链接 https://slint.dev{where}）")
 
 
 def slint_library_conclusion():
@@ -448,20 +486,120 @@ def slint_library_conclusion():
     return "已达成（`packaging/` 中无独立 Slint 库；构建产物尚未生成，未核对 target/）"
 
 
-def git_licence_status():
-    """OB-5: vendored licence notices must be untouched."""
+def git_status(pathspec):
+    """`git status --porcelain` lines for `pathspec`, or None when git cannot answer.
+
+    None is not an empty list: a tree outside a git work tree, or a machine without
+    git, has not been checked, and reporting that as "clean" would turn an unchecked
+    claim into a passing one. The work tree has to be rooted exactly at `root`, so a
+    scratch copy of the repository that happens to sit inside another checkout
+    reports "not checked" rather than the enclosing repository's state.
+    """
     try:
-        completed = subprocess.run(["git", "status", "--porcelain", "--", "*LICENSES*"],
+        toplevel = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                                  cwd=root, capture_output=True, text=True, check=False)
+        if toplevel.returncode != 0 or Path(toplevel.stdout.strip()).resolve() != root.resolve():
+            return None
+        completed = subprocess.run(["git", "status", "--porcelain", "--", pathspec],
                                    cwd=root, capture_output=True, text=True, check=False)
-    except OSError as error:
-        return f"未核对（git 不可用：{error}）"
+    except OSError:
+        return None
     if completed.returncode != 0:
-        return "未核对（不在 git 工作树中）"
-    dirty = [line for line in completed.stdout.splitlines() if line.strip()]
+        return None
+    return [line for line in completed.stdout.splitlines() if line.strip()]
+
+
+def licences_directory_conclusion(licence_path, licence_text):
+    """OB-5: the licence texts under `LICENSES/` are present and verbatim.
+
+    The previous form of this check ran `git status --porcelain -- *LICENSES*` and
+    asserted the output was empty. That is vacuously true when no `LICENSES/`
+    directory is tracked at all -- which was the state the repository was in -- so
+    the check could not report the dangling reference `docs/dev/NOTICE` carried, and
+    it said nothing about the content of the files it named. Asserting presence and
+    content is what turns it from a formality into a gate.
+
+    The copies are compared against the licence texts shipped inside the Slint
+    package, read through `cargo metadata`, rather than against a digest registered
+    by hand: a hand-registered value has to be updated on every Slint upgrade and can
+    drift unnoticed, while the package's own text is what the obligation is about.
+    Only the names a release actually points at are compared -- the ones
+    `docs/dev/NOTICE` references and the licence of the component whose terms this
+    project satisfies by shipping its text -- so an extra file nothing references is
+    left alone. Trailing newlines are ignored, because the universal-newline decoding
+    used here already normalises line endings and a trailing blank line carries no
+    licence content; every other character is compared exactly.
+    """
+    directory = root / "LICENSES"
+    if not directory.is_dir():
+        report("LICENSES/ 不存在；docs/dev/NOTICE 引用了其中的许可原文，"
+               "发布产物会携带一个悬空引用")
+        return "未达成：LICENSES/ 不存在"
+    if not any(path.is_file() for path in directory.iterdir()):
+        report("LICENSES/ 为空；许可原文必须随发布产物提供")
+        return "未达成：LICENSES/ 为空"
+    if licence_path is None or not licence_text:
+        report("无法读取 Slint 发行包内的许可原文（先运行 `cargo fetch`）；"
+               "LICENSES/ 下的副本无从比对")
+        return "未达成：无法比对许可原文"
+
+    notice = NOTICE_DOC.read_text(encoding="utf-8") if NOTICE_DOC.is_file() else ""
+    required = set(re.findall(r"`LICENSES/([^\s`]+)`", notice))
+    required.add(Path(licence_path).name)
+    package_dir = Path(licence_path).parent
+    failures = []
+    for name in sorted(required):
+        vendored, upstream = directory / name, package_dir / name
+        if not vendored.is_file():
+            failures.append(f"LICENSES/{name} 不存在；该许可原文必须随仓库提供，"
+                            f"发布产物引用的是仓库内的副本")
+        elif not upstream.is_file():
+            failures.append(f"LICENSES/{name} 在 Slint 发行包内没有同名文件，无法核对原文")
+        else:
+            actual = vendored.read_text(encoding="utf-8", errors="replace")
+            expected = upstream.read_text(encoding="utf-8", errors="replace")
+            if actual.rstrip("\n") != expected.rstrip("\n"):
+                failures.append(
+                    f"LICENSES/{name} 与 Slint 发行包内的原文不一致（副本 SHA256 "
+                    f"{hashlib.sha256(actual.encode('utf-8')).hexdigest()}，原文 SHA256 "
+                    f"{hashlib.sha256(expected.encode('utf-8')).hexdigest()}）")
+    for detail in failures:
+        report(f"{detail}；许可原文必须逐字复制，不得删改或节选")
+    if failures:
+        return "未达成：" + "；".join(failures)
+
+    checked = "、".join(f"`{name}`" for name in sorted(required))
+    dirty = git_status("LICENSES/")
+    if dirty is None:
+        return (f"已达成（LICENSES/ 下 {checked} 与 Slint 发行包内的原文一致；"
+                f"不在 git 工作树中，未核对本地改动）")
     if dirty:
-        report("LICENSES/ 下的许可声明被改动：" + "；".join(dirty))
+        report("LICENSES/ 下有未提交的改动：" + "；".join(dirty))
         return "未达成：LICENSES/ 下有本地改动"
-    return "已达成（LICENSES/ 下无改动）"
+    return f"已达成（LICENSES/ 下 {checked} 与 Slint 发行包内的原文一致，且无本地改动）"
+
+
+def check_project_licence_files():
+    """The two licence texts the workspace manifest publishes under must be present.
+
+    `Cargo.toml` declares `MIT OR Apache-2.0` for the workspace, and a release
+    archive, a `.deb` and an `.rpm` all carry both texts. A manifest that declares a
+    licence the repository does not ship is a release blocker, so presence is
+    asserted -- and a phrase from each file is asserted too, because presence alone
+    accepts the two having been swapped, which neither a reader nor a packager would
+    notice.
+    """
+    for name, phrases in PROJECT_LICENCES:
+        path = root / name
+        if not path.is_file():
+            report(f"{name} 不存在；`Cargo.toml` 声明的 `MIT OR Apache-2.0` 要求两份许可原文"
+                   f"随仓库与发布产物提供")
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for phrase in phrases:
+            if phrase not in text:
+                report(f"{name} 不含 `{phrase}`；该文件必须是它对应的那份许可原文，"
+                       f"而不是另一份许可或一个空壳文件")
 
 
 def obligation_rows(licence_path, licence_text, recorded_hash):
@@ -477,7 +615,8 @@ def obligation_rows(licence_path, licence_text, recorded_hash):
                f"复核后运行 `--write` 更新登记值")
     results = {"OB-1": readme_conclusion(), "OB-2": slint_library_conclusion(),
                "OB-3": "已达成（第 6 节声明）", "OB-4": "已达成（`scripts/check-slint-leak.sh` 强制）",
-               "OB-5": git_licence_status(), "OB-6": "已达成（第 7 节转述）"}
+               "OB-5": licences_directory_conclusion(licence_path, licence_text),
+               "OB-6": "已达成（第 7 节转述）"}
     rows = []
     for identifier, title, anchor, method in OBLIGATIONS:
         excerpt = paragraph_with(licence_text, anchor) if licence_text else None
@@ -565,7 +704,8 @@ def render_notice(entries, licence_text, slint_version, digest):
         f"Slint {slint_version}（SixtyFPS GmbH，<https://slint.dev>）依据 **Slint Royalty-free",
         "Desktop, Mobile, and Web Applications License, Version 2.0**（SPDX：",
         "`LicenseRef-Slint-Royalty-free-2.0`）使用。归属声明：本程序使用 Slint 构建。", "",
-        f"许可原文（`LICENSES/LicenseRef-Slint-Royalty-free-2.0.md`，SHA256 `{digest or '—'}`）：", "",
+        f"随本发布产物一同提供的许可原文（`LICENSES/LicenseRef-Slint-Royalty-free-2.0.md`，"
+        f"SHA256 `{digest or '—'}`）：", "",
         (licence_text.strip() if licence_text
          else "（许可原文未找到：先运行 `cargo fetch` 再生成本块）"),
         "", "词库数据来源：", "| 来源 | 许可证 | 用途 |", "|---|---|---|", *rows,
@@ -666,6 +806,7 @@ def main():
 
     entries = load_sources()
     copyleft = check_sources(entries)
+    check_project_licence_files()
     licence_path, licence_text = slint_licence(document)
     licences = LICENSES_DOC.read_text(encoding="utf-8") if LICENSES_DOC.is_file() else None
     notice = NOTICE_DOC.read_text(encoding="utf-8") if NOTICE_DOC.is_file() else None
@@ -724,10 +865,15 @@ expect_status() {
 write_fixture_root() {
     # A scratch tree carrying copies of the committed documents plus what they
     # cannot supply themselves, so the document pipeline can be exercised
-    # without writing to the repository.
-    mkdir -p "$1/docs/dev" "$1/data/raw" "$1/scripts"
+    # without writing to the repository. The licence copies come from the
+    # repository because the check compares them against the text inside the
+    # Slint package, which is read from the real metadata document.
+    mkdir -p "$1/docs/dev" "$1/data/raw" "$1/scripts" "$1/LICENSES"
     cp -- "$script_root/docs/dev/licenses.md" "$script_root/docs/dev/NOTICE" "$1/docs/dev/"
+    cp -- "$script_root/LICENSES/LicenseRef-Slint-Royalty-free-2.0.md" "$1/LICENSES/"
     : >"$1/scripts/check-slint-leak.sh"
+    printf 'Apache License\nVersion 2.0, January 2004\n' >"$1/LICENSE-APACHE"
+    printf 'MIT License\n\nPermission is hereby granted, free of charge\n' >"$1/LICENSE-MIT"
     printf '[[source]]\nid = "alpha"\nkind = "upstream"\nlayer = "L1"\nlicense = "MIT"\nspdx = "MIT"\npermissive = true\n' \
         >"$1/data/sources.toml"
     printf '# rspinyin\n\n[![Made with Slint](https://img.shields.io/badge/Made%%20with-Slint-blue)](https://slint.dev)\n' \
@@ -789,7 +935,24 @@ run_self_test() {
         >>"$root/data/sources.toml"
     expect_status 1 "未登记词源" "a source added without regenerating the document" check
     expect_status 0 "PASS" "the tree after regeneration" write
-    echo "gen-licenses: self-test PASS (8 classifier cases, 3 source cases, document pipeline)"
+
+    echo "gen-licenses: self-test (the project's licence files and the LICENSES/ guard)"
+    mv -- "$root/LICENSE-MIT" "$root/LICENSE-MIT.absent"
+    expect_status 1 "LICENSE-MIT 不存在" "a tree without the MIT licence text" check
+    mv -- "$root/LICENSE-MIT.absent" "$root/LICENSE-MIT"
+    mv -- "$root/LICENSES" "$root/LICENSES.absent"
+    expect_status 1 "LICENSES/ 不存在" "a tree without LICENSES/" check
+    mv -- "$root/LICENSES.absent" "$root/LICENSES"
+    expect_status 0 "PASS" "the restored LICENSES/" check
+    cp -- "$root/docs/dev/NOTICE" "$root/NOTICE.saved"
+    printf '\n见 `LICENSES/LicenseRef-Absent-1.0.md`。\n' >>"$root/docs/dev/NOTICE"
+    expect_status 1 "LICENSES/LicenseRef-Absent-1.0.md 不存在" \
+        "a NOTICE pointing at a licence text the repository does not carry" check
+    mv -- "$root/NOTICE.saved" "$root/docs/dev/NOTICE"
+    printf '\n## Tampered\n' >>"$root/LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+    expect_status 1 "与 Slint 发行包内的原文不一致" \
+        "a LICENSES/ copy whose text was altered" check
+    echo "gen-licenses: self-test PASS (8 classifier cases, 3 source cases, licence files and LICENSES/ guard, document pipeline)"
 }
 
 # --check-links: OB-1 also asks that the attribution link answer HTTP 200. The

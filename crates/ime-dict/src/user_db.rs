@@ -30,26 +30,33 @@
 //!
 //! Durability: records accumulate in memory and reach the disk on the first of three
 //! triggers -- [`COMMIT_BATCH`] distinct keys, [`COMMIT_INTERVAL_MS`] of typing, or the
-//! ceiling [`PENDING_CAPACITY`]. A crash costs at most the current window (`ASM-20`); a
-//! graceful shutdown loses nothing, because the owner calls [`UserDb::final_commit`]
-//! before the store is dropped. A removal travels the same path: it is a tombstone in the
-//! same delta, so a word the user has forgotten is gone from the ranking at once and from
-//! the file at the next flush, and a crash before that flush costs the removal the way it
-//! costs the records of the same window.
+//! ceiling [`PENDING_CAPACITY`]. The write itself happens on the store's own flush thread and
+//! never on the caller's, which is what the frozen `UserFreqSource::record` contract requires
+//! in its own words ("Implementations batch and flush asynchronously; this method must return
+//! within 5us") and what `AGENTS.md` requires of an fcitx5 callback. A crash costs at most the
+//! current window (`ASM-20`); a graceful shutdown loses nothing, because the owner calls
+//! [`UserDb::final_commit`] before the store is dropped. A removal travels the same path: it
+//! is a tombstone in the same delta, so a word the user has forgotten is gone from the ranking
+//! at once and from the file at the next flush, and a crash before that flush costs the
+//! removal the way it costs the records of the same window.
 //!
 //! Reads: the counts the store has flushed live in memory. A store holding at most
 //! [`HYDRATE_CAP`] records is loaded whole at open and kept in step with the file by the
 //! flush and the sweep, so a decode never opens a read transaction -- the frozen
 //! `UserFreqSource` contract requires `freq` not to block and not to take a lock a writer
 //! can hold, and a read transaction does both. A store past the ceiling is not loaded: its
-//! reads fall back to the on-demand path, whose cost is bounded by the ceiling rather than
-//! by the word count.
+//! reads fall back to the on-demand path, which is bounded by the ceiling rather than by the
+//! word count and backed by the miss cache in `cache` -- a cache a loaded store is opened
+//! without, because nothing would consult it.
 //!
 //! Threading: `record` runs on the host thread right after a commit and does no IO -- it
-//! takes one short mutex, touches a map and returns. The flush it may start runs on that
-//! same thread on purpose: one session's records have to reach the store in the order
-//! they were committed, and a writer thread would need a queue and a wakeup for a batch
-//! of thirty-two small writes. The idle sweep in [`evict`] is the only other writer.
+//! takes one short mutex, touches a map and returns. Everything that touches the file runs
+//! elsewhere: the flush on the store's flush thread, and the idle sweep in [`evict`]. Both
+//! reach the store through a weak handle, so neither can keep it alive, and each is the
+//! single consumer of its own trigger -- which is what preserves the order one session's
+//! records have to reach the store in (`ASM-11`). The two explicit flushes,
+//! [`UserDb::commit`] and [`UserDb::final_commit`], do run on the caller's thread: they are
+//! the owner's own calls, and a graceful shutdown may not return before the delta is on disk.
 
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -72,8 +79,9 @@ mod flush;
 mod hydrate;
 mod manage;
 
-use self::cache::LruCache;
+use self::cache::MissCache;
 use self::evict::{Sweep, start_sweep};
+use self::flush::{FlushThread, Pending};
 use self::hydrate::load_committed;
 
 pub use self::backup::{
@@ -82,6 +90,7 @@ pub use self::backup::{
     backup_dir, list_backups, recover_user_db_with_backup, run_backup,
 };
 pub use self::export::{EXPORT_LIMIT_BYTES, ImportReport};
+pub use self::flush::CommitReport;
 pub use self::manage::{ForgetOutcome, MAX_LIST_LIMIT, UserRecord};
 
 #[cfg(test)]
@@ -97,11 +106,12 @@ mod export_tests;
 pub const COMMIT_BATCH: usize = 32;
 /// Milliseconds of typing after which a flush is due.
 pub const COMMIT_INTERVAL_MS: u64 = 2000;
-/// Keys the on-demand cache keeps resident.
+/// Keys the fallback path's cache keeps resident.
 ///
 /// The cache belongs to the fallback path: a store whose counts were loaded answers from
 /// memory, and the cache is what keeps a store past [`HYDRATE_CAP`] to one read transaction
-/// per distinct word per session rather than one per lookup.
+/// per distinct word per session rather than one per lookup. A loaded store is opened without
+/// one, so the capacity is what a store that fell back costs and nothing else.
 pub const CACHE_CAPACITY: usize = 4096;
 /// Records the store loads into memory at open.
 ///
@@ -217,27 +227,6 @@ impl Clock for SystemClock {
     fn now_nanos(&self) -> u64 {
         u64::try_from(self.epoch.elapsed().as_nanos()).unwrap_or(u64::MAX)
     }
-}
-
-/// What one flush did.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CommitReport {
-    /// Number of records written; zero when nothing was pending. A removal is not a record
-    /// and is not counted here.
-    pub written: usize,
-    /// Duration of the write transaction in microseconds.
-    pub elapsed_us: u64,
-    /// Whether this flush relaxed the batching policy because the disk was slow.
-    pub relaxed: bool,
-}
-
-/// The in-memory delta of one key: what has been recorded but not yet flushed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Pending {
-    /// Commits recorded since the last successful flush.
-    count: u32,
-    /// Wall-clock milliseconds of the most recent record.
-    last_used_ms: u64,
 }
 
 /// Everything the store holds in memory between two flushes.
@@ -390,8 +379,13 @@ struct Inner {
     /// are loaded at open for the same reason the counts are: a keystroke that asks to
     /// forget a word may not open a read transaction to find out whether it is pinned.
     pinned: Mutex<HashSet<Box<str>>>,
-    /// The frequency cache, consulted before the store itself.
-    cache: Mutex<LruCache>,
+    /// The fallback path's cache, present only for a store that was not loaded.
+    ///
+    /// A loaded store answers from [`Inner::committed`] and never consults a cache, so it is
+    /// opened without one. That is what keeps the record path down to the delta map's single
+    /// lock: the previous form bumped a cache on every record, for a reader that does not
+    /// exist on a loaded store.
+    cache: Option<Mutex<MissCache>>,
     /// Set once the store can no longer be written.
     readonly: AtomicBool,
     /// Distinct keys that make a flush due.
@@ -408,6 +402,12 @@ struct Inner {
     path: PathBuf,
     /// The idle sweep thread, when one could be started.
     sweep: Option<Sweep>,
+    /// The flush thread, when one could be started.
+    ///
+    /// The record path publishes a request here and returns; the write transaction happens on
+    /// that thread. A store whose thread could not be started flushes on the caller's thread
+    /// instead -- see [`Inner::request_flush`].
+    writer: Option<FlushThread>,
 }
 
 impl Inner {
@@ -431,11 +431,15 @@ impl Inner {
 ///
 /// # Concurrency
 ///
-/// The store is `Send + Sync` and cheap to clone: every clone shares one `redb` handle,
-/// one delta map and one cache. `freq` and `record` are safe to call from any thread, but
-/// the store relies on the decoder's serial-per-session discipline (`ASM-11`) for the
-/// order of the records it is given, and on that discipline alone to keep a flush from
-/// interleaving with the records of another session.
+/// The store is `Send + Sync` and cheap to clone: every clone shares one `redb` handle, one
+/// delta map, and -- for a store that was not loaded -- one cache. `freq` and `record` are
+/// safe to call from any thread, but the store relies on the decoder's serial-per-session
+/// discipline (`ASM-11`) for the order of the records it is given, and on that discipline
+/// alone to keep a flush from interleaving with the records of another session.
+///
+/// The file itself is touched by two threads of the store's own -- the flush thread and the
+/// idle sweep -- and both are single consumers of their own trigger, so the order one
+/// session's records arrive in is the order they reach the disk in.
 #[derive(Clone)]
 pub struct UserDb {
     inner: Arc<Inner>,
@@ -489,7 +493,11 @@ impl UserDb {
             committed: Mutex::new(held.counts),
             pinned: Mutex::new(held.pinned),
             pending: Mutex::new(PendingState::default()),
-            cache: Mutex::new(LruCache::new(CACHE_CAPACITY)),
+            cache: if is_hydrated {
+                None
+            } else {
+                Some(Mutex::new(MissCache::new(CACHE_CAPACITY)))
+            },
             readonly: AtomicBool::new(false),
             batch: AtomicUsize::new(COMMIT_BATCH),
             interval_ms: AtomicU64::new(COMMIT_INTERVAL_MS),
@@ -498,15 +506,25 @@ impl UserDb {
             clock,
             path,
             sweep: None,
+            writer: None,
         });
+        // Both threads reach the store through a weak handle, so neither can keep it alive,
+        // and both are started before the last strong reference is published -- which is what
+        // makes the `Arc::get_mut` below the only writer of these two fields.
         let sweep = start_sweep(&inner);
+        let writer = FlushThread::start(&inner);
         if let Some(state) = Arc::get_mut(&mut inner) {
             state.sweep = sweep;
+            state.writer = writer;
         }
         Ok(Self { inner })
     }
 
     /// Flushes every pending record with `durability`.
+    ///
+    /// The flush runs on the calling thread, with the store's flush thread held aside for the
+    /// length of the call. That is deliberate: this is an explicit request from the owner, and
+    /// what it reports is the delta this call itself made durable.
     ///
     /// # Errors
     /// As [`UserDb::final_commit`].
@@ -517,14 +535,16 @@ impl UserDb {
     /// Flushes every pending record with [`Durability::Immediate`].
     ///
     /// The owner calls this on shutdown: it is what makes a graceful exit lose nothing
-    /// (`ASM-20`). It is also the flush a caller uses when the configuration asks for a
-    /// synchronous commit after every candidate.
+    /// (`ASM-20`), because the records a batch trigger had not yet handed to the flush thread
+    /// are written here and the call does not return until they are. It is also the flush a
+    /// caller uses when the configuration asks for a synchronous commit after every candidate.
     ///
     /// # Errors
     /// Returns [`ImeError::DataReadonly`] -- the `data/readonly-mode` code -- when the write
     /// fails, after the store has degraded to read-only. [`CommitReport::relaxed`] is set
     /// when the flush was slow enough to relax the batching policy, and the caller reports
-    /// [`SLOW_DISK_CODE`] then.
+    /// [`SLOW_DISK_CODE`] then. A flush a batch trigger earned runs on the store's own thread
+    /// and answers to nobody, so this is the only path that reports `relaxed` at all.
     pub fn final_commit(&mut self) -> Result<CommitReport, ImeError> {
         self.commit_inner(Durability::Immediate)
     }
@@ -570,10 +590,15 @@ impl UserDb {
 
     /// Flushes the pending records with `durability`.
     ///
+    /// The store's flush thread is held aside for the length of the call, so what this
+    /// reports is the delta this flush itself made durable. The wait is bounded; a writer
+    /// that does not answer inside the bound is left running and the flush proceeds beside
+    /// it, which is safe because both drain the same delta map.
+    ///
     /// # Errors
     /// As [`UserDb::final_commit`].
     fn commit_inner(&self, durability: Durability) -> Result<CommitReport, ImeError> {
-        self.inner.flush(durability)
+        self.inner.flush_now(durability)
     }
 
     /// How many records are waiting to be flushed.
@@ -604,6 +629,32 @@ impl UserDb {
             return None;
         }
         Some(lock(&self.inner.committed).len())
+    }
+
+    /// Waits until the flush thread has served everything it was asked to.
+    ///
+    /// Test-only: the production paths that need this are `commit` and `final_commit`, and
+    /// both flush on the caller's own thread. A test that asserts what a trigger wrote cannot
+    /// otherwise tell "not yet" from "never", and the bound is generous because a flush of a
+    /// batch is bounded by one write transaction -- a thread that misses it is broken rather
+    /// than slow, which is what the assertion says.
+    #[cfg(test)]
+    fn wait_for_flush(&self) {
+        if let Some(writer) = &self.inner.writer {
+            assert!(
+                writer.settle(std::time::Duration::from_secs(5)),
+                "the flush thread did not settle"
+            );
+        }
+    }
+
+    /// Whether the store was opened with the fallback path's cache.
+    ///
+    /// Test-only: it is what turns "the cache exists only for a store that was not loaded"
+    /// from a code-review item into an assertion.
+    #[cfg(test)]
+    fn has_miss_cache(&self) -> bool {
+        self.inner.cache.is_some()
     }
 }
 
@@ -640,48 +691,20 @@ impl UserFreqSource for UserDb {
         self.inner.on_demand(key)
     }
 
+    /// Records one commit of `key`, without blocking and without allocating when the key is
+    /// already pending.
+    ///
+    /// The wall clock is not read, the cache is not touched, and the write transaction is not
+    /// performed here: the delta map's own entry point owns the batching policy, and the flush
+    /// thread owns the disk. What is left on this path is one monotonic reading, one lock of
+    /// the delta map, one hash lookup, and -- only for a key the map has not seen -- one
+    /// allocation.
     fn record(&self, key: &str, _weight_hint: u16) {
         if self.is_readonly() {
             return;
         }
-        let now_nanos = self.inner.clock.now_nanos();
-        let now_ms = self.inner.clock.now_ms();
-        self.inner
-            .last_record_nanos
-            .store(now_nanos, Ordering::Relaxed);
-        let due = {
-            let mut pending = lock(&self.inner.pending);
-            // Committing the word again takes the tombstone back: the user is asking for it
-            // to be learned, which is the opposite of the removal still waiting to be
-            // flushed, and the later statement wins.
-            pending.removed.remove(key);
-            let entry = pending.entries.entry(Box::from(key)).or_insert(Pending {
-                count: 0,
-                last_used_ms: now_ms,
-            });
-            entry.count = entry.count.saturating_add(1);
-            entry.last_used_ms = now_ms;
-            let batch = self.inner.batch.load(Ordering::Relaxed);
-            let interval_ms = self.inner.interval_ms.load(Ordering::Relaxed);
-            let held = pending.entries.len();
-            let elapsed = now_nanos.saturating_sub(pending.last_flush_nanos);
-            held >= batch
-                || held >= PENDING_CAPACITY
-                || elapsed >= interval_ms.saturating_mul(1_000_000)
-        };
-        // The cache belongs to the fallback path: a store whose counts are in memory
-        // answers from them, so bumping a cache nothing reads would cost the record path a
-        // lock and a lookup per commit for no reader.
-        if !self.inner.is_hydrated {
-            lock(&self.inner.cache).bump(key);
-        }
-        if due {
-            // The flush runs on the caller's thread on purpose: one session's records have
-            // to reach the store in the order they were committed, and the alternative --
-            // a writer thread -- would need a queue and a wakeup for a batch of thirty-two
-            // small writes. The failure is not swallowed: it flips the store to read-only,
-            // which is what the caller polls.
-            let _ = self.commit_inner(Durability::Eventual);
+        if self.inner.record_delta(key) {
+            self.inner.request_flush();
         }
     }
 

@@ -7,13 +7,16 @@
 //!   repeat, so the UI thread waits for room, and when the wait runs out it
 //!   abandons the click *loudly* -- the counter behind `ui/select/timeout` and an
 //!   error the caller may report -- rather than queueing it behind a host that is
-//!   not draining.
+//!   not draining. Its class is a **command**: the host has to answer it.
 //! * `Page` and `Dismiss` are ordered and collapse to the newest, exactly like
-//!   `Show` and `Hide`: the last page turn is the one the user meant.
+//!   `Show` and `Hide`: the last page turn is the one the user meant. Their class
+//!   is an **event**, a notification whose loss the user would see.
 //! * `Hover` is a latest-wins slot with a throttle, because pointer motion is
-//!   high-rate and only the newest hovered candidate matters.
+//!   high-rate and only the newest hovered candidate matters. An **event** as
+//!   well, for the same reason.
 //! * `Rendered` is a latency probe rather than business state, so it is
-//!   latest-wins as well; the newest sample is the one a probe wants.
+//!   latest-wins as well; the newest sample is the one a probe wants. Its class
+//!   is a **data stream**: a receipt is a complete reading, not a transition.
 //!
 //! The consumer side drains without waiting for a zero timeout and really waits
 //! for a non-zero one, which is what keeps `poll_event(Duration::ZERO)` safe to
@@ -98,6 +101,13 @@ pub struct UiEventQueue {
 
 impl UiEventQueue {
     /// Creates the event channel with the capacities and budgets from `config`.
+    ///
+    /// `config` must already satisfy [`ChannelConfig::validate`]. This
+    /// constructor takes it on trust rather than returning a `Result`, because
+    /// the UI thread's start-up path builds both halves of the boundary from the
+    /// same value and checks it while it builds the command half, so an illegal
+    /// configuration is refused before either half exists. A caller that builds
+    /// an event queue on its own owes the same check.
     ///
     /// # Panics
     ///

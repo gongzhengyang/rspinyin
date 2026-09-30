@@ -265,6 +265,7 @@ impl RecordingHost {
                 Call::Post(_, UiCommand::Show { .. }) => Some("show"),
                 Call::Post(_, UiCommand::Hide { .. }) => Some("hide"),
                 Call::Post(_, UiCommand::Theme(_)) => Some("theme"),
+                Call::Post(_, UiCommand::Overlay(_)) => Some("overlay"),
                 Call::Post(_, UiCommand::Shutdown) => Some("shutdown"),
                 _ => None,
             })

@@ -35,6 +35,8 @@ enum Observed {
     Frame(u32),
     /// A theme was applied.
     Theme,
+    /// An overlay was applied, carrying whether one is open.
+    Overlay(bool),
     /// The window was told to appear, carrying the revision.
     Show(u32),
     /// The window was told to disappear, carrying the revision.
@@ -157,6 +159,7 @@ impl UiSurface for RecordingSurface {
         let observed = match update {
             SurfaceUpdate::Frame(frame) => Observed::Frame(frame.revision),
             SurfaceUpdate::Theme(_) => Observed::Theme,
+            SurfaceUpdate::Overlay(frame) => Observed::Overlay(frame.is_some()),
             SurfaceUpdate::Show { revision, .. } => Observed::Show(revision),
             SurfaceUpdate::Hide { revision, .. } => Observed::Hide(revision),
         };

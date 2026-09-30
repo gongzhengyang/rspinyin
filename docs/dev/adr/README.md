@@ -12,10 +12,11 @@
 | `0003` | UI 角色必须独立成 addon | 已接受 | 项目基线 | [0003-ui-role-separate-addon.md](0003-ui-role-separate-addon.md) |
 | `0004` | UI 角色拆分为 `ime-ui-addon` crate（第二个 cdylib 落地） | 已接受 | 本仓库实现 | [0004-ui-addon-crate-split.md](0004-ui-addon-crate-split.md) |
 | `0005` | 增量功能的契约扩展（`crates/ime-types`） | 已接受 | `docs/dev/features-add.md` 的里程碑 `M0` | [0005-incremental-contract-extension.md](0005-incremental-contract-extension.md) |
-| `0006` | 按键速查浮层的承载方式（`UiFrame.overlay` 字段 vs `UiCommand::Overlay` 通道） | **已分配，未落盘** | `docs/dev/opt-keymap.md` 的 `KEY-P2.02.01` | 见 `docs/dev/opt-keymap.md` 与 `docs/dev/opt-keymap/phase-3.md` |
+| `0006` | 按键速查浮层的承载方式（`UiFrame.overlay` 字段 vs `UiCommand::Overlay` 通道） | 已接受 | `docs/dev/opt-keymap.md` 的 `KEY-P2.02.01` | [0006-overlay-channel.md](0006-overlay-channel.md) |
 | `0007` | `UiFrame` 的 `serde` 派生（冻结契约的追加） | **已分配，未落盘** | `docs/dev/features-test.md` 的 `FEAT-TEST-P0.02.01` | 见 `docs/dev/features-test.md` |
 | `0008` | 命令面板的契约增量（`UiCommand::Panel` / `UiEvent::PanelAction`） | **已分配，未落盘** | `docs/dev/features-add/phase-2.md` 的 `ADD-FEAT-P1.02.02` | 见 `docs/dev/features-add/phase-2.md` |
 | `0009` | `Placement` 追加 `Fixed` / `Remember` 两个变体 | **已分配，未落盘** | `docs/dev/features-add/phase-2.md` 的 `ADD-FEAT-P1.03.04` | 见 `docs/dev/features-add/phase-2.md` |
+| `0010` | 测试专用分配计数器（第四条 `unsafe` 白名单路径） | 已接受 | `docs/dev/opt-perf.md` 的 `PERF-P2.01.01` | [0010-test-only-allocation-counter.md](0010-test-only-allocation-counter.md) |
 
 ## 编号冲突的由来
 

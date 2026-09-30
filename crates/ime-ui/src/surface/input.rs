@@ -1,8 +1,9 @@
 //! Turning backend events into the events the host is posted.
 //!
-//! Responsibility: drain what the platform has queued, test a pointer position against the hit
-//! map of the last placement, and post the hover or the selection that follows. This is the
-//! only place a `SurfaceEvent` is read.
+//! Responsibility: drain what the platform has queued and hand every event to the pointer
+//! router, which decides what it means and which channel it travels on. This is the only
+//! place a `SurfaceEvent` is read, and the only place the router is driven, so the mouse path
+//! and the keyboard path share one selection entry rather than each growing their own.
 //!
 //! Boundaries: nothing here decides what a candidate is worth, and nothing here draws or
 //! places anything. A position outside every cell clears the hover rather than failing, and a
@@ -13,25 +14,34 @@
 //! # Coordinate spaces
 //!
 //! A pointer position arrives relative to the window and the hit map is expressed in the
-//! container's own space, so the shadow reserve is subtracted once, on the way in, and every
-//! comparison below is like for like.
+//! container's own space, so the shadow reserve is subtracted once, inside the interaction
+//! layer, and nothing here has to know which space it holds a number in.
+//!
+//! # Why the drawn state is refreshed here
+//!
+//! The five states of the design table -- the focus ring, the hover, the press -- are not
+//! part of `UiFrame`: the engine's paging state holds the highlight and the frame carries
+//! none of it. The pointer state is therefore pushed into the adapter whenever the router
+//! says something drawn changed, which is the same call that asks for the repaint. A hover
+//! that reached the model but not the window would be a highlight the user cannot see.
 
 use std::time::Instant;
 
-use ime_types::{ImeError, SelectTrigger, SurfaceEvent, UiEvent};
+use ime_types::ImeError;
 
+use crate::adapter::{PointerState, local_position};
 use crate::channel::UiEventQueue;
-use crate::geometry::Geometry;
+use crate::interaction::RouteRequest;
 
 use super::CandidateSurface;
 
 impl CandidateSurface {
     /// Drains pending input and compositor events, posting what they mean.
     ///
-    /// Pointer events are tested against the hit map of the last placement and become a hover
-    /// or a selection; a resize or a scale change was already applied to the window by the
-    /// platform. Events beyond `limit` stay queued for the next call, so a burst of pointer
-    /// motion cannot starve rendering and no input is lost either.
+    /// Each event is translated by the pointer router and posted into the channel its
+    /// overflow rule belongs to; a resize or a scale change was already applied to the
+    /// window by the platform. Events beyond `limit` stay queued for the next call, so a
+    /// burst of pointer motion cannot starve rendering and no input is lost either.
     ///
     /// # Parameters
     ///
@@ -52,74 +62,73 @@ impl CandidateSurface {
             .map_err(ImeError::from)?;
         let ready = self.pending.len().min(limit);
         let revision = self.frame.as_ref().map_or(0, |frame| frame.revision);
-        let geometry = self.geometry.as_ref();
-        for event in self.pending.drain(..ready) {
-            deliver(event, events, geometry, revision);
+        // One clock read per batch rather than one per event: the click debounce and the
+        // hover throttle are both measured against the instant the batch arrived.
+        let now = Instant::now();
+        // The batch is moved out so that the events can be drained while the router and the
+        // placement they are tested against are borrowed from the surface; the allocation
+        // travels with it, so nothing is allocated per event. Whatever the limit left over
+        // is handed back for the next call.
+        let mut batch = core::mem::take(&mut self.pending);
+        // Adopting before the batch is what makes the events that arrived after a placement
+        // land on the cells that placement produced.
+        if core::mem::take(&mut self.adoption_pending) {
+            let _ = self
+                .router
+                .adopt_frame(revision, self.geometry.as_ref(), now, events);
+        }
+        for event in batch.drain(..ready) {
+            // The hover or the selection that came out is the host's, and the channel it was
+            // posted to owns what happens to it next.
+            let _ = self.router.route(
+                RouteRequest {
+                    event: &event,
+                    revision,
+                    geometry: self.geometry.as_ref(),
+                    now,
+                },
+                events,
+            );
+        }
+        self.pending = batch;
+        // The router raises this for the transitions that produce no event of their own -- a
+        // press, a release, a gesture that was cancelled -- which are exactly the ones the
+        // window would otherwise never draw.
+        if self.router.take_repaint() {
+            self.sync_pointer();
         }
         Ok(())
     }
-}
 
-/// Turns one backend event into what the host needs to know about it.
-///
-/// Pointer positions arrive relative to the window and are tested against the hit map of the
-/// last placement. Everything else either has no meaning for an override-redirect panel -- a
-/// close request, a wheel -- or was already applied to the window by the platform, which is
-/// what a resize and a scale change are.
-fn deliver(event: SurfaceEvent, events: &UiEventQueue, geometry: Option<&Geometry>, revision: u32) {
-    match event {
-        SurfaceEvent::PointerEnter { x, y } | SurfaceEvent::PointerMotion { x, y } => {
-            let index = hit_test(geometry, x, y);
-            events.post_hover(UiEvent::Hover { revision, index }, Instant::now());
-        }
-        SurfaceEvent::PointerLeave => {
-            events.post_hover(
-                UiEvent::Hover {
-                    revision,
-                    index: None,
-                },
-                Instant::now(),
-            );
-        }
-        SurfaceEvent::PointerButton {
-            x,
-            y,
-            button: 1,
-            pressed: true,
-        } => {
-            let Some(index) = hit_test(geometry, x, y) else {
-                return;
-            };
-            // A click that cannot be handed over within the queue's budget is abandoned rather
-            // than retried: the queue counts it behind `ui/select/timeout`, and failing this
-            // call would take the whole UI thread down.
-            let _ = events.post_select(UiEvent::Select {
-                revision,
-                index,
-                trigger: SelectTrigger::Mouse,
-            });
-        }
-        _ => {}
+    /// Writes the pointer state the router holds into the grid the component draws.
+    ///
+    /// The router numbers candidates globally, across pages, because that is the numbering
+    /// the host is told about; the grid compares them against a cell of the page on show. The
+    /// conversion is the adapter's own, so the cell the pointer state names is the cell the
+    /// hit map named.
+    ///
+    /// The highlight is deliberately not converted: it is the one field that is already a
+    /// position within the page, because it belongs to the engine's paging state and arrives
+    /// through the adapter rather than through this path. Mapping it again would move the
+    /// focus ring to a cell the engine never named.
+    fn sync_pointer(&mut self) {
+        let Some(frame) = self.frame.as_deref() else {
+            return;
+        };
+        let page = frame.page;
+        let pointer = PointerState {
+            highlighted: self.adapter.state().pointer.highlighted,
+            hovered: self
+                .router
+                .hovered()
+                .and_then(|index| local_position(index, &page)),
+            pressed: self
+                .router
+                .pressed()
+                .and_then(|index| local_position(index, &page)),
+        };
+        // The adapter asks for the repaint itself when the grid changed, so the return value
+        // is the same information the router's flag already carried.
+        self.adapter.apply_pointer(pointer);
     }
-}
-
-/// The candidate under a window-relative pointer position, if there is one.
-///
-/// The pointer arrives relative to the window and the hit map is expressed in the container's
-/// own space, so the shadow reserve is subtracted before the test. A position that cannot be
-/// expressed in that space -- the far edge of an `i32` -- is outside every cell.
-fn hit_test(geometry: Option<&Geometry>, x: i32, y: i32) -> Option<u16> {
-    let geometry = geometry?;
-    let x = i64::from(x) - i64::from(geometry.container_offset.0);
-    let y = i64::from(y) - i64::from(geometry.container_offset.1);
-    geometry
-        .hit_map
-        .iter()
-        .find(|(rect, _)| {
-            let left = i64::from(rect.x);
-            let top = i64::from(rect.y);
-            (left..left + i64::from(rect.w)).contains(&x)
-                && (top..top + i64::from(rect.h)).contains(&y)
-        })
-        .map(|(_, index)| *index)
 }

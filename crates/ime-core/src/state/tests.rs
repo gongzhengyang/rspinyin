@@ -19,6 +19,7 @@ use super::machine::{Session, SessionEnv, SessionState};
 use super::paging::Paging;
 use super::{Effect, SessionConfig};
 use crate::lm::InMemoryLm;
+use crate::segment::{SYLLABLES, SyllableDag, normalize};
 use crate::viterbi::Decoder;
 use crate::viterbi::lattice::testing::MockLexicon;
 
@@ -825,4 +826,44 @@ fn test_candidate_index_helper_finds_a_word() {
         CandidateSource::Dict,
         "the readings come from the dictionary"
     );
+}
+
+#[test]
+fn test_typing_every_table_syllable_with_bare_keys_composes() {
+    // Ergonomics: the whole syllable table is reachable with the keyboard alone. Each
+    // entry is typed as its own spelling, with `v` standing in for the umlaut the
+    // normalizer folds, one `InputChar` per character -- the action a bare letter key
+    // produces -- and no modifier and no mouse event takes part in it.
+    //
+    // `ê` is the one entry no bare key types: the input alphabet is the ASCII letters and
+    // `'`, and the table keeps `ê` as the syllable the normalizer passes through
+    // unchanged. The list is pinned so that a second such entry cannot appear unnoticed.
+    let cfg = SessionConfig::default();
+    let fixture = Fixture::new();
+    let env = fixture.env();
+    let mut typed = String::new();
+    let mut not_typeable = Vec::new();
+    for entry in SYLLABLES {
+        typed.clear();
+        for ch in entry.chars() {
+            typed.push(if ch == 'ü' { 'v' } else { ch });
+        }
+        if !typed.chars().all(|ch| ch.is_ascii_alphabetic() || ch == '\'') {
+            not_typeable.push(*entry);
+            continue;
+        }
+        // The typed form reaches the entry it is spelled after...
+        assert_eq!(normalize(&typed).text, *entry, "typing {typed:?}");
+        let mut dag = SyllableDag::new();
+        assert_eq!(dag.build(&typed), Ok(()), "building {typed:?}");
+        assert!(dag.has_path(), "{typed:?} must cut into syllables");
+        // ...and the session takes it one key press at a time, with nothing typed lost.
+        let mut session = Session::new();
+        for ch in typed.chars() {
+            let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+        }
+        assert_eq!(session.state, SessionState::Composing, "typing {typed:?}");
+        assert_eq!(session.buf.raw(), typed.as_str(), "typing {typed:?}");
+    }
+    assert_eq!(not_typeable, ["ê"]);
 }

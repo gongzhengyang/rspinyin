@@ -22,8 +22,10 @@
 //! tests run on machines without the Fcitx5 development packages installed.
 
 pub mod addon;
+pub mod effects;
 pub mod engine;
 pub mod privacy_impl;
+pub mod session_host;
 
 // The `unsafe_code` allowance is scoped to this one module declaration rather than
 // applied crate-wide, so raw pointers stay confined to the FFI boundary the architecture

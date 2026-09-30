@@ -1,0 +1,10 @@
+rspinyin (0.1.0-1) unstable; urgency=medium
+
+  * Initial packaging.
+  * The dictionary is compiled at build time and shipped in the package, so an
+    install needs neither the network nor a Rust toolchain.
+  * The two shared objects are addon plugins: they are stripped once, at
+    packaging time, with --strip-unneeded, and the addon factory symbol is read
+    back from the build root before the package is written.
+
+ -- rspinyin contributors <rspinyin@localhost>  Tue, 29 Sep 2026 00:00:00 +0000

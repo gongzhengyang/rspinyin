@@ -8,8 +8,9 @@
 //!
 //! Routing is the contract:
 //!
-//! * `Frame` and `Theme` go to a latest-wins slot, because both are complete
-//!   snapshots and an unread one carries no information the newer one lacks.
+//! * `Frame`, `Theme` and `Overlay` go to a latest-wins slot, because each of
+//!   them is a complete snapshot or a mode rather than a transition, and an
+//!   unread one carries no information the newer one lacks.
 //! * `Show` and `Hide` go to the ordered collapsing queue, because the pair
 //!   means something only in order.
 //! * `Shutdown` gets a flag of its own rather than sharing a slot with anything
@@ -17,12 +18,20 @@
 //!   UI thread running for the rest of the process's life.
 //!
 //! Every one of those routes ends with the same wakeup, so a post is one lock
-//! (or one bounded spin), one store and one syscall on the host thread.
+//! (or one bounded staging step), one store and one syscall on the host thread.
+//!
+//! # Revisions
+//!
+//! `Show` and `Hide` carry the revision of the frame they belong to, and the
+//! producer posts them in non-decreasing revision order. The rule is stated in
+//! [`crate::channel`]'s module documentation; the consumer *counts* a violation
+//! rather than acting on it, because the one thing worse than acting on a stale
+//! revision is dropping the `Hide` that would have put the window away.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use ime_types::{ThemeSpec, UiCommand, UiError, UiFrame};
+use ime_types::{ImeError, OverlayFrame, ThemeSpec, UiCommand, UiError, UiFrame};
 
 use super::ChannelConfig;
 use super::queue::{CollapsingQueue, LatestSlot};
@@ -42,28 +51,49 @@ use super::wakeup::Wakeup;
 pub struct CommandChannels {
     frame: LatestSlot<Box<UiFrame>>,
     theme: LatestSlot<ThemeSpec>,
+    /// The newest overlay state, or `Some(None)` once the host has closed the
+    /// overlay.
+    ///
+    /// The value stored is an `Option` on purpose: "the overlay is closed" and
+    /// "the host has said nothing about overlays" are different states, and a
+    /// surface that conflated them would draw a panel the user has dismissed.
+    overlay: LatestSlot<Option<Box<OverlayFrame>>>,
     control: CollapsingQueue<UiCommand>,
     shutdown: AtomicBool,
+    /// The highest `Show`/`Hide` revision delivered so far.
+    last_control_revision: AtomicU32,
+    /// How many of them arrived out of revision order.
+    control_revision_regressions: AtomicU64,
     wakeup: Wakeup,
 }
 
 impl CommandChannels {
     /// Creates the channel, including its wakeup counter.
     ///
+    /// The configuration is checked against the boundary contract before
+    /// anything is built, so an illegal one is rejected here -- at construction
+    /// -- rather than producing a channel that quietly violates `features.md`
+    /// 2.2.1.
+    ///
     /// # Errors
     ///
-    /// Returns [`UiError::ChannelClosed`] when the wakeup counter cannot be
-    /// created, which means no UI thread can be started.
+    /// Returns [`ImeError::ConfigInvalid`] when `config` breaks the contract (see
+    /// [`ChannelConfig::validate`]), and [`ImeError::UiChannelClosed`] when the
+    /// wakeup counter cannot be created, which means no UI thread can be started.
     ///
     /// # Panics
     ///
     /// This function does not panic.
-    pub fn new(config: &ChannelConfig) -> Result<Self, UiError> {
+    pub fn new(config: &ChannelConfig) -> Result<Self, ImeError> {
+        config.validate()?;
         Ok(Self {
             frame: LatestSlot::new(),
             theme: LatestSlot::new(),
+            overlay: LatestSlot::new(),
             control: CollapsingQueue::new(config.control_capacity, config.control_spin),
             shutdown: AtomicBool::new(false),
+            last_control_revision: AtomicU32::new(0),
+            control_revision_regressions: AtomicU64::new(0),
             wakeup: Wakeup::new()?,
         })
     }
@@ -95,13 +125,35 @@ impl CommandChannels {
         self.theme.take()
     }
 
+    /// Takes the newest overlay state, if the host has posted one.
+    ///
+    /// The outer `Option` is whether anything was waiting at all; the inner one
+    /// is the state itself, so `Some(None)` means "the overlay is closed" and
+    /// `None` means "the host has not spoken about overlays". A caller that
+    /// collapses the two cannot tell a dismissed panel from one that was never
+    /// opened, which is why the return type keeps them apart.
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic.
+    pub fn take_overlay(&self) -> Option<Option<Box<OverlayFrame>>> {
+        self.overlay.take()
+    }
+
     /// Takes the oldest ordered control command, if one is waiting.
+    ///
+    /// A `Show` or `Hide` whose revision went backwards is delivered anyway and
+    /// counted: dropping a `Hide` to punish a producer that broke the rule would
+    /// leave the candidate window visible, which is the worse of the two
+    /// failures.
     ///
     /// # Panics
     ///
     /// This function does not panic.
     pub fn pop_control(&self) -> Option<UiCommand> {
-        self.control.pop()
+        let command = self.control.pop()?;
+        self.note_control_revision(&command);
+        Some(command)
     }
 
     /// Records that the UI thread has been asked to stop.
@@ -142,6 +194,18 @@ impl CommandChannels {
         self.theme.coalesced()
     }
 
+    /// How many overlay states were replaced before the UI thread read them.
+    ///
+    /// A close posted over an unread open counts, exactly as a frame replacing a
+    /// frame does: the older state is gone either way.
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic.
+    pub fn overlays_coalesced(&self) -> u64 {
+        self.overlay.coalesced()
+    }
+
     /// How many control commands had to be collapsed.
     ///
     /// This is the probe counter behind `ui.control.dropped`.
@@ -152,6 +216,41 @@ impl CommandChannels {
     pub fn controls_collapsed(&self) -> u64 {
         self.control.collapsed()
     }
+
+    /// How many `Show`/`Hide` commands arrived out of revision order.
+    ///
+    /// Zero is what a correct producer leaves here. A non-zero value is a
+    /// producer bug rather than a channel one: the channel delivered what it was
+    /// given, in the order it was given.
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic.
+    pub fn control_revision_regressions(&self) -> u64 {
+        self.control_revision_regressions.load(Ordering::Relaxed)
+    }
+
+    /// Counts a `Show`/`Hide` whose revision is older than one already delivered.
+    ///
+    /// `fetch_max` is what makes this a "went backwards" check rather than a
+    /// sequence check: the consumer sees the commands in the order the queue
+    /// delivered them, so comparing against the highest revision seen so far is
+    /// exactly the rule the producer has to keep.
+    fn note_control_revision(&self, command: &UiCommand) {
+        let (UiCommand::Show { revision, .. } | UiCommand::Hide { revision, .. }) = command
+        else {
+            // Every other variant carries no revision: a frame's is inside the
+            // frame, the theme and overlay slots are modes rather than
+            // transitions, and shutdown is a flag of its own.
+            return;
+        };
+        let highest = &self.last_control_revision;
+        let previous = highest.fetch_max(*revision, Ordering::Relaxed);
+        if *revision < previous {
+            let regressions = &self.control_revision_regressions;
+            regressions.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 /// The host thread's handle on one UI thread's command channel.
@@ -161,9 +260,9 @@ impl CommandChannels {
 ///
 /// # Concurrency
 ///
-/// `Send` and `Sync`. [`UiCommandSender::send`] is non-blocking apart from the
-/// ordered channel's bounded wait, which is capped by the configured budget and
-/// is the only place it can be held up at all.
+/// `Send` and `Sync`. [`UiCommandSender::send`] is non-blocking: the ordered
+/// channel stages a value that does not fit instead of waiting for room, so the
+/// only work on the host thread is a lock, a store and the wakeup syscall.
 #[derive(Clone, Debug)]
 pub struct UiCommandSender {
     channels: Arc<CommandChannels>,
@@ -207,6 +306,9 @@ impl UiCommandSender {
             UiCommand::Theme(theme) => {
                 self.channels.theme.put(theme);
             }
+            UiCommand::Overlay(frame) => {
+                self.channels.overlay.put(frame);
+            }
             UiCommand::Show { .. } | UiCommand::Hide { .. } => self.channels.control.push(command),
             UiCommand::Shutdown => self.channels.request_shutdown(),
         }
@@ -227,7 +329,7 @@ impl UiCommandSender {
 
 #[cfg(test)]
 mod tests {
-    use ime_types::{Anchor, HideReason, Placement, RectI, ScreenId};
+    use ime_types::{Anchor, HideReason, OverlayKind, Placement, RectI, ScreenId};
 
     use super::*;
 
@@ -278,6 +380,16 @@ mod tests {
         }
     }
 
+    fn overlay(title: &str) -> Box<OverlayFrame> {
+        Box::new(OverlayFrame {
+            kind: OverlayKind::CheatSheet,
+            title: String::from(title),
+            sections: Vec::new(),
+            selected: None,
+            query: String::new(),
+        })
+    }
+
     #[test]
     fn test_command_sender_frames_are_latest_wins() {
         let channels = channels();
@@ -320,6 +432,7 @@ mod tests {
         }
         assert_eq!(observed, sequence, "Show/Hide keep their order");
         assert_eq!(channels.controls_collapsed(), 0);
+        assert_eq!(channels.control_revision_regressions(), 0);
     }
 
     #[test]
@@ -367,6 +480,45 @@ mod tests {
     }
 
     #[test]
+    fn test_command_sender_overlays_are_latest_wins() {
+        let channels = channels();
+        let sender = sender(&channels);
+        for title in ["one", "two", "three"] {
+            sender
+                .send(UiCommand::Overlay(Some(overlay(title))))
+                .expect("the channel is open");
+        }
+        let newest = channels
+            .take_overlay()
+            .expect("an overlay state is waiting")
+            .expect("the newest state is an open overlay");
+        assert_eq!(newest.title, "three", "the newest overlay is the one kept");
+        assert_eq!(
+            channels.overlays_coalesced(),
+            2,
+            "the two replaced states are counted, not queued"
+        );
+        assert!(channels.take_overlay().is_none());
+    }
+
+    #[test]
+    fn test_command_sender_overlay_close_is_a_value_not_an_absence() {
+        let channels = channels();
+        let sender = sender(&channels);
+        sender
+            .send(UiCommand::Overlay(None))
+            .expect("the channel is open");
+        // `Some(None)` is what a surface needs to tell "close the panel" from
+        // "nothing was ever posted about panels".
+        assert_eq!(
+            channels.take_overlay().map(|state| state.is_none()),
+            Some(true),
+            "the close is delivered as a state"
+        );
+        assert_eq!(channels.take_overlay(), None);
+    }
+
+    #[test]
     fn test_command_sender_after_the_thread_died_reports_and_posts_nothing() {
         let channels = channels();
         let dead = Arc::new(AtomicBool::new(true));
@@ -393,5 +545,22 @@ mod tests {
             .wakeup()
             .drain()
             .expect("the counter is empty again");
+    }
+
+    #[test]
+    fn test_command_channels_reject_an_illegal_configuration() {
+        // The check happens in the constructor, so a channel that would violate
+        // the contract cannot exist even briefly.
+        let config = ChannelConfig {
+            control_capacity: 1,
+            ..ChannelConfig::default()
+        };
+        let outcome = CommandChannels::new(&config);
+        assert!(
+            matches!(&outcome, Err(ImeError::ConfigInvalid { .. })),
+            "a one-deep ordered queue is refused at construction"
+        );
+        let error = outcome.expect_err("no channel was created");
+        assert!(error.to_string().contains("ui.channel.control_capacity"));
     }
 }

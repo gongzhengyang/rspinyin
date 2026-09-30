@@ -21,6 +21,13 @@
 //! counter name, a record written twice, a line that is not `key=value`, and a
 //! value that is not a whole number are all refused with the line number, rather
 //! than silently contributing a zero to a report that then reads as a pass.
+//!
+//! # The memory section
+//!
+//! A file the plugin writes also carries the process's memory, which is the other half
+//! of what the budgets are stated for; [`MemorySnapshot`] owns that section's records
+//! and is the strict reader for them. This module writes the snapshot's own records and
+//! skips the memory ones, so a reader of either section can be handed the whole file.
 
 use std::io::{self, Write as _};
 use std::path::Path;
@@ -28,6 +35,7 @@ use std::time::Duration;
 
 use super::HistSnapshot;
 use super::counters::{COUNTER_COUNT, Counter};
+use super::memory::MemorySnapshot;
 use super::metric::Metric;
 
 /// The version tag every snapshot file starts with.
@@ -145,20 +153,25 @@ impl ProbeSnapshot {
     /// method. The directory is the caller's to prepare: this module owns the file's
     /// mode, the layout module owns where the file goes.
     ///
+    /// A caller that has the probes themselves wants [`Probes::write_snapshot`], which
+    /// writes this text and the process's memory section after it.
+    ///
     /// # Errors
     ///
     /// Returns the underlying [`io::Error`] when the file cannot be created, its mode
     /// cannot be set, or the text cannot be written.
+    ///
+    /// [`Probes::write_snapshot`]: super::Probes::write_snapshot
     pub fn write_to(&self, path: &Path) -> io::Result<()> {
-        let mut file = crate::perms::create_private(path)?;
-        // Truncated explicitly: `create_private` opens without truncating, because the
-        // log sink appends through it, and a shorter snapshot left over a longer one
-        // would end in the older file's tail and fail to parse.
-        file.set_len(0)?;
-        file.write_all(self.to_text().as_bytes())
+        write_private(path, &self.to_text())
     }
 
     /// Reads the text a snapshot file holds.
+    ///
+    /// A record of the memory section is skipped: that section travels in the same file
+    /// and is read by [`MemorySnapshot::parse`], which is the strict one for those keys
+    /// -- it refuses an unknown field, a repeat and a value that is not a number -- so
+    /// nothing is accepted by both halves that one of them would have refused.
     ///
     /// # Errors
     ///
@@ -193,6 +206,9 @@ impl ProbeSnapshot {
                 )));
             };
             let key = key.trim();
+            if MemorySnapshot::is_key(key) {
+                continue;
+            }
             if seen.contains(&key) {
                 return Err(malformed(format!(
                     "line {}: `{key}` is written twice",
@@ -209,6 +225,23 @@ impl ProbeSnapshot {
         }
         Ok(snapshot)
     }
+}
+
+/// Writes `text` to `path`, which is created `0600` and truncated.
+///
+/// Shared by the snapshot writer and the writer that adds the memory section after it,
+/// so that the file's mode and its truncation are decided once: `create_private` opens
+/// without truncating, because the log sink appends through it, and a shorter snapshot
+/// left over a longer one would end in the older file's tail and fail to parse.
+///
+/// # Errors
+///
+/// Returns the underlying [`io::Error`] when the file cannot be created, its mode cannot
+/// be set, its length cannot be reset, or the text cannot be written.
+pub(super) fn write_private(path: &Path, text: &str) -> io::Result<()> {
+    let mut file = crate::perms::create_private(path)?;
+    file.set_len(0)?;
+    file.write_all(text.as_bytes())
 }
 
 impl HistSnapshot {

@@ -33,6 +33,18 @@ import { Theme } from "theme.slint";
 export { Theme } from "theme.slint";
 export { CandidateData } from "candidate_grid.slint";
 
+// One run of the preedit line, as the header draws it.
+//
+// The span list is what `ime_types::Preedit::spans` already is; `src/adapter/` only flattens
+// it, lifts the caret out of it and cuts the head that does not fit. `kind` is the wire
+// value of `ime_types::SpanKind` -- 0 syllable, 1 separator, 2 passthrough -- and the cursor
+// is deliberately not one of the values: a zero-width run would take a slot in the layout
+// that the caret has to share with the text on either side of it.
+export struct PreeditRun {
+    text: string,
+    kind: int,
+}
+
 // Geometry, material and type-scale constants (3.1.1 - 3.1.4).
 export global CandidateMetrics {
     // -- window geometry (3.1.1) --------------------------------------------
@@ -63,6 +75,12 @@ export global CandidateMetrics {
     // produced at the grid's corners. 3.1.1 states the derivation, not just the number.
     out property <length> cell-radius: 4px;
     out property <length> number-gap: 6px;
+    // The slot the number label occupies, and the reason it is a slot rather than the
+    // glyph's own advance: digits do not all advance by the same amount, so a label that
+    // hugged its glyph would start the candidate text at a different x on every cell and
+    // the row would read as ragged. 8dp is the 11sp digit's advance rounded up to the 4dp
+    // grid of 3.1.4, and `cell-chrome-width` below already budgets for it.
+    out property <length> number-slot-width: 8px;
     out property <length> annotation-gap: 6px;
     out property <length> grid-gap: 6px;
 
@@ -201,76 +219,147 @@ export component CandidateShadow inherits Rectangle {
 // block -- `4 * icon + 3 * gap`, declared once -- so the preedit text beside it keeps the
 // same budget when a mode toggles and the header cannot jump sideways. A marker that is
 // off is drawn at the idle token rather than hidden, which is what makes that width
-// constant; the mode label carries the words, this carries the glance.
-//
-// The cluster is declared here and placed in the strip by the header task, which is where
-// the frame's mode flags reach the component.
-export component StatusCluster inherits HorizontalLayout {
+// constant; the mode label carries the words, this carries the glance. The two secondary
+// markers are the one thing that can be dropped, and only when the preedit has no room
+// left; see `show-secondary`.
+export component StatusCluster inherits Rectangle {
     in property <bool> chinese: true;
     in property <bool> full-width: false;
     in property <bool> punctuation-full: false;
     in property <bool> readonly: false;
+    // Whether the two secondary markers are drawn. A header whose preedit has almost no room
+    // left keeps the mode and the lock and drops the other two: those two are what the user
+    // has to know, the others are what he occasionally wants to. Dropping them takes 48dp
+    // off the cluster, which is exactly what the adapter gives back to the preedit when it
+    // decides the same thing -- the two halves are one decision.
+    in property <bool> show-secondary: true;
+    // The height of the row the cluster is placed in, which is the header's own height.
+    in property <length> strip-height: CandidateMetrics.header-height;
 
-    spacing: CandidateMetrics.header-icon-gap;
-    width: 4 * CandidateMetrics.header-icon-size + 3 * CandidateMetrics.header-icon-gap;
-    // The layout and its markers share one height, so the cross axis is exact whether the
-    // layout stretches a child or leaves it at its own size.
-    height: CandidateMetrics.header-icon-size;
+    background: transparent;
+    // The cluster is a fixed-size block: `4 * icon + 3 * gap` with both markers drawn, and
+    // `2 * icon + 1 * gap` with the two secondary ones dropped. Its width never depends on
+    // *which* modes are on, which is what keeps a mode toggle from reflowing the preedit and
+    // making the header jump sideways.
+    width: root.show-secondary
+        ? 4 * CandidateMetrics.header-icon-size + 3 * CandidateMetrics.header-icon-gap
+        : 2 * CandidateMetrics.header-icon-size + CandidateMetrics.header-icon-gap;
+    // As tall as the row, with the markers placed on the row's optical centre below. A block
+    // that kept its own 16dp height would be a fixed-size child of a taller row, which the
+    // layout places at the row's start -- 8dp above the line the preedit and the status text
+    // beside it sit on.
+    height: root.strip-height;
 
-    // Mode dot: solid accent in Chinese mode, the idle token in English mode.
-    Rectangle {
-        width: CandidateMetrics.header-icon-size;
+    HorizontalLayout {
+        // The markers and the layout they sit in share one height, so the cross axis is exact
+        // whether the layout stretches a child or leaves it at its own size.
+        y: (parent.height - CandidateMetrics.header-icon-size) / 2;
+        spacing: CandidateMetrics.header-icon-gap;
         height: CandidateMetrics.header-icon-size;
-        border-radius: self.width / 2;
-        background: root.chinese ? Theme.status-dot-active : Theme.status-dot-idle;
-    }
 
-    // Full-width marker: the same disc, ringed only while full-width punctuation is on.
-    Rectangle {
-        width: CandidateMetrics.header-icon-size;
-        height: CandidateMetrics.header-icon-size;
-        border-radius: self.width / 2;
-        border-width: 2px;
-        border-color: root.full-width ? Theme.status-dot-active : Theme.status-dot-idle;
-        background: transparent;
-    }
+        // Mode dot: solid accent in Chinese mode, the idle token in English mode.
+        Rectangle {
+            width: CandidateMetrics.header-icon-size;
+            height: CandidateMetrics.header-icon-size;
+            border-radius: self.width / 2;
+            background: root.chinese ? Theme.status-dot-active : Theme.status-dot-idle;
+        }
 
-    // Chinese-punctuation marker.
-    Rectangle {
-        width: CandidateMetrics.header-icon-size;
-        height: CandidateMetrics.header-icon-size;
-        border-radius: self.width / 2;
-        border-width: 2px;
-        border-color: root.punctuation-full ? Theme.status-dot-active : Theme.status-dot-idle;
-        background: transparent;
-    }
+        // Full-width marker: the same disc, ringed only while full-width punctuation is on.
+        Rectangle {
+            visible: root.show-secondary;
+            width: CandidateMetrics.header-icon-size;
+            height: CandidateMetrics.header-icon-size;
+            border-radius: self.width / 2;
+            border-width: 2px;
+            border-color: root.full-width ? Theme.status-dot-active : Theme.status-dot-idle;
+            background: transparent;
+        }
 
-    // Read-only lock, drawn only in the degraded mode of 3.6. It takes the annotation token
-    // because a read-only store is information rather than an alert.
-    //
-    // Gated by its colour rather than by an `opacity`, which is the rule this file follows
-    // throughout: on the renderer this project ships a *bound* opacity does not merely go
-    // ignored, it takes the subtree down a compositing path that draws nothing at all, so a
-    // marker "faded out" that way is a marker that would never appear when it is on either.
-    // The disc keeps its slot in the cluster whichever way the flag reads, which is what
-    // holds the four markers at one width.
-    Rectangle {
-        width: CandidateMetrics.header-icon-size;
-        height: CandidateMetrics.header-icon-size;
-        border-radius: 4px;
-        border-width: 1px;
-        border-color: root.readonly ? Theme.text-annotation : transparent;
-        background: transparent;
+        // Chinese-punctuation marker.
+        Rectangle {
+            visible: root.show-secondary;
+            width: CandidateMetrics.header-icon-size;
+            height: CandidateMetrics.header-icon-size;
+            border-radius: self.width / 2;
+            border-width: 2px;
+            border-color: root.punctuation-full ? Theme.status-dot-active : Theme.status-dot-idle;
+            background: transparent;
+        }
+
+        // Read-only lock, drawn only in the degraded mode of 3.6. It takes the annotation token
+        // because a read-only store is information rather than an alert.
+        //
+        // Gated by its colour rather than by an `opacity`, which is the rule this file follows
+        // throughout: on the renderer this project ships a *bound* opacity does not merely go
+        // ignored, it takes the subtree down a compositing path that draws nothing at all, so a
+        // marker "faded out" that way is a marker that would never appear when it is on either.
+        // The disc keeps its slot in the cluster whichever way the flag reads, which is what
+        // holds the four markers at one width.
+        Rectangle {
+            width: CandidateMetrics.header-icon-size;
+            height: CandidateMetrics.header-icon-size;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: root.readonly ? Theme.text-annotation : transparent;
+            background: transparent;
+        }
     }
 }
 
-// The header strip: the preedit on the left, the mode label on the right. The sizes are
-// 3.1.1's, the colours are the theme's (3.2). `StatusCluster` joins the strip when the
-// frame's mode flags reach the component, and the span-level preedit styling (the
-// 0.40-opacity syllable separators) is still to come.
+// One run of the preedit, styled by what it represents.
+//
+// The separator is the reason this is a component rather than a single text element: a
+// pinyin string is far easier to read when its syllable boundaries are visible, and
+// `ni'hao'a` collapses into one unreadable run the moment the separators are drawn at the
+// same weight as the syllables. 3.1.1 gives them a token of their own for exactly that
+// reason. A passthrough run is not pinyin at all -- it is the input shown as it was typed,
+// because the segmentation found no reading for it -- so it takes the secondary token and
+// reads as the weaker of the three.
+component PreeditSpan inherits Text {
+    in property <PreeditRun> run;
+
+    text: root.run.text;
+    font-family: Theme.font-family;
+    font-size: CandidateMetrics.font-size-header;
+    // Syllables are 500; separators and passthrough runs are 400 (3.1.1).
+    font-weight: root.run.kind == 0 ? 500 : 400;
+    color: root.run.kind == 0 ? Theme.text-primary
+        : root.run.kind == 1 ? Theme.text-separator
+        : Theme.text-secondary;
+    vertical-alignment: center;
+    overflow: elide;
+    wrap: no-wrap;
+}
+
+// The header strip: the preedit on the left, the status cluster on the right.
+//
+// 3.1.3 cuts a preedit that does not fit from the *left*, keeping the newest input: the user
+// is typing the tail, so the head is the half that can be spared. The cut itself happens in
+// `src/adapter/`, which is the only layer that can estimate a width, and it arrives here as
+// a run list that already fits plus a `truncated` flag. The strip's own job is to draw the
+// caret where the span list says it is, and to fade the edge a cut left behind.
 export component Header inherits Rectangle {
-    in property <string> preedit-text: "";
+    // The preedit split around the caret: everything left of it, and everything right of it.
+    // Splitting in the adapter rather than positioning a caret at a measured offset is what
+    // makes a caret in the middle of the string work without any measurement on this side.
+    in property <[PreeditRun]> before: [];
+    in property <[PreeditRun]> after: [];
+    // Whether the caret is drawn at all. False only when the cut took the caret with it,
+    // which is the one case where its position is not on screen.
+    in property <bool> caret-visible: false;
+    // Whether a prefix was dropped to make the preedit fit.
+    in property <bool> truncated: false;
+
     in property <string> mode-label: "";
+    in property <bool> full-width: false;
+    in property <bool> punctuation-full: false;
+    in property <bool> readonly: false;
+    // Whether the cluster's two secondary markers are drawn; see `StatusCluster`. The
+    // adapter decides it from the room the preedit has left, and the cluster's width and the
+    // preedit's budget are the two halves of that one decision.
+    in property <bool> show-secondary-status: true;
+
     // Driven by the window: 3.1.1 compresses the strip to 28dp for a preedit-only window.
     in property <length> strip-height: CandidateMetrics.header-height;
 
@@ -291,26 +380,74 @@ export component Header inherits Rectangle {
         // candidate area 8dp, and taking the strip's own padding here would put the first
         // glyph 2dp to the right of the first cell's edge.
         padding-left: CandidateMetrics.container-padding;
-        // The right side keeps the strip's own 10dp: the mode label is the last thing on the
-        // line and must not sit against the container edge.
+        // The right side keeps the strip's own 10dp: the status cluster is the last thing on
+        // the line and must not sit against the container edge.
         padding-right: CandidateMetrics.header-padding-h;
         spacing: CandidateMetrics.header-text-gap;
 
-        // 3.1.3 wants a preedit that is too wide to be cut from the left, keeping the
-        // newest input. Slint can only elide the tail, so the adapter hands over a string
-        // that is already truncated on the left; this binding is the last-resort guard.
-        Text {
-            text: root.preedit-text;
-            font-family: Theme.font-family;
-            font-size: CandidateMetrics.font-size-header;
-            font-weight: 500;
-            color: Theme.text-primary;
-            vertical-alignment: center;
-            overflow: elide;
-            wrap: no-wrap;
+        // The preedit takes whatever the cluster leaves. Its own left edge is where the fade
+        // is anchored, so the overlay lives in this wrapper rather than beside the text in
+        // the layout, and the wrapper is what clips a run the layout could not shrink. Its
+        // height is the strip's own rather than whatever the layout would derive from the
+        // runs, so the caret and the fade are measured against one line and the preedit
+        // cannot sit on a different optical centre than the status text beside it.
+        Rectangle {
+            background: transparent;
             horizontal-stretch: 1;
+            height: root.strip-height;
+            clip: true;
+
+            HorizontalLayout {
+                spacing: 0px;
+
+                for run in root.before: PreeditSpan { run: run; }
+
+                // The caret sits exactly where the zero-width `SpanKind::Cursor` span was,
+                // which is the whole reason the span list is ordered. It is gated by its own
+                // colour rather than by an `opacity` or a `visible`: a bound opacity draws
+                // nothing at all on the renderer this project ships, and hiding it would take
+                // it out of the layout and shift every glyph behind it by a pixel each time
+                // the caret blinked.
+                //
+                // The slot is as tall as the row and the bar is centred in it explicitly, for
+                // the reason `StatusCluster` is: a fixed-size child of a taller row is placed
+                // by the layout's cross-axis alignment, and a caret on a different centre
+                // from the text beside it is a caret drawn in the wrong place.
+                Rectangle {
+                    width: CandidateMetrics.stroke-width;
+                    height: root.strip-height;
+                    background: transparent;
+
+                    Rectangle {
+                        y: (parent.height - root.strip-height * 0.7) / 2;
+                        width: parent.width;
+                        height: root.strip-height * 0.7;
+                        background: root.caret-visible ? Theme.accent : transparent;
+                    }
+                }
+
+                for run in root.after: PreeditSpan { run: run; }
+            }
+
+            // The cut's affordance. Slint has no mask image, so the equivalent is an overlay
+            // in the panel's own colour fading to nothing: whatever the cut left at the edge
+            // is covered rather than clipped through. It is drawn only when something was
+            // actually dropped, so a preedit that fits keeps its full contrast at the left
+            // edge. The overlay is the panel's *fill* and not its base colour, because the
+            // base is opaque and would paint a solid block over a translucent panel.
+            if root.truncated: Rectangle {
+                x: 0px;
+                width: 8px;
+                height: parent.height;
+                background: @linear-gradient(90deg, Theme.surface-fill 0%, transparent 100%);
+            }
         }
 
+        // The status text of 3.1.1: the mode's own name, or the sentence a degraded state has
+        // to say out loud -- 3.6 puts the dictionary-unavailable notice and the input-limit
+        // notice here. It sits between the preedit and the cluster and takes its natural
+        // width, which the adapter estimates before it cuts the preedit -- the estimate is a
+        // generous one, so the text is never squeezed below the room the adapter budgeted.
         Text {
             text: root.mode-label;
             font-family: Theme.font-family;
@@ -320,6 +457,20 @@ export component Header inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
             wrap: no-wrap;
+        }
+
+        // The status cluster is a fixed-width block (3.1.1: 16dp icons, 8dp apart). Its
+        // width never depends on which modes are on, so toggling one cannot reflow the
+        // preedit and the header never jitters. The mode dot reads the mode from the label
+        // the strip already carries: `StatusStrip::mode_label` is the mode's own text, and a
+        // strip with no label is a strip that is not in Chinese mode.
+        StatusCluster {
+            strip-height: root.strip-height;
+            chinese: root.mode-label != "";
+            full-width: root.full-width;
+            punctuation-full: root.punctuation-full;
+            readonly: root.readonly;
+            show-secondary: root.show-secondary-status;
         }
     }
 }
@@ -332,8 +483,20 @@ export component Header inherits Rectangle {
 // decision; this component only places what it is given.
 export component CandidateWindow inherits Window {
     // Frame data, resolved by the adapter.
-    in property <string> preedit-text: "";
+    //
+    // The preedit arrives split around the caret and already cut to fit, and the status
+    // cluster arrives as the flags of `StatusStrip`. Nothing here decides any of it: the
+    // header draws what it is handed, which is what keeps the render path a pure function of
+    // the frame.
+    in property <[PreeditRun]> preedit-before: [];
+    in property <[PreeditRun]> preedit-after: [];
+    in property <bool> caret-visible: false;
+    in property <bool> preedit-truncated: false;
+    in property <bool> show-secondary-status: true;
     in property <string> mode-label: "";
+    in property <bool> full-width: false;
+    in property <bool> punctuation-full: false;
+    in property <bool> readonly: false;
     // The page's candidates, in the model the grid draws from.
     in property <[CandidateData]> items: [];
     // Whether a candidate's annotation is drawn beside it. The adapter writes it from every
@@ -399,6 +562,15 @@ export component CandidateWindow inherits Window {
     // springs home. The header does not move -- the preedit did not change page.
     in property <length> page-offset-dp: 0px;
 
+    // The caret indicator (3.1.1), in container-relative dp. `arrow-visible` is false when
+    // the placement pass declined to draw one -- a window that was flipped above the caret
+    // or pushed sideways has no straight line back to it, and an arrow pointing the wrong
+    // way is worse than none (`src/geometry/placement.rs`). The two coordinates are
+    // meaningless while it is false and are then never read.
+    in property <length> arrow-x: 0px;
+    in property <length> arrow-y: 0px;
+    in property <bool> arrow-visible: false;
+
     // The panel as the appear motion scales it, in container coordinates. Slint 1.13 has no
     // scale transform -- `Rectangle` carries no transform property at all -- so the scale is
     // drawn as geometry: the panel's own rectangle shrinks about the cursor-side edge and its
@@ -453,6 +625,43 @@ export component CandidateWindow inherits Window {
         container-radius: root.container-radius;
     }
 
+    // The caret indicator (3.1.1): a 12dp by 6dp triangle whose tip sits on the caret and
+    // whose base meets the panel's top edge. It lives in the transparent shadow reserve, so
+    // it is a sibling of the panel: it paints over the shadow band the panel casts upwards
+    // and never over the panel itself. The whole shape is drawn only when the placement pass
+    // produced a clean one -- a window flipped above the caret or pushed sideways has no
+    // straight line back to it.
+    //
+    // The two paths are one triangle. The first fills it; the second strokes only its two
+    // slanted edges, because stroking the closed path would draw the base as well and that
+    // line would land on the panel's own top edge and read as a doubled edge. The command
+    // string spells the metrics' own 12dp and 6dp, because a path is a string and cannot be
+    // computed from them; `scripts/check-ui-spec.sh` is what keeps the two numbers equal to
+    // `cursor-arrow-width` and `cursor-arrow-height`.
+    if root.arrow-visible: Rectangle {
+        x: CandidateMetrics.shadow-margin + root.arrow-x;
+        y: CandidateMetrics.shadow-margin + root.arrow-y;
+        width: CandidateMetrics.cursor-arrow-width;
+        height: CandidateMetrics.cursor-arrow-height;
+        background: transparent;
+
+        Path {
+            width: parent.width;
+            height: parent.height;
+            commands: "M 0 6 L 6 0 L 12 6 Z";
+            fill: Theme.surface-fill;
+        }
+
+        Path {
+            width: parent.width;
+            height: parent.height;
+            commands: "M 0 6 L 6 0 L 12 6";
+            fill: transparent;
+            stroke: Theme.surface-stroke;
+            stroke-width: CandidateMetrics.stroke-width;
+        }
+    }
+
     // L0 base and L4 stroke: the stroke is drawn inside the border, so it never changes
     // the container's outer size.
     Rectangle {
@@ -479,8 +688,15 @@ export component CandidateWindow inherits Window {
 
             Header {
                 strip-height: root.header-height;
-                preedit-text: root.preedit-text;
+                before: root.preedit-before;
+                after: root.preedit-after;
+                caret-visible: root.caret-visible;
+                truncated: root.preedit-truncated;
+                show-secondary-status: root.show-secondary-status;
                 mode-label: root.mode-label;
+                full-width: root.full-width;
+                punctuation-full: root.punctuation-full;
+                readonly: root.readonly;
             }
 
             Rectangle {
@@ -512,6 +728,7 @@ export component CandidateWindow inherits Window {
                     cell-radius: root.cell-radius;
                     cell-padding-h: CandidateMetrics.cell-padding-h;
                     cell-padding-v: CandidateMetrics.cell-padding-v;
+                    number-slot-width: CandidateMetrics.number-slot-width;
                     number-gap: CandidateMetrics.number-gap;
                     annotation-gap: CandidateMetrics.annotation-gap;
                     grid-gap: CandidateMetrics.grid-gap;

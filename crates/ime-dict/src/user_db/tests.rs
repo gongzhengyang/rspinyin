@@ -39,6 +39,12 @@ pub(super) struct TestClock {
     /// still, which is how a test tells the batch trigger apart from the interval trigger;
     /// a large step is how a test reports a slow flush without sleeping.
     step_nanos: u64,
+    /// The threads that have read the wall clock, in order.
+    ///
+    /// The wall clock is the one reading the record path does not perform and the flush does,
+    /// so which thread asked for it is what turns "the write happens off the caller's thread"
+    /// from a claim about the code into an assertion about a run.
+    wall_readers: Arc<Mutex<Vec<std::thread::ThreadId>>>,
 }
 
 impl TestClock {
@@ -50,19 +56,32 @@ impl TestClock {
         }
     }
 
-    /// Moves the wall clock forward.
+    /// Moves the wall clock forward, and the monotonic clock with it.
+    ///
+    /// The two move together because that is what the system's clocks do and the store
+    /// converts between them: a fixture whose wall clock moved while its monotonic one stood
+    /// still would date every record of a batch from the same instant, which is an artefact
+    /// of the fixture and not a property of the store.
     pub(super) fn advance_ms(&self, ms: u64) {
         self.ms.fetch_add(ms, Ordering::Relaxed);
+        self.nanos
+            .fetch_add(ms.saturating_mul(1_000_000), Ordering::Relaxed);
     }
 
-    /// Moves the monotonic clock forward.
+    /// Moves the monotonic clock forward on its own.
     pub(super) fn advance_nanos(&self, nanos: u64) {
         self.nanos.fetch_add(nanos, Ordering::Relaxed);
+    }
+
+    /// The threads that have read the wall clock so far.
+    pub(super) fn wall_readers(&self) -> Vec<std::thread::ThreadId> {
+        lock(&self.wall_readers).clone()
     }
 }
 
 impl Clock for TestClock {
     fn now_ms(&self) -> u64 {
+        lock(&self.wall_readers).push(std::thread::current().id());
         self.ms.load(Ordering::Relaxed)
     }
 
@@ -147,6 +166,9 @@ fn test_user_db_batch_trigger_flushes_at_the_batch_size() {
         "below the batch nothing is flushed"
     );
     db.record("key-last", 0);
+    // The flush the trigger earned runs on the store's own thread, so the assertion has to
+    // wait for it rather than assume it happened inside `record`.
+    db.wait_for_flush();
     assert_eq!(db.record_count().expect("counting"), COMMIT_BATCH as u64);
     assert_eq!(db.pending_len(), 0, "the flush emptied the delta map");
 }
@@ -160,6 +182,7 @@ fn test_user_db_interval_trigger_flushes_after_the_interval() {
     assert_eq!(db.record_count().expect("counting"), 0);
     clock.advance_nanos(COMMIT_INTERVAL_MS * 1_000_000);
     db.record("ni'hao", 0);
+    db.wait_for_flush();
     assert_eq!(db.record_count().expect("counting"), 1);
 }
 
@@ -227,6 +250,10 @@ fn test_user_db_slow_flush_relaxes_the_batching_policy() {
 
 #[test]
 fn test_user_db_evicts_the_oldest_records() {
+    // All ten records travel in one batch, so they share a flush and differ only in the stamp
+    // the record path took for each of them. Eviction ranking them correctly is what says the
+    // stamp is the record's own moment rather than the flush's: a batch stamped at flush time
+    // would make every record equally old and this eviction would remove nothing.
     let dir = temp_dir("evict");
     let clock = TestClock::default();
     let mut db = open_in(&dir, clock.clone());
@@ -242,35 +269,6 @@ fn test_user_db_evicts_the_oldest_records() {
     assert_eq!(db.record_count().expect("counting"), 9);
     assert_eq!(db.freq("a"), 0, "the least recently used record goes first");
     assert_eq!(db.freq("j"), 1, "the most recent one stays");
-}
-
-#[test]
-fn test_user_db_cache_reuses_a_freed_slot() {
-    let mut cache = LruCache::new(3);
-    cache.insert("a", 1);
-    cache.insert("b", 2);
-    cache.insert("c", 3);
-    cache.remove("b");
-    cache.insert("d", 4);
-    assert_eq!(cache.get("a"), Some(1), "a resident key is not evicted");
-    assert_eq!(cache.get("c"), Some(3));
-    assert_eq!(cache.get("d"), Some(4));
-    assert_eq!(cache.get("b"), None, "the removed key is gone");
-}
-
-#[test]
-fn test_user_db_cache_is_bounded_by_its_capacity() {
-    let mut cache = LruCache::new(2);
-    cache.insert("a", 1);
-    cache.insert("b", 2);
-    cache.insert("c", 3);
-    assert_eq!(
-        cache.get("a"),
-        None,
-        "the third insert displaces one of two"
-    );
-    assert_eq!(cache.get("b"), Some(2));
-    assert_eq!(cache.get("c"), Some(3));
 }
 
 #[test]
@@ -598,6 +596,159 @@ fn test_user_db_store_past_the_ceiling_reads_on_demand() {
         store_reads() - before,
         2,
         "a miss is remembered too: one transaction per distinct word per session"
+    );
+}
+
+#[test]
+fn test_user_db_record_merges_repeated_commits_into_one_delta() {
+    let dir = temp_dir("record-merge");
+    let db = open_in(&dir, TestClock::default());
+    for _ in 0..64 {
+        db.record("ni'hao", 0);
+    }
+    assert_eq!(db.pending_len(), 1, "the delta map holds one entry per key");
+    assert_eq!(db.freq("ni'hao"), 64, "and a read answers the whole count");
+    assert_eq!(
+        db.record_count().expect("counting"),
+        0,
+        "a still clock keeps the batch and the interval trigger quiet, so nothing was written"
+    );
+}
+
+#[test]
+fn test_user_db_flush_runs_off_the_recording_thread() {
+    // The deferral the frozen contract asks for in its own words ("Implementations batch and
+    // flush asynchronously"): the batch trigger fires on the caller's thread and the write
+    // transaction happens on the store's own. The wall clock is the reading the record path
+    // does not perform and the flush does, so which thread asked for it is the evidence.
+    let dir = temp_dir("flush-thread");
+    let clock = TestClock::default();
+    let db = open_in(&dir, clock.clone());
+    for index in 0..COMMIT_BATCH {
+        db.record(&format!("key{index}"), 0);
+    }
+    db.wait_for_flush();
+
+    let readers = clock.wall_readers();
+    assert!(
+        !readers.is_empty(),
+        "the batch trigger has to have flushed at all, or this proves nothing"
+    );
+    assert!(
+        !readers.contains(&std::thread::current().id()),
+        "a flush read the wall clock on the recording thread"
+    );
+    assert_eq!(db.record_count().expect("counting"), COMMIT_BATCH as u64);
+}
+
+#[test]
+fn test_user_db_final_commit_writes_what_the_batch_left_behind() {
+    // The shutdown contract (`ASM-20`): whatever the flush thread has not taken yet is written
+    // by the final commit, which does not return before it is on the disk. The batch trigger
+    // fires on the last record here, so the two writers are racing on purpose -- and every key
+    // is distinct, so whichever of them drains it, the file ends up with all of them.
+    let dir = temp_dir("final-commit");
+    let mut db = open_in(&dir, TestClock::default());
+    for index in 0..COMMIT_BATCH {
+        db.record(&format!("key{index}"), 0);
+    }
+    db.final_commit().expect("flushing on shutdown");
+    assert_eq!(db.record_count().expect("counting"), COMMIT_BATCH as u64);
+    assert_eq!(db.pending_len(), 0, "nothing was left in memory");
+}
+
+#[test]
+fn test_user_db_freq_does_not_fall_across_a_flush() {
+    // The answer is `committed + delta`, and a flush moves a record from the second half to
+    // the first: the reading must not dip in between.
+    let dir = temp_dir("freq-flush");
+    let mut db = open_in(&dir, TestClock::default());
+    for _ in 0..5 {
+        db.record("ni'hao", 0);
+    }
+    let before = db.freq("ni'hao");
+    db.final_commit().expect("flushing");
+    let after = db.freq("ni'hao");
+    assert_eq!(before, 5, "the delta is visible before the flush");
+    assert!(after >= before, "the flush lost a record: {after} < {before}");
+    assert_eq!(
+        db.committed_len(),
+        Some(1),
+        "the delta moved into the loaded counts"
+    );
+}
+
+#[test]
+fn test_user_db_miss_cache_exists_only_for_a_store_that_was_not_loaded() {
+    let dir = temp_dir("cache-presence");
+    let mut db = open_in(&dir, TestClock::default());
+    db.record("ni'hao", 0);
+    db.final_commit().expect("flushing");
+    drop(db);
+
+    let loaded = open_in(&dir, TestClock::default());
+    assert!(loaded.is_hydrated(), "the fixture store has to be loaded");
+    assert!(
+        !loaded.has_miss_cache(),
+        "a loaded store answers from memory and needs no cache"
+    );
+    // The store holds an exclusive lock on its file, so the handle has to go before the
+    // fallback one opens.
+    drop(loaded);
+
+    let fallback_clock = TestClock::default();
+    let opened = UserDb::open_with_hydrate_cap(db_path(&dir), Box::new(fallback_clock), 0);
+    let fallback = opened.expect("opening the user store");
+    assert!(!fallback.is_hydrated(), "a ceiling of zero loads nothing");
+    assert!(
+        fallback.has_miss_cache(),
+        "the fallback path is the one that needs the cache"
+    );
+}
+
+#[test]
+fn test_user_db_fallback_read_adds_the_delta_to_a_cached_value() {
+    // An entry holds what the *file* holds, and the delta is added on every read. Caching the
+    // total instead would freeze the answer at the first read, and the record path no longer
+    // bumps the cache -- it may not take a second lock -- so nothing would correct it.
+    let dir = temp_dir("fallback-delta");
+    let mut db = open_in(&dir, TestClock::default());
+    db.record("ni'hao", 0);
+    db.final_commit().expect("flushing");
+    drop(db);
+
+    let fallback_clock = TestClock::default();
+    let opened = UserDb::open_with_hydrate_cap(db_path(&dir), Box::new(fallback_clock), 0);
+    let db = opened.expect("opening the user store");
+    assert!(!db.is_hydrated(), "the fixture has to take the fallback");
+    assert_eq!(db.freq("ni'hao"), 1, "the first read comes from the store");
+    db.record("ni'hao", 0);
+    assert_eq!(
+        db.freq("ni'hao"),
+        2,
+        "the record is added to the value the cache remembers"
+    );
+}
+
+#[test]
+fn test_user_db_fallback_read_after_a_flush_sees_the_written_value() {
+    let dir = temp_dir("fallback-flush");
+    let mut db = open_in(&dir, TestClock::default());
+    db.record("ni'hao", 0);
+    db.final_commit().expect("flushing");
+    drop(db);
+
+    let fallback_clock = TestClock::default();
+    let opened = UserDb::open_with_hydrate_cap(db_path(&dir), Box::new(fallback_clock), 0);
+    let mut db = opened.expect("opening the user store");
+    assert!(!db.is_hydrated(), "the fixture has to take the fallback");
+    assert_eq!(db.freq("ni'hao"), 1, "the first read comes from the store");
+    db.record("ni'hao", 0);
+    db.final_commit().expect("flushing the record");
+    assert_eq!(
+        db.freq("ni'hao"),
+        2,
+        "the flush moved the delta into the file and brought the entry with it"
     );
 }
 

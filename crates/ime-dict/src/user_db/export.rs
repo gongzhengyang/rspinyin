@@ -31,6 +31,8 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use super::*;
 
+use super::flush::Delta;
+
 /// Ceiling on one export document, in bytes (`ASM-A-09`).
 ///
 /// The same number bounds an import: a document larger than this is not one of ours, and
@@ -211,12 +213,13 @@ impl Inner {
     /// Returns [`ImeError::ExportTooLarge`] when the document passes the ceiling and
     /// [`ImeError::DictCorrupt`] when the store holds a key the format cannot carry.
     pub(super) fn render_export(&self) -> Result<(String, u64), ImeError> {
-        let (removed, mut unclaimed) = self.pending_snapshot();
+        let (removed, unclaimed) = self.pending_snapshot();
+        let mut unclaimed = self.stamp_snapshot(unclaimed);
         let mut document = ExportDocument::new(self.path.clone());
         self.scan_export(&removed, &mut unclaimed, &mut document)?;
         // A word recorded a keystroke ago and not yet flushed is still a word the user has
         // learned; it joins the document after the stored rows, in key order like them.
-        let mut fresh: Vec<(&Box<str>, &Pending)> = unclaimed.iter().collect();
+        let mut fresh: Vec<(&Box<str>, &Delta)> = unclaimed.iter().collect();
         fresh.sort_by(|left, right| left.0.cmp(right.0));
         for (key, delta) in fresh {
             document.push(&UserRecord {
@@ -242,7 +245,7 @@ impl Inner {
     fn scan_export(
         &self,
         removed: &HashSet<Box<str>>,
-        unclaimed: &mut HashMap<Box<str>, Pending>,
+        unclaimed: &mut HashMap<Box<str>, Delta>,
         document: &mut ExportDocument,
     ) -> Result<(), ImeError> {
         let txn = self
@@ -301,7 +304,11 @@ impl Inner {
                 reason: String::from("the user database is read-only"),
             });
         }
-        self.flush(Durability::Immediate)?;
+        // The flush runs on this thread with the writer held aside: the value an import merges
+        // with has to be the value the store holds rather than the one it held at the last
+        // flush, and an import is a management operation -- nothing calls it while the user is
+        // typing -- so it may wait for that to be true.
+        self.flush_now(Durability::Immediate)?;
         let mut merged: Vec<(Box<str>, u32, bool)> = Vec::with_capacity(rows.len());
         let mut txn = self
             .db

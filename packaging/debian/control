@@ -1,0 +1,42 @@
+Source: rspinyin
+Section: utils
+Priority: optional
+Maintainer: rspinyin contributors <rspinyin@localhost>
+Build-Depends:
+ binutils,
+ cargo,
+ curl,
+ debhelper-compat (= 13),
+ libfcitx5config-dev,
+ libfcitx5core-dev,
+ libfcitx5utils-dev,
+ pkgconf,
+ python3,
+ rustc (>= 1.85),
+ unzip,
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/gongzhengyang/rspinyin
+Vcs-Git: https://github.com/gongzhengyang/rspinyin.git
+Vcs-Browser: https://github.com/gongzhengyang/rspinyin
+
+Package: rspinyin
+Architecture: any
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends},
+ fcitx5 (>= 5.1.0),
+Description: Offline-first Chinese pinyin input method for Fcitx5
+ rspinyin is an in-process Fcitx5 addon that draws its own candidate window
+ instead of delegating to ClassicUI. It decodes full-pinyin input with a
+ k-best Viterbi search over a compiled FST dictionary, learns from the user's
+ own word frequency, and never opens a network socket: there is no cloud input,
+ no dictionary update channel and no telemetry.
+ .
+ The candidate window is rendered by a software rasteriser into a shared-memory
+ buffer, so it needs no GPU and no display-server-specific toolkit.
+ .
+ The package installs two shared objects, not one. Fcitx5 picks the active user
+ interface from the addons it discovered with Category=UI, and an addon belongs
+ to exactly one category, so the decoding engine (Category=InputMethod) cannot
+ also be the candidate window.
