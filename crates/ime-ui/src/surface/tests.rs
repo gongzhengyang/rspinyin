@@ -311,7 +311,11 @@ fn test_surface_hover_repaints_the_window() {
         // The appear motion is run out first: a panel still growing changes every pixel, and
         // the comparison would then be about the motion rather than about the hover.
         let settled = settle(surface);
-        let before = state.lock().expect("the mock is not poisoned").pixels.clone();
+        let before = state
+            .lock()
+            .expect("the mock is not poisoned")
+            .pixels
+            .clone();
         let events = UiEventQueue::new(&ChannelConfig::default());
         let region = surface.input_region().expect("the panel was placed");
         // The second cell, because the first carries the keyboard highlight: the design
@@ -328,7 +332,11 @@ fn test_surface_hover_repaints_the_window() {
         surface
             .render(settled + Duration::from_millis(16))
             .expect("the hovered frame is drawn");
-        let after = state.lock().expect("the mock is not poisoned").pixels.clone();
+        let after = state
+            .lock()
+            .expect("the mock is not poisoned")
+            .pixels
+            .clone();
         (before, after, (hovered, index))
     });
     assert_eq!(

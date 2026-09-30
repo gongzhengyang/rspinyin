@@ -651,7 +651,11 @@ fn test_dispatch_in_overlay_layer_defers_when_no_overlay_is_open() {
 fn test_dispatch_closes_the_overlay_on_escape() {
     // Every panel the bus can hold answers `Escape` the same way, the cheat sheet included,
     // and the key does not reach the composition behind it.
-    for panel in [Overlay::CheatSheet, Overlay::CommandPalette, Overlay::Diagnostics] {
+    for panel in [
+        Overlay::CheatSheet,
+        Overlay::CommandPalette,
+        Overlay::Diagnostics,
+    ] {
         let session = Setup::Composing.session();
         let view = view_of(session.as_ref());
         let mut dispatcher = Dispatcher::new(KeyBindings::default());
@@ -848,7 +852,10 @@ fn test_dispatch_leaves_the_composition_behind_a_panel_untouched() {
     );
     // A panel that draws nothing must not stop the typing behind it: the composition is
     // still live and still takes the next letter.
-    assert_eq!(session.as_ref().map(|s| s.state), Some(SessionState::Composing));
+    assert_eq!(
+        session.as_ref().map(|s| s.state),
+        Some(SessionState::Composing)
+    );
     assert_eq!(
         dispatcher.dispatch(&press(KEY_A, 0), &view),
         Consumed::Consumed

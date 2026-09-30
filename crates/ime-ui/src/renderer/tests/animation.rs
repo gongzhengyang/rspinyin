@@ -206,7 +206,11 @@ fn test_animation_steady_frames_damage_only_the_highlight_path() {
         let mut heading_out = true;
         highlight.retarget(cell(COLUMNS - 1, 0));
 
-        let mut previous = state.lock().expect("the mock is not poisoned").pixels.clone();
+        let mut previous = state
+            .lock()
+            .expect("the mock is not poisoned")
+            .pixels
+            .clone();
         let mut report = Report::default();
         while report.frames < ANIMATION_FRAMES {
             let step = highlight.step(FRAME_S, SCALE);
@@ -233,7 +237,9 @@ fn test_animation_steady_frames_damage_only_the_highlight_path() {
             previous.clone_from(&observed.pixels);
 
             let (rectangles, copies) = match outcome {
-                RenderOutcome::Rendered { rectangles, copies, .. } => (rectangles, copies),
+                RenderOutcome::Rendered {
+                    rectangles, copies, ..
+                } => (rectangles, copies),
                 // A frame the renderer had nothing to draw for: no damage, no copy. It is a
                 // legal outcome -- the box moved by less than the renderer could see -- and
                 // the assertions below are about the frames that did draw something.
@@ -252,9 +258,18 @@ fn test_animation_steady_frames_damage_only_the_highlight_path() {
         report
     });
 
-    assert_eq!(report.frames, ANIMATION_FRAMES, "the whole animation is measured");
-    assert!(report.worst_damage > 0, "a moving box damages something: {report:?}");
-    assert_eq!(report.full_repaints, 0, "no frame repaints everything: {report:?}");
+    assert_eq!(
+        report.frames, ANIMATION_FRAMES,
+        "the whole animation is measured"
+    );
+    assert!(
+        report.worst_damage > 0,
+        "a moving box damages something: {report:?}"
+    );
+    assert_eq!(
+        report.full_repaints, 0,
+        "no frame repaints everything: {report:?}"
+    );
     assert!(
         report.changed_frames * 5 >= report.frames * 4,
         "the animation must keep changing what is on screen, or the window has stopped \
@@ -335,12 +350,18 @@ fn test_animation_frames_keep_the_highlight_inside_the_grid() {
             sample(&state, cell(0, 0)),
         )
     });
-    assert_eq!(parked, HIGHLIGHT_PIXEL, "the parked box paints the highlight");
+    assert_eq!(
+        parked, HIGHLIGHT_PIXEL,
+        "the parked box paints the highlight"
+    );
     assert!(
         crossed,
         "the box is drawn on the cell it crosses, not only where it started and stopped"
     );
-    assert_eq!(landed, parked, "the cell it settled on carries the highlight");
+    assert_eq!(
+        landed, parked,
+        "the cell it settled on carries the highlight"
+    );
     assert_eq!(released, CELL_PIXEL, "and the cell it left is plain again");
 }
 

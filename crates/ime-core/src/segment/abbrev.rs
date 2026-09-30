@@ -200,6 +200,11 @@ pub struct Readings {
     /// The path the enumeration walks, kept so that a call allocates no buffer of
     /// its own. Empty between calls.
     path: Vec<AbbrevSyllable>,
+    /// The prefix query the abbreviation walk spells, kept beside the readings it is
+    /// spelled from for the same reason the syllable vectors are pooled: a buffer a
+    /// caller keeps should never be asked for twice. The walk clears it before every
+    /// spelling, so what it holds between calls is stale and never read.
+    query: String,
 }
 
 impl Readings {
@@ -221,6 +226,16 @@ impl Readings {
     /// Returns whether the last call produced no reading at all.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// The buffer one prefix query is spelled into.
+    ///
+    /// Crate-internal because spelling a query is the abbreviation walk's business; a
+    /// reader of this buffer wants [`Readings::as_slice`]. The walk takes the `String`
+    /// out, spells into it while it pushes edges, and puts it back, so the accessor is
+    /// the only door and the allocation travels with the buffer's owner.
+    pub(crate) fn query_buf(&mut self) -> &mut String {
+        &mut self.query
     }
 
     /// Drops the readings of the last call, keeping every allocation for the next.

@@ -44,6 +44,12 @@ use super::manifest::{Artifact, Manifest, is_file_name, is_sha256};
 /// verifier looking for a differently named list would report a signed release as unsigned.
 pub const CHECKSUMS_FILE: &str = "SHA256SUMS";
 
+/// File name of the detached signature over the checksum list.
+///
+/// The signature ships beside the list it signs, as the list's name with `.asc` appended, so
+/// the name is derived from [`CHECKSUMS_FILE`] and kept in step with it for the same reason.
+const DETACHED_SIGNATURE_FILE: &str = "SHA256SUMS.asc";
+
 /// Bytes in a mebibyte: the unit the manifest states its size ceilings in.
 const MEBIBYTE: f64 = 1024.0 * 1024.0;
 
@@ -342,10 +348,15 @@ fn check_budget(artifact: &Artifact, size_bytes: u64) -> Result<(), VerifyError>
 ///
 /// Two files can never be in the list: the list itself, because a file cannot carry its own
 /// digest, and the detached signature over it, because the signature is produced after the
-/// list it covers. Everything else in the directory has to be accounted for.
+/// list it covers. Everything else in the directory has to be accounted for. The signature
+/// is exempt under its own name whether or not this manifest records one: a release ships
+/// `signature: null` until it is signed, and the digest stage naming the signature file
+/// unaccounted-for would report the wrong failure ahead of the one the signature stage
+/// exists to make.
 fn exempt_names(manifest: &Manifest) -> BTreeSet<String> {
     let mut exempt = BTreeSet::new();
     exempt.insert(CHECKSUMS_FILE.to_owned());
+    exempt.insert(DETACHED_SIGNATURE_FILE.to_owned());
     if let Some(signature) = &manifest.signature {
         exempt.insert(signature.detached.clone());
     }
@@ -361,7 +372,10 @@ fn file_size(path: &Path) -> Result<u64, VerifyError> {
     let metadata = fs::metadata(path).map_err(|error| {
         VerifyError::rejected(
             Code::ArtifactMissing,
-            format!("{} is not in the release directory: {error}", path.display()),
+            format!(
+                "{} is not in the release directory: {error}",
+                path.display()
+            ),
         )
     })?;
     if !metadata.is_file() {
@@ -519,11 +533,8 @@ mod tests {
         fs::write(dir.join("base.dict"), b"dictionary bytes").expect("writing the artifact");
         let sha256 = sha256_file(&dir.join("base.dict")).expect("the digest is readable");
         let manifest = manifest_for("base.dict", &sha256, 16);
-        fs::write(
-            dir.join(CHECKSUMS_FILE),
-            format!("{sha256}  base.dict\n"),
-        )
-        .expect("writing the list");
+        fs::write(dir.join(CHECKSUMS_FILE), format!("{sha256}  base.dict\n"))
+            .expect("writing the list");
 
         let checked = verify(&dir, &manifest).expect("the three records agree");
         assert_eq!(checked.len(), 1);
@@ -558,8 +569,11 @@ mod tests {
     fn test_verify_refuses_a_file_the_manifest_names_and_the_directory_lacks() {
         let dir = scratch("missing-artifact");
         let manifest = manifest_for("base.dict", &digest('a'), 16);
-        fs::write(dir.join(CHECKSUMS_FILE), format!("{}  base.dict\n", digest('a')))
-            .expect("writing the list");
+        fs::write(
+            dir.join(CHECKSUMS_FILE),
+            format!("{}  base.dict\n", digest('a')),
+        )
+        .expect("writing the list");
 
         let failure = verify(&dir, &manifest).expect_err("the file is not there");
         assert!(matches!(

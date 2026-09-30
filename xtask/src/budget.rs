@@ -24,6 +24,11 @@
 //! resident memory beside the latencies, and fails on a budget that is past its ceiling
 //! or that nothing measured.
 //!
+//! Judging a decode run's allocation counts against the allocation budget is
+//! [`alloc`]'s: it reads the report the decode test writes, which carries the counts a
+//! steady-state decode cost, and fails on a budget that is past its ceiling or that
+//! nothing measured.
+//!
 //! The module is split by responsibility: this root holds the document types, the
 //! binding table and the entry points, [`schema`] turns the document's text into
 //! those types, [`spec`] reads the spec's cells and compares the two, [`bench`]
@@ -36,6 +41,10 @@ mod meta;
 mod schema;
 mod spec;
 
+// `pub(crate)` so that `xtask/src/main.rs` can dispatch `--alloc` to it, which is the
+// one line this module's wiring is still waiting for.
+pub(crate) mod alloc;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -43,8 +52,11 @@ use anyhow::{Context, Result, ensure};
 
 use self::SpecCell::{MetricAfter, ThresholdAfter, ThresholdFirst, ThresholdZero};
 pub(crate) use self::bench::{SIGMAS, owner};
-pub(crate) use self::spec::{Spec, compare};
 pub(crate) use self::memory::run as run_memory;
+pub(crate) use self::spec::{Spec, compare};
+
+#[cfg(test)]
+mod alloc_tests;
 
 #[cfg(test)]
 mod memory_tests;
@@ -146,6 +158,13 @@ pub struct Bench {
     pub ui_wakeup_latency_us: f64,
 }
 
+/// Allocation thresholds, in calls the allocator receives.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AllocCount {
+    /// Allocations one decode costs in a workspace that has already decoded once.
+    pub decode_steady: u64,
+}
+
 /// The parsed contents of `docs/dev/budgets.json`.
 ///
 /// Fields are public so callers can build a modified copy and re-run [`compare`]
@@ -166,6 +185,8 @@ pub struct Budgets {
     pub robustness: Robustness,
     /// Per-case benchmark thresholds.
     pub bench: Bench,
+    /// Allocation thresholds.
+    pub alloc_count: AllocCount,
     /// Process-external sockets allowed at runtime; the spec requires zero.
     pub net_sockets: u64,
 }
@@ -305,6 +326,11 @@ const BINDINGS: &[Binding] = &[
         "bench.ui_wakeup_latency_us",
         "TASK-1.05.02#1",
         ThresholdAfter("≤"),
+    ),
+    Binding(
+        "alloc_count.decode_steady",
+        "BUDGET-ALLOC-01",
+        ThresholdFirst,
     ),
     Binding("net_sockets", "BUDGET-NET-01", ThresholdFirst),
 ];

@@ -179,6 +179,12 @@ impl Machine {
     /// it was, so the state it reports afterwards is the one that refused rather than the one
     /// that would have followed.
     ///
+    /// A passing check that arrives at S4 moves straight on to S5. The verdict is the one
+    /// state no check produces -- it is reached when nothing is left to check, which is
+    /// exactly what having just passed the contents check says -- so the machine does not
+    /// rest in between, and the state a caller reads after the last check is the verdict the
+    /// release reached rather than the last stage that ran.
+    ///
     /// # Panics
     ///
     /// Never.
@@ -188,6 +194,11 @@ impl Machine {
     ) -> Result<T, VerifyError> {
         let value = check()?;
         self.state = self.state.next();
+        // S5 is the verdict, not a checked fact: no check runs on the way into it, so without
+        // this step the machine would stop one stage short of what it has to report.
+        if self.state == State::ContentsChecked {
+            self.state = State::Verified;
+        }
         Ok(value)
     }
 }

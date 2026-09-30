@@ -76,8 +76,14 @@ pub fn assertions_of(case: &CaseLine, runs: &[CommandRun]) -> Vec<AssertionRecor
         let position = index + 1;
         records.push(command_assertion(position, run));
         records.push(exit_code_assertion(position, run));
-        records.push(tail_assertion(format!("stdout_tail_{position}"), &run.stdout_tail));
-        records.push(tail_assertion(format!("stderr_tail_{position}"), &run.stderr_tail));
+        records.push(tail_assertion(
+            format!("stdout_tail_{position}"),
+            &run.stdout_tail,
+        ));
+        records.push(tail_assertion(
+            format!("stderr_tail_{position}"),
+            &run.stderr_tail,
+        ));
     }
     records.push(criteria_assertion(case));
     records

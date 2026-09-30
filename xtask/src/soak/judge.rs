@@ -228,9 +228,9 @@ fn check_pass_rate(report: &SoakReport, budgeted_pct: f64, verdict: &mut SoakVer
              {budgeted_pct:.2}% the budget requires",
             report.plan.planned_strokes
         )),
-        None => verdict
-            .violations
-            .push(format!("{PASS_RATE}: the plan holds no stroke, so no pass rate exists")),
+        None => verdict.violations.push(format!(
+            "{PASS_RATE}: the plan holds no stroke, so no pass rate exists"
+        )),
     }
 }
 
@@ -240,9 +240,9 @@ fn check_stopped(report: &SoakReport, verdict: &mut SoakVerdict) {
         Some(stop) => verdict
             .violations
             .push(format!("{STOPPED_EARLY}: {}", stop.describe())),
-        None => verdict
-            .passed
-            .push(format!("{STOPPED_EARLY}: the run reached the end of its plan")),
+        None => verdict.passed.push(format!(
+            "{STOPPED_EARLY}: the run reached the end of its plan"
+        )),
     }
 }
 

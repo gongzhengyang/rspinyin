@@ -62,8 +62,8 @@ use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ime_types::{DictError, ImeError, UserFreqSource, WordRef};
 use redb::{Database, Durability, ReadableTable, ReadableTableMetadata, TableDefinition};
@@ -81,7 +81,7 @@ mod manage;
 
 use self::cache::MissCache;
 use self::evict::{Sweep, start_sweep};
-use self::flush::{FlushThread, Pending};
+use self::flush::{FLUSH_SETTLE_TIMEOUT_MS, FlushThread, Pending};
 use self::hydrate::load_committed;
 
 pub use self::backup::{
@@ -401,13 +401,18 @@ struct Inner {
     /// The path, kept for error reporting.
     path: PathBuf,
     /// The idle sweep thread, when one could be started.
-    sweep: Option<Sweep>,
+    ///
+    /// Written once by [`UserDb::open_with_hydrate_cap`] -- the only stretch in which the
+    /// store is not shared yet -- and read everywhere else through `get`.
+    sweep: OnceLock<Option<Sweep>>,
     /// The flush thread, when one could be started.
     ///
     /// The record path publishes a request here and returns; the write transaction happens on
     /// that thread. A store whose thread could not be started flushes on the caller's thread
-    /// instead -- see [`Inner::request_flush`].
-    writer: Option<FlushThread>,
+    /// instead -- see [`Inner::request_flush`]. Written once at open, for the same reason the
+    /// sweep is: the two handles live behind locks rather than behind `Arc::get_mut`, because
+    /// a weak handle is enough to keep `get_mut` from ever answering.
+    writer: OnceLock<Option<FlushThread>>,
 }
 
 impl Inner {
@@ -487,7 +492,7 @@ impl UserDb {
         let loaded = load_committed(&db, hydrate_cap);
         let is_hydrated = loaded.is_some();
         let held = loaded.unwrap_or_default();
-        let mut inner = Arc::new(Inner {
+        let inner = Arc::new(Inner {
             db,
             is_hydrated,
             committed: Mutex::new(held.counts),
@@ -505,18 +510,18 @@ impl UserDb {
             last_record_nanos: AtomicU64::new(clock.now_nanos()),
             clock,
             path,
-            sweep: None,
-            writer: None,
+            sweep: OnceLock::new(),
+            writer: OnceLock::new(),
         });
-        // Both threads reach the store through a weak handle, so neither can keep it alive,
-        // and both are started before the last strong reference is published -- which is what
-        // makes the `Arc::get_mut` below the only writer of these two fields.
-        let sweep = start_sweep(&inner);
-        let writer = FlushThread::start(&inner);
-        if let Some(state) = Arc::get_mut(&mut inner) {
-            state.sweep = sweep;
-            state.writer = writer;
-        }
+        // Both threads reach the store through a weak handle, so neither can keep it alive.
+        // Their handles are installed through the locks rather than through `Arc::get_mut`:
+        // the weak handles the two threads hold are themselves enough to keep `get_mut`
+        // answering `None` forever, which is how an install here used to silently drop both
+        // threads and turn every record path into a caller-thread flush. `set` cannot
+        // refuse -- the locks are fresh, and only this function, which has not returned yet,
+        // can reach them -- so the results are dropped rather than matched.
+        let _ = inner.sweep.set(start_sweep(&inner));
+        let _ = inner.writer.set(FlushThread::start(&inner));
         Ok(Self { inner })
     }
 
@@ -640,7 +645,7 @@ impl UserDb {
     /// than slow, which is what the assertion says.
     #[cfg(test)]
     fn wait_for_flush(&self) {
-        if let Some(writer) = &self.inner.writer {
+        if let Some(writer) = self.inner.writer.get().and_then(|set| set.as_ref()) {
             assert!(
                 writer.settle(std::time::Duration::from_secs(5)),
                 "the flush thread did not settle"
@@ -655,6 +660,29 @@ impl UserDb {
     #[cfg(test)]
     fn has_miss_cache(&self) -> bool {
         self.inner.cache.is_some()
+    }
+}
+
+impl Drop for UserDb {
+    /// Gives the flush thread a moment to step out of the file.
+    ///
+    /// The thread holds the store only for the length of one flush, but that is long enough
+    /// to keep the `redb` file lock standing after the last clone has dropped -- which is
+    /// what an immediate reopen (the recovery pass, a test) would otherwise meet. The wait
+    /// is bounded by [`FLUSH_SETTLE_TIMEOUT_MS`], the same bound an explicit flush waits
+    /// with; past it the flush is still running, and the lock lifts when it ends rather than
+    /// when this drop does.
+    fn drop(&mut self) {
+        // Best effort by design, and the guard is what keeps it so: only the last clone
+        // settles, because only it can be the one whose release ends the store. A clone
+        // that appears while this one drops keeps the store -- and its thread -- alive and
+        // owns the next settle itself.
+        if Arc::strong_count(&self.inner) != 1 {
+            return;
+        }
+        if let Some(writer) = self.inner.writer.get().and_then(|set| set.as_ref()) {
+            writer.settle(Duration::from_millis(FLUSH_SETTLE_TIMEOUT_MS));
+        }
     }
 }
 

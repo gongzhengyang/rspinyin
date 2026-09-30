@@ -211,8 +211,7 @@ fn test_repaired_reports_a_cross_list_conflict_only_when_both_lists_can_use_the_
         let reported = rejected(&warnings) == [String::from(BINDING_CONFLICT_CODE)];
 
         assert_eq!(
-            reported,
-            routable_in_both,
+            reported, routable_in_both,
             "{spelling}: a conflict is reported exactly when both lists can route the key"
         );
         if reported {
@@ -270,7 +269,10 @@ fn test_repaired_leaves_disjoint_binding_lists_alone() {
     // twice. A repair that reported anything here would put a diagnostic on a configuration
     // nobody got wrong.
     let (defaults, warnings) = Config::default().repaired();
-    assert!(warnings.is_empty(), "the defaults are disjoint: {warnings:?}");
+    assert!(
+        warnings.is_empty(),
+        "the defaults are disjoint: {warnings:?}"
+    );
     assert_eq!(defaults, Config::default());
 
     let disjoint = with_lists(
@@ -279,7 +281,10 @@ fn test_repaired_leaves_disjoint_binding_lists_alone() {
     );
     let (repaired, warnings) = disjoint.repaired();
 
-    assert!(warnings.is_empty(), "no overlap, no diagnostic: {warnings:?}");
+    assert!(
+        warnings.is_empty(),
+        "no overlap, no diagnostic: {warnings:?}"
+    );
     assert_eq!(repaired.keys.flip_keys, [KeyName::Minus, KeyName::PageUp]);
     assert_eq!(repaired.keys.highlight_keys, [KeyName::Tab, KeyName::Right]);
 }

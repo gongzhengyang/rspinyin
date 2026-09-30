@@ -70,9 +70,7 @@ use slint::platform::software_renderer::{PhysicalRegion, RepaintBufferType, Soft
 use slint::platform::{Renderer, WindowAdapter, WindowEvent};
 use slint::{PhysicalSize, PlatformError as SlintError, Window};
 
-use self::raster::{
-    BYTES_PER_PIXEL, PixelScratch, clip_rect, overlaps, union_pair, union_rect,
-};
+use self::raster::{BYTES_PER_PIXEL, PixelScratch, clip_rect, overlaps, union_pair, union_rect};
 
 pub use self::probe::{CJK_FAMILIES, FontChoice, FontStatus, probe_font_choice, probe_fonts};
 
@@ -383,8 +381,6 @@ pub(crate) struct SlintWindowAdapter {
     /// Rasterization target and damage bookkeeping. Interior mutability because every
     /// `WindowAdapter` method takes `&self`.
     frame: RefCell<FrameState>,
-    /// Slint asked for a repaint since the last one.
-    needs_redraw: Cell<bool>,
     /// The frame callback token of the last committed frame.
     pending_frame: Cell<Option<FrameToken>>,
     /// Physical size and scale of the surface.
@@ -429,7 +425,6 @@ impl SlintWindowAdapter {
                     ),
                     backend,
                     frame: RefCell::new(FrameState::new()),
-                    needs_redraw: Cell::new(true),
                     pending_frame: Cell::new(None),
                     geometry: Cell::new(geometry),
                     starved: Cell::new(0),
@@ -454,9 +449,13 @@ impl SlintWindowAdapter {
     /// Propagates a backend failure. A backend with no free buffer is *not* an error: the
     /// frame is reported as [`RenderOutcome::Skipped`] and stays dirty.
     pub(crate) fn render_if_dirty(&self) -> Result<RenderOutcome, PlatformError> {
-        if !self.needs_redraw.replace(false) {
-            return Ok(RenderOutcome::Idle);
-        }
+        // Rasterizes unconditionally, because Slint's own repaint buffer is the dirty
+        // oracle: a property the scene reads reaches the renderer without anyone calling
+        // `request_redraw` -- that is the component-level path the highlight animation
+        // drives -- and `render` answers an empty region for a clean scene, which the
+        // empty damage list below turns into `Idle`. What `full` on the frame state
+        // still owns are the repaints Slint cannot see -- the remap and the resize --
+        // and those commit the whole surface.
         let (width_px, height_px) = self.geometry.get().physical();
         let mut frame = self.frame.borrow_mut();
         let state = &mut *frame;
@@ -488,8 +487,8 @@ impl SlintWindowAdapter {
             Ok(buffer) => buffer,
             Err(PlatformError::NoFreeBuffer) => {
                 // The frame stays dirty so the next wake-up retries it; what wakes the UI
-                // thread is the compositor releasing the buffer it is holding.
-                self.needs_redraw.set(true);
+                // thread is the compositor releasing the buffer it is holding, and until
+                // then Slint's own repaint buffer still considers the scene undrawn.
                 self.starved.set(self.starved.get().saturating_add(1));
                 return Ok(RenderOutcome::Skipped);
             }
@@ -592,7 +591,6 @@ impl SlintWindowAdapter {
         self.geometry.set(geometry);
         let mut frame = self.frame.borrow_mut();
         frame.full = true;
-        self.needs_redraw.set(true);
     }
 
     /// The frame callback token of the last committed frame, until it is redeemed.
@@ -635,15 +633,15 @@ impl WindowAdapter for SlintWindowAdapter {
             // frame repaints all of it.
             let mut frame = self.frame.borrow_mut();
             frame.full = true;
-            self.needs_redraw.set(true);
         }
         Ok(())
     }
 
     fn request_redraw(&self) {
-        // Nothing but a flag. The UI thread renders after `poll(2)` returns, so a redraw
-        // request must not block, wake anything or query a Slint property itself.
-        self.needs_redraw.set(true);
+        // Nothing to do here, by design. The UI thread rasterizes after `poll(2)` returns
+        // whether or not anyone asked, because `render_if_dirty` trusts Slint's own
+        // repaint buffer to answer an empty region for a clean scene; a request need not
+        // block, wake anything or set a flag for a render that is already scheduled.
     }
 }
 

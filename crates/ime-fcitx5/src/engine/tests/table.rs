@@ -67,9 +67,7 @@ fn is_routed(sym: u32, state: u32) -> bool {
         KEY_PAGE_DOWN,
     ];
     let read = fold_shifted_letter(sym, state);
-    (KEY_A..=KEY_Z).contains(&read)
-        || (KEY_0..=KEY_9).contains(&read)
-        || NAMED.contains(&read)
+    (KEY_A..=KEY_Z).contains(&read) || (KEY_0..=KEY_9).contains(&read) || NAMED.contains(&read)
 }
 
 #[test]
@@ -586,7 +584,10 @@ fn test_translate_key_enters_temporary_english_on_ctrl_shift_e() {
             // A host that folds the case into the symbol delivers the chord with the
             // uppercase shape; the fold turns it back before the table is read, so the
             // chord's row names the lowercase keysym alone.
-            (press(KEY_E_UPPER, CTRL | SHIFT), KeyAction::EnterTempEnglish),
+            (
+                press(KEY_E_UPPER, CTRL | SHIFT),
+                KeyAction::EnterTempEnglish,
+            ),
             // Either modifier alone is not the chord.
             (press(KEY_E, CTRL), KeyAction::Ignore),
             (press(KEY_E, SHIFT), KeyAction::InputChar('e')),

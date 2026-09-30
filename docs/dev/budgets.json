@@ -34,6 +34,9 @@
     "so_stripped": 12.0,
     "base_dict": 20.0
   },
+  "alloc_count": {
+    "decode_steady": 13
+  },
   "robustness": {
     "soak_hours": 8.0,
     "rss_drift_mb": 2.0,

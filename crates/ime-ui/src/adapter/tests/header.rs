@@ -27,7 +27,11 @@ fn test_adapter_splits_the_preedit_around_a_caret_in_the_middle() {
             window.get_caret_visible(),
         )
     });
-    assert_eq!(before, ["ni", "'"], "the runs up to the caret are drawn first");
+    assert_eq!(
+        before,
+        ["ni", "'"],
+        "the runs up to the caret are drawn first"
+    );
     assert_eq!(after, ["hao"], "and the rest behind it");
     assert_eq!(
         kinds,
@@ -77,7 +81,10 @@ fn test_adapter_drops_the_secondary_status_markers_when_the_preedit_has_no_room(
         !secondary,
         "a preedit under the floor keeps the two markers the user has to know"
     );
-    assert!(truncated, "and the reading no longer fits beside the notice");
+    assert!(
+        truncated,
+        "and the reading no longer fits beside the notice"
+    );
     assert!(
         !drawn.is_empty(),
         "what does fit is still drawn, tail first (3.1.3)"
@@ -120,7 +127,10 @@ fn test_adapter_hides_the_caret_arrow_when_the_placement_declined_one() {
         )
     });
     assert!(shown);
-    assert!(hidden, "a flipped or clamped placement takes the arrow away");
+    assert!(
+        hidden,
+        "a flipped or clamped placement takes the arrow away"
+    );
     assert!(!visible, "the shape is gated, not faded");
     assert_eq!(
         position,
@@ -148,7 +158,7 @@ fn test_adapter_dropping_the_secondary_markers_frees_their_room() {
             .set_visible(true)
             .expect("the surface can be mapped");
 
-        let mut settle = || {
+        let settle = || {
             for _ in 0..4 {
                 platform
                     .render_if_dirty()
@@ -236,7 +246,7 @@ fn test_adapter_draws_the_caret_arrow_into_the_surface() {
         // six dp down, which is inside the shape on every row but the tip.
         let x = constants.shadow_margin as usize + 18 + 6;
         let y = constants.shadow_margin as usize - 6 + 5;
-        let mut settle = || {
+        let settle = || {
             for _ in 0..4 {
                 platform
                     .render_if_dirty()

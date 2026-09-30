@@ -653,6 +653,12 @@ fn test_user_db_final_commit_writes_what_the_batch_left_behind() {
         db.record(&format!("key{index}"), 0);
     }
     db.final_commit().expect("flushing on shutdown");
+    // The settle bound is the owner's shutdown latency, and a flush that outlived it may
+    // still be writing what the batch trigger handed it -- the reader between a drain and
+    // its adopt undercounts by one window, which is the store's documented shape. What this
+    // test asserts is that the union of the two writers reaches the file, so it gives the
+    // thread the same generous bound every other test gives it before it counts.
+    db.wait_for_flush();
     assert_eq!(db.record_count().expect("counting"), COMMIT_BATCH as u64);
     assert_eq!(db.pending_len(), 0, "nothing was left in memory");
 }
@@ -670,7 +676,10 @@ fn test_user_db_freq_does_not_fall_across_a_flush() {
     db.final_commit().expect("flushing");
     let after = db.freq("ni'hao");
     assert_eq!(before, 5, "the delta is visible before the flush");
-    assert!(after >= before, "the flush lost a record: {after} < {before}");
+    assert!(
+        after >= before,
+        "the flush lost a record: {after} < {before}"
+    );
     assert_eq!(
         db.committed_len(),
         Some(1),

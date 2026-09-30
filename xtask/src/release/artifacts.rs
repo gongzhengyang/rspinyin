@@ -524,9 +524,18 @@ mod tests {
 
     #[test]
     fn test_package_kind_parses_its_name_and_refuses_another() {
-        assert_eq!(PackageKind::parse("deb").expect("deb is a kind"), PackageKind::Deb);
-        assert_eq!(PackageKind::parse("rpm").expect("rpm is a kind"), PackageKind::Rpm);
-        assert_eq!(PackageKind::parse("pkg").expect("pkg is a kind"), PackageKind::Pkg);
+        assert_eq!(
+            PackageKind::parse("deb").expect("deb is a kind"),
+            PackageKind::Deb
+        );
+        assert_eq!(
+            PackageKind::parse("rpm").expect("rpm is a kind"),
+            PackageKind::Rpm
+        );
+        assert_eq!(
+            PackageKind::parse("pkg").expect("pkg is a kind"),
+            PackageKind::Pkg
+        );
         let failure = PackageKind::parse("apk").expect_err("apk is not a kind");
         assert!(failure.to_string().contains("deb"), "{failure}");
     }
@@ -535,10 +544,7 @@ mod tests {
     fn test_spelling_uses_the_ecosystems_own_architecture_names() {
         // Debian names the architecture differently from everyone else, and a package
         // labelled with the wrong one installs on a machine that cannot load it.
-        assert_eq!(
-            PackageKind::Deb.spelling(Architecture::X86_64),
-            "amd64"
-        );
+        assert_eq!(PackageKind::Deb.spelling(Architecture::X86_64), "amd64");
         assert_eq!(PackageKind::Deb.spelling(Architecture::Aarch64), "arm64");
         assert_eq!(PackageKind::Rpm.spelling(Architecture::X86_64), "x86_64");
         assert_eq!(PackageKind::Pkg.spelling(Architecture::Aarch64), "aarch64");
@@ -616,7 +622,10 @@ mod tests {
         let names: Vec<&str> = set.files().iter().map(|file| file.name.as_str()).collect();
         let mut sorted = names.clone();
         sorted.sort_unstable();
-        assert_eq!(names, sorted, "the manifest records the files in name order");
+        assert_eq!(
+            names, sorted,
+            "the manifest records the files in name order"
+        );
         assert_eq!(
             set.architectures(),
             [Architecture::X86_64, Architecture::Aarch64],
@@ -687,7 +696,8 @@ mod tests {
 
     #[test]
     fn test_read_reports_a_directory_that_is_not_there() {
-        let dir = std::env::temp_dir().join(format!("rspinyin-release-absent-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("rspinyin-release-absent-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let failure = Set::read(&dir, VERSION, &packages()).expect_err("there is no release");
         assert!(failure.to_string().contains("release:"), "{failure}");

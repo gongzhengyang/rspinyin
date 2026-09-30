@@ -62,6 +62,7 @@ impl Budgets {
         let size = section(root, "size_mb")?;
         let robust = section(root, "robustness")?;
         let bench = section(root, "bench")?;
+        let alloc = section(root, "alloc_count")?;
 
         let budgets = Self {
             version,
@@ -109,6 +110,9 @@ impl Budgets {
                 decode_holdout_s: positive(bench, "bench", "decode_holdout_s")?,
                 ui_wakeup_latency_us: positive(bench, "bench", "ui_wakeup_latency_us")?,
             },
+            alloc_count: AllocCount {
+                decode_steady: count(alloc, "alloc_count", "decode_steady")?,
+            },
             net_sockets: count(root, "top level", "net_sockets")?,
         };
         budgets.reject_unknown_paths(&parsed)?;
@@ -120,13 +124,14 @@ impl Budgets {
     /// The keys are the dotted paths used by `BINDINGS`, which is what lets the
     /// spec comparison run without a second copy of the numbers anywhere.
     pub fn thresholds(&self) -> Vec<Threshold> {
-        let (l, m, c, s, r, b) = (
+        let (l, m, c, s, r, b, a) = (
             &self.latency_ms,
             &self.memory_mb,
             &self.cpu_pct,
             &self.size_mb,
             &self.robustness,
             &self.bench,
+            &self.alloc_count,
         );
         [
             Threshold("latency_ms.key_to_present_p50", l.key_to_present_p50),
@@ -162,6 +167,7 @@ impl Budgets {
             Threshold("bench.input_buffer_ops_us", b.buffer_ops_us),
             Threshold("bench.decode_holdout_s", b.decode_holdout_s),
             Threshold("bench.ui_wakeup_latency_us", b.ui_wakeup_latency_us),
+            Threshold("alloc_count.decode_steady", a.decode_steady as f64),
             Threshold("net_sockets", self.net_sockets as f64),
         ]
         .to_vec()

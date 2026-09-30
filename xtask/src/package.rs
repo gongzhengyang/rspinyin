@@ -392,8 +392,7 @@ fn collect(plan: &mut Plan, policy: StripPolicy) -> Result<()> {
     fs::create_dir_all(tree).with_context(|| format!("creating {}", tree.display()))?;
     for payload in &mut plan.payloads {
         if let Some(parent) = payload.path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
         if payload.required_exports.is_empty() {
             fs::copy(&payload.source, &payload.path).with_context(|| {
@@ -475,8 +474,7 @@ fn publish(
     for payload in &plan.payloads {
         let destination = out.join(payload.name);
         if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
         fs::copy(&payload.path, &destination).with_context(|| {
             format!(

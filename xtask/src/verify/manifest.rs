@@ -412,11 +412,8 @@ mod tests {
             }
         ));
 
-        let wrong_type = document_with(
-            &format!("[{}]", artifact("librspinyin.so")),
-            "null",
-        )
-        .replace("\"manifest_version\": 1", "\"manifest_version\": \"one\"");
+        let wrong_type = document_with(&format!("[{}]", artifact("librspinyin.so")), "null")
+            .replace("\"manifest_version\": 1", "\"manifest_version\": \"one\"");
         let failure = parse_str(&wrong_type).expect_err("the version is a number");
         assert!(matches!(
             failure,
@@ -437,8 +434,8 @@ mod tests {
                 "size_bytes": 12, "size_budget_mb": 12.0}}"#,
             digest()
         );
-        let failure = parse_str(&document(&format!("[{without}]")))
-            .expect_err("`exports` is required");
+        let failure =
+            parse_str(&document(&format!("[{without}]"))).expect_err("`exports` is required");
         assert!(matches!(
             failure,
             VerifyError::Rejected {
@@ -462,7 +459,13 @@ mod tests {
 
     #[test]
     fn test_parse_str_refuses_a_name_that_leaves_the_release_directory() {
-        for name in ["../../etc/shadow", "/etc/shadow", "sub/base.dict", "..", "."] {
+        for name in [
+            "../../etc/shadow",
+            "/etc/shadow",
+            "sub/base.dict",
+            "..",
+            ".",
+        ] {
             let failure = parse_str(&document(&format!("[{}]", artifact(name))))
                 .expect_err("a name is not a path");
             assert!(

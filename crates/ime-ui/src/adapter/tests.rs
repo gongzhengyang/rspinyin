@@ -143,22 +143,21 @@ fn with_adapter<R: Send + 'static>(scene: impl FnOnce(&mut Adapter) -> R + Send 
 
 #[test]
 fn test_adapter_writes_the_panel_properties_from_a_frame() {
-    let (count, rows, width, height, header, per_row, before, after) =
-        with_adapter(|adapter| {
-            let frame = frame_with(1, "ni'hao", 9);
-            assert!(adapter.apply_frame(&frame), "the first frame is drawn");
-            let window = adapter.window();
-            (
-                window.get_item_count(),
-                window.get_grid_rows(),
-                window.get_container_width(),
-                window.get_container_height(),
-                window.get_header_height(),
-                window.get_max_per_row(),
-                run_texts(&window.get_preedit_before()),
-                run_texts(&window.get_preedit_after()),
-            )
-        });
+    let (count, rows, width, height, header, per_row, before, after) = with_adapter(|adapter| {
+        let frame = frame_with(1, "ni'hao", 9);
+        assert!(adapter.apply_frame(&frame), "the first frame is drawn");
+        let window = adapter.window();
+        (
+            window.get_item_count(),
+            window.get_grid_rows(),
+            window.get_container_width(),
+            window.get_container_height(),
+            window.get_header_height(),
+            window.get_max_per_row(),
+            run_texts(&window.get_preedit_before()),
+            run_texts(&window.get_preedit_after()),
+        )
+    });
     assert_eq!(count, 9);
     assert_eq!(rows, 2, "nine candidates at five per row");
     assert_eq!(width, 370.0);

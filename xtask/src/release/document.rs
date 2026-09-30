@@ -104,11 +104,7 @@ pub fn render(identity: &Identity, set: &Set) -> Result<String> {
         .iter()
         .map(|file| record(set.dir(), file))
         .collect::<Result<_>>()?;
-    let architectures: Vec<&str> = set
-        .architectures()
-        .iter()
-        .map(|arch| arch.name())
-        .collect();
+    let architectures: Vec<&str> = set.architectures().iter().map(|arch| arch.name()).collect();
     let document = json!({
         "manifest_version": MANIFEST_VERSION,
         "request_id": identity.request_id,
@@ -279,7 +275,10 @@ mod tests {
             .as_object()
             .expect("a compatibility block");
         for key in ["fcitx5", "architectures", "session_tiers"] {
-            assert!(compatibility.contains_key(key), "compatibility.{key} is missing");
+            assert!(
+                compatibility.contains_key(key),
+                "compatibility.{key} is missing"
+            );
         }
         assert_eq!(compatibility["fcitx5"], json!(">=5.1.0"));
         assert_eq!(
@@ -367,7 +366,10 @@ mod tests {
         let (dir, set) = release("vanished");
         fs::remove_file(dir.join("rspinyin-0.1.0.tar.gz")).expect("removing the archive");
         let failure = render(&identity(), &set).expect_err("the archive is gone");
-        assert!(failure.to_string().contains("rspinyin-0.1.0.tar.gz"), "{failure}");
+        assert!(
+            failure.to_string().contains("rspinyin-0.1.0.tar.gz"),
+            "{failure}"
+        );
         fs::remove_dir_all(&dir).expect("cleaning up");
     }
 }

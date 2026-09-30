@@ -848,7 +848,10 @@ fn test_typing_every_table_syllable_with_bare_keys_composes() {
         for ch in entry.chars() {
             typed.push(if ch == 'ü' { 'v' } else { ch });
         }
-        if !typed.chars().all(|ch| ch.is_ascii_alphabetic() || ch == '\'') {
+        if !typed
+            .chars()
+            .all(|ch| ch.is_ascii_alphabetic() || ch == '\'')
+        {
             not_typeable.push(*entry);
             continue;
         }

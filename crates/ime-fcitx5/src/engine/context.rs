@@ -660,7 +660,12 @@ impl Dispatcher {
         if self.overlay.is_none() {
             return Consumed::Ignored;
         }
-        if event.sym == KEY_ESCAPE {
+        // The panel's key is a chord like any other, and a chord is the modifier set
+        // compared for equality: `Escape` with a modifier held is a different key that
+        // belongs to the application, exactly as `Ctrl+Shift+/` is one chord and
+        // `Ctrl+Shift+Alt+/` is another. Matching the symbol alone would take half of
+        // `Alt+Escape` and friends from the desktop behind the user's back.
+        if event.state & super::MODIFIER_MASK == 0 && event.sym == KEY_ESCAPE {
             self.close_overlay();
             return Consumed::Consumed;
         }

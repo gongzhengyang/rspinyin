@@ -237,8 +237,7 @@ impl CommandChannels {
     /// delivered them, so comparing against the highest revision seen so far is
     /// exactly the rule the producer has to keep.
     fn note_control_revision(&self, command: &UiCommand) {
-        let (UiCommand::Show { revision, .. } | UiCommand::Hide { revision, .. }) = command
-        else {
+        let (UiCommand::Show { revision, .. } | UiCommand::Hide { revision, .. }) = command else {
             // Every other variant carries no revision: a frame's is inside the
             // frame, the theme and overlay slots are modes rather than
             // transitions, and shutdown is a flag of its own.

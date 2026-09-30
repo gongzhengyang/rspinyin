@@ -548,7 +548,9 @@ fn test_session_host_never_claims_a_key_release() {
     let mut host = RecordingHost::default();
     sessions.activate(IC);
     type_ni(&mut sessions, IC, &mut host);
-    for sym in [KEY_N, KEY_I, KEY_SPACE, 0xff0d, 0xff08, 0xff1b, 0xff09, 0xff51] {
+    for sym in [
+        KEY_N, KEY_I, KEY_SPACE, 0xff0d, 0xff08, 0xff1b, 0xff09, 0xff51,
+    ] {
         let mut key = press(sym);
         key.is_release = true;
         assert!(
@@ -605,7 +607,10 @@ fn lock_slot() -> MutexGuard<'static, ()> {
 fn test_install_refuses_a_second_session_host() {
     let _slot = lock_slot();
     let _ = shutdown();
-    assert!(!is_installed(), "the sweep before the test emptied the slot");
+    assert!(
+        !is_installed(),
+        "the sweep before the test emptied the slot"
+    );
     assert!(
         install(sources(), privacy(), RoutingConfig::default()),
         "the first install takes the slot"

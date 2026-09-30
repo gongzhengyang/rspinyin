@@ -2118,6 +2118,7 @@ dependencies = [
 name = "ime-core"
 version = "0.1.0"
 dependencies = [
+ "alloc-count",
  "criterion",
  "ime-types",
  "proptest",

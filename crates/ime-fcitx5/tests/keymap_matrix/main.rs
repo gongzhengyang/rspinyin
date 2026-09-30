@@ -50,11 +50,11 @@ use rspinyin::engine::{
 };
 
 use support::{
-    ALT, CTRL, DESKTOP_MODIFIERS, Fixture, IC, KEY_0, KEY_1, KEY_9, KEY_A, KEY_APOSTROPHE, KEY_AT,
-    KEY_A_UPPER, KEY_BACKSPACE, KEY_BRACKET_LEFT, KEY_DOWN, KEY_E, KEY_EQUAL, KEY_ESCAPE, KEY_LEFT,
-    KEY_MINUS, KEY_P, KEY_PAGE_DOWN, KEY_PAGE_UP, KEY_PERIOD, KEY_RETURN, KEY_RIGHT, KEY_SHIFT_L,
-    KEY_SHIFT_R, KEY_SLASH, KEY_SPACE, KEY_TAB, KEY_UP, KEY_Z, KEY_Z_UPPER, Lcg, RecordingHost,
-    SHIFT, Situation, press, release,
+    ALT, CTRL, DESKTOP_MODIFIERS, Fixture, IC, KEY_0, KEY_1, KEY_9, KEY_A, KEY_A_UPPER,
+    KEY_APOSTROPHE, KEY_AT, KEY_BACKSPACE, KEY_BRACKET_LEFT, KEY_DOWN, KEY_E, KEY_EQUAL,
+    KEY_ESCAPE, KEY_LEFT, KEY_MINUS, KEY_P, KEY_PAGE_DOWN, KEY_PAGE_UP, KEY_PERIOD, KEY_RETURN,
+    KEY_RIGHT, KEY_SHIFT_L, KEY_SHIFT_R, KEY_SLASH, KEY_SPACE, KEY_TAB, KEY_UP, KEY_Z, KEY_Z_UPPER,
+    Lcg, RecordingHost, SHIFT, Situation, press, release,
 };
 
 // ── The matrix ───────────────────────────────────────────────────────────────────
@@ -540,8 +540,7 @@ fn test_the_matrix_reaches_every_action_the_routing_table_can_produce() {
     }
     let expected: BTreeSet<&str> = ROUTABLE_ACTIONS.iter().copied().collect();
     assert_eq!(
-        reached,
-        expected,
+        reached, expected,
         "the matrix must name a key for every action the table can reach"
     );
 }
@@ -632,10 +631,21 @@ fn test_the_bus_claims_a_key_exactly_when_the_table_and_the_session_agree() {
                 );
                 continue;
             }
+            if is_panel_chord(row.sym, row.state) && situation != Situation::TempEnglish {
+                // The panel chords are not table rows and never become a `KeyAction`, so
+                // the arbitrator is not the reference answer for them: the bus answers
+                // them ahead of the walk wherever the plugin may open the panel its chord
+                // names, and temporary English hands them back with every other key.
+                assert_eq!(
+                    claimed,
+                    Consumed::Consumed,
+                    "{label} must open its panel in {situation:?}"
+                );
+                continue;
+            }
             let arbitrated = arbitrate(translate_key(&event, &keys), Some(&session), &cfg);
             assert_eq!(
-                claimed,
-                arbitrated,
+                claimed, arbitrated,
                 "the bus and the arbitrator disagree about {label} in {situation:?}"
             );
             if claimed != Consumed::Ignored {
@@ -647,6 +657,16 @@ fn test_the_bus_claims_a_key_exactly_when_the_table_and_the_session_agree() {
             }
         }
     }
+}
+
+/// Whether the key is one of the two panel chords the bus answers ahead of the walk.
+///
+/// The modifier set is compared for equality, exactly as the engine compares it: a chord
+/// is `Ctrl+Shift` and nothing else, so `Ctrl+Shift+Alt+/` is a different key that
+/// belongs to the desktop environment. The uppercase shapes are spelled as literals
+/// because the host folds `Shift` into the symbol the way it folds it into a letter.
+fn is_panel_chord(sym: u32, state: u32) -> bool {
+    state == (CTRL | SHIFT) && matches!(sym, KEY_SLASH | 0x003f | KEY_P | 0x0050)
 }
 
 #[test]
@@ -718,8 +738,7 @@ fn test_every_key_release_is_handed_back() {
         }
     }
     assert_eq!(
-        host.calls,
-        0,
+        host.calls, 0,
         "a release must reach the host untouched, the application's key-up included"
     );
     assert!(
@@ -788,8 +807,7 @@ fn test_holding_shift_never_switches_the_input_mode() {
         "a modifier release is the application's"
     );
     assert_eq!(
-        host.toggles,
-        0,
+        host.toggles, 0,
         "holding Shift is how a capital letter is typed, not how the mode is switched"
     );
 }

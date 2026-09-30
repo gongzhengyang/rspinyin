@@ -200,7 +200,11 @@ impl Release {
             readable_dictionary,
         };
         release.write_artifacts();
-        write(&release.dir, ARCHIVE_FILE, b"the archive the manifest describes");
+        write(
+            &release.dir,
+            ARCHIVE_FILE,
+            b"the archive the manifest describes",
+        );
         write(&release.dir, SIGNATURE_FILE, b"a detached signature");
         release.seal(1, &signed_by(KEY_ID));
         release
@@ -289,7 +293,10 @@ struct Refused(Code);
 
 impl Verifier for Refused {
     fn verify(&self, _signature: &Path, _signed: &Path) -> Result<String, VerifyError> {
-        Err(VerifyError::rejected(self.0, "the fixture verifier refused"))
+        Err(VerifyError::rejected(
+            self.0,
+            "the fixture verifier refused",
+        ))
     }
 }
 
@@ -424,7 +431,11 @@ fn test_verify_changes_nothing_in_the_release_directory() {
 fn test_verify_leaves_a_release_it_refused_unchanged_too() {
     let release = Release::build("read-only-refused");
     let before = release.snapshot();
-    let _ = verify(&release.manifest(), &release.dir, &Refused(Code::SignatureInvalid));
+    let _ = verify(
+        &release.manifest(),
+        &release.dir,
+        &Refused(Code::SignatureInvalid),
+    );
     assert_eq!(before, release.snapshot());
 }
 

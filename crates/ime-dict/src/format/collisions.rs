@@ -87,7 +87,10 @@ mod tests {
     #[test]
     fn test_find_colliding_hashes_accepts_a_word_list_that_has_none() {
         assert_eq!(find_colliding_hashes(&[]), None);
-        assert_eq!(find_colliding_hashes(&["中国", "银行", "中心", "你好"]), None);
+        assert_eq!(
+            find_colliding_hashes(&["中国", "银行", "中心", "你好"]),
+            None
+        );
         // The same word twice is not a collision either.
         assert_eq!(find_colliding_hashes(&["中国", "中国"]), None);
     }

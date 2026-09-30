@@ -126,15 +126,13 @@ mod tests {
     /// Written from the format rather than from the encoder, so that a change to either side
     /// is caught by the other: the prefix is ten five-bit groups, most significant first.
     fn decode_prefix(id: &str) -> u64 {
-        id.chars()
-            .take(10)
-            .fold(0u64, |value, character| {
-                let digit = CROCKFORD
-                    .iter()
-                    .position(|byte| *byte as char == character)
-                    .expect("the character is in the alphabet") as u64;
-                (value << 5) | digit
-            })
+        id.chars().take(10).fold(0u64, |value, character| {
+            let digit = CROCKFORD
+                .iter()
+                .position(|byte| *byte as char == character)
+                .expect("the character is in the alphabet") as u64;
+            (value << 5) | digit
+        })
     }
 
     #[test]
@@ -142,7 +140,8 @@ mod tests {
         let id = ulid(1_790_899_200_000, ENTROPY);
         assert_eq!(id.len(), LENGTH);
         assert!(
-            id.chars().all(|character| CROCKFORD.contains(&(character as u8))),
+            id.chars()
+                .all(|character| CROCKFORD.contains(&(character as u8))),
             "every character is in the alphabet: {id}"
         );
         // The alphabet excludes the four letters a human reads as digits.

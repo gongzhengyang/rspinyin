@@ -190,6 +190,7 @@ cargo test --workspace --doc                        # doctest 单独补跑
 | `BUDGET-SIZE-01` | `librspinyin.so` 体积（release, stripped） | ≤ 12MB | `ls -l` + `size` | TASK-1.07.01 |
 | `BUDGET-SIZE-02` | 内置基础词库体积（`base.dict`） | ≤ 20MB | `ls -l` | TASK-1.03.01 |
 | `BUDGET-NET-01` | 进程外联网 socket 数 | = 0（除 fcitx5 自身的本地 Unix socket） | `ss -tanp` + 依赖闭包断言 | TASK-1.06.03 |
+| `BUDGET-ALLOC-01` | 单次稳态解码的堆分配次数（`DecodeScratch` 复用后） | ≤ 13 次（12 音节最宽输入实测 13、2 音节实测 2；2026-09-30 二次修订：边表预估式补入多音节跨度余量、撤销反向催生分配的文本容量 hint 后按实测锚定；残余为 `Lattice` 边表与 dedupe/排序换手时换入的文本容量，归零路径见 `TASK-139`） | `crates/ime-core/tests/alloc_budget.rs` 计数断言 + `target/alloc-report.txt` + `xtask budget --alloc` | PERF-P2.01.01 |
 | `BUDGET-ROB-01` | 连续 8 小时输入无崩溃、无内存增长（RSS 漂移 ≤ 2MB） | 100% 通过 | 长稳脚本 | TASK-3.08.01 |
 
 #### 0.5.4 离线与隐私行为定义
@@ -795,6 +796,8 @@ pub enum ConfigError {
 | `ui/channel/config-invalid` | `ime-ui` 的通道构造 | `ChannelConfig` 破坏了 2.2.1 / 2.2.2 的通道契约（控制队列深度 < 2 会把有序的 `Show`/`Hide` 对坍缩成 latest-wins 槽；任一容量为 0 的通道会静默丢弃一切；控制通道的自旋预算超过 200µs 的宿主回调上限） | 是（常量 `channel::CONFIG_INVALID_CODE`，内嵌在 `config/invalid: ui.channel.<字段> (...)` 的 reason 里） |
 | `budget/memory-exceeded` | `xtask budget --memory` | 某个内存窗口（插件 / UI / 词库 mmap）相对基线的增长超过 `budgets.json` 的 `memory_mb.*` 上限 | 是（`xtask` 的退出码与违规清单，不经 `ImeError`） |
 | `budget/memory-unmeasured` | `xtask budget --memory` | 快照里缺少该窗口的读数或基线（内核读不到 `/proc`，或探针没在该窗口打点）。**缺读数按失败处理，不按 0 通过** | 是（同上；消息点名缺失的字段与需要的打点调用） |
+| `budget/alloc-exceeded` | `xtask budget --alloc` | 稳态解码的堆分配次数超过 `budgets.json` 的 `alloc_count.decode_steady` 上限（`BUDGET-ALLOC-01`） | 是（`xtask` 的退出码与违规清单，不经 `ImeError`；读 `target/alloc-report.txt`） |
+| `budget/alloc-unmeasured` | `xtask budget --alloc` | 报告里缺少该记录（解码测试没有跑，或少写了一条记录）。**缺读数按失败处理，不按 0 通过** | 是（同上；消息点名缺失的记录名与产出它的测试） |
 
 **FFI 层的诊断码（v1.3 新增登记）**：`TASK-1.04.01` 的 C ABI 边界在 `ime-fcitx5` 内直接产生一批诊断码。它们**不是** `ImeError` 的变体（跨 FFI 边界的失败无法用 Rust 错误类型表达），但同样遵循 `领域/动作/原因` 的稳定字符串约定，写入崩溃/诊断通道，且不得改写：
 

@@ -249,7 +249,10 @@ mod tests {
         let mut recorded = populated();
         recorded.insert_bigram("", "hao", -8);
         assert_eq!(recorded.bigram("", "hao"), -8);
-        assert_eq!(recorded.bigram("", "bu"), UNIGRAM_MISS + BIGRAM_MISS_PENALTY);
+        assert_eq!(
+            recorded.bigram("", "bu"),
+            UNIGRAM_MISS + BIGRAM_MISS_PENALTY
+        );
     }
 
     #[test]

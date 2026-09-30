@@ -139,9 +139,15 @@ fn test_effect_host_toggle_enabled_flips_the_context_state() {
     // lives, and the point of these assertions is to read the context between the two
     // calls. A temporary borrow is dropped at the end of its statement, which is what
     // makes the read legal without moving the state out from under the host.
-    assert!(!boundary(&mut ctx).toggle_enabled(IC), "an enabled context turns off");
+    assert!(
+        !boundary(&mut ctx).toggle_enabled(IC),
+        "an enabled context turns off"
+    );
     assert!(!ctx.enabled, "the state the host holds is the flipped one");
-    assert!(boundary(&mut ctx).toggle_enabled(IC), "and turning it back on reports on");
+    assert!(
+        boundary(&mut ctx).toggle_enabled(IC),
+        "and turning it back on reports on"
+    );
 }
 
 #[test]

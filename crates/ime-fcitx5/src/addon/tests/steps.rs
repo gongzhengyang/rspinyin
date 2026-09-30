@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 use ime_config::Config;
 use ime_core::privacy::DefaultPolicy;
 use ime_core::viterbi::Decoder;
-use ime_dict::paths::{BaseDirs, READONLY_CODE};
 use ime_diag::probe::{MemorySnapshot, ProbeSnapshot, SNAPSHOT_FILE_NAME};
+use ime_dict::paths::{BaseDirs, READONLY_CODE};
 use ime_types::{CandidateSource, DecodeRequest, ImeError, UiCommand};
 
 use crate::engine::host::Host;
@@ -190,7 +190,10 @@ fn test_prepare_data_dirs_in_degrades_to_readonly_when_the_directory_is_blocked(
     );
 
     let paths = layout().expect("the layout is recorded even when it is read-only");
-    assert!(paths.is_readonly(), "the degradation is reported by the layout");
+    assert!(
+        paths.is_readonly(),
+        "the degradation is reported by the layout"
+    );
     assert!(
         paths
             .notices()
@@ -300,7 +303,10 @@ fn test_sources_for_without_a_dictionary_answers_a_pass_through_candidate() {
         .candidates
         .first()
         .expect("a decode is never answered with an empty list");
-    assert_eq!(candidate.text, "ni'hao", "the text is handed back unchanged");
+    assert_eq!(
+        candidate.text, "ni'hao",
+        "the text is handed back unchanged"
+    );
     assert_eq!(candidate.source, CandidateSource::Passthrough);
     assert!(decoded.degraded, "and the answer says it is degraded");
 }

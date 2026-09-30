@@ -28,6 +28,16 @@ use std::collections::BTreeMap;
 use ime_core::segment::syllable_at;
 use ime_types::{ImeError, Lexicon, SyllableId, WordFlags, WordIter, WordRef};
 
+/// Words one lookup serves, which is the head of the key's list.
+///
+/// The lattice takes no more than this from a key, so serving the head is serving the
+/// whole list the decode path reads, and it is what lets the handles live in an array
+/// on the stack rather than in a `Vec`: the contract requires a lookup not to allocate
+/// per candidate, and the real dictionary's lookup hands its words out of the mapping
+/// without building a list at all. A lookup that materialized a `Vec` per call would
+/// put its own allocation into every number this target reports.
+const HEAD: usize = ime_types::lexicon::WORD_ITER_INLINE;
+
 /// Builds the dictionary the decode cases decode against.
 ///
 /// The corpus carries a word for every span of every benchmark input and for every
@@ -93,11 +103,10 @@ impl SyntheticDict {
 
 impl Lexicon for SyntheticDict {
     fn lookup(&self, key: &str) -> Result<WordIter<'_>, ImeError> {
-        let words = match self.words.get(key) {
-            Some(entries) => entries.iter().map(reference).collect(),
-            None => Vec::new(),
-        };
-        Ok(WordIter::from_vec(words))
+        let entries = self.words.get(key).map_or(&[][..], Vec::as_slice);
+        let mut handles = [EMPTY_ENTRY; HEAD];
+        let taken = references(entries, &mut handles);
+        Ok(WordIter::from_slice(&handles[..taken]))
     }
 
     fn prefix(&self, _prefix: &str, _limit: usize) -> Result<WordIter<'_>, ImeError> {
@@ -106,16 +115,43 @@ impl Lexicon for SyntheticDict {
         Err(ImeError::Unsupported)
     }
 
-    fn fallback_single(&self, syl: SyllableId, limit: usize) -> Result<WordIter<'_>, ImeError> {
+    fn fallback_single(&self, syl: SyllableId, _limit: usize) -> Result<WordIter<'_>, ImeError> {
         // Every syllable of the table has a reading in the corpus, so the fallback
         // answers for all of them; the lattice reaches it only for a span no word
-        // covers, which the generated corpus leaves almost nowhere.
-        let words = match syllable_at(syl).and_then(|spelling| self.words.get(spelling)) {
-            Some(entries) => entries.iter().take(limit).map(reference).collect(),
-            None => Vec::new(),
-        };
-        Ok(WordIter::from_vec(words))
+        // covers, which the generated corpus leaves almost nowhere. The `limit` the
+        // caller asks for is smaller than the head served here, and the caller takes
+        // its own share of what comes back.
+        let entries = syllable_at(syl)
+            .and_then(|spelling| self.words.get(spelling))
+            .map_or(&[][..], Vec::as_slice);
+        let mut handles = [EMPTY_ENTRY; HEAD];
+        let taken = references(entries, &mut handles);
+        Ok(WordIter::from_slice(&handles[..taken]))
     }
+}
+
+/// The entry a slot holds before anything is written into it.
+///
+/// Only the slots below the count [`references`] answered are handed to the iterator,
+/// so the placeholder is never served as a word.
+const EMPTY_ENTRY: WordRef<'static> = WordRef {
+    text: "",
+    weight: 0,
+    syl_count: 0,
+    flags: WordFlags::empty(),
+};
+
+/// Fills `handles` with the head of `entries` and answers how many it filled.
+///
+/// The handles borrow the entries rather than copying their text, which is the
+/// zero-copy shape the contract promises and the real dictionary delivers.
+fn references<'a>(entries: &'a [Word], handles: &mut [WordRef<'a>; HEAD]) -> usize {
+    let mut filled = 0usize;
+    for (slot, word) in handles.iter_mut().zip(entries) {
+        *slot = reference(word);
+        filled += 1;
+    }
+    filled
 }
 
 /// Borrows one entry as the contract's zero-copy word handle.

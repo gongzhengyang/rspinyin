@@ -198,7 +198,7 @@ impl Inner {
     /// degradation rather than a failure: a store without a flush thread still flushes,
     /// exactly as a store without a sweep thread still answers every query.
     pub(super) fn request_flush(&self) {
-        match &self.writer {
+        match self.writer.get().and_then(|set| set.as_ref()) {
             Some(writer) => writer.request(),
             None => {
                 let _ = self.flush(Durability::Eventual);
@@ -214,7 +214,8 @@ impl Inner {
     /// once, so that the flush which returns is the flush that made the delta durable
     /// (`ASM-20`: a graceful shutdown loses nothing).
     pub(super) fn flush_now(&self, durability: Durability) -> Result<CommitReport, ImeError> {
-        let Some(writer) = &self.writer else {
+        let writer = self.writer.get().and_then(|set| set.as_ref());
+        let Some(writer) = writer else {
             return self.flush(durability);
         };
         // A writer that does not answer inside the bound is left running, and the flush below
@@ -515,11 +516,12 @@ impl FlushThread {
 
     /// Waits until no request is outstanding and none is being served.
     ///
-    /// Test-only, and the reason is the hold: the production path that needs this is
-    /// [`FlushThread::pause`], which has to take the hold under the same lock that observed
-    /// the thread idle, so it cannot go through a plain wait. A test that asserts what a
-    /// trigger wrote cannot otherwise tell "not yet" from "never".
-    #[cfg(test)]
+    /// Unlike [`FlushThread::pause`] this takes no hold: the caller only observes, and a
+    /// flush that starts after the observation is one the caller did not wait for. That is
+    /// the shape two callers want. The store's drop uses it to give the thread a moment to
+    /// step out of the file before the last reference lets go of it -- pausing there would
+    /// be wrong, because a clone that appears while this one drops must find a thread that
+    /// can still serve -- and a test uses it for the same observation without a hold.
     pub(super) fn settle(&self, timeout: Duration) -> bool {
         self.wait_until_idle(timeout, false)
     }

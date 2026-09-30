@@ -166,4 +166,5 @@ pub(super) const KEY_UNITS: &[(&str, Unit)] = &[
     ("bench.decode_holdout_s", Unit::Seconds),
     ("bench.ui_wakeup_latency_us", Unit::Micros),
     ("net_sockets", Unit::Count),
+    ("alloc_count.decode_steady", Unit::Count),
 ];

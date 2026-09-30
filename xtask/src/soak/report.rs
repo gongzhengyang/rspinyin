@@ -348,8 +348,13 @@ impl CycleReport {
     pub fn of(plan: &Plan, strokes_per_cycle: u64, delivered_strokes: u64) -> Self {
         Self {
             strokes_per_cycle,
-            planned: plan.planned_strokes().checked_div(strokes_per_cycle).unwrap_or(0),
-            delivered: delivered_strokes.checked_div(strokes_per_cycle).unwrap_or(0),
+            planned: plan
+                .planned_strokes()
+                .checked_div(strokes_per_cycle)
+                .unwrap_or(0),
+            delivered: delivered_strokes
+                .checked_div(strokes_per_cycle)
+                .unwrap_or(0),
         }
     }
 

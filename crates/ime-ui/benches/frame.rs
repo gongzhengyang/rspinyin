@@ -492,7 +492,11 @@ fn frame_bench(criterion: &mut Criterion) {
             apply_slide(&card, step.rect);
             if step.settled {
                 heading_to_second = !heading_to_second;
-                let x = if heading_to_second { SLIDE_TO } else { SLIDE_FROM };
+                let x = if heading_to_second {
+                    SLIDE_TO
+                } else {
+                    SLIDE_FROM
+                };
                 anim.retarget(HighlightRect::new(x, SLIDE_Y, SLIDE_W, SLIDE_H));
             }
             let outcome = platform.render_if_dirty();

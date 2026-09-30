@@ -220,13 +220,17 @@ fn test_lattice_with_capacity_sizes_the_edge_vector_for_the_graph() {
     assert_eq!(lattice.node_count(), 0);
     assert_eq!(
         lattice.edges.capacity(),
-        4 * (WORDS_PER_KEY + FALLBACK_SINGLES),
-        "the fallbacks are part of the estimate when they are on"
+        4 * (WORDS_PER_KEY + usize::from(MAX_WORD_SYLLABLES) - 1 + FALLBACK_SINGLES),
+        "the fallbacks and the multi-syllable span margin are part of the estimate when \
+         the fallback is on"
     );
     // A node count past the ceiling is cut to it, so a hand-built configuration cannot
     // make the lattice allocate without bound.
     let bounded: Lattice<'_> = Lattice::with_capacity(usize::MAX, false);
-    assert_eq!(bounded.edges.capacity(), MAX_LATTICE_NODES * WORDS_PER_KEY);
+    assert_eq!(
+        bounded.edges.capacity(),
+        MAX_LATTICE_NODES * (WORDS_PER_KEY + usize::from(MAX_WORD_SYLLABLES) - 1)
+    );
 }
 
 #[test]

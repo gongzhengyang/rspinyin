@@ -547,12 +547,13 @@ mod tests {
     #[test]
     fn test_destination_directories_carries_the_destdir_into_every_entry() {
         let directories = layout("stage").destination_directories();
-        assert_eq!(directories.len(), 6);
+        assert_eq!(directories.len(), 7);
         assert!(
             directories.iter().all(|dir| dir.starts_with("stage/usr")),
             "every directory is staged: {directories:?}"
         );
         assert!(directories.contains(&PathBuf::from("stage/usr/share/fcitx5/addon")));
+        assert!(directories.contains(&PathBuf::from("stage/usr/share/metainfo")));
     }
 
     #[test]

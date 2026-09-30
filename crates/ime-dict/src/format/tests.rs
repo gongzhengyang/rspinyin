@@ -111,7 +111,9 @@ fn test_dict_entry_validate_rejects_a_character_count_above_the_byte_length() {
     // A character is at least one byte, so a count above `word_len` describes a text no
     // compiler could have written.
     let too_many = DictEntry::new(0, 3, 1, 0, 7).with_characters(4);
-    let err = too_many.validate().expect_err("four characters need four bytes");
+    let err = too_many
+        .validate()
+        .expect_err("four characters need four bytes");
     assert_eq!(bounds_field(&err), Some("char_count"), "{err}");
 
     // The boundary itself is in contract: a three-byte word of three characters.

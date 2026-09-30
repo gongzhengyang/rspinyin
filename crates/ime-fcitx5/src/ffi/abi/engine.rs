@@ -90,7 +90,9 @@ pub extern "C" fn on_key_event(
         // `FcitxKeyEvent` is `repr(C)` and every bit pattern is a valid value. The copy
         // is what lets the borrow end here rather than travel into the routing layer.
         let key = unsafe { *event };
-        with_host(ic_id, |host| crate::session_host::key_event(ic_id, &key, host))
+        with_host(ic_id, |host| {
+            crate::session_host::key_event(ic_id, &key, host)
+        })
     })
 }
 

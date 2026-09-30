@@ -193,7 +193,11 @@ fn test_record_damage_of_a_full_repaint_reports_the_whole_surface_once() {
         }],
         "a full repaint is the whole surface as a single rectangle"
     );
-    assert_eq!(state.pending.len(), 1, "which makes the frame report one rectangle");
+    assert_eq!(
+        state.pending.len(),
+        1,
+        "which makes the frame report one rectangle"
+    );
 }
 
 #[test]

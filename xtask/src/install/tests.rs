@@ -104,6 +104,11 @@ fn fixture(tag: &str) -> (PathBuf, Sources, Layout) {
         "addon descriptor",
     );
     artifact(&root, "packaging/fcitx5/rspinyin-im.conf", "input method");
+    artifact(
+        &root,
+        "packaging/metainfo/org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml",
+        "metainfo",
+    );
     artifact(&root, "assets/icon-48.png", "png bytes");
     artifact(&root, "assets/icon.svg", "svg bytes");
     dictionary(&root, "data/compiled/base.dict");
@@ -160,8 +165,11 @@ fn test_plan_install_resolves_every_payload_in_the_order_they_are_copied() {
             layout.data_dir.join("base.dict"),
             layout.icon_dir.join("48x48/apps/fcitx-rspinyin.png"),
             layout.icon_dir.join("scalable/apps/fcitx-rspinyin.svg"),
+            layout
+                .metainfo_dir
+                .join("org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml"),
         ],
-        "every payload is planned, icons included"
+        "every payload is planned, icons and metainfo included"
     );
     assert_eq!(
         plan.iter().filter(|file| file.is_addon_library).count(),
@@ -235,7 +243,7 @@ fn test_apply_installs_every_file_with_the_documented_mode() {
     let manifest = apply(&plan(&sources, &layout), &layout, Elevation::Direct)
         .expect("installing into a writable tree");
 
-    assert_eq!(manifest.entries.len(), 8);
+    assert_eq!(manifest.entries.len(), 9);
     assert_eq!(manifest.version, MANIFEST_VERSION);
     assert_eq!(manifest.package_version, PACKAGE_VERSION);
     assert!(
@@ -272,6 +280,12 @@ fn test_apply_installs_every_file_with_the_documented_mode() {
         (
             layout.icon_dir.join("scalable/apps/fcitx-rspinyin.svg"),
             "svg bytes",
+        ),
+        (
+            layout
+                .metainfo_dir
+                .join("org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml"),
+            "metainfo",
         ),
     ] {
         assert_eq!(read(&path), content, "{}", path.display());

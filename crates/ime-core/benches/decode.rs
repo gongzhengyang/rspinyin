@@ -32,6 +32,14 @@
 //! same question out of the compiled dictionary's unigram table, and its case lives in that
 //! crate's own bench target, because this one may not depend on it.
 //!
+//! `alloc/decode` and `alloc/keystroke` are the same two paths seen by the process's
+//! counting allocator: the case reads the counter around the routine and consumes the
+//! delta, so a run reports the cost of the work with the observation inside it, and a
+//! case whose allocation count stopped being the same on every iteration fails rather
+//! than reporting. The thresholds the counts are judged against live in
+//! `docs/dev/budgets.json`, and the runs that assert them are the integration test in
+//! `tests/alloc_budget.rs` and `xtask budget`, which read each other's numbers.
+//!
 //! This file measures. Comparing the measurements against the thresholds is
 //! `xtask budget --check`, which reads the same numbers out of
 //! `docs/dev/budgets.json` and the criterion output this run leaves in
@@ -120,6 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     bench_decode(&mut criterion, &dictionary, &model);
     bench_decode_reuse(&mut criterion, &dictionary, &model);
+    bench_allocations(&mut criterion, &dictionary, &model);
     bench_session(&mut criterion, &dictionary, &model);
     bench_holdout(&mut criterion, &dictionary, &model);
     bench_segment(&mut criterion);
@@ -205,13 +214,9 @@ fn bench_decode(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &I
 /// its own name; `viterbi_into` keeps one workspace and decodes into it, which is the shape a
 /// session runs once per keystroke. Both run the same walk over the same lattice, so the
 /// difference between them is what building the workspace costs -- the sweep's beams, the
-/// candidate drafts and the result buffers -- and nothing else.
-///
-/// The allocation count the reuse is judged by cannot be asserted here: a counting allocator
-/// needs `#[global_allocator]` and an `unsafe impl GlobalAlloc`, and `unsafe` is confined to
-/// the two FFI directories and `ime-dict/src/mmap.rs`. What the pair reports instead is the
-/// time the reuse is worth; the buffers themselves are pinned by the unit tests beside
-/// `DecodeScratch`, which show that a steady-state decode grows no capacity.
+/// candidate drafts and the result buffers -- and nothing else. What the reuse is worth in
+/// allocations is `alloc/decode`'s to report, and the budget it is judged against is the
+/// integration test's to assert.
 fn bench_decode_reuse(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &InMemoryLm) {
     let Some(case) = CASES.iter().find(|case| case.name == REUSE_CASE) else {
         return;
@@ -347,14 +352,9 @@ fn bench_edge_score(criterion: &mut Criterion, dictionary: &SyntheticDict, model
 ///
 /// The seed is typed in the setup half, which keeps the allocations it costs outside
 /// the measurement: what the iteration measures is a session that is already
-/// composing, which is the state nine keystrokes in ten arrive in.
-///
-/// The allocation count the reuse is judged by cannot be asserted here, for the same
-/// reason as in [`bench_decode_reuse`]: counting allocations needs a
-/// `#[global_allocator]` and an `unsafe impl GlobalAlloc`, and `unsafe` is confined to
-/// the two FFI directories and `ime-dict/src/mmap.rs`. What this case reports is the
-/// time a keystroke costs; the buffers it reuses are pinned by the unit tests beside
-/// the session machine, which show that a repeat frame grows no capacity.
+/// composing, which is the state nine keystrokes in ten arrive in. What a keystroke
+/// allocates is `alloc/keystroke`'s to report, under the same counting allocator the
+/// decode case reads.
 ///
 /// # Panics
 ///
@@ -401,6 +401,145 @@ fn bench_session(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &
         );
     });
     group.finish();
+}
+
+/// Times the two hot paths the way the counting allocator sees them.
+///
+/// Criterion answers "how long"; the `alloc` group exists for "how many times", which
+/// is the number the decode path's buffer reuse is stated in and the one a timing
+/// threshold on a fast machine cannot catch changing. Criterion has no counter, so each
+/// case reads the process allocator around its routine and consumes the delta: what it
+/// reports as the time is therefore the cost of the work with the observation inside
+/// it, which is the honest price of the measurement.
+///
+/// The assertion the group makes is not a threshold. A threshold lives in
+/// `docs/dev/budgets.json`, and the runs that assert it are the integration test that
+/// installs the same allocator and `xtask budget`, which reads the counts that test
+/// writes. What a criterion run can assert on its own is that the count is the same on
+/// every iteration: a path whose allocation cost depends on how many times it has run
+/// is a workspace that is not reusing what it holds, and it would otherwise hide behind
+/// a mean that looks normal.
+fn bench_allocations(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &InMemoryLm) {
+    bench_alloc_decode(criterion, dictionary, model);
+    bench_alloc_keystroke(criterion, dictionary, model);
+}
+
+/// Times and counts one steady-state decode, the path `decode/viterbi_into` measures.
+///
+/// The workspace is warm before the first sample, which is the state the assertion is
+/// about: a first iteration that filled the buffers would make the count a property of
+/// the sample order rather than of the path.
+///
+/// # Panics
+///
+/// When two iterations allocate different amounts, which is a workspace that stopped
+/// reusing what it holds.
+fn bench_alloc_decode(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &InMemoryLm) {
+    let decoder = Decoder::default();
+    let user = NoUser;
+    let Some(case) = CASES.iter().find(|case| case.name == REUSE_CASE) else {
+        return;
+    };
+    let request = DecodeRequest::new(case.raw);
+    let mut scratch = DecodeScratch::new();
+    decoder.decode_into(&mut scratch, &request, dictionary, &user, model);
+    let mut group = criterion.benchmark_group("alloc");
+    group.bench_function("decode", |bencher| {
+        let mut seen: Option<usize> = None;
+        bencher.iter(|| {
+            let before = (alloc_count::allocations(), alloc_count::bytes());
+            decoder.decode_into(&mut scratch, black_box(&request), dictionary, &user, model);
+            black_box(scratch.result().candidates.len());
+            let counted = (
+                alloc_count::allocations() - before.0,
+                alloc_count::bytes() - before.1,
+            );
+            assert_same_every_iteration(&mut seen, counted.0);
+            black_box(counted)
+        });
+    });
+    group.finish();
+}
+
+/// Times and counts the keystrokes of a session that is already composing, the path
+/// `session/keystroke` measures.
+///
+/// The session is built and seeded in the setup half, so its allocations stay outside
+/// both the timing and the counted window, and one iteration is the whole run of
+/// [`SESSION_KEYS`] -- the same shape the timing case reports, so the two numbers can be
+/// read side by side.
+///
+/// # Panics
+///
+/// When two iterations allocate different amounts, or when a keystroke does not reach
+/// the frame path, because the case would then be measuring a diagnostic.
+fn bench_alloc_keystroke(
+    criterion: &mut Criterion,
+    dictionary: &SyntheticDict,
+    model: &InMemoryLm,
+) {
+    let cfg = SessionConfig::default();
+    let decoder = Decoder::default();
+    let user = NoUser;
+    let env = SessionEnv {
+        decoder: &decoder,
+        lexicon: dictionary,
+        user_freq: &user,
+        lm: model,
+    };
+    let mut group = criterion.benchmark_group("alloc");
+    group.bench_function("keystroke", |bencher| {
+        let mut seen: Option<usize> = None;
+        bencher.iter_batched(
+            || {
+                let mut session = Session::new();
+                for ch in SESSION_SEED.chars() {
+                    let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+                }
+                session
+            },
+            |mut session| {
+                let before = (alloc_count::allocations(), alloc_count::bytes());
+                let mut frames = 0usize;
+                for ch in SESSION_KEYS.chars() {
+                    let effects = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+                    frames += effects
+                        .iter()
+                        .filter(|effect| matches!(effect, Effect::SendFrame(_)))
+                        .count();
+                }
+                assert_eq!(
+                    frames,
+                    SESSION_KEYS.len(),
+                    "each keystroke repaints the window"
+                );
+                let counted = (
+                    alloc_count::allocations() - before.0,
+                    alloc_count::bytes() - before.1,
+                );
+                assert_same_every_iteration(&mut seen, counted.0);
+                black_box(counted)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.finish();
+}
+
+/// Asserts that `counted` is what every iteration before this one allocated.
+///
+/// The first iteration only sets the bar: the case has nothing to compare it with, and
+/// a comparison against a number invented for the purpose would be the assertion
+/// asserting itself.
+fn assert_same_every_iteration(seen: &mut Option<usize>, counted: usize) {
+    match *seen {
+        None => *seen = Some(counted),
+        Some(first) => assert_eq!(
+            counted, first,
+            "every iteration of a warm path allocates the same amount: {counted} against \
+             the {first} the first iteration produced"
+        ),
+    }
 }
 
 /// Times building the word lattice of the widest input the buffer accepts.

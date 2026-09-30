@@ -78,6 +78,11 @@ pub(super) fn run(layout: &Layout, user: &UserData, options: &Options) -> Result
     }
     manifest::remove_file(elevation, &layout.manifest_path())?;
     manifest::remove_directory(elevation, &layout.data_dir)?;
+    // The metainfo directory is a shared system directory the install may have created
+    // for its one payload; `rmdir` semantics leave it standing the moment anything else
+    // lives in it, so the prune is safe on every freedesktop system and restores the
+    // tree where the install created it.
+    manifest::remove_directory(elevation, &layout.metainfo_dir)?;
     print!("{}", user_data_report(user));
     println!("uninstall: run `fcitx5 -r` to reload Fcitx5");
     Ok(())

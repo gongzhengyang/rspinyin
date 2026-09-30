@@ -708,8 +708,7 @@ mod tests {
         let mut expected: Vec<u32> = (0..CONTROL_CAPACITY as u32).collect();
         expected.push(99);
         assert_eq!(
-            revisions,
-            expected,
+            revisions, expected,
             "the pair survives a full queue, in order and complete"
         );
         assert_eq!(

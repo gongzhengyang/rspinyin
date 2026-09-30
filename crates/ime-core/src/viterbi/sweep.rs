@@ -52,13 +52,6 @@ const NO_EDGE: u32 = u32::MAX;
 /// Marks a path with no predecessor.
 const NO_SLOT: u16 = u16::MAX;
 
-/// Bytes one word adds to a candidate, used to size its text before it is built.
-///
-/// A word is at least one CJK character, three bytes in UTF-8, so this is a lower bound and a
-/// good enough hint: sizing exactly would need a second pass over the path for the sake of a
-/// few bytes.
-const BYTES_PER_WORD: usize = 3;
-
 /// The Q16.16 unit as a float, for the display-only candidate score.
 const Q16_ONE: f32 = (Q * Q) as f32;
 
@@ -464,9 +457,13 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
         draft.score = score;
         draft.source = CandidateSource::Dict;
         draft.syllables = 0;
-        // A capacity hint, not a requirement: a buffer that already holds enough is left
-        // alone, so a steady-state decode reserves nothing.
-        draft.text.reserve(count.saturating_mul(BYTES_PER_WORD));
+        // No `reserve` here, deliberately. The slot's text is the same text it held on the
+        // last decode of this input, so the capacity it already carries is enough, and a
+        // reserve sized from `count * BYTES_PER_WORD` would ask for *four bytes a word*
+        // against words the dictionary spells in three -- a request the buffer can refuse
+        // only by reallocating. That is how a hint built to save a steady-state decode
+        // becomes the one thing allocating in it; `push_str` grows a fresh slot on its own
+        // and leaves a reused one alone.
         for index in edges[..count].iter().rev() {
             let Some(edge) = self.sources.lattice.edge_at(*index as usize) else {
                 return false;

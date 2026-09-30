@@ -184,7 +184,10 @@ fn test_plan_new_refuses_a_run_that_would_type_nothing() {
     // A hundredth of a second at one key a minute comes to no whole stroke, and a run that
     // types nothing would report a perfect pass rate over an empty schedule.
     let refused = Plan::new(0.000_01, 0.016, INTERVAL_S, WARMUP_S);
-    assert!(matches!(refused, Err(PlanError::NoStrokes { .. })), "{refused:?}");
+    assert!(
+        matches!(refused, Err(PlanError::NoStrokes { .. })),
+        "{refused:?}"
+    );
 }
 
 #[test]
@@ -214,7 +217,10 @@ fn test_plan_due_merges_the_two_schedules_and_gives_a_tie_to_the_sample() {
     assert_eq!(plan.planned_strokes(), 10);
     assert_eq!(plan.planned_samples(), 3);
 
-    assert_eq!(plan.due(0, 0), Some((Step::Sample, std::time::Duration::ZERO)));
+    assert_eq!(
+        plan.due(0, 0),
+        Some((Step::Sample, std::time::Duration::ZERO))
+    );
     assert_eq!(
         plan.due(0, 1),
         Some((Step::Stroke, std::time::Duration::ZERO))
@@ -348,8 +354,11 @@ fn test_report_read_refuses_a_document_it_cannot_judge() {
     let newer = dir.join("newer.json");
     let text = serde_json::to_string(&report(&eight_hour_plan(), series(4, |_| 40_000)))
         .expect("the report renders");
-    fs::write(&newer, text.replace("\"report_version\":2", "\"report_version\":3"))
-        .expect("the file is writable");
+    fs::write(
+        &newer,
+        text.replace("\"report_version\":2", "\"report_version\":3"),
+    )
+    .expect("the file is writable");
     let refused = SoakReport::read(&newer);
     assert!(refused.is_err(), "a newer schema is not read as this one");
 }
@@ -387,9 +396,16 @@ fn test_report_pass_rate_is_a_fraction_of_the_plan_not_of_what_the_run_reached()
 #[test]
 fn test_stop_reason_describe_carries_its_code_and_its_detail() {
     let stolen = StopReason::focus_stolen("the focus moved to 0x600003");
-    assert!(stolen.describe().starts_with("soak/focus-stolen: "), "{stolen:?}");
+    assert!(
+        stolen.describe().starts_with("soak/focus-stolen: "),
+        "{stolen:?}"
+    );
     assert!(stolen.describe().contains("0x600003"), "{stolen:?}");
-    assert!(StopReason::process_died("gone").describe().starts_with("soak/process-died"));
+    assert!(
+        StopReason::process_died("gone")
+            .describe()
+            .starts_with("soak/process-died")
+    );
 }
 
 // ── The statistics ──────────────────────────────────────────────────────────────
@@ -408,8 +424,8 @@ fn test_rss_stats_of_a_flat_series_has_no_envelope() {
 fn test_rss_stats_of_a_rising_series_separates_the_warmup_from_the_drift() {
     // Every reading adds half a mebibyte, so the whole-run envelope is nine of them and the
     // steady window -- everything from sixty seconds on -- holds three.
-    let stats = RssStats::of(&series(10, |index| 40_000 + index * 512), WARMUP_S)
-        .expect("ten readings");
+    let stats =
+        RssStats::of(&series(10, |index| 40_000 + index * 512), WARMUP_S).expect("ten readings");
     assert_eq!(stats.envelope_kb, 9 * 512);
     assert_eq!(stats.steady_envelope_kb, 3 * 512);
     assert_eq!(stats.steady_min_kb, 40_000 + 6 * 512);
@@ -423,8 +439,8 @@ fn test_rss_stats_of_a_rising_series_separates_the_warmup_from_the_drift() {
 
 #[test]
 fn test_rss_stats_of_a_series_that_shrank_has_a_negative_slope() {
-    let stats = RssStats::of(&series(10, |index| 40_000 - index * 512), WARMUP_S)
-        .expect("ten readings");
+    let stats =
+        RssStats::of(&series(10, |index| 40_000 - index * 512), WARMUP_S).expect("ten readings");
     assert!(stats.slope_kib_per_hour < 0.0, "{stats:?}");
     // The envelope is a magnitude: a run that gave memory back still moved.
     assert_eq!(stats.envelope_kb, 9 * 512);
@@ -472,8 +488,18 @@ fn test_judge_passes_a_run_that_did_what_it_planned_and_stayed_flat() {
     let report = report(&eight_hour_plan(), series(10, |_| 40_000));
     let verdict = judge::judge(&report, &budgets()).expect("the report is judgeable");
     assert!(verdict.is_pass(), "{:?}", verdict.violations);
-    assert!(verdict.passed.iter().any(|line| line.contains("soak/rss-drift")));
-    assert!(verdict.passed.iter().any(|line| line.contains("soak/pass-rate")));
+    assert!(
+        verdict
+            .passed
+            .iter()
+            .any(|line| line.contains("soak/rss-drift"))
+    );
+    assert!(
+        verdict
+            .passed
+            .iter()
+            .any(|line| line.contains("soak/pass-rate"))
+    );
     assert!(
         verdict
             .passed
@@ -492,7 +518,10 @@ fn test_judge_passes_a_run_that_did_what_it_planned_and_stayed_flat() {
 fn test_judge_fails_a_run_whose_resident_set_moved_past_the_ceiling() {
     // Half a mebibyte per reading, four steady readings: three mebibytes of drift against
     // the two the document states.
-    let report = report(&eight_hour_plan(), series(10, |index| 40_000 + index * 1_024));
+    let report = report(
+        &eight_hour_plan(),
+        series(10, |index| 40_000 + index * 1_024),
+    );
     let verdict = judge::judge(&report, &budgets()).expect("the report is judgeable");
     assert!(!verdict.is_pass());
     assert!(
@@ -511,7 +540,11 @@ fn test_judge_reads_the_ceiling_out_of_the_document_rather_than_a_constant() {
     // once against a copy whose drift ceiling has been made impossible. A verdict that did
     // not move would be one that never read the document.
     let report = report(&eight_hour_plan(), series(10, |index| 40_000 + index * 512));
-    assert!(judge::judge(&report, &budgets()).expect("judgeable").is_pass());
+    assert!(
+        judge::judge(&report, &budgets())
+            .expect("judgeable")
+            .is_pass()
+    );
 
     let root = budget::repo_root().expect("the repository root resolves");
     let text = fs::read_to_string(root.join(budget::BUDGETS_FILE)).expect("readable");
@@ -519,9 +552,15 @@ fn test_judge_reads_the_ceiling_out_of_the_document_rather_than_a_constant() {
     assert_ne!(patched, text, "the threshold to patch is in the document");
     let impossible = Budgets::from_json(&patched).expect("the patched document is valid");
     let verdict = judge::judge(&report, &impossible).expect("judgeable");
-    assert!(!verdict.is_pass(), "a one kibibyte ceiling is not met by 1536");
     assert!(
-        verdict.violations.iter().any(|line| line.contains("1536KiB of 1KiB")),
+        !verdict.is_pass(),
+        "a one kibibyte ceiling is not met by 1536"
+    );
+    assert!(
+        verdict
+            .violations
+            .iter()
+            .any(|line| line.contains("1536KiB of 1KiB")),
         "{:?}",
         verdict.violations
     );
@@ -569,11 +608,9 @@ fn test_judge_fails_a_run_that_stopped_early_and_says_why() {
     let verdict = judge::judge(&report, &budgets()).expect("the report is judgeable");
     assert!(!verdict.is_pass());
     assert!(
-        verdict
-            .violations
-            .iter()
-            .any(|line| line.starts_with("soak/stopped-early")
-                && line.contains("soak/focus-stolen")),
+        verdict.violations.iter().any(
+            |line| line.starts_with("soak/stopped-early") && line.contains("soak/focus-stolen")
+        ),
         "{:?}",
         verdict.violations
     );

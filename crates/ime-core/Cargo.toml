@@ -15,6 +15,11 @@ smallvec.workspace = true
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
+# Test-only. The counting allocator behind the decode path's allocation budget: a
+# `#[global_allocator]` can only be installed by a binary target, which is what the
+# integration test in `tests/` is. `scripts/check-unsafe.sh` confines this crate to
+# `[dev-dependencies]` sections, so it can never reach a release artifact.
+alloc-count.workspace = true
 
 # criterion supplies its own harness, so the default libtest harness must be turned off
 # per target; an auto-discovered bench would otherwise fail to link two `main`s.

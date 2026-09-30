@@ -25,8 +25,8 @@ use ime_core::privacy::DefaultPolicy;
 use ime_core::state::{Session, SessionEnv, SessionEvent, step};
 use ime_core::viterbi::Decoder;
 use ime_types::{
-    ImeError, KeyAction, Lexicon, PageState, SyllableId, UiCommand, UserFreqSource, WordFlags,
-    WordIter, WordRef,
+    ImeError, Lexicon, PageState, SyllableId, UiCommand, UserFreqSource, WordFlags, WordIter,
+    WordRef,
 };
 use rspinyin::engine::host::Host;
 use rspinyin::engine::{KeyBindings, KeyRouter, RoutingConfig, translate_key};
@@ -457,10 +457,8 @@ impl Fixture {
     pub fn router(&self, keys: KeyBindings) -> KeyRouter<'_> {
         let mut config = self.config;
         config.keys = keys;
-        let privacy = ContextPrivacy::new(
-            Box::new(DefaultPolicy::default()),
-            AppBlacklist::default(),
-        );
+        let privacy =
+            ContextPrivacy::new(Box::new(DefaultPolicy::default()), AppBlacklist::default());
         let mut router = KeyRouter::new(self.env(), privacy, config);
         router.activate_reported(IC, ordinary_report());
         router

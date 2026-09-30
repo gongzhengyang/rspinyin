@@ -90,7 +90,9 @@ fn test_probe_with_a_wayland_only_session_does_not_pretend_to_have_a_window() {
     let outcome = probe(&Environment::new(None, Some("wayland-0")));
     assert_eq!(outcome.backend_id(), None);
     assert_eq!(outcome.tier(), Some(SessionTier::Wayland));
-    let line = outcome.diagnostic().expect("an unsupported probe records a line");
+    let line = outcome
+        .diagnostic()
+        .expect("an unsupported probe records a line");
     assert!(
         line.starts_with(crate::ui_impl::NO_BACKEND_CODE),
         "the frozen code is the line's first field: {line}"

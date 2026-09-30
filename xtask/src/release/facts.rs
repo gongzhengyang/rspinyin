@@ -393,7 +393,8 @@ mod tests {
 
     #[test]
     fn test_floor_in_reads_the_core_dependency_of_its_own_section() {
-        let descriptor = "[Addon]\nName=Rust Pinyin\nVersion=0.1.0\n\n[Addon/Dependencies]\n0=core:5.1.0\n";
+        let descriptor =
+            "[Addon]\nName=Rust Pinyin\nVersion=0.1.0\n\n[Addon/Dependencies]\n0=core:5.1.0\n";
         assert_eq!(floor_in(descriptor).as_deref(), Some("5.1.0"));
         // A floor declared in another section is not the addon's floor.
         assert_eq!(floor_in("[Addon]\n0=core:5.1.7\n"), None);

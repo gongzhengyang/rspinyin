@@ -11,7 +11,7 @@ use super::*;
 use ime_types::DecodeRequest;
 
 use crate::lm::InMemoryLm;
-use crate::state::paging::{MAX_PAGES, MAX_PAGE_SIZE, MAX_REACHABLE_CANDIDATES, Paging};
+use crate::state::paging::{MAX_PAGE_SIZE, MAX_PAGES, MAX_REACHABLE_CANDIDATES, Paging};
 use crate::viterbi::decoder::{DEFAULT_MAX_CANDIDATES, DecodeConfig, Decoder, MAX_CANDIDATES};
 use crate::viterbi::lattice::WORDS_PER_KEY;
 use crate::viterbi::lattice::testing::{NoUser, PageLexicon};

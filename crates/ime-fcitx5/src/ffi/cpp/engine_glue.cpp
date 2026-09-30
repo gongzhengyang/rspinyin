@@ -58,6 +58,7 @@
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputmethodengine.h>
 #include <fcitx/inputmethodentry.h>
+#include <fcitx/inputpanel.h>
 #include <fcitx/text.h>
 
 // ── Mirrored C ABI contract ──────────────────────────────────────────────────────

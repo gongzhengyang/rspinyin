@@ -65,6 +65,7 @@ const DOCUMENT: &str = r#"{
     "idle_poll_timer_count": 0
   },
   "size_mb": { "so_stripped": 13.5, "base_dict": 13.5 },
+  "alloc_count": { "decode_steady": 5 },
   "robustness": { "soak_hours": 5.5, "rss_drift_mb": 5.5, "pass_rate_pct": 5.5 },
   "bench": {
     "passthrough_classify_ns": 555.5,

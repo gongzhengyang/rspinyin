@@ -23,7 +23,7 @@
 
 use crate::testd::TestError;
 use crate::testd::keys::{
-    self, CONTROL_MASK, KS_BACKSPACE, KS_ESCAPE, KS_EQUAL, KS_MINUS, KS_SPACE, KS_TAB, KeyStroke,
+    self, CONTROL_MASK, KS_BACKSPACE, KS_EQUAL, KS_ESCAPE, KS_MINUS, KS_SPACE, KS_TAB, KeyStroke,
 };
 
 /// One thing the run does, as a unit of the cycle.
@@ -288,7 +288,10 @@ mod tests {
 
     #[test]
     fn test_action_transition_moves_the_session_only_where_it_is_bound() {
-        assert_eq!(step(Action::Compose("ni"), Phase::Idle), vec![Phase::Composing]);
+        assert_eq!(
+            step(Action::Compose("ni"), Phase::Idle),
+            vec![Phase::Composing]
+        );
         // The two ways of taking a candidate pass through the committing phase on the way
         // back to idle, so the walk never rests in a phase the session does not rest in.
         for action in [Action::Commit, Action::Select('2')] {
@@ -330,7 +333,12 @@ mod tests {
         // teardown path and never the path user-frequency writes happen on.
         assert!(walk.commits() >= 2, "{:?}", walk.phases);
         let sequence = walk.sequence();
-        let loop_ = [Phase::Idle, Phase::Composing, Phase::Committing, Phase::Idle];
+        let loop_ = [
+            Phase::Idle,
+            Phase::Composing,
+            Phase::Committing,
+            Phase::Idle,
+        ];
         assert!(
             sequence.windows(loop_.len()).any(|window| window == loop_),
             "the walk never takes the whole loop: {sequence:?}"

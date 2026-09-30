@@ -139,15 +139,17 @@ fn report(outcome: &Outcome) {
     let release = &manifest.release;
     let toolchain = &manifest.toolchain;
     let compatibility = &manifest.compatibility;
-    println!("verify: rspinyin {} ({})", release.version, manifest.request_id);
+    println!(
+        "verify: rspinyin {} ({})",
+        release.version, manifest.request_id
+    );
     let origin = match &release.commit {
         Some(commit) => format!("built from {commit}"),
         None => "built from a tree with no commit recorded".to_owned(),
     };
     println!(
         "verify: {origin} at {} (source date epoch {})",
-        release.built_at,
-        release.source_date_epoch
+        release.built_at, release.source_date_epoch
     );
     println!(
         "verify: built by rustc {} on channel {}, glibc >= {}",

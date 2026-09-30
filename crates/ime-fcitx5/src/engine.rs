@@ -674,7 +674,9 @@ mod temp_english_tests {
 
     /// Whether the session of [`IC`] is in temporary English mode.
     fn is_temp_english(router: &KeyRouter<'_>) -> bool {
-        router.session(IC).is_some_and(|session| session.temp_english)
+        router
+            .session(IC)
+            .is_some_and(|session| session.temp_english)
     }
 
     #[test]
@@ -740,7 +742,10 @@ mod temp_english_tests {
                 !router.key_event(IC, &press(KEY_RETURN, 0), &mut host),
                 "the return key reaches the application under {label}"
             );
-            assert!(!is_temp_english(&router), "and leaves the mode under {label}");
+            assert!(
+                !is_temp_english(&router),
+                "and leaves the mode under {label}"
+            );
             assert_eq!(
                 router.session(IC).map(|session| session.state),
                 Some(SessionState::Idle),

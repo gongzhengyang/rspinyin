@@ -166,10 +166,7 @@ fn release(at: (i32, i32)) -> SurfaceEvent {
 }
 
 fn motion(at: (i32, i32)) -> SurfaceEvent {
-    SurfaceEvent::PointerMotion {
-        x: at.0,
-        y: at.1,
-    }
+    SurfaceEvent::PointerMotion { x: at.0, y: at.1 }
 }
 
 fn wheel(at: (i32, i32), delta: i32) -> SurfaceEvent {
@@ -306,7 +303,9 @@ fn test_route_click_and_the_number_key_name_the_same_candidate() {
 /// An event with the trigger field removed, for comparing two paths to one candidate.
 fn normalise(event: UiEvent) -> UiEvent {
     match event {
-        UiEvent::Select { revision, index, .. } => UiEvent::Select {
+        UiEvent::Select {
+            revision, index, ..
+        } => UiEvent::Select {
             revision,
             index,
             trigger: SelectTrigger::Mouse,
@@ -439,7 +438,11 @@ fn test_route_click_is_never_dropped_behind_a_busy_hover_and_page_queue() {
         selected,
         "the click comes out ahead of everything else that is queued"
     );
-    assert_eq!(events.select_timeouts(), 0, "and nothing had to be abandoned");
+    assert_eq!(
+        events.select_timeouts(),
+        0,
+        "and nothing had to be abandoned"
+    );
 }
 
 #[test]

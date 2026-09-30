@@ -591,7 +591,8 @@ impl Adapter {
             self.state.preedit.after.iter().map(run_data).collect();
         self.before.set_vec(before);
         self.after.set_vec(after);
-        self.window.set_caret_visible(self.state.preedit.caret_visible);
+        self.window
+            .set_caret_visible(self.state.preedit.caret_visible);
         self.window
             .set_preedit_truncated(self.state.preedit.truncated);
         self.window

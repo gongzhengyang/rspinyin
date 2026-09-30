@@ -164,7 +164,9 @@ impl DictLm {
     /// formed with checked arithmetic: a record whose index would overflow the offset is
     /// reported as a miss rather than read.
     fn record(&self, index: u32) -> Option<(u32, u16)> {
-        let at = usize::try_from(index).ok()?.checked_mul(UNIGRAM_ENTRY_SIZE)?;
+        let at = usize::try_from(index)
+            .ok()?
+            .checked_mul(UNIGRAM_ENTRY_SIZE)?;
         let hash = read_u32(self.unigram, at, "unigram_hash").ok()?;
         let prob = read_u16(self.unigram, at.checked_add(4)?, "unigram_prob").ok()?;
         Some((hash, prob))
@@ -216,6 +218,8 @@ impl core::fmt::Debug for DictLm {
     /// Reports how many records the table holds rather than the scores themselves: the
     /// table is 16 KiB of derived values, and the count is the part a log line can use.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("DictLm").field("entries", &self.count).finish()
+        f.debug_struct("DictLm")
+            .field("entries", &self.count)
+            .finish()
     }
 }

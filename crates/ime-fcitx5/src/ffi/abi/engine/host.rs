@@ -201,8 +201,7 @@ unsafe extern "C" {
     ///
     /// As [`rspinyin_host_commit`]; `caret` must be a byte offset on a character boundary
     /// of that buffer.
-    fn rspinyin_host_set_preedit(ic_id: u64, text: *const c_char, len: usize, caret: u32)
-    -> bool;
+    fn rspinyin_host_set_preedit(ic_id: u64, text: *const c_char, len: usize, caret: u32) -> bool;
 
     /// Empties the client's preedit area. Defined in `src/ffi/cpp/engine_glue.cpp`.
     ///

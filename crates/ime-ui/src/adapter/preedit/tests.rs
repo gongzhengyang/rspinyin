@@ -113,9 +113,15 @@ fn test_layout_preedit_splits_the_runs_around_a_caret_at_the_end() {
     );
 
     assert_eq!(texts(&layout.before), ["ni", "'", "hao"]);
-    assert!(layout.after.is_empty(), "nothing follows a caret at the end");
+    assert!(
+        layout.after.is_empty(),
+        "nothing follows a caret at the end"
+    );
     assert!(layout.caret_visible);
-    assert!(!layout.truncated, "the reading fits the budget it was given");
+    assert!(
+        !layout.truncated,
+        "the reading fits the budget it was given"
+    );
     assert!(layout.show_secondary_status);
     assert_eq!(layout.before[1].kind, RunKind::Separator);
     assert_eq!(layout.before[1].kind.code(), 1);
@@ -168,7 +174,10 @@ fn test_layout_preedit_cuts_the_head_and_keeps_the_newest_input() {
     // The tail is what survives: 3 whole syllables of 21dp each plus the separators between
     // them are 84dp, and the remainder of 16dp pays for two of the three characters of the
     // syllable the cut lands in.
-    assert_eq!(texts(&layout.before), ["ao", "'", "hao", "'", "hao", "'", "hao"]);
+    assert_eq!(
+        texts(&layout.before),
+        ["ao", "'", "hao", "'", "hao", "'", "hao"]
+    );
     assert!(layout.truncated, "a dropped prefix is reported");
     assert!(
         runs_width(&layout.before, font_size) <= budget,
@@ -203,7 +212,7 @@ fn test_layout_preedit_hides_a_caret_the_cut_dropped() {
 fn test_layout_preedit_gives_the_secondary_markers_room_back_to_a_narrow_preedit() {
     let mut measure = super::Measure::default();
     // One dp under the threshold: the cluster drops its two secondary markers and the
-    // preedit is laid out with the 48dp they were occupying. `ni'hao` is 42dp, so it fits
+    // preedit is laid out with the 40dp they were occupying. `ni'hao` is 42dp, so it fits
     // only because that room came back.
     let narrow = layout_preedit(&typed("ni'hao"), 40.0, 14.0, &mut measure);
     assert!(!narrow.show_secondary_status);
@@ -213,12 +222,7 @@ fn test_layout_preedit_gives_the_secondary_markers_room_back_to_a_narrow_preedit
     );
 
     // The threshold itself is inclusive: at exactly the minimum the markers stay.
-    let at_minimum = layout_preedit(
-        &typed("ni'hao"),
-        MIN_PREEDIT_WIDTH_DP,
-        14.0,
-        &mut measure,
-    );
+    let at_minimum = layout_preedit(&typed("ni'hao"), MIN_PREEDIT_WIDTH_DP, 14.0, &mut measure);
     assert!(at_minimum.show_secondary_status);
     assert_eq!(texts(&at_minimum.before), ["ni", "'", "hao"]);
 }
@@ -291,12 +295,14 @@ fn test_layout_preedit_writes_into_the_buffers_it_already_holds() {
 #[test]
 fn test_layout_preedit_cuts_on_a_character_boundary() {
     let font_size = 14.0;
-    let preedit = preedit_of(&[(SpanKind::Passthrough, "你好世界")], 12);
+    let preedit = preedit_of(&[(SpanKind::Passthrough, "你好世界你好")], 24);
     let layout = layout_preedit(&preedit, 30.0, font_size, &mut super::Measure::default());
 
-    // Two full-width characters are 28dp and three are 42dp, so the budget of 30dp keeps
-    // exactly the last two -- whole characters, never half of one.
-    assert_eq!(texts(&layout.before), ["世界"]);
+    // A line this narrow is below the markers' minimum, so the markers give their room
+    // back and the preedit's budget is the line plus `SECONDARY_STATUS_WIDTH_DP`: 70dp.
+    // Five full-width characters are 70dp and six are 84dp, so the budget keeps exactly
+    // the last five -- whole characters, never half of one.
+    assert_eq!(texts(&layout.before), ["好世界你好"]);
     assert!(layout.truncated);
     assert_eq!(layout.before[0].kind, RunKind::Passthrough);
     assert_eq!(layout.before[0].kind.code(), 2);
@@ -348,7 +354,10 @@ fn test_truncation_start_stays_on_a_character_boundary() {
 fn test_run_kind_maps_the_contract_and_rejects_the_cursor() {
     assert_eq!(RunKind::of(SpanKind::Syllable), Some(RunKind::Syllable));
     assert_eq!(RunKind::of(SpanKind::Separator), Some(RunKind::Separator));
-    assert_eq!(RunKind::of(SpanKind::Passthrough), Some(RunKind::Passthrough));
+    assert_eq!(
+        RunKind::of(SpanKind::Passthrough),
+        Some(RunKind::Passthrough)
+    );
     assert_eq!(
         RunKind::of(SpanKind::Cursor),
         None,
@@ -369,13 +378,21 @@ fn test_secondary_status_width_matches_the_cluster_the_component_draws() {
         SECONDARY_STATUS_WIDTH_DP, secondary,
         "the room the preedit gains is the two markers' own width (3.1.1)"
     );
+    // Dropping the markers folds their two icons and the two gaps that separated them
+    // from what stays, so the cluster's fixed width loses that much and the strip keeps
+    // one gap of slack between it and the preedit.
     assert_eq!(
         full - SECONDARY_STATUS_WIDTH_DP,
-        secondary,
+        2.0 * metrics.header_icon_size + 2.0 * metrics.header_icon_gap,
         "and it is exactly what the cluster's fixed width loses when they are dropped"
     );
-    assert!(
-        MIN_PREEDIT_WIDTH_DP <= SECONDARY_STATUS_WIDTH_DP,
-        "the preedit is never given less room than the markers it displaces"
-    );
+    // A relation between two constants is a compile-time invariant, which is what the
+    // const block asserts; a runtime `assert!` on it is the one clippy calls a constant
+    // assertion, and it would also run once per test process for no information.
+    const {
+        assert!(
+            MIN_PREEDIT_WIDTH_DP >= SECONDARY_STATUS_WIDTH_DP,
+            "the preedit is never given less room than the markers it displaces"
+        );
+    }
 }

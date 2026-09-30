@@ -32,9 +32,15 @@ fn version() -> String {
 
 /// The `kind:architecture` list the release workflow declares.
 fn matrix() -> Vec<String> {
-    ["deb:x86_64", "deb:aarch64", "rpm:x86_64", "rpm:aarch64", "pkg:x86_64"]
-        .map(str::to_owned)
-        .to_vec()
+    [
+        "deb:x86_64",
+        "deb:aarch64",
+        "rpm:x86_64",
+        "rpm:aarch64",
+        "pkg:x86_64",
+    ]
+    .map(str::to_owned)
+    .to_vec()
 }
 
 /// Writes the files a complete release publishes into `dir`.
@@ -85,7 +91,10 @@ fn test_expect_packages_parses_the_matrix_the_workflow_declares() {
     assert_eq!(parsed[0], (PackageKind::Deb, Architecture::X86_64));
     assert_eq!(parsed[4], (PackageKind::Pkg, Architecture::X86_64));
     assert_eq!(
-        parsed.iter().filter(|(_, arch)| *arch == Architecture::Aarch64).count(),
+        parsed
+            .iter()
+            .filter(|(_, arch)| *arch == Architecture::Aarch64)
+            .count(),
         2
     );
 }
@@ -104,7 +113,10 @@ fn test_expect_packages_refuses_the_neighbours() {
         "deb:amd64".to_owned(),
     ] {
         let failure = expect_packages(&[entry.clone()]).expect_err("not a declared package");
-        assert!(failure.to_string().starts_with("release:"), "{entry}: {failure}");
+        assert!(
+            failure.to_string().starts_with("release:"),
+            "{entry}: {failure}"
+        );
     }
 }
 

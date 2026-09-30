@@ -123,6 +123,11 @@ fn fixture(tag: &str) -> (PathBuf, Sources, Layout, UserData) {
         "addon descriptor",
     );
     artifact(&root, "packaging/fcitx5/rspinyin-im.conf", "input method");
+    artifact(
+        &root,
+        "packaging/metainfo/org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml",
+        "metainfo",
+    );
     artifact(&root, "assets/icon-48.png", "icon bytes");
     artifact(&root, "assets/icon.svg", "<svg/>");
     dictionary(&root, "data/compiled/base.dict");
@@ -293,7 +298,11 @@ fn test_round_trip_restores_the_destination_tree_byte_for_byte() {
         report.planned.contains(&displaced),
         "the displaced descriptor is still a planned payload"
     );
-    assert_eq!(report.planned.len(), 8, "six payloads plus two icons");
+    assert_eq!(
+        report.planned.len(),
+        9,
+        "six payloads, two icons and the metainfo"
+    );
     assert_eq!(report.manifest.version, MANIFEST_VERSION);
     assert_eq!(
         report.manifest.package_version,

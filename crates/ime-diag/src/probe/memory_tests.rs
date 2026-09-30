@@ -140,7 +140,10 @@ fn test_alloc_probe_realloc_moves_live_and_raises_the_peak() {
     assert_eq!(snapshot.allocations, 1, "a resize is one call, not two");
     assert_eq!(snapshot.deallocations, 0);
     assert_eq!(snapshot.reallocations, 2);
-    assert!(!snapshot.is_empty(), "a scope that only resized measured something");
+    assert!(
+        !snapshot.is_empty(),
+        "a scope that only resized measured something"
+    );
 }
 
 #[test]
@@ -168,7 +171,10 @@ fn test_alloc_probe_arm_after_a_scope_starts_the_next_one_empty() {
     probe.arm();
     probe.note_alloc(64);
     let snapshot = probe.snapshot();
-    assert_eq!(snapshot.allocations, 1, "the previous scope is not in this one");
+    assert_eq!(
+        snapshot.allocations, 1,
+        "the previous scope is not in this one"
+    );
     assert_eq!(snapshot.peak_bytes, 64);
     assert_eq!(snapshot.live_bytes, 64);
 }
@@ -261,10 +267,7 @@ fn test_memory_reading_dirty_kib_is_the_sum_the_budget_is_stated_in() {
 fn test_memory_reading_now_reads_this_process() {
     let reading = MemoryReading::now().expect("this process can be read");
     assert!(reading.rss_kib > 0, "a running process is resident");
-    assert!(
-        reading.dirty_kib() > 0,
-        "a Rust process has private pages"
-    );
+    assert!(reading.dirty_kib() > 0, "a Rust process has private pages");
     // A second reading is a second reading of the same process, not a copy of the
     // first: the reader goes back to the kernel every time.
     let again = MemoryReading::now().expect("this process can be read");
@@ -301,10 +304,7 @@ fn test_memory_snapshot_to_text_omits_what_nothing_measured() {
     };
     let text = snapshot.to_text();
     assert_eq!(text, "memory.rss_kib=1024\n");
-    assert_eq!(
-        MemorySnapshot::parse(&text).expect("it parses"),
-        snapshot
-    );
+    assert_eq!(MemorySnapshot::parse(&text).expect("it parses"), snapshot);
     assert_eq!(MemorySnapshot::default().to_text(), "");
 }
 
@@ -396,7 +396,10 @@ fn test_memory_snapshot_growth_is_the_difference_and_never_negative() {
     assert_eq!(snapshot.ui_growth_kib(), Some(1_024));
     // The dictionary's growth is measured in the dirty totals, not in the resident set.
     assert_eq!(snapshot.dictionary_growth_kib(), Some(0));
-    assert_ne!(snapshot.dictionary_growth_kib(), snapshot.plugin_growth_kib());
+    assert_ne!(
+        snapshot.dictionary_growth_kib(),
+        snapshot.plugin_growth_kib()
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -441,7 +444,9 @@ fn test_probes_write_snapshot_writes_both_sections() {
     let path = dir.join("probe.txt");
     let probes = Probes::new();
     probes.decode.record(Duration::from_micros(250));
-    probes.write_snapshot(&path).expect("the snapshot is writable");
+    probes
+        .write_snapshot(&path)
+        .expect("the snapshot is writable");
 
     let text = fs::read_to_string(&path).expect("the file is readable");
     let snapshot = ProbeSnapshot::parse(&text).expect("the snapshot section parses");

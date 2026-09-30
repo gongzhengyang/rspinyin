@@ -56,8 +56,11 @@ pub const MIN_PREEDIT_WIDTH_DP: f32 = 48.0;
 ///
 /// `2 * header-icon-size + header-icon-gap` (3.1.1), which is exactly the room the preedit
 /// gains when they are dropped: the cluster's width and this number are two halves of one
-/// decision, and the test below pins this one against the component's own constants.
-pub const SECONDARY_STATUS_WIDTH_DP: f32 = 48.0;
+/// decision, and the test below pins this one against the component's own constants. The
+/// value is the two markers' own width rather than the cluster's whole reflow -- the strip
+/// also folds one gap away when they go, and that gap is slack between the preedit and the
+/// cluster, not room the preedit claims.
+pub const SECONDARY_STATUS_WIDTH_DP: f32 = 40.0;
 
 /// What one run of the preedit represents.
 ///

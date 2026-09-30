@@ -223,9 +223,17 @@ impl DrawState {
             metrics,
         );
         let show_annotation = frame.layout.show_annotation;
+        // The width budget protects one full row, so what owes it is the cells that row
+        // actually holds: a page shorter than a row spends the room its empty slots leave.
+        // Budgeting the configured row length instead would cut a lone candidate's text to a
+        // fraction of the 3.1.3 limit it fits in, on account of a row it is not a member of.
+        let on_row = u8::try_from(frame.candidates.len())
+            .unwrap_or(u8::MAX)
+            .min(columns)
+            .max(1);
         let cell = layout::cell_width(
             &[widest_cell(frame, show_annotation, metrics, measure)],
-            columns,
+            on_row,
             max_container_width,
             metrics,
         );
@@ -237,12 +245,24 @@ impl DrawState {
             metrics: *metrics,
         };
         let cells = self.write_cells(frame, geometry, show_annotation, measure);
+        // The header's measurements -- the mode label here, the preedit's spans below -- go
+        // through a scratch estimator rather than the caller's. Those strings are fragments
+        // of the reading being typed and one fixed label, not the candidate texts that
+        // repeat across keystrokes, and the caller's cache exists for the latter alone: its
+        // miss count is the number the adapter's measurement budget is asserted with, and a
+        // header string measured into it would spend a candidate's slot on a string that
+        // never pays it back.
+        let mut header_measure = Measure::default();
         // Laid out after the panel is sized, because the preedit's budget is what the panel's
         // width leaves once the strip's own chrome has taken its share of it.
-        let available = preedit_budget(container.width, &frame.status, metrics, measure);
-        let preedit = self
-            .preedit
-            .update(&frame.preedit, available, metrics.font_size_header, measure);
+        let available =
+            preedit_budget(container.width, &frame.status, metrics, &mut header_measure);
+        let preedit = self.preedit.update(
+            &frame.preedit,
+            available,
+            metrics.font_size_header,
+            &mut header_measure,
+        );
         DrawDelta {
             preedit,
             mode_label: write_text(&mut self.mode_label, &frame.status.mode_label),

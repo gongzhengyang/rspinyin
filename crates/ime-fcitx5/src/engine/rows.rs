@@ -489,7 +489,8 @@ fn backspace(_sym: u32, _state: u32, _keys: &KeyBindings) -> Option<KeyAction> {
 ///
 /// Never.
 fn bound_highlight(set: HighlightSet, binding: HighlightSet, delta: i8) -> Option<KeyAction> {
-    set.contains(binding).then_some(KeyAction::MoveHighlight(delta))
+    set.contains(binding)
+        .then_some(KeyAction::MoveHighlight(delta))
 }
 
 /// The page action a binding names, or `None` when the configuration did not bind it.

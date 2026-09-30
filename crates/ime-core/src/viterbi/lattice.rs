@@ -207,18 +207,22 @@ impl<'dict> Lattice<'dict> {
     /// Creates an empty lattice with room for the edges of a graph of `nodes` nodes.
     ///
     /// The edge vector is what one decode allocates, so it is sized once rather than grown:
-    /// that is the difference between a single allocation and the eight a doubling growth
-    /// takes for a twelve-syllable input. The estimate is the average the walk produces --
-    /// every node contributes at most [`WORDS_PER_KEY`] edges for its one-syllable spans,
-    /// plus the single-character fallbacks when they are on -- so a dictionary that is richer
-    /// than that, or a build the abbreviation walk adds edges to, grows the vector once more
-    /// rather than being refused.
+    /// that is the difference between a single allocation and the several a doubling growth
+    /// takes for a twelve-syllable input. The estimate is what the walk produces per node --
+    /// [`WORDS_PER_KEY`] for the node's one-syllable spans, [`FALLBACK_SINGLES`] when the
+    /// fallback is on, and [`MAX_WORD_SYLLABLES`]` - 1` more keys for the longer spans a
+    /// chain of syllables spells out of the same node. A dictionary richer than that, or a
+    /// graph that branches harder than the margin, grows the vector once more rather than
+    /// being refused.
     ///
     /// # Panics
     ///
     /// Never: a node count past [`MAX_LATTICE_NODES`] is cut to it.
     pub fn with_capacity(nodes: usize, fallback_single: bool) -> Self {
-        let per_node = WORDS_PER_KEY + if fallback_single { FALLBACK_SINGLES } else { 0 };
+        let mut per_node = WORDS_PER_KEY + usize::from(MAX_WORD_SYLLABLES) - 1;
+        if fallback_single {
+            per_node += FALLBACK_SINGLES;
+        }
         let nodes = nodes.min(MAX_LATTICE_NODES);
         Self {
             edges: Vec::with_capacity(nodes.saturating_mul(per_node)),
@@ -381,7 +385,8 @@ pub fn build_lattice_into<'dict>(
         user,
         fallback_single,
         lattice,
-        key: String::with_capacity(MAX_KEY_BYTES),
+        key: [0; MAX_KEY_BYTES],
+        key_len: 0,
         singles: SmallVec::new(),
         stack: SmallVec::new(),
         flags,
@@ -428,19 +433,29 @@ struct Single {
 /// the lattice being filled.
 ///
 /// The key and the two stacks are held across the whole build rather than
-/// allocated per span, and the key is sized for the longest word, so the walk
-/// never grows a buffer. The lattice is borrowed rather than owned, which is what
-/// lets a caller build into a lattice it keeps. The abbreviation walk's own state
-/// -- the switches, its enumeration buffer and the reachability of the nodes -- is
-/// held here as well, because it runs node by node inside the same pass.
+/// allocated per span. The key is a fixed buffer rather than a `String` on
+/// purpose: the walk runs on the decode path, and the allocation budget
+/// (`BUDGET-MEM-04`) counts what that path asks the allocator for, so the scratch
+/// the key needs lives in this struct on the stack. The lattice is borrowed rather
+/// than owned, which is what lets a caller build into a lattice it keeps. The
+/// abbreviation walk's own state -- the switches, its enumeration buffer and the
+/// reachability of the nodes -- is held here as well, because it runs node by node
+/// inside the same pass.
 struct Builder<'a, 'lattice, 'buf> {
     lexicon: &'a dyn Lexicon,
     user: &'a dyn UserFreqSource,
     fallback_single: bool,
     lattice: &'lattice mut Lattice<'a>,
-    /// Key under construction, reused by every span the walk spells and, once the spans
-    /// of a node are done, by the abbreviation query spelled for the same node.
-    key: String,
+    /// Key under construction, reused by every span the walk spells.
+    ///
+    /// Only `[..key_len]` is meaningful; the bytes past it are stale and are
+    /// overwritten before they are ever read. The abbreviation query is not spelled
+    /// here: it lives in the caller's readings buffer, which keeps its allocation the
+    /// way this array keeps its bytes.
+    key: [u8; MAX_KEY_BYTES],
+    /// How much of `key` the spans spelled so far. Tracked beside the buffer because
+    /// a fixed buffer cannot answer `len` the way a `String` does.
+    key_len: usize,
     /// The one-syllable spans of the node being walked.
     singles: SmallVec<[Single; SINGLES_INLINE]>,
     /// Spans still to be spelled, in the order the graph produced them.
@@ -509,12 +524,20 @@ impl Builder<'_, '_, '_> {
         if text.is_empty() {
             return;
         }
-        self.key.truncate(frame.key_len);
+        self.key_len = frame.key_len;
         if frame.syllables > 0 {
-            self.key.push('\'');
+            self.key[self.key_len] = b'\'';
+            self.key_len += 1;
         }
-        self.key.push_str(text);
-        let key_len = self.key.len();
+        let text = text.as_bytes();
+        debug_assert!(
+            self.key_len + text.len() <= MAX_KEY_BYTES,
+            "a key longer than the bound the buffer is sized for: one of the walk's own \
+             bounds is broken"
+        );
+        self.key[self.key_len..self.key_len + text.len()].copy_from_slice(text);
+        self.key_len += text.len();
+        let key_len = self.key_len;
         let syllables = frame.syllables.saturating_add(1);
         let covered = self.words(edge, key_len, syllables);
         if frame.syllables == 0 {
@@ -541,7 +564,13 @@ impl Builder<'_, '_, '_> {
         // The reference is copied out first: the dictionary outlives this builder,
         // so the words it hands back stay valid while the lattice is filled.
         let lexicon = self.lexicon;
-        let key = &self.key[..key_len];
+        // The key is spelled from syllable text, which is UTF-8 by construction, so
+        // the conversion cannot fail; the branch exists because the standard library
+        // cannot know that.
+        let Ok(key) = std::str::from_utf8(&self.key[..key_len]) else {
+            self.lattice.lookup_failed = true;
+            return false;
+        };
         let Ok(words) = lexicon.lookup(key) else {
             self.lattice.lookup_failed = true;
             return false;

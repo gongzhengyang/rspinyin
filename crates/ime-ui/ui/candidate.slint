@@ -632,12 +632,20 @@ export component CandidateWindow inherits Window {
     // produced a clean one -- a window flipped above the caret or pushed sideways has no
     // straight line back to it.
     //
-    // The two paths are one triangle. The first fills it; the second strokes only its two
-    // slanted edges, because stroking the closed path would draw the base as well and that
-    // line would land on the panel's own top edge and read as a doubled edge. The command
-    // string spells the metrics' own 12dp and 6dp, because a path is a string and cannot be
-    // computed from them; `scripts/check-ui-spec.sh` is what keeps the two numbers equal to
-    // `cursor-arrow-width` and `cursor-arrow-height`.
+    // The shape is a filled staircase of 1dp columns, not a `Path`. The software renderer
+    // this project ships stubs `draw_path` out to nothing, exactly as it stubs
+    // `draw_box_shadow` (the reason the shadow layers above are rings): a `Path` element is
+    // declared, takes its place in the scene, and paints no pixels at all. Twelve columns of
+    // 1dp are what this renderer can draw, and a 1dp-wide silhouette of the triangle is
+    // within a pixel of the shape 3.1.1 specifies. The stroke a filled path would have
+    // carried on its slanted edges is dropped with the path: the fill is the panel's own
+    // opaque colour against the dark shadow band, and a 1dp diagonal stroke is not drawable
+    // as columns without doubling the arrow's width. The table below is the triangle the two
+    // metrics describe -- twelve columns, none taller than `cursor-arrow-height` -- and
+    // changing either metric means re-deriving the table with them.
+    private property <[length]> arrow-column-heights:
+        [1px, 2px, 3px, 4px, 5px, 6px, 6px, 5px, 4px, 3px, 2px, 1px];
+
     if root.arrow-visible: Rectangle {
         x: CandidateMetrics.shadow-margin + root.arrow-x;
         y: CandidateMetrics.shadow-margin + root.arrow-y;
@@ -645,20 +653,12 @@ export component CandidateWindow inherits Window {
         height: CandidateMetrics.cursor-arrow-height;
         background: transparent;
 
-        Path {
-            width: parent.width;
-            height: parent.height;
-            commands: "M 0 6 L 6 0 L 12 6 Z";
-            fill: Theme.surface-fill;
-        }
-
-        Path {
-            width: parent.width;
-            height: parent.height;
-            commands: "M 0 6 L 6 0 L 12 6";
-            fill: transparent;
-            stroke: Theme.surface-stroke;
-            stroke-width: CandidateMetrics.stroke-width;
+        for h[i] in root.arrow-column-heights: Rectangle {
+            x: i * 1px;
+            y: parent.height - h;
+            width: 1px;
+            height: h;
+            background: Theme.surface-fill;
         }
     }
 

@@ -603,7 +603,10 @@ mod tests {
     fn test_count_records_counts_only_the_files_a_record_is_written_as() -> Result<()> {
         // A directory that is not there is a plugin that has never crashed, which is a
         // measured zero -- the one case in which zero is a reading rather than a guess.
-        assert_eq!(count_records(&scratch("no-such-run").join("crash")), Some(0));
+        assert_eq!(
+            count_records(&scratch("no-such-run").join("crash")),
+            Some(0)
+        );
 
         let dir = scratch("count-records");
         let _ = fs::remove_dir_all(&dir);

@@ -134,7 +134,11 @@ fn test_a_shrinking_scratch_repaints_the_whole_surface() {
     let shrinking = shrinking.expect("the streak ends on the frame that shrinks the scratch");
     let (bounding, rectangles, copies, copy_bytes) =
         rendered(shrinking).expect("the shrinking frame reaches the surface");
-    assert_eq!(bounding, whole_surface(), "the shrinking frame repaints it all");
+    assert_eq!(
+        bounding,
+        whole_surface(),
+        "the shrinking frame repaints it all"
+    );
     assert_eq!(rectangles, 1, "a full repaint is one rectangle");
     assert_eq!(copies, 1, "and it is carried over in one copy");
     assert_eq!(

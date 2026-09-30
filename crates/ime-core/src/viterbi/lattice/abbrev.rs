@@ -68,17 +68,11 @@ impl Builder<'_, '_, '_> {
         if !self.live_node || self.extensions_full || !is_enabled(self.flags) {
             return;
         }
-        // The span walk of this node is done, so its key buffer is free and can carry
-        // the query instead: a query has the same shape as a key -- spellings joined by
-        // `'`, at most `MAX_WORD_SYLLABLES` of them -- so the buffer the build already
-        // owns is wide enough and no second one is needed.
-        let mut query = core::mem::take(&mut self.key);
-        self.abbrev_node(dag, node, &mut query);
-        self.key = query;
+        self.abbrev_node(dag, node);
     }
 
     /// Enumerates the readings of the input from `node` and adds an edge per hit.
-    fn abbrev_node(&mut self, dag: &SyllableDag, node: u16, query: &mut String) {
+    fn abbrev_node(&mut self, dag: &SyllableDag, node: u16) {
         let Some(rest) = dag.normalized().get(usize::from(node)..) else {
             return;
         };
@@ -89,6 +83,14 @@ impl Builder<'_, '_, '_> {
         if readings_into(&mut readings, rest) {
             self.abbrev_truncated = true;
         }
+        // The query is spelled into the readings buffer's own `String`, and it travels
+        // with the readings for the same reason: a decode that keeps one keeps the other,
+        // so the query's capacity survives into the next keystroke and the walk asks the
+        // allocator for nothing. The build's key buffer cannot carry it -- that one is a
+        // fixed byte array, sized for the spans the exact walk spells -- and a query has
+        // the same ceiling as a key anyway: at most `MAX_WORD_SYLLABLES` spellings
+        // joined by `'`.
+        let mut query = core::mem::take(readings.query_buf());
         let mut queries = 0usize;
         // The walk visits the readings shortest first, and that is not the order the
         // enumeration hands them over in. `readings_into` is most-specific-first, which
@@ -124,13 +126,14 @@ impl Builder<'_, '_, '_> {
                 }
                 // A reading that spells more combinations than the cap holds refuses
                 // every one of them, so this is the branch that drops it.
-                if !spell_into(query, reading, combination) {
+                if !spell_into(&mut query, reading, combination) {
                     continue;
                 }
                 queries = queries.saturating_add(1);
-                self.prefix_edges(end, syllables, query.as_str());
+                self.prefix_edges(end, syllables, &query);
             }
         }
+        *readings.query_buf() = query;
         *self.readings = readings;
     }
 

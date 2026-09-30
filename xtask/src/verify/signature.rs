@@ -366,9 +366,7 @@ mod tests {
 
     /// A signature block naming `key_id`.
     fn signed_by(key_id: &str) -> String {
-        format!(
-            r#"{{"scheme": "openpgp", "key_id": "{key_id}", "detached": "SHA256SUMS.asc"}}"#
-        )
+        format!(r#"{{"scheme": "openpgp", "key_id": "{key_id}", "detached": "SHA256SUMS.asc"}}"#)
     }
 
     /// A verifier that answers without running anything.
@@ -407,7 +405,9 @@ mod tests {
 
     #[test]
     fn test_classify_reports_a_key_the_keyring_does_not_hold() {
-        let status = format!("[GNUPG:] ERRSIG {FINGERPRINT} 22 8 00 1790899200 9\n[GNUPG:] NO_PUBKEY {FINGERPRINT}\n");
+        let status = format!(
+            "[GNUPG:] ERRSIG {FINGERPRINT} 22 8 00 1790899200 9\n[GNUPG:] NO_PUBKEY {FINGERPRINT}\n"
+        );
         let failure = classify(2, &status).expect_err("the key is not there");
         assert!(matches!(
             failure,
@@ -537,7 +537,10 @@ mod tests {
 
     #[test]
     fn test_key_matches_refuses_a_different_key_and_a_too_short_one() {
-        assert!(!key_matches(FINGERPRINT, "FEDCBA98765432100123456789ABCDEF01234567"));
+        assert!(!key_matches(
+            FINGERPRINT,
+            "FEDCBA9876543210FEDCBA9876543210FEDCBA98"
+        ));
         assert!(!key_matches("ABCD1234", FINGERPRINT));
         assert!(!key_matches("not a key", FINGERPRINT));
         assert!(!key_matches(FINGERPRINT, "ABCD1234"));
@@ -581,7 +584,7 @@ mod tests {
         fs::write(dir.join(CHECKSUMS_FILE), "a").expect("writing the list");
         fs::write(dir.join("SHA256SUMS.asc"), "a signature").expect("writing the signature");
         let manifest = manifest_for(&signed_by(&FINGERPRINT[24..]));
-        let other = "FEDCBA98765432100123456789ABCDEF01234567";
+        let other = "FEDCBA9876543210FEDCBA9876543210FEDCBA98";
         let verifier = Double {
             answer: Ok(other.to_owned()),
         };

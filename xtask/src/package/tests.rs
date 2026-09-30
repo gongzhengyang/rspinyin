@@ -39,8 +39,7 @@ fn write(root: &Path, relative: &str, content: &str) {
     fs::write(&path, content).expect("writing the fixture");
 }
 
-/// A scratch tree holding every artifact the payload table requires, minus the licence
-/// texts, which are the optional payloads.
+/// A scratch tree holding every artifact the payload table requires.
 fn fixture(tag: &str) -> PathBuf {
     let root = scratch(tag);
     write(&root, "target/release/librspinyin.so", "library bytes");
@@ -56,6 +55,16 @@ fn fixture(tag: &str) -> PathBuf {
     write(&root, "assets/icon-48.png", "png bytes");
     write(&root, "assets/icon.svg", "svg bytes");
     write(&root, "docs/dev/NOTICE", "notice");
+    write(
+        &root,
+        "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md",
+        "licence text",
+    );
+    write(
+        &root,
+        "packaging/metainfo/org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml",
+        "metainfo",
+    );
     root
 }
 
@@ -159,10 +168,13 @@ fn test_plan_release_resolves_every_required_payload_and_reports_the_optional_on
         "fcitx-rspinyin.png",
         "fcitx-rspinyin.svg",
         "NOTICE",
+        "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md",
+        "org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml",
     ];
     assert_eq!(
         names, expected,
-        "the icons ship with the release; only the licence texts are absent"
+        "the icons, the licence the fixture writes and the metainfo ship with the release; \
+         only the two licence texts the fixture leaves unwritten are absent"
     );
 
     let absent: Vec<&str> = plan.absent.iter().map(|(name, _)| *name).collect();

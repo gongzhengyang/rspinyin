@@ -187,7 +187,10 @@ mod tests {
     fn test_miss_cache_refreshes_a_resident_entry_and_adds_nothing() {
         let mut cache = MissCache::new(4);
         cache.insert("a", 1);
-        assert!(cache.refresh("a", 9), "a resident key is brought up to date");
+        assert!(
+            cache.refresh("a", 9),
+            "a resident key is brought up to date"
+        );
         assert_eq!(cache.get("a"), Some(9));
         assert!(
             !cache.refresh("b", 9),

@@ -75,6 +75,12 @@ enum Command {
         /// The snapshot file `--memory` reads; the plugin's own file by default.
         #[arg(long, value_name = "PATH", requires = "memory")]
         memory_input: Option<PathBuf>,
+        /// Judge the allocation budget against the report the decode test wrote.
+        #[arg(long)]
+        alloc: bool,
+        /// The report file `--alloc` reads; the decode test's own file by default.
+        #[arg(long, value_name = "PATH", requires = "alloc")]
+        alloc_report: Option<PathBuf>,
         /// Directory the release artifacts `--measure` reads.
         #[arg(long, value_name = "DIR", default_value = "dist")]
         dist: PathBuf,
@@ -148,6 +154,8 @@ fn main() -> anyhow::Result<()> {
             bench,
             memory,
             memory_input,
+            alloc,
+            alloc_report,
             dist,
         } => {
             if let Some(path) = soak_report {
@@ -158,6 +166,9 @@ fn main() -> anyhow::Result<()> {
             }
             if memory {
                 return budget::run_memory(memory_input.as_deref());
+            }
+            if alloc {
+                return budget::alloc::run(alloc_report.as_deref());
             }
             budget::run(budget::Actions {
                 validate,

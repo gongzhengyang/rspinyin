@@ -39,8 +39,14 @@ use crate::ids::ScreenId;
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiCommand {
     Frame(Box<UiFrame>),
-    Show { revision: u32, anchor: Anchor },
-    Hide { revision: u32, reason: HideReason },
+    Show {
+        revision: u32,
+        anchor: Anchor,
+    },
+    Hide {
+        revision: u32,
+        reason: HideReason,
+    },
     Theme(ThemeSpec),
     /// The modal overlay drawn in the candidate window's surface, or `None` when
     /// no overlay is open.

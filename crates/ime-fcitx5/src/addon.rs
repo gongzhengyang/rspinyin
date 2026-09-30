@@ -225,7 +225,10 @@ pub fn on_addon_destroy(_handle: *mut c_void) {
         user_store::flush_store(&store);
         // The backup is a whole document and leaves this thread; the handle is dropped
         // rather than joined, so the host never waits on the write.
-        drop(user_store::start_shutdown_backup(store, user_store::now_ms()));
+        drop(user_store::start_shutdown_backup(
+            store,
+            user_store::now_ms(),
+        ));
     }
 
     // Close diagnostics last, so every step above still has a sink.

@@ -18,7 +18,7 @@ use anyhow::Result;
 use super::judge;
 use super::report::{CrashCount, CycleReport, SoakReport};
 use super::tests::{budgets, cycle_strokes, eight_hour_plan, report, scratch, series};
-use super::{Plan, Phase, SoakError, assert_report};
+use super::{Phase, Plan, SoakError, assert_report};
 
 #[test]
 fn test_cycle_report_of_counts_whole_passes_and_never_divides_by_zero() {
@@ -67,7 +67,10 @@ fn test_cycle_report_verify_refuses_a_count_that_disagrees_with_its_strokes() {
     let refused = tampered
         .cycles()
         .expect_err("one pass more than the strokes hold");
-    assert!(refused.to_string().contains("delivered passes"), "{refused}");
+    assert!(
+        refused.to_string().contains("delivered passes"),
+        "{refused}"
+    );
 }
 
 #[test]
@@ -245,7 +248,11 @@ fn test_assert_report_fails_a_report_whose_drift_is_past_the_ceiling() -> Result
     fs::create_dir_all(&dir)?;
 
     let drifting = dir.join("drifting.json");
-    report(&eight_hour_plan(), series(10, |index| 40_000 + index * 1_024)).write(&drifting)?;
+    report(
+        &eight_hour_plan(),
+        series(10, |index| 40_000 + index * 1_024),
+    )
+    .write(&drifting)?;
     let failure =
         assert_report(&drifting).expect_err("three mebibytes against a two mebibyte ceiling");
     assert!(failure.to_string().contains("soak/rss-drift"), "{failure}");
@@ -267,7 +274,10 @@ fn test_assert_report_fails_a_report_whose_drift_is_past_the_ceiling() -> Result
     let inconsistent = dir.join("inconsistent.json");
     tampered.write(&inconsistent)?;
     let failure = assert_report(&inconsistent).expect_err("the counts disagree");
-    assert!(failure.to_string().contains("delivered passes"), "{failure}");
+    assert!(
+        failure.to_string().contains("delivered passes"),
+        "{failure}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
     Ok(())

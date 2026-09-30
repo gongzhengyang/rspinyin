@@ -465,7 +465,11 @@ mod tests {
         for index in 0..reader.entry_count() {
             let entry = reader.entry(index).expect("the record");
             let text = reader.word(&entry).expect("the text");
-            assert_eq!(usize::from(entry.char_count), text.chars().count(), "{text}");
+            assert_eq!(
+                usize::from(entry.char_count),
+                text.chars().count(),
+                "{text}"
+            );
         }
     }
 

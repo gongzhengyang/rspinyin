@@ -99,7 +99,9 @@ pub static CORE_CASES: [CaseLine; 30] = [
     CaseLine {
         id: "TC-CORE-05",
         module: CORE_MODULE,
-        commands: &["cargo nextest run -p ime-core segment::dag::tests::test_build_finds_a_path_for_every_table_syllable segment::syllable::tests::test_lookup_finds_every_table_entry_by_its_index"],
+        commands: &[
+            "cargo nextest run -p ime-core segment::dag::tests::test_build_finds_a_path_for_every_table_syllable segment::syllable::tests::test_lookup_finds_every_table_entry_by_its_index",
+        ],
         precondition: r#"`FEAT-TEST-P0.03.01` 的引擎直驱通道就绪。场景文件 `tests/fixtures/scenarios/syllable_traverse.toml`"#,
         criteria: r#"**功能逻辑**：411 个音节全部可纯键盘输入并切分成功。 **人机工学**：不依赖任何修饰键或鼠标操作。"#,
     },
@@ -127,15 +129,9 @@ pub static CORE_CASES: [CaseLine; 30] = [
     CaseLine {
         id: "TC-CORE-09",
         module: CORE_MODULE,
-        // No command: the case assumed an `alloc-count` feature that does not exist.
-        // `crates/ime-core/Cargo.toml` has no `[features]` table at all, so the command it
-        // was written with fails with cargo's "none of the selected packages contains
-        // these features". The counter belongs to `PERF-P2.01.01`, and until that lands the
-        // case is `[待实现]` and is not runnable -- which the runner records as `flawed`
-        // rather than inventing a filter that would pass.
-        commands: &[],
-        precondition: r#"**不成立**：`alloc-count` feature 不存在（`crates/ime-core/Cargo.toml` 无 `[features]` 表），分配计数归属 `PERF-P2.01.01`。"#,
-        criteria: r#"**功能逻辑**：DAG 复用 `Vec` 容量，单次解码零堆分配（`BUDGET-LAT-02` 的前提）。 **性能**：`build_dag` 在 64 字节输入下 P99 ≤ 30µs（`criterion` 基准 `segment/dag_build`）。"#,
+        commands: &["cargo nextest run -p ime-core --test alloc_budget"],
+        precondition: r#"无；计数由 `alloc-count` 计数分配器（`crates/alloc-count`）在独立测试二进制里安装，经 nextest 每用例一进程运行。"#,
+        criteria: r#"**功能逻辑**：稳态解码的堆分配次数不超过分配预算（`BUDGET-ALLOC-01`，`docs/dev/budgets.json` 的 `alloc_count.decode_steady`）；直通降级不比真实解码更贵；首次解码必然更多。 **预算**：`target/alloc-report.txt` 由分配预算门（`budget --alloc`）判定通过。"#,
     },
     CaseLine {
         id: "TC-CORE-10",
@@ -189,14 +185,18 @@ pub static CORE_CASES: [CaseLine; 30] = [
     CaseLine {
         id: "TC-CORE-17",
         module: CORE_MODULE,
-        commands: &["cargo nextest run -p ime-core viterbi::tests::test_decode_without_a_usable_word_degrades_to_passthrough"],
+        commands: &[
+            "cargo nextest run -p ime-core viterbi::tests::test_decode_without_a_usable_word_degrades_to_passthrough",
+        ],
         precondition: r#"`MockLexicon` 的所有 `lookup` 返回空迭代器。"#,
         criteria: r#"**功能逻辑**：**绝不返回空候选**——空候选在用户侧表现为"打字无反应"，是最差的降级。 **状态矩阵**：降级状态被显式标记（`degraded`），UI 可据此提示。"#,
     },
     CaseLine {
         id: "TC-CORE-18",
         module: CORE_MODULE,
-        commands: &["cargo nextest run -p ime-core viterbi::tests::test_decode_keeps_the_list_inside_the_page_budget state::paging::tests::test_page_count_rounds_up_and_caps_at_five_pages"],
+        commands: &[
+            "cargo nextest run -p ime-core viterbi::tests::test_decode_keeps_the_list_inside_the_page_budget state::paging::tests::test_page_count_rounds_up_and_caps_at_five_pages",
+        ],
         precondition: r#"`MockLexicon` 对某个 key 返回 200 个词。"#,
         criteria: r#"**功能逻辑**：候选数上限与分页约束成立。 **边界**：恰好 45 与 46 个词的边界行为明确。"#,
     },
@@ -224,7 +224,9 @@ pub static CORE_CASES: [CaseLine; 30] = [
     CaseLine {
         id: "TC-CORE-22",
         module: CORE_MODULE,
-        commands: &["cargo nextest run -p ime-core lm::score::tests::test_edge_score_clamps_the_user_term_at_a_million_hits lm::score::tests::test_user_term_starts_at_zero_and_scales_with_the_count"],
+        commands: &[
+            "cargo nextest run -p ime-core lm::score::tests::test_edge_score_clamps_the_user_term_at_a_million_hits lm::score::tests::test_user_term_starts_at_zero_and_scales_with_the_count",
+        ],
         precondition: r#"`MockUserFreq` 可注入任意频次。"#,
         criteria: r#"**功能逻辑**：防止某个词被打 10 万次后永久霸榜。 **边界**：`freq = 0` 时用户项为 0。"#,
     },
@@ -238,14 +240,18 @@ pub static CORE_CASES: [CaseLine; 30] = [
     CaseLine {
         id: "TC-CORE-24",
         module: CORE_MODULE,
-        commands: &["cargo nextest run -p ime-core lm::ngram::tests::test_bigram_falls_back_to_the_unigram_plus_the_fixed_penalty"],
+        commands: &[
+            "cargo nextest run -p ime-core lm::ngram::tests::test_bigram_falls_back_to_the_unigram_plus_the_fixed_penalty",
+        ],
         precondition: r#"`MockLm` 的 `bigram` 表为空。"#,
         criteria: r#"**功能逻辑**：退化惩罚是固定常数，保证确定性。 **边界**：`prev` 为空串时同样退化。"#,
     },
     CaseLine {
         id: "TC-CORE-25",
         module: CORE_MODULE,
-        commands: &["cargo nextest run -p xtask tune::tests::test_rank_and_evaluate_count_the_first_choice_and_the_reachable_rows tune::tests::test_generate_holdout_writes_rows_that_avoid_the_evaluation_set"],
+        commands: &[
+            "cargo nextest run -p xtask tune::tests::test_rank_and_evaluate_count_the_first_choice_and_the_reachable_rows tune::tests::test_generate_holdout_writes_rows_that_avoid_the_evaluation_set",
+        ],
         precondition: r#"`xtask tune` 的求值器（`xtask/src/tune/eval.rs`）。"#,
         criteria: r#"**功能逻辑**：两个指标分别记录（前者衡量排序、后者衡量可达性——`L3b` 多键展开修的是后者）。 **性能**：全量解码耗时 < 3s（可参与 CI）。 **边界**：`lm_holdout.tsv` 与 `lm_golden.tsv` 无重叠。"#,
     },
@@ -259,14 +265,18 @@ pub static CORE_CASES: [CaseLine; 30] = [
     CaseLine {
         id: "TC-CORE-27",
         module: CORE_MODULE,
-        commands: &["cargo nextest run -p ime-core passthrough::tests::test_classify_rule_table_returns_the_expected_decision"],
+        commands: &[
+            "cargo nextest run -p ime-core passthrough::tests::test_classify_rule_table_returns_the_expected_decision",
+        ],
         precondition: r#"无。"#,
         criteria: r#"**功能逻辑**：URL/邮箱场景不打断用户。 **边界**：纯字母输入**不**被误判为 URL。"#,
     },
     CaseLine {
         id: "TC-CORE-28",
         module: CORE_MODULE,
-        commands: &["cargo nextest run -p ime-core passthrough::tests::test_classify_rule_table_returns_the_expected_decision passthrough::tests::test_classify_punctuation_table_maps_the_twelve_ascii_marks"],
+        commands: &[
+            "cargo nextest run -p ime-core passthrough::tests::test_classify_rule_table_returns_the_expected_decision passthrough::tests::test_classify_punctuation_table_maps_the_twelve_ascii_marks",
+        ],
         precondition: r#"无。"#,
         criteria: r#"**功能逻辑**：12 个标点映射正确；`'` 保留为分隔符语义。 **边界**：`punct_mode = english` 时返回 `HostHandles`（**不是** `Decode`——`Decode` 会把标点当非法字符丢弃，导致按逗号"什么都没发生"；`.dev-progress.json` 已记录该修正）。"#,
     },
@@ -280,7 +290,9 @@ pub static CORE_CASES: [CaseLine; 30] = [
     CaseLine {
         id: "TC-CORE-30",
         module: CORE_MODULE,
-        commands: &["cargo nextest run -p ime-core temp_english passthrough::tests::test_classify_rule_table_returns_the_expected_decision"],
+        commands: &[
+            "cargo nextest run -p ime-core temp_english passthrough::tests::test_classify_rule_table_returns_the_expected_decision",
+        ],
         precondition: r#"`PassthroughFlags.temp_english = true`。"#,
         criteria: r#"**功能逻辑**：临时英文模式的判定顺序**早于**大写提交规则与 URL 规则（`.dev-progress.json` 记录了该顺序修正：按任务卡的原始顺序，临时英文模式下打一个大写字母会被大写规则提交并退出会话——正是该模式要防止的）。 **边界**：`EnterTempEnglish` 由路由层产出，`classify` 不返回它（纯文本分类器观察不到键和弦）。"#,
     },

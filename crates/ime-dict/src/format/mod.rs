@@ -413,10 +413,12 @@ impl DictEntry {
 /// [`ENTRY_SIZE`]; a slice of any other length cannot occur, and is reported the same
 /// way rather than indexed.
 fn decode_padding(bytes: &[u8]) -> Result<[u8; 3], DictError> {
-    let pad = bytes.get(13..ENTRY_SIZE).ok_or(DictError::LengthOutOfRange {
-        field: "_pad",
-        value: 0,
-    })?;
+    let pad = bytes
+        .get(13..ENTRY_SIZE)
+        .ok_or(DictError::LengthOutOfRange {
+            field: "_pad",
+            value: 0,
+        })?;
     pad.try_into().map_err(|_| DictError::LengthOutOfRange {
         field: "_pad",
         value: 0,

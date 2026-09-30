@@ -37,9 +37,9 @@ pub use crate::lexicon::{
 pub use crate::surface::{FrameToken, PixelBufferMut, SurfaceBackend, SurfaceEvent};
 pub use crate::ui::{
     Anchor, Candidate, CandidateSource, ColorScheme, DismissReason, HideReason, LayoutHint,
-    OverlayEntry, OverlayFrame, OverlayKind, OverlaySection, PageDir, PageState, Placement, Preedit,
-    PreeditSpan, RectI, Rgba8, SelectTrigger, SpanKind, StatusStrip, ThemeSpec, UiCommand, UiEvent,
-    UiFrame,
+    OverlayEntry, OverlayFrame, OverlayKind, OverlaySection, PageDir, PageState, Placement,
+    Preedit, PreeditSpan, RectI, Rgba8, SelectTrigger, SpanKind, StatusStrip, ThemeSpec, UiCommand,
+    UiEvent, UiFrame,
 };
 pub use crate::version::{
     CONFIG_SCHEMA_VERSION, DICT_FORMAT_VERSION, RSPINYIN_ABI_VERSION, check_abi,

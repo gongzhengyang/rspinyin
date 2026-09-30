@@ -281,12 +281,10 @@ const FIELDS: [(&str, FieldReader); 6] = [
     ("baseline_rss_kib", |memory| memory.baseline_rss_kib),
     ("baseline_dirty_kib", |memory| memory.baseline_dirty_kib),
     ("ui_baseline_rss_kib", |memory| memory.ui_baseline_rss_kib),
-    (
-        "dictionary_baseline_dirty_kib",
-        |memory| memory.dictionary_baseline_dirty_kib,
-    ),
+    ("dictionary_baseline_dirty_kib", |memory| {
+        memory.dictionary_baseline_dirty_kib
+    }),
 ];
-
 
 /// The growth from `baseline` to `reading`, or `None` when either was not measured.
 fn growth(reading: Option<u64>, baseline: Option<u64>) -> Option<u64> {

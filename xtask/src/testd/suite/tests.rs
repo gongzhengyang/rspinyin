@@ -165,17 +165,22 @@ fn test_every_case_states_a_criterion_and_a_precondition() {
 }
 
 #[test]
-fn test_the_table_declares_eighteen_commands_and_twelve_cases_without_one() {
+fn test_the_table_declares_thirty_commands_and_no_case_without_one() {
     let declared = CORE_CASES.iter().filter(|c| !c.commands.is_empty()).count();
-    let undeclared = CORE_CASES.iter().filter(|c| c.commands.is_empty()).count();
-    assert_eq!(declared + undeclared, CORE_CASES.len());
+    let undeclared: Vec<&str> = CORE_CASES
+        .iter()
+        .filter(|c| c.commands.is_empty())
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(declared + undeclared.len(), CORE_CASES.len());
     assert_eq!(
-        declared, 18,
-        "eighteen cases of the document state a command to run"
+        declared, 30,
+        "every case of the document states a command to run"
     );
     assert_eq!(
-        undeclared, 12,
-        "twelve cases state a precondition and no command, and none of them may be given one"
+        undeclared,
+        [] as [&str; 0],
+        "a case with a precondition and no command would be one the runner cannot execute"
     );
 }
 
@@ -197,20 +202,28 @@ fn test_every_declared_command_is_one_the_runner_can_split() {
 
 #[test]
 fn test_every_nextest_command_names_the_package_under_test() {
+    // The table spans more than one crate: the decoder cases name `ime-core`, and the
+    // ranking-evaluator case names `xtask` itself. What every command owes is a `-p`
+    // scope -- a bare `cargo nextest run` would run the whole workspace -- so the check
+    // is that the scope names a package, whatever that package is.
     let mut nextest = 0;
     for case in &CORE_CASES {
         for command in case.commands {
             if let Some(rest) = command.strip_prefix("cargo nextest run ") {
                 nextest += 1;
+                let words: Vec<&str> = rest.split_whitespace().collect();
+                let names_package = words
+                    .windows(2)
+                    .any(|pair| pair[0] == "-p" && !pair[1].starts_with('-'));
                 assert!(
-                    rest.contains("-p ime-core"),
+                    names_package,
                     "{}: `{command}` does not name the package",
                     case.id
                 );
             }
         }
     }
-    assert_eq!(nextest, 16, "sixteen of the eighteen commands run nextest");
+    assert_eq!(nextest, 28, "twenty-eight of the commands run nextest");
 }
 
 #[test]
@@ -227,7 +240,10 @@ fn test_selected_of_one_case_returns_that_case_alone() {
         .expect("a case the table holds");
     assert_eq!(one.len(), 1);
     assert_eq!(one[0].id, "TC-CORE-07");
-    assert_eq!(one[0].commands, &["cargo nextest run -p ime-core segment::dag"]);
+    assert_eq!(
+        one[0].commands,
+        &["cargo nextest run -p ime-core segment::dag"]
+    );
 }
 
 #[test]
@@ -308,7 +324,10 @@ fn test_command_line_parse_splits_a_declared_line() {
         line.args(),
         &["nextest", "run", "-p", "ime-core", "segment::syllable"]
     );
-    assert_eq!(line.text(), "cargo nextest run -p ime-core segment::syllable");
+    assert_eq!(
+        line.text(),
+        "cargo nextest run -p ime-core segment::syllable"
+    );
 }
 
 #[test]
@@ -418,7 +437,10 @@ fn test_assertions_withhold_every_captured_tail() {
     assert!(document.contains("stdout_tail_1"), "{document}");
     // The count is kept, which is what tells a reader there was output at all.
     assert!(
-        document.contains(&format!("<redacted:len={}>", run.stdout_tail.chars().count())),
+        document.contains(&format!(
+            "<redacted:len={}>",
+            run.stdout_tail.chars().count()
+        )),
         "{document}"
     );
 }
@@ -556,7 +578,12 @@ fn test_run_case_of_a_failing_case_leaves_a_bundle_with_a_trace() {
         .expect("the bundle is written");
     assert_eq!(
         bundle.dir,
-        scratch.path.join("runs").join(run_dir.name()).join("core").join("TC-CORE-11")
+        scratch
+            .path
+            .join("runs")
+            .join(run_dir.name())
+            .join("core")
+            .join("TC-CORE-11")
     );
     assert!(bundle.trace.is_some(), "a failed case leaves a trace");
     let document = fs::read_to_string(&bundle.assertions).expect("assertions.json is there");

@@ -57,7 +57,10 @@ fn test_highlight_rect_of_a_degenerate_state_stays_on_the_grid() {
     // before its first frame holds. The column count is kept away from zero and the
     // position is still placed on the grid rather than dropped.
     let empty = highlight_rect(&DrawState::default(), 3, metrics);
-    assert_eq!(empty.x, 0.0, "a page with no column must not divide by zero");
+    assert_eq!(
+        empty.x, 0.0,
+        "a page with no column must not divide by zero"
+    );
     assert_eq!(empty.w, 0.0, "and a cell with no width draws nothing");
     assert_eq!(
         empty.y,

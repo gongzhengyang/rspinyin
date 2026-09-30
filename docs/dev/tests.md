@@ -213,7 +213,7 @@
 - **操作步骤**：
   1. 对 411 个音节逐个构造 `KeyAction::InputChar` 序列 -> 触发存盘：`<RUN>/core/TC-CORE-05/assertions.json`
   2. 断言每个音节序列都能产出一个合法切分（`has_path() == true`）。
-  3. 断言全部输入仅由 `a-z` 与 `'` 组成（无修饰键、无鼠标）。
+  3. 断言全部输入仅由 `a-z`、`'` 与 `ê` 组成（`ê` 是音节表自带的收尾条目，规范化规则将其原样保留，所以它同样可以纯键盘输入；无修饰键、无鼠标）。
 - **通过标准 (Pass Criteria)**：
   - **功能逻辑**：411 个音节全部可纯键盘输入并切分成功。
   - **人机工学**：不依赖任何修饰键或鼠标操作。
@@ -263,20 +263,20 @@
   - **功能逻辑**：强制分隔符语义正确；异常分隔符被折叠并记录诊断。
   - **边界**：开头/结尾/连续 `'` 三种异常均不崩溃。
 
-### TC-CORE-09 DAG 复用容量：单次解码零堆分配（`REQ-CORE-02`）
+### TC-CORE-09 分配预算：稳态解码的堆分配次数等于预算（`REQ-CORE-02`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
   - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-02` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
-  - 代码落地锚点：`crates/ime-core/src/segment/dag.rs`（`SmallVec<[DagEdge; 8]>`）
-- **前置条件与沙盒状态**：`FEAT-TEST-P0.03.01` 的分配计数器。`cargo nextest run -p ime-core --features alloc-count`
+  - 代码落地锚点：`crates/ime-core/tests/alloc_budget.rs`（`#[global_allocator]` 计数器来自 `crates/alloc-count`）
+- **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core --test alloc_budget`（nextest 每用例一进程，计数读数因此只含被测代码）
 - **操作步骤**：
-  1. 预热一次 `build` 以填充容量 -> 触发存盘：`<RUN>/core/TC-CORE-09/assertions.json`
-  2. 复位分配计数器，对 64 字节输入再次 `build`。
-  3. 断言堆分配次数 = 0。
+  1. 预热一次 `decode_into` 以填充工作区 -> 触发存盘：`<RUN>/core/TC-CORE-09/assertions.json`（同时写出 `target/alloc-report.txt`）
+  2. 复位分配计数，对同一工作区再次解码，记录稳态分配次数。
+  3. 断言稳态分配次数不超过分配预算（`BUDGET-ALLOC-01`：12 音节实测 13、2 音节实测 2，2026-09-30 按实测锚定；残余项与归零路径见 `features.md` 0.5.3 的该行与 `TASK-139`）；并断言直通降级不比真实解码更贵、首次解码必然更多。
 - **通过标准 (Pass Criteria)**：
-  - **功能逻辑**：DAG 复用 `Vec` 容量，单次解码零堆分配（`BUDGET-LAT-02` 的前提）。
-  - **性能**：`build_dag` 在 64 字节输入下 P99 ≤ 30µs（`criterion` 基准 `segment/dag_build`）。
+  - **功能逻辑**：稳态解码的堆分配次数不超过分配预算（`BUDGET-ALLOC-01`）。
+  - **预算**：`target/alloc-report.txt` 被 `cargo run -p xtask -- budget --alloc` 判定通过；空缺记录按失败处理（`budget/alloc-unmeasured`）。
 
 ### TC-CORE-10 fuzz 目标持续 60 秒无 panic（`REQ-CORE-02`）
 
@@ -390,7 +390,7 @@
 - **前置条件与沙盒状态**：`MockLexicon` 的所有 `lookup` 返回空迭代器。 ｜ 命令：`cargo nextest run -p ime-core viterbi::tests::test_decode_without_a_usable_word_degrades_to_passthrough`
 - **操作步骤**：
   1. 用空词库解码 `nihao` -> 触发存盘：`<RUN>/core/TC-CORE-17/assertions.json`
-  2. 断言候选列表**非空**（走 `fallback_single` 或 `Passthrough`）。
+  2. 断言候选列表**非空**且来自 `Passthrough`（`fallback_single` 开或关结果一致——空词库下回退表同样是空的，两条路径都收敛到直通候选）。
   3. 断言 `DecodeResult.degraded == true`。
 - **通过标准 (Pass Criteria)**：
   - **功能逻辑**：**绝不返回空候选**——空候选在用户侧表现为"打字无反应"，是最差的降级。

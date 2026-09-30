@@ -38,7 +38,13 @@ const TEST_WINDOW_WIDTH_DP: u32 = 420;
 const TEST_WINDOW_HEIGHT_DP: u32 = 200;
 
 /// How long a test waits for the UI thread to draw something.
-const FRAME_TIMEOUT: Duration = Duration::from_secs(10);
+///
+/// Generous by design, and the reason is the font warm-up the surface build runs: the
+/// probe's first shaping pass loads the machine's fonts, which on a cold page cache can
+/// cost tens of seconds, and `nextest` gives every test a process of its own, so every
+/// test that builds a surface pays it again. The bound exists to catch a hung loop, not
+/// to race the warm-up.
+const FRAME_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// How often a test samples the surface while waiting for it to settle.
 const SETTLE_POLL: Duration = Duration::from_millis(20);
@@ -397,7 +403,10 @@ fn test_on_addon_init_is_usable_and_leaves_no_window_behind() {
 fn test_register_takeover_reaches_the_host_once_the_window_exists() {
     let _state = install_mock_backend();
     start_ui_startup().expect("the UI thread can be started");
-    assert!(wait_for_ready(), "the window must exist before the host is asked");
+    assert!(
+        wait_for_ready(),
+        "the window must exist before the host is asked"
+    );
     let outcome = ui_impl::register_takeover();
     // The two outcomes that mean the host was never asked are the ones this test exists to
     // rule out. What the host answers when it *is* asked depends on the build: a pure-Rust
@@ -433,7 +442,9 @@ fn test_the_pre_created_window_redraws_for_a_new_frame() {
         revision: 1,
         anchor: anchor(),
     };
-    thread.send(show).expect("the pre-created window can be shown");
+    thread
+        .send(show)
+        .expect("the pre-created window can be shown");
     let first_frame = UiCommand::Frame(Box::new(frame(1, "ni", &["你", "泥"])));
     thread.send(first_frame).expect("the first frame is posted");
     wait_for_commits(&state, baseline + 1);
@@ -453,7 +464,9 @@ fn test_the_pre_created_window_redraws_for_a_new_frame() {
         "showing the window maps the surface the probe pre-created"
     );
     let second_frame = UiCommand::Frame(Box::new(frame(2, "ni hao", &["你好", "尼好"])));
-    thread.send(second_frame).expect("the second frame is posted");
+    thread
+        .send(second_frame)
+        .expect("the second frame is posted");
     wait_for_commits(&state, baseline + 2);
     let after = settled_checksum(&state);
     // The defect this catches cannot be seen any other way: a window that rasterizes its
