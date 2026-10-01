@@ -119,7 +119,7 @@ net_sockets: 0
 | fuzz 目标 | **1** | `fuzz/fuzz_targets/dag_build.rs` |
 | CI 审计脚本 | **8** | `scripts/check-{deps,unsafe,no-network,slint-leak,dict-sources}.sh`、`runtime-socket-check.sh`、`gen-licenses.sh`、`dict-probe.py` |
 | ADR | **4** | 0000–0003 |
-| 已编译词库 | `data/compiled/base.dict` = **248,484 字节** | 见 1.4 的发现 ① |
+| 已编译词库 | `data/compiled/base.dict` = **16,382,188 字节**（2026-10-01 全量重编译；发现 ① 的开发词表问题已随 `BUILD-DEF-22` 结案） | 见 1.4 的发现 ① |
 
 **各 crate 实测规模**：
 

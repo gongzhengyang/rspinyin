@@ -47,7 +47,7 @@ fn test_from_container_ceiling_reproduces_the_spec_table() {
     assert_eq!(budgets.section(SectionKind::StrPool), Some(4_194_304));
     assert_eq!(budgets.section(SectionKind::Entries), Some(6_815_744));
     assert_eq!(budgets.section(SectionKind::WordList), Some(2_097_152));
-    assert_eq!(budgets.section(SectionKind::Fst), Some(2_621_440));
+    assert_eq!(budgets.section(SectionKind::Fst), Some(3_984_588));
     assert_eq!(budgets.section(SectionKind::Unigram), Some(3_670_016));
     assert_eq!(budgets.total(), 18_350_080);
 }
@@ -228,9 +228,10 @@ fn test_ledger_sums_the_recorded_sections_and_an_empty_ledger_sums_to_zero() {
 #[test]
 fn test_violations_reports_a_section_over_its_ceiling() {
     let mut ledger = Ledger::new(small_budgets());
-    // The FST cap is 125 per-mille of 1 MiB, which is 128,000 bytes.
+    // The FST cap is 190 per-mille of the 1,024,000-byte ceiling, which is 194,560
+    // bytes.
     ledger
-        .record(SectionKind::Fst, None, 128_001)
+        .record(SectionKind::Fst, None, 194_561)
         .expect("recording the fst");
     let violations = ledger.violations();
     assert_eq!(violations.len(), 1);
@@ -243,7 +244,7 @@ fn test_violations_reports_a_section_over_its_ceiling() {
 fn test_violations_is_empty_when_a_row_sits_exactly_at_its_ceiling() {
     let mut ledger = Ledger::new(small_budgets());
     ledger
-        .record(SectionKind::Fst, None, 128_000)
+        .record(SectionKind::Fst, None, 194_560)
         .expect("recording the fst");
     assert!(
         ledger.is_within(),
@@ -324,7 +325,7 @@ fn test_render_matches_the_stats_table_contract() {
         "StrPool           —     100,000     204,800",
         "Entries       1,234     200,000     332,800",
         "WordList      4,567      90,000     102,400",
-        "Fst               —     120,000     128,000",
+        "Fst               —     120,000     194,560",
         "Unigram       1,234     170,000     179,200",
         "TOTAL             —     680,000     896,000",
     ]

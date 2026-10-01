@@ -6,12 +6,12 @@
 
 ## 0. 分片基线（引用主文档，不重复定义）
 
-- **假设清单**：主文档第 1 节 + [features-test.md](../features-test.md) 第 1 节。强相关：`ASM-T-06`（`dict_mmap_rss = 25MB`、`base_dict = 20MB`）、`ASM-T-07`（开发词库 5,871 行 / 248KB）、`ASM-T-11`（基准纯净度）。
+- **假设清单**：主文档第 1 节 + [features-test.md](../features-test.md) 第 1 节。强相关：`ASM-T-06`（`dict_mmap_rss = 25MB`、`base_dict = 20MB`）、`ASM-T-07`（开发词库 5,871 行；已编译词库 2026-10-01 起为全量 15.62MiB / 348,972 词条）、`ASM-T-11`（基准纯净度）。
 - **追踪矩阵**：主文档第 2 节的 `REQ-DICT-01` ~ `REQ-DICT-07`、`REQ-SEC-04`。
 - **预算阈值**：`docs/dev/budgets.json`（键名：`dict_mmap_rss`、`base_dict`、`plugin_rss`、`rss_drift_mb`）。
 - **不可信输入纪律**：词库与用户数据是**不可信输入**（0.4 规则 8 / `AGENTS.md` 3.9）——mmap 之前必须校验 magic、格式版本、长度字段与 CRC。本分片的全部畸形用例都在 `FEAT-TEST-P0.03.02` 的**临时副本**上执行，绝不触碰 `data/compiled/base.dict`。
 
-> 现有基线：`ime-dict` 已有 **89 个 `#[test]`**（含 `user_db/tests.rs` 402 行）、2 个 criterion 基准（`benches/{dict,userdb}.rs`）。`data/compiled/base.dict` = 248KB。
+> 现有基线：`ime-dict` 已有 **89 个 `#[test]`**（含 `user_db/tests.rs` 402 行）、2 个 criterion 基准（`benches/{dict,userdb}.rs`）。`data/compiled/base.dict` = 15.62MiB（2026-10-01 全量重编译，`BUILD-DEF-22` 结案）。
 
 ---
 

@@ -37,6 +37,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, ensure};
 use clap::Args;
 use ime_dict::format::SectionKind;
+use ime_dict::format::collision_limit;
 use ime_dict::format::writer::DictWriter;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -47,7 +48,13 @@ use crate::dictc::source::{
 };
 
 /// Default word list, relative to the repository root.
-pub const DEFAULT_INPUT: &str = "data/raw/base.tsv";
+///
+/// The word list and the L4 frequency source are the same file at production scale:
+/// jieba's rows are `word<TAB>frequency`, which [`load_words`] reads directly -- an
+/// all-digit second column is a weight, and the baseline reading is composed from L1.
+/// The development subset compiled by the tasks' original matrix passes
+/// `--input data/raw/base.tsv --expand-top 2856` instead.
+pub const DEFAULT_INPUT: &str = "data/raw/jieba-dict.tsv";
 /// Default output file, relative to the repository root.
 pub const DEFAULT_OUTPUT: &str = "data/compiled/base.dict";
 /// Default L3c weight-correction table.
@@ -85,14 +92,14 @@ pub struct DictcArgs {
     sources: PathBuf,
     /// Expand the N highest-frequency words of the L4 source; 0 disables L3b.
     ///
-    /// The default is tuned for the development subset committed to this repository,
-    /// not for the full dictionary. ADR-0000 measured the production expansion at +23%
-    /// of keys using the top 50k words of a 400k-word dictionary, and that is the value
-    /// the release build matrix passes. The committed subset holds 5441 words drawn from
-    /// across the frequency range, so the same cut admits 43% of it and expands to
-    /// +38%, over the growth ceiling. Cutting at weight 3000 instead lands the subset at
-    /// +22.5%, which is what makes it a useful stand-in for the real thing.
-    #[arg(long, default_value_t = 2_856)]
+    /// The default is ADR-0000's production value: the top 50k words of the frequency
+    /// source, measured at +17.9% keys over the full 349k-word list with the committed
+    /// polyphone table, inside the 30% ceiling. The development subset compiled by the
+    /// original task matrix holds 5441 words drawn from across the frequency range, so
+    /// the same cut would admit 43% of it and break the ceiling; that matrix passes
+    /// `--expand-top 2856` (a weight cut, landing the subset at +22.5%) together with
+    /// its `--input`.
+    #[arg(long, default_value_t = 50_000)]
     expand_top: u64,
     /// L3b cap on the number of keys generated per word.
     #[arg(long, default_value_t = 4)]
@@ -284,6 +291,15 @@ fn report(
     println!(
         "dictc: {} polyphone-risk words (a character of the word has several readings)",
         stats.polyphone_risk
+    );
+    // The read path resolves these by text; the count is the hash-health signal the
+    // format layer documents, and the build has already refused to get here if it
+    // passed the bound.
+    println!(
+        "dictc: {} hash collisions (the bound for {} words is {})",
+        stats.hash_collisions,
+        stats.words,
+        collision_limit(stats.words as usize)
     );
     if !stats.expanded_examples.is_empty() {
         let sample: Vec<String> = stats
@@ -509,20 +525,18 @@ mod tests {
     /// The L1 character table of the scratch repository.
     const FIXTURE_L1: &str = "中\tzhong\n国\tguo\n银\tyin\n行\txing,hang\n心\txin\n";
 
-    /// The word list of the scratch repository.
+    /// The word list of the scratch repository, which is also its frequency source: at
+    /// production scale the two are one file, and the rows' weights place the band.
     ///
     /// Three rows a compiler can use and one it cannot: `行` states a reading that is not
     /// a syllable sequence, which is the row the build has to count and skip rather than
     /// fail on.
     const FIXTURE_WORDS: &str = "中国\t\t5000\n银行\t\t4000\n中心\t\t3000\n行\tzzz\t10\n";
 
-    /// The frequency ranking of the scratch repository, which places the band.
-    const FIXTURE_FREQUENCIES: &str = "中\t5000\n国\t4000\n心\t3000\n";
-
     /// The correction table of the scratch repository: the reading `银行` actually has.
     const FIXTURE_POLYPHONE: &str = "银行\tyin'hang\n";
 
-    /// Writes a scratch repository root holding the five files the compiler reads, and
+    /// Writes a scratch repository root holding the four files the compiler reads, and
     /// returns it.
     ///
     /// The root carries its own allowlist, raw sources and budget document, so a test can
@@ -539,31 +553,27 @@ mod tests {
         fs::create_dir_all(&raw).expect("creating data/raw");
         fs::create_dir_all(&docs).expect("creating docs/dev");
         fs::write(raw.join("pinyin-data.tsv"), FIXTURE_L1).expect("writing the L1 source");
-        fs::write(raw.join("base.tsv"), FIXTURE_WORDS).expect("writing the word list");
-        fs::write(raw.join("jieba-dict.tsv"), FIXTURE_FREQUENCIES)
-            .expect("writing the frequency source");
+        fs::write(raw.join("jieba-dict.tsv"), FIXTURE_WORDS)
+            .expect("writing the word and frequency source");
         fs::write(raw.join("polyphone.tsv"), FIXTURE_POLYPHONE)
             .expect("writing the correction table");
         fs::write(docs.join("budgets.json"), BUDGETS_FIXTURE).expect("writing the budgets");
 
         // The two upstream sources are hash-pinned exactly as the real allowlist pins the
-        // fetched files; the two derived ones carry no pin, because the project generates
-        // them and they change whenever the generator does.
+        // fetched files; the derived one carries no pin, because the project generates it
+        // and it changes whenever the generator does.
         let allowlist = format!(
             "[[source]]\nid = \"pinyin-data\"\nkind = \"upstream\"\nlayer = \"L1\"\n\
              url = \"https://example.invalid/pinyin-data\"\nlicense = \"MIT\"\nspdx = \"MIT\"\n\
              retrieved = \"2026-09-29\"\nsha256 = \"{}\"\npermissive = true\n\n\
-             [[source]]\nid = \"jieba-dict\"\nkind = \"upstream\"\nlayer = \"L4\"\n\
+             [[source]]\nid = \"jieba-dict\"\nkind = \"upstream\"\nlayer = \"L2\"\n\
              url = \"https://example.invalid/jieba-dict\"\nlicense = \"MIT\"\nspdx = \"MIT\"\n\
              retrieved = \"2026-09-29\"\nsha256 = \"{}\"\npermissive = true\n\n\
-             [[source]]\nid = \"base\"\nkind = \"derived\"\nlayer = \"L2\"\n\
-             url = \"https://example.invalid/base\"\nlicense = \"Project-owned\"\n\
-             spdx = \"MIT OR Apache-2.0\"\npermissive = true\n\n\
              [[source]]\nid = \"polyphone\"\nkind = \"derived\"\nlayer = \"L3c\"\n\
              url = \"https://example.invalid/polyphone\"\nlicense = \"Project-owned\"\n\
              spdx = \"MIT OR Apache-2.0\"\npermissive = true\n",
             hex(&Sha256::digest(FIXTURE_L1.as_bytes())),
-            hex(&Sha256::digest(FIXTURE_FREQUENCIES.as_bytes())),
+            hex(&Sha256::digest(FIXTURE_WORDS.as_bytes())),
         );
         fs::write(root.join("data/sources.toml"), allowlist).expect("writing the allowlist");
         root

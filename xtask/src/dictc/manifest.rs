@@ -335,13 +335,16 @@ pub fn record_build(
 ///
 /// The order is a function of the sources rather than of the caller's list, which is
 /// what makes two builds of the same inputs render the same manifest. A path breaks a
-/// tie between two entries that share an id, so the order stays total.
+/// tie between two entries that share an id, so the order stays total. A file consumed
+/// through two roles -- the frequency source that is also the word list, say -- is one
+/// source, so the same (id, path) pair is measured once.
 fn measured_sources(mut sources: Vec<SourceIdentity>) -> Result<Vec<SourceRecord>> {
     sources.sort_by(|left, right| {
         left.id
             .cmp(&right.id)
             .then_with(|| left.path.cmp(&right.path))
     });
+    sources.dedup_by(|left, right| left.id == right.id && left.path == right.path);
     let mut records = Vec::with_capacity(sources.len());
     for identity in sources {
         records.push(SourceRecord::measure(identity)?);

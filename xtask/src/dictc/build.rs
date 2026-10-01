@@ -18,7 +18,7 @@ use std::path::Path;
 use anyhow::Result;
 use ime_dict::format::{
     DictEntry, ENTRY_SIZE, MAX_SYL_COUNT, MAX_WORDS_PER_KEY, PROB_Q12_MAX, UNIGRAM_ENTRY_SIZE,
-    find_colliding_hashes, hash_word, pack_fst_value,
+    collision_limit, count_colliding_hashes, find_colliding_hashes, hash_word, pack_fst_value,
 };
 
 use super::source::Word;
@@ -61,6 +61,10 @@ pub(crate) struct Stats {
     pub(crate) polyphone_unmatched: u64,
     /// (key, word) pairs dropped because the key was already at its word ceiling.
     pub(crate) truncated_pairs: u64,
+    /// Pairs of distinct words whose hashes agree. The read path resolves them by
+    /// text; the count is reported because a count far past the birthday bound is
+    /// what a broken hash looks like.
+    pub(crate) hash_collisions: u64,
     /// Total FST keys.
     pub(crate) keys: u64,
 }
@@ -120,15 +124,27 @@ pub(crate) fn compile(
             .cmp(&hash_word(&right.text))
             .then_with(|| left.text.cmp(&right.text))
     });
-    // The unigram table is searched by hash alone, so two words sharing one would take
-    // each other's score; the format layer owns the check because it owns the hash.
+    // The unigram table is searched by hash and resolved by text on the read path
+    // (`Reader::unigram_lookup` compares the candidate's word through the same
+    // index), so a healthy-hash collision costs a read nothing. A count far past the
+    // birthday bound, though, is what a degenerate hash looks like -- and with it a
+    // read path whose equal-hash runs degrade towards a linear scan. The format layer
+    // owns both the count and the bound because it owns the hash.
     let texts: Vec<&str> = ordered.iter().map(|word| word.text.as_str()).collect();
-    if let Some((hash, left, right)) = find_colliding_hashes(&texts) {
-        anyhow::bail!("dict/unigram/collision: {left:?} and {right:?} share hash {hash:#010x}");
+    let collisions = count_colliding_hashes(&texts);
+    let limit = collision_limit(texts.len());
+    if collisions > limit {
+        if let Some((hash, left, right)) = find_colliding_hashes(&texts) {
+            anyhow::bail!(
+                "dict/unigram/collision: {collisions} colliding pairs past the {limit} the \
+                 hash allows; {left:?} and {right:?} share hash {hash:#010x}"
+            );
+        }
     }
 
     let mut stats = Stats {
         words: ordered.len() as u64,
+        hash_collisions: collisions,
         ..Stats::default()
     };
     let mut corrections_by_word: BTreeMap<&str, &str> = BTreeMap::new();

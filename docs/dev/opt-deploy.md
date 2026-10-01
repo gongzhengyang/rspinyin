@@ -49,7 +49,7 @@
 | `opt-level` | 未显式设置（默认 3） | ✅ 可接受 |
 | 产物剥离时机 | 只在 `xtask install` 内部发生（`strip --strip-unneeded` + 复检 `.dynsym`） | ⚠️ 只在安装路径上，发布路径没有 |
 | 实测产物 | `target/release/librspinyin.so` = **625,008 字节（610KB）**，`file` 报 **"not stripped"**，含 `.symtab`；`size` → text 418,868 / data 16,600 / bss 1,202 | 距 `BUDGET-SIZE-01`（≤12MB）余量极大 |
-| 实测词库 | `data/compiled/base.dict` = **248,484 字节（243KB）** | 距 `BUDGET-SIZE-02`（≤20MB）差约 84 倍——**说明词条内容远未完成**，不是"优化得好" |
+| 实测词库 | ~~`data/compiled/base.dict` = 248,484 字节~~ **2026-10-01 复测 = 16,382,188 字节（15.62MiB）**，348,972 词条 | `BUILD-DEF-22` 结案：距 `BUDGET-SIZE-02`（≤20MB）余量约 22%，处于 `ASM-05` 的 32~40 万词条窗口内 |
 | 内置静态资源 | **无**。无字体、无图标、无图片被打进产物（`assets/` 目录根本不存在，见 BUILD-DEF-06） | ✅ 无资源膨胀风险 |
 | `.cargo/config.toml` | **不存在** | ❌ 无交叉编译配置、无链接期硬化、无可复现构建设置 |
 | 已安装的 target | 仅 `x86_64-unknown-linux-gnu`（另有无关的 `wasm32-unknown-unknown`） | ❌ 无 aarch64 路径 |
@@ -153,7 +153,7 @@
 | `BUILD-DEF-19` | 编译 | 实测 `rustup target list --installed` 只有 `x86_64-unknown-linux-gnu`；无 `.cargo/config.toml`；CI 全部作业固定 `ubuntu-24.04` | 无 aarch64 构建路径，`docs/dev/features.md:117` 的"aarch64 待评估"没有任何可执行入口，评估无法闭环 | 已修复：`cross-arch` 作业在原生 arm64 runner 上跑 `just check-arm64`；本轮另加 `matrix.yml` 的 arm64 腿 |
 | `BUILD-DEF-20` | 编译 | 实测无 `.cargo/config.toml`；`.github/workflows/ci.yml` 无 `RUSTFLAGS` / `SOURCE_DATE_EPOCH` | 无链接期硬化（`-z relro -z now`、`--as-needed`、`noexecstack`），也无可复现构建设置（`SOURCE_DATE_EPOCH`、`-ffile-prefix-map`）。插件常驻用户主进程，硬化缺失的代价高于普通 CLI | 已修复：`SOURCE_DATE_EPOCH` 全局设定（`ci.yml:68`），`reproducible` 作业断言 `GNU_RELRO` |
 | `BUILD-DEF-21` | CI | 实测 `.github/workflows/ci.yml` 无 `cargo audit` / `cargo deny` 步骤；`AGENTS.md` §3.9 要求提交前执行二者 | 依赖漏洞与许可证 bans 无自动化门禁，只有人工纪律 | 已修复：`audit` 作业跑 `just check-advisories`（`cargo audit` + `cargo deny`） |
-| `BUILD-DEF-22` | 打包 | 实测 `data/compiled/base.dict` = 248,484 字节 vs `BUDGET-SIZE-02` 阈值 20MB；`.dev-progress.json` 记录 `TASK-1.03.02` / `TASK-1.03.03` 未完成 | 词库内容距发布规模差约 84 倍，**发布产物功能不完整**（候选质量无法达标） | **部分修复**：`data/compiled/base.dict` 仍只有 5,441 条（`dictc` 默认 `--input` 指向 `base.tsv` 而非 349,046 行的 `jieba-dict.tsv`），距 `BUDGET-SIZE-02` 的 20MB 仍差约 84 倍。词库规模是本轮的遗留项 |
+| `BUILD-DEF-22` | 打包 | 实测 `data/compiled/base.dict` = 248,484 字节 vs `BUDGET-SIZE-02` 阈值 20MB；`.dev-progress.json` 记录 `TASK-1.03.02` / `TASK-1.03.03` 未完成 | 词库内容距发布规模差约 84 倍，**发布产物功能不完整**（候选质量无法达标） | **已修复（2026-10-01）**：`dictc` 默认输入改为 `data/raw/jieba-dict.tsv`（349,046 行，MIT）并配生产展开带 `--expand-top 50000`，实测编译 **348,972 词条 / 292,315 键 / 15.62MiB**（`BUDGET-SIZE-02` 与 `ASM-05` 全部上限内，FST 段份额按实测重锚 125‰→190‰）；`dictc quality` 于 6,000 条留出集实测 top1 73.8% / top9 96.4%。词库后续工作是质量调优（`xtask tune`、`L3b` 阈值扫描），不再是规模 |
 | `BUILD-DEF-23` | CI | 实测无跨发行版作业（`TASK-3.07.03` 未开始） | Fedora / Arch 上从未构建过；`docs/dev/features.md:4451` 的"三套包可安装、可卸载且可逆"验收无任何基础 | 已修复：`.github/workflows/matrix.yml` 与 `packaging/containers/` 五份 Dockerfile 已落盘。**本机未构建过任何镜像，矩阵一次都没跑过** |
 
 ---
@@ -348,7 +348,7 @@
 | `BUILD-DEF-19` | 编译 | Track A | 无 aarch64 构建路径 | `BUILD-P0.01.02` | 已修复：`cross-arch` 作业在原生 arm64 runner 上跑 `just check-arm64`；本轮另加 `matrix.yml` 的 arm64 腿 |
 | `BUILD-DEF-20` | 编译 | Track A | 无硬化与可复现构建设置 | `BUILD-P0.01.03` | 已修复：`SOURCE_DATE_EPOCH` 全局设定（`ci.yml:68`），`reproducible` 作业断言 `GNU_RELRO` |
 | `BUILD-DEF-21` | CI | Track C | 无 `cargo audit` / `cargo deny` | `BUILD-P0.05.01` | 已修复：`audit` 作业跑 `just check-advisories`（`cargo audit` + `cargo deny`） |
-| `BUILD-DEF-22` | 打包 | Track A | 词库内容距发布规模差 84 倍 | `BUILD-P0.02.02`、`BUILD-P2.05.03` | **部分修复**：`data/compiled/base.dict` 仍只有 5,441 条（`dictc` 默认 `--input` 指向 `base.tsv` 而非 349,046 行的 `jieba-dict.tsv`），距 `BUDGET-SIZE-02` 的 20MB 仍差约 84 倍。词库规模是本轮的遗留项 |
+| `BUILD-DEF-22` | 打包 | Track A | 词库内容距发布规模差 84 倍 | `BUILD-P0.02.02`、`BUILD-P2.05.03` | **已修复（2026-10-01）**：`dictc` 默认输入改为 `jieba-dict.tsv` + `--expand-top 50000`，实测 348,972 词条 / 15.62MiB 容器，全部体积上限内；`ASM-05` FST 份额按实测重锚。详见问题总清单行 |
 | `BUILD-DEF-23` | CI | Track A | 无跨发行版编译矩阵 | `BUILD-P1.01.01` | 已修复：`.github/workflows/matrix.yml` 与 `packaging/containers/` 五份 Dockerfile 已落盘。**本机未构建过任何镜像，矩阵一次都没跑过** |
 | `L-01` Ubuntu 24.04 x86_64 | 平台切片 | A / B / C | 主切片 | `BUILD-P0.01.01`、`BUILD-P1.04.01`、`BUILD-P1.03.01`、`BUILD-P0.05.02` |
 | `L-02` Ubuntu 22.04 x86_64 | 平台切片 | A / B | 受 `BUILD-DEF-09` 阻塞 | `BUILD-P0.03.04`、`BUILD-P1.04.01`、`BUILD-P1.03.01` |
@@ -1165,7 +1165,7 @@ check-size:
   - **`just bench` 已接上 `budget --check`**（此前是悬空门禁）；`bench-quick` 未动，以免破坏它「无 bench target 时保绿」的守卫。
   - **已知限制**：
     1. **体积实测未取**：`dist/` 需先跑 `just package`。
-    2. **`BUDGET-SIZE-02` 与词库完成度的关系必须读对**：`base.dict` 实测约 243KB 对 20MB 上限，差距反映的是**词库尚未做完**（`BUILD-DEF-22`），不能读成「体积控制得好」。CI 的 summary 已明写这一点。
+    2. ~~**`BUDGET-SIZE-02` 与词库完成度的关系必须读对**~~ **已消解（2026-10-01）**：`BUILD-DEF-22` 结案后 `base.dict` 实测 15.62MiB 对 20MB 上限，规模与预算的差距不再指向未完成的词库；`dictc` 无参默认即编译全量词表。
   - **环境**：Rust 1.98.0（workspace MSRV 1.85，`rust-toolchain.toml` 钉定）、Linux 6.18.40.1-microsoft-standard-WSL2、Fcitx5 5.1.7、cargo-nextest 0.9.143、cargo-deny 0.20.2。
 
 ---

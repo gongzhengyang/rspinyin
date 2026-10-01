@@ -38,22 +38,33 @@ use crate::budget::{BUDGETS_FILE, read_budgets};
 
 /// Payload section ceilings as per-mille shares of the container ceiling.
 ///
-/// At the container ceiling `docs/dev/budgets.json` states, these reproduce the
-/// `ASM-05` table exactly: 4 MiB, 6.5 MiB, 2 MiB, 2.5 MiB and 3.5 MiB. The order is
-/// the order the `--stats` table lists the rows in, which is the order the size gate
-/// parses, so it is a build-time contract rather than a presentation choice.
+/// At the container ceiling `docs/dev/budgets.json` states, these give 4 MiB, 6.5 MiB,
+/// 2 MiB, 3.8 MiB and 3.5 MiB. The order is the order the `--stats` table lists the
+/// rows in, which is the order the size gate parses, so it is a build-time contract
+/// rather than a presentation choice.
+///
+/// The `Fst` share is the one measurement moved. `ASM-05` originally estimated it at
+/// 125 per-mille (2.5 MiB) from a ~5.9 B/key density guess; the first full-scale build
+/// measured 11.65 B/key over 292,315 keys (3,404,030 bytes), and even the expansion-free
+/// baseline needs ~2.9 MB -- the original ceiling is unreachable at the entry floor, let
+/// alone the 400k-entry window. 190 per-mille (3.8 MiB) fits that window's worst case
+/// (~335k keys) with headroom, and `docs/dev/features.md` `ASM-05` states the same
+/// number.
 const SECTION_SHARES: [(SectionKind, u32); 5] = [
     (SectionKind::StrPool, 200),
     (SectionKind::Entries, 325),
     (SectionKind::WordList, 100),
-    (SectionKind::Fst, 125),
+    (SectionKind::Fst, 190),
     (SectionKind::Unigram, 175),
 ];
 
 /// Share of the container ceiling the five payload sections may use together.
 ///
 /// `ASM-05` leaves 2.5 MiB of a 20 MiB container to the header, the section table and
-/// the alignment padding, which is 875 per-mille of the container.
+/// the alignment padding, which is 875 per-mille of the container. The section shares
+/// sum to more than that on purpose -- 19.8 MiB against a 17.5 MiB payload budget --
+/// because a build inside every section ceiling and past the payload total has to fail
+/// on the total, and a build past one section ceiling says which input grew.
 const PAYLOAD_SHARE: u32 = 875;
 
 /// Denominator of every share in this module.
@@ -83,8 +94,8 @@ impl SegmentBudgets {
     /// Derives every ceiling from one container ceiling.
     ///
     /// A container ceiling of 20 MiB, the value `docs/dev/budgets.json` states,
-    /// yields the `ASM-05` table: 4 MiB, 6.5 MiB, 2 MiB, 2.5 MiB and 3.5 MiB per
-    /// section. Those five add up to 18.5 MiB, which is *more* than the 17.5 MiB the
+    /// yields the `ASM-05` table: 4 MiB, 6.5 MiB, 2 MiB, 3.8 MiB and 3.5 MiB per
+    /// section. Those five add up to 19.8 MiB, which is *more* than the 17.5 MiB the
     /// five may use together -- see [`PAYLOAD_SHARE`] -- and the difference is the
     /// point: the section ceilings are loose so that a build past one of them says
     /// which input grew, while the total is the ceiling a build has to respect.

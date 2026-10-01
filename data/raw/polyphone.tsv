@@ -1,6 +1,10 @@
 # rspinyin L3c polyphone weight-correction table.
 #
-# Columns: word <TAB> reading
+# Columns: word <TAB> reading <TAB> origin
+#   The origin is where the row's reading comes from -- `unihan` (derived from
+#   the Unihan database), `manual` (curated by hand, which is what every row of
+#   this table is), or `corpus` (mined from corpus text). `dictc quality` audits
+#   the column so a row's provenance travels with it.
 #   The reading is the one the word actually has, spelled as one syllable per
 #   character separated by apostrophes. Tone marks, tone digits and an
 #   apostrophe-free spelling are accepted as well; dictc folds every form onto
@@ -19,3133 +23,2851 @@
 # one of those characters, with the reading that word has.
 
 # ── 行 xing / hang ─────────────────────────────────────────────────────────
-银行	yin'hang
-行业	hang'ye
-行人	xing'ren
-行动	xing'dong
-行为	xing'wei
-行政	xing'zheng
-行驶	xing'shi
-行李	xing'li
-旅行	lv'xing
-进行	jin'xing
-举行	ju'xing
-实行	shi'xing
-发行	fa'xing
-流行	liu'xing
-同行	tong'hang
-内行	nei'hang
-外行	wai'hang
-行列	hang'lie
-行情	hang'qing
-行车	xing'che
-步行	bu'xing
-飞行	fei'xing
-航行	hang'xing
-银行家	yin'hang'jia
-自行车	zi'xing'che
-自行车	zi'xing'che
-火车站	huo'che'zhan
-汽车站	qi'che'zhan
-地铁站	di'tie'zhan
-加油站	jia'you'zhan
-出租车	chu'zu'che
-公交车	gong'jiao'che
-救护车	jiu'hu'che
-面包车	mian'bao'che
-三轮车	san'lun'che
-大卡车	da'ka'che
-小轿车	xiao'jiao'che
-火车站	huo'che'zhan
+银行	yin'hang		manual
+行业	hang'ye		manual
+行人	xing'ren		manual
+行动	xing'dong		manual
+行为	xing'wei		manual
+行政	xing'zheng		manual
+行驶	xing'shi		manual
+行李	xing'li		manual
+旅行	lv'xing		manual
+进行	jin'xing		manual
+举行	ju'xing		manual
+实行	shi'xing		manual
+发行	fa'xing		manual
+流行	liu'xing		manual
+同行	tong'hang		manual
+内行	nei'hang		manual
+外行	wai'hang		manual
+行列	hang'lie		manual
+行情	hang'qing		manual
+行车	xing'che		manual
+步行	bu'xing		manual
+飞行	fei'xing		manual
+航行	hang'xing		manual
+银行家	yin'hang'jia		manual
+自行车	zi'xing'che		manual
+火车站	huo'che'zhan		manual
+汽车站	qi'che'zhan		manual
+地铁站	di'tie'zhan		manual
+加油站	jia'you'zhan		manual
+出租车	chu'zu'che		manual
+公交车	gong'jiao'che		manual
+救护车	jiu'hu'che		manual
+面包车	mian'bao'che		manual
+三轮车	san'lun'che		manual
+大卡车	da'ka'che		manual
+小轿车	xiao'jiao'che		manual
 # ── 重 zhong / chong ───────────────────────────────────────────────────────
-重要	zhong'yao
-重大	zhong'da
-重点	zhong'dian
-重视	zhong'shi
-严重	yan'zhong
-尊重	zun'zhong
-体重	ti'zhong
-重量	zhong'liang
-重心	zhong'xin
-重新	chong'xin
-重复	chong'fu
-重建	chong'jian
-重庆	chong'qing
-重叠	chong'die
-重逢	chong'feng
-重新开始	chong'xin'kai'shi
-重整旗鼓	chong'zheng'qi'gu
-重见天日	chong'jian'tian'ri
-重蹈覆辙	chong'dao'fu'zhe
+重要	zhong'yao		manual
+重大	zhong'da		manual
+重点	zhong'dian		manual
+重视	zhong'shi		manual
+严重	yan'zhong		manual
+尊重	zun'zhong		manual
+体重	ti'zhong		manual
+重量	zhong'liang		manual
+重心	zhong'xin		manual
+重新	chong'xin		manual
+重复	chong'fu		manual
+重建	chong'jian		manual
+重庆	chong'qing		manual
+重叠	chong'die		manual
+重逢	chong'feng		manual
+重新开始	chong'xin'kai'shi		manual
+重整旗鼓	chong'zheng'qi'gu		manual
+重见天日	chong'jian'tian'ri		manual
+重蹈覆辙	chong'dao'fu'zhe		manual
 # ── 长 chang / zhang ───────────────────────────────────────────────────────
-长江	chang'jiang
-长城	chang'cheng
-长期	chang'qi
-长度	chang'du
-长大	zhang'da
-成长	cheng'zhang
-生长	sheng'zhang
-增长	zeng'zhang
-长辈	zhang'bei
-校长	xiao'zhang
-市长	shi'zhang
-家长	jia'zhang
-部长	bu'zhang
-班长	ban'zhang
-队长	dui'zhang
-组长	zu'zhang
-首长	shou'zhang
-长处	chang'chu
-擅长	shan'chang
-特长	te'chang
-长途	chang'tu
-漫长	man'chang
-长年累月	chang'nian'lei'yue
-长篇大论	chang'pian'da'lun
-长驱直入	chang'qu'zhi'ru
-长风破浪	chang'feng'po'lang
-山高水长	shan'gao'shui'chang
-草长莺飞	cao'zhang'ying'fei
+长江	chang'jiang		manual
+长城	chang'cheng		manual
+长期	chang'qi		manual
+长度	chang'du		manual
+长大	zhang'da		manual
+成长	cheng'zhang		manual
+生长	sheng'zhang		manual
+增长	zeng'zhang		manual
+长辈	zhang'bei		manual
+校长	xiao'zhang		manual
+市长	shi'zhang		manual
+家长	jia'zhang		manual
+部长	bu'zhang		manual
+班长	ban'zhang		manual
+队长	dui'zhang		manual
+组长	zu'zhang		manual
+首长	shou'zhang		manual
+长处	chang'chu		manual
+擅长	shan'chang		manual
+特长	te'chang		manual
+长途	chang'tu		manual
+漫长	man'chang		manual
+长年累月	chang'nian'lei'yue		manual
+长篇大论	chang'pian'da'lun		manual
+长驱直入	chang'qu'zhi'ru		manual
+长风破浪	chang'feng'po'lang		manual
+山高水长	shan'gao'shui'chang		manual
+草长莺飞	cao'zhang'ying'fei		manual
 # ── 乐 le / yue ────────────────────────────────────────────────────────────
-音乐	yin'yue
-乐器	yue'qi
-乐队	yue'dui
-乐曲	yue'qu
-乐观	le'guan
-快乐	kuai'le
-娱乐	yu'le
-乐趣	le'qu
-乐园	le'yuan
-欢乐	huan'le
-乐谱	yue'pu
-音乐会	yin'yue'hui
-交响乐	jiao'xiang'yue
-音乐家	yin'yue'jia
-游乐场	you'le'chang
+音乐	yin'yue		manual
+乐器	yue'qi		manual
+乐队	yue'dui		manual
+乐曲	yue'qu		manual
+乐观	le'guan		manual
+快乐	kuai'le		manual
+娱乐	yu'le		manual
+乐趣	le'qu		manual
+乐园	le'yuan		manual
+欢乐	huan'le		manual
+乐谱	yue'pu		manual
+音乐会	yin'yue'hui		manual
+交响乐	jiao'xiang'yue		manual
+音乐家	yin'yue'jia		manual
+游乐场	you'le'chang		manual
 # ── 还 hai / huan ──────────────────────────────────────────────────────────
-还有	hai'you
-还是	hai'shi
-归还	gui'huan
-偿还	chang'huan
-还债	huan'zhai
-还原	huan'yuan
-返老还童	fan'lao'huan'tong
+还有	hai'you		manual
+还是	hai'shi		manual
+归还	gui'huan		manual
+偿还	chang'huan		manual
+还债	huan'zhai		manual
+还原	huan'yuan		manual
+返老还童	fan'lao'huan'tong		manual
 # ── 都 dou / du ────────────────────────────────────────────────────────────
-都是	dou'shi
-都市	du'shi
-首都	shou'du
-都城	du'cheng
-全都	quan'dou
+都是	dou'shi		manual
+都市	du'shi		manual
+首都	shou'du		manual
+都城	du'cheng		manual
+全都	quan'dou		manual
 # ── 得 de / dei ────────────────────────────────────────────────────────────
-得到	de'dao
-获得	huo'de
-取得	qu'de
-觉得	jue'de
-记得	ji'de
-懂得	dong'de
-显得	xian'de
-值得	zhi'de
-不得不	bu'de'bu
-得意	de'yi
-心得	xin'de
-得天独厚	de'tian'du'hou
-得心应手	de'xin'ying'shou
+得到	de'dao		manual
+获得	huo'de		manual
+取得	qu'de		manual
+觉得	jue'de		manual
+记得	ji'de		manual
+懂得	dong'de		manual
+显得	xian'de		manual
+值得	zhi'de		manual
+不得不	bu'de'bu		manual
+得意	de'yi		manual
+心得	xin'de		manual
+得天独厚	de'tian'du'hou		manual
+得心应手	de'xin'ying'shou		manual
 # ── 地 de / di ─────────────────────────────────────────────────────────────
-地方	di'fang
-地区	di'qu
-土地	tu'di
-地面	di'mian
-地球	di'qiu
-地址	di'zhi
-地图	di'tu
-地位	di'wei
-地下	di'xia
-当地	dang'di
-外地	wai'di
-基地	ji'di
-场地	chang'di
-草地	cao'di
-耕地	geng'di
-盆地	pen'di
-地铁	di'tie
-地毯	di'tan
-地板	di'ban
-地理	di'li
-地窖	di'jiao
-地洞	di'dong
-地沟	di'gou
-地漏	di'lou
-地基	di'ji
-地脚	di'jiao
-地头	di'tou
-地角	di'jiao
-地处	di'chu
-地名	di'ming
-地带	di'dai
-地域	di'yu
-田地	tian'di
-荒地	huang'di
-林地	lin'di
-山地	shan'di
-坡地	po'di
-洼地	wa'di
-平地	ping'di
-高地	gao'di
-湿地	shi'di
-旱地	han'di
-沙地	sha'di
-地表	di'biao
-地皮	di'pi
-地盘	di'pan
-地界	di'jie
-翻天覆地	fan'tian'fu'di
-顶天立地	ding'tian'li'di
-冰天雪地	bing'tian'xue'di
+地方	di'fang		manual
+地区	di'qu		manual
+土地	tu'di		manual
+地面	di'mian		manual
+地球	di'qiu		manual
+地址	di'zhi		manual
+地图	di'tu		manual
+地位	di'wei		manual
+地下	di'xia		manual
+当地	dang'di		manual
+外地	wai'di		manual
+基地	ji'di		manual
+场地	chang'di		manual
+草地	cao'di		manual
+耕地	geng'di		manual
+盆地	pen'di		manual
+地铁	di'tie		manual
+地毯	di'tan		manual
+地板	di'ban		manual
+地理	di'li		manual
+地窖	di'jiao		manual
+地洞	di'dong		manual
+地沟	di'gou		manual
+地漏	di'lou		manual
+地基	di'ji		manual
+地脚	di'jiao		manual
+地头	di'tou		manual
+地角	di'jiao		manual
+地处	di'chu		manual
+地名	di'ming		manual
+地带	di'dai		manual
+地域	di'yu		manual
+田地	tian'di		manual
+荒地	huang'di		manual
+林地	lin'di		manual
+山地	shan'di		manual
+坡地	po'di		manual
+洼地	wa'di		manual
+平地	ping'di		manual
+高地	gao'di		manual
+湿地	shi'di		manual
+旱地	han'di		manual
+沙地	sha'di		manual
+地表	di'biao		manual
+地皮	di'pi		manual
+地盘	di'pan		manual
+地界	di'jie		manual
+翻天覆地	fan'tian'fu'di		manual
+顶天立地	ding'tian'li'di		manual
+冰天雪地	bing'tian'xue'di		manual
 # ── 了 le / liao ───────────────────────────────────────────────────────────
-了解	liao'jie
-为了	wei'le
-除了	chu'le
-完了	wan'le
-罢了	ba'le
-一目了然	yi'mu'liao'ran
-一了百了	yi'liao'bai'liao
+了解	liao'jie		manual
+为了	wei'le		manual
+除了	chu'le		manual
+完了	wan'le		manual
+罢了	ba'le		manual
+一目了然	yi'mu'liao'ran		manual
+一了百了	yi'liao'bai'liao		manual
 # ── 着 zhe / zhuo / zhao ───────────────────────────────────────────────────
-看着	kan'zhe
-拿着	na'zhe
-接着	jie'zhe
-沿着	yan'zhe
-着重	zhuo'zhong
-着陆	zhuo'lu
-着手	zhuo'shou
-着急	zhao'ji
-着火	zhao'huo
-着想	zhuo'xiang
-沉着	chen'zhuo
-着装	zhuo'zhuang
+看着	kan'zhe		manual
+拿着	na'zhe		manual
+接着	jie'zhe		manual
+沿着	yan'zhe		manual
+着重	zhuo'zhong		manual
+着陆	zhuo'lu		manual
+着手	zhuo'shou		manual
+着急	zhao'ji		manual
+着火	zhao'huo		manual
+着想	zhuo'xiang		manual
+沉着	chen'zhuo		manual
+着装	zhuo'zhuang		manual
 # ── 和 he / huo / hu ───────────────────────────────────────────────────────
-和平	he'ping
-和谐	he'xie
-温和	wen'he
-和气	he'qi
-和面	huo'mian
-和牌	hu'pai
-心平气和	xin'ping'qi'he
+和平	he'ping		manual
+和谐	he'xie		manual
+温和	wen'he		manual
+和气	he'qi		manual
+和面	huo'mian		manual
+和牌	hu'pai		manual
+心平气和	xin'ping'qi'he		manual
 # ── 差 cha / chai / ci ─────────────────────────────────────────────────────
-差别	cha'bie
-差距	cha'ju
-差异	cha'yi
-差不多	cha'bu'duo
-出差	chu'chai
-差事	chai'shi
-参差	cen'ci
-阴差阳错	yin'cha'yang'cuo
+差别	cha'bie		manual
+差距	cha'ju		manual
+差异	cha'yi		manual
+差不多	cha'bu'duo		manual
+出差	chu'chai		manual
+差事	chai'shi		manual
+参差	cen'ci		manual
+阴差阳错	yin'cha'yang'cuo		manual
 # ── 参 can / shen / cen ────────────────────────────────────────────────────
-参加	can'jia
-参与	can'yu
-参考	can'kao
-参数	can'shu
-参观	can'guan
-人参	ren'shen
-参差	cen'ci
-参考书	can'kao'shu
+参加	can'jia		manual
+参与	can'yu		manual
+参考	can'kao		manual
+参数	can'shu		manual
+参观	can'guan		manual
+人参	ren'shen		manual
+参考书	can'kao'shu		manual
 # ── 便 bian / pian ─────────────────────────────────────────────────────────
-方便	fang'bian
-便宜	pian'yi
-便利	bian'li
-便条	bian'tiao
-随便	sui'bian
-大便	da'bian
-小便	xiao'bian
-家常便饭	jia'chang'bian'fan
+方便	fang'bian		manual
+便宜	pian'yi		manual
+便利	bian'li		manual
+便条	bian'tiao		manual
+随便	sui'bian		manual
+大便	da'bian		manual
+小便	xiao'bian		manual
+家常便饭	jia'chang'bian'fan		manual
 # ── 藏 cang / zang ─────────────────────────────────────────────────────────
-西藏	xi'zang
-藏族	zang'zu
-隐藏	yin'cang
-收藏	shou'cang
-藏书	cang'shu
-矿藏	kuang'cang
-宝藏	bao'zang
-躲藏	duo'cang
+西藏	xi'zang		manual
+藏族	zang'zu		manual
+隐藏	yin'cang		manual
+收藏	shou'cang		manual
+藏书	cang'shu		manual
+矿藏	kuang'cang		manual
+宝藏	bao'zang		manual
+躲藏	duo'cang		manual
 # ── 朝 chao / zhao ─────────────────────────────────────────────────────────
-朝鲜	chao'xian
-朝气	zhao'qi
-朝阳	zhao'yang
-朝霞	zhao'xia
-朝廷	chao'ting
-朝代	chao'dai
-朝向	chao'xiang
+朝鲜	chao'xian		manual
+朝气	zhao'qi		manual
+朝阳	zhao'yang		manual
+朝霞	zhao'xia		manual
+朝廷	chao'ting		manual
+朝代	chao'dai		manual
+朝向	chao'xiang		manual
 # ── 折 zhe / she ───────────────────────────────────────────────────────────
-打折	da'zhe
-折扣	zhe'kou
-折磨	zhe'mo
-曲折	qu'zhe
-折断	zhe'duan
-折合	zhe'he
-骨折	gu'zhe
-折扇	zhe'shan
-百折不挠	bai'zhe'bu'nao
-一波三折	yi'bo'san'zhe
+打折	da'zhe		manual
+折扣	zhe'kou		manual
+折磨	zhe'mo		manual
+曲折	qu'zhe		manual
+折断	zhe'duan		manual
+折合	zhe'he		manual
+骨折	gu'zhe		manual
+折扇	zhe'shan		manual
+百折不挠	bai'zhe'bu'nao		manual
+一波三折	yi'bo'san'zhe		manual
 # ── 血 xue / xie ───────────────────────────────────────────────────────────
-血液	xue'ye
-血管	xue'guan
-血压	xue'ya
-血型	xue'xing
-流血	liu'xue
-输血	shu'xue
-血汗	xue'han
-心血	xin'xue
-血口喷人	xue'kou'pen'ren
+血液	xue'ye		manual
+血管	xue'guan		manual
+血压	xue'ya		manual
+血型	xue'xing		manual
+流血	liu'xue		manual
+输血	shu'xue		manual
+血汗	xue'han		manual
+心血	xin'xue		manual
+血口喷人	xue'kou'pen'ren		manual
 # ── 角 jiao / jue ──────────────────────────────────────────────────────────
-角度	jiao'du
-角落	jiao'luo
-三角	san'jiao
-直角	zhi'jiao
-墙角	qiang'jiao
-街角	jie'jiao
-视角	shi'jiao
-角色	jue'se
-角逐	jue'zhu
-口角	kou'jiao
-主角	zhu'jue
-配角	pei'jue
-天涯海角	tian'ya'hai'jiao
+角度	jiao'du		manual
+角落	jiao'luo		manual
+三角	san'jiao		manual
+直角	zhi'jiao		manual
+墙角	qiang'jiao		manual
+街角	jie'jiao		manual
+视角	shi'jiao		manual
+角色	jue'se		manual
+角逐	jue'zhu		manual
+口角	kou'jiao		manual
+主角	zhu'jue		manual
+配角	pei'jue		manual
+天涯海角	tian'ya'hai'jiao		manual
 # ── 觉 jue / jiao ──────────────────────────────────────────────────────────
-觉得	jue'de
-感觉	gan'jue
-觉悟	jue'wu
-睡觉	shui'jiao
-午觉	wu'jiao
-不知不觉	bu'zhi'bu'jue
+感觉	gan'jue		manual
+觉悟	jue'wu		manual
+睡觉	shui'jiao		manual
+午觉	wu'jiao		manual
+不知不觉	bu'zhi'bu'jue		manual
 # ── 落 luo / la / lao ──────────────────────────────────────────────────────
-落下	luo'xia
-落后	luo'hou
-落实	luo'shi
-角落	jiao'luo
-落地	luo'di
-落成	luo'cheng
-丢三落四	diu'san'la'si
-落枕	lao'zhen
-落井下石	luo'jing'xia'shi
-落花流水	luo'hua'liu'shui
-落叶归根	luo'ye'gui'gen
-落落大方	luo'luo'da'fang
+落下	luo'xia		manual
+落后	luo'hou		manual
+落实	luo'shi		manual
+落地	luo'di		manual
+落成	luo'cheng		manual
+丢三落四	diu'san'la'si		manual
+落枕	lao'zhen		manual
+落井下石	luo'jing'xia'shi		manual
+落花流水	luo'hua'liu'shui		manual
+落叶归根	luo'ye'gui'gen		manual
+落落大方	luo'luo'da'fang		manual
 # ── 没 mei / mo ────────────────────────────────────────────────────────────
-没有	mei'you
-没事	mei'shi
-淹没	yan'mo
-埋没	mai'mo
-没收	mo'shou
-沉没	chen'mo
+没有	mei'you		manual
+没事	mei'shi		manual
+淹没	yan'mo		manual
+埋没	mai'mo		manual
+没收	mo'shou		manual
+沉没	chen'mo		manual
 # ── 会 hui / kuai ──────────────────────────────────────────────────────────
-会议	hui'yi
-社会	she'hui
-学会	xue'hui
-机会	ji'hui
-会计	kuai'ji
-会计师	kuai'ji'shi
-不会	bu'hui
-体会	ti'hui
-委员会	wei'yuan'hui
-社会制度	she'hui'zhi'du
-社会主义	she'hui'zhu'yi
+会议	hui'yi		manual
+社会	she'hui		manual
+学会	xue'hui		manual
+机会	ji'hui		manual
+会计	kuai'ji		manual
+会计师	kuai'ji'shi		manual
+不会	bu'hui		manual
+体会	ti'hui		manual
+委员会	wei'yuan'hui		manual
+社会制度	she'hui'zhi'du		manual
+社会主义	she'hui'zhu'yi		manual
 # ── 系 xi / ji ─────────────────────────────────────────────────────────────
-关系	guan'xi
-系统	xi'tong
-联系	lian'xi
-系列	xi'lie
-体系	ti'xi
-系鞋带	ji'xie'dai
+关系	guan'xi		manual
+系统	xi'tong		manual
+联系	lian'xi		manual
+系列	xi'lie		manual
+体系	ti'xi		manual
+系鞋带	ji'xie'dai		manual
 # ── 将 jiang / qiang ───────────────────────────────────────────────────────
-将来	jiang'lai
-将军	jiang'jun
-即将	ji'jiang
-将近	jiang'jin
-将要	jiang'yao
+将来	jiang'lai		manual
+将军	jiang'jun		manual
+即将	ji'jiang		manual
+将近	jiang'jin		manual
+将要	jiang'yao		manual
 # ── 解 jie / xie ───────────────────────────────────────────────────────────
-解决	jie'jue
-解释	jie'shi
-了解	liao'jie
-理解	li'jie
-解放	jie'fang
-解答	jie'da
-解开	jie'kai
-押解	ya'jie
+解决	jie'jue		manual
+解释	jie'shi		manual
+理解	li'jie		manual
+解放	jie'fang		manual
+解答	jie'da		manual
+解开	jie'kai		manual
+押解	ya'jie		manual
 # ── 卷 juan / quan ─────────────────────────────────────────────────────────
-卷子	juan'zi
-试卷	shi'juan
-卷起	juan'qi
-席卷	xi'juan
-卷心菜	juan'xin'cai
-花卷	hua'juan
-胶卷	jiao'juan
+卷子	juan'zi		manual
+试卷	shi'juan		manual
+卷起	juan'qi		manual
+席卷	xi'juan		manual
+卷心菜	juan'xin'cai		manual
+花卷	hua'juan		manual
+胶卷	jiao'juan		manual
 # ── 弄 nong / long ─────────────────────────────────────────────────────────
-弄虚作假	nong'xu'zuo'jia
-摆弄	bai'nong
-弄堂	long'tang
-糊弄	hu'nong
-玩弄	wan'nong
+弄虚作假	nong'xu'zuo'jia		manual
+摆弄	bai'nong		manual
+弄堂	long'tang		manual
+糊弄	hu'nong		manual
+玩弄	wan'nong		manual
 # ── 强 qiang / jiang ───────────────────────────────────────────────────────
-强大	qiang'da
-强调	qiang'diao
-加强	jia'qiang
-勉强	mian'qiang
-强壮	qiang'zhuang
-强迫	qiang'po
-倔强	jue'jiang
+强大	qiang'da		manual
+强调	qiang'diao		manual
+加强	jia'qiang		manual
+勉强	mian'qiang		manual
+强壮	qiang'zhuang		manual
+强迫	qiang'po		manual
+倔强	jue'jiang		manual
 # ── 圈 quan / juan ─────────────────────────────────────────────────────────
-圈子	quan'zi
-圆圈	yuan'quan
-圈套	quan'tao
-猪圈	zhu'juan
-花圈	hua'quan
-眼圈	yan'quan
+圈子	quan'zi		manual
+圆圈	yuan'quan		manual
+圈套	quan'tao		manual
+猪圈	zhu'juan		manual
+花圈	hua'quan		manual
+眼圈	yan'quan		manual
 # ── 色 se / shai ───────────────────────────────────────────────────────────
-颜色	yan'se
-特色	te'se
-出色	chu'se
-角色	jue'se
-景色	jing'se
-掉色	diao'shai
-色子	shai'zi
-五颜六色	wu'yan'liu'se
-面不改色	mian'bu'gai'se
+颜色	yan'se		manual
+特色	te'se		manual
+出色	chu'se		manual
+景色	jing'se		manual
+掉色	diao'shai		manual
+色子	shai'zi		manual
+五颜六色	wu'yan'liu'se		manual
+面不改色	mian'bu'gai'se		manual
 # ── 什 shen / shi ──────────────────────────────────────────────────────────
-什么	shen'me
-为什么	wei'shen'me
-什锦	shi'jin
+什么	shen'me		manual
+为什么	wei'shen'me		manual
+什锦	shi'jin		manual
 # ── 省 sheng / xing ────────────────────────────────────────────────────────
-省份	sheng'fen
-节省	jie'sheng
-省会	sheng'hui
-反省	fan'xing
-省亲	xing'qin
+省份	sheng'fen		manual
+节省	jie'sheng		manual
+省会	sheng'hui		manual
+反省	fan'xing		manual
+省亲	xing'qin		manual
 # ── 宿 su / xiu ────────────────────────────────────────────────────────────
-宿舍	su'she
-住宿	zhu'su
-一宿	yi'xiu
-星宿	xing'xiu
+宿舍	su'she		manual
+住宿	zhu'su		manual
+一宿	yi'xiu		manual
+星宿	xing'xiu		manual
 # ── 缩 suo / su ────────────────────────────────────────────────────────────
-缩小	suo'xiao
-收缩	suo'shou
-缩短	suo'duan
-压缩	ya'suo
-缩水	suo'shui
+缩小	suo'xiao		manual
+收缩	suo'shou		manual
+缩短	suo'duan		manual
+压缩	ya'suo		manual
+缩水	suo'shui		manual
 # ── 提 ti / di ─────────────────────────────────────────────────────────────
-提高	ti'gao
-提供	ti'gong
-提前	ti'qian
-提议	ti'yi
-提醒	ti'xing
-提防	di'fang
-提款	ti'kuan
+提高	ti'gao		manual
+提供	ti'gong		manual
+提前	ti'qian		manual
+提议	ti'yi		manual
+提醒	ti'xing		manual
+提防	di'fang		manual
+提款	ti'kuan		manual
 # ── 万 wan / mo ────────────────────────────────────────────────────────────
-万一	wan'yi
-万岁	wan'sui
-千万	qian'wan
-万紫千红	wan'zi'qian'hong
+万一	wan'yi		manual
+万岁	wan'sui		manual
+千万	qian'wan		manual
+万紫千红	wan'zi'qian'hong		manual
 # ── 尾 wei / yi ────────────────────────────────────────────────────────────
-尾巴	wei'ba
-结尾	jie'wei
-尾声	wei'sheng
-马尾	ma'yi
+尾巴	wei'ba		manual
+结尾	jie'wei		manual
+尾声	wei'sheng		manual
+马尾	ma'yi		manual
 # ── 吓 xia / he ────────────────────────────────────────────────────────────
-吓人	xia'ren
-吓唬	xia'hu
-恫吓	dong'he
+吓人	xia'ren		manual
+吓唬	xia'hu		manual
+恫吓	dong'he		manual
 # ── 削 xiao / xue ──────────────────────────────────────────────────────────
-削皮	xiao'pi
-削苹果	xiao'ping'guo
-削减	xue'jian
-削弱	xue'ruo
-剥削	bo'xue
+削皮	xiao'pi		manual
+削苹果	xiao'ping'guo		manual
+削减	xue'jian		manual
+削弱	xue'ruo		manual
+剥削	bo'xue		manual
 # ── 咽 yan / ye ────────────────────────────────────────────────────────────
-咽喉	yan'hou
-吞咽	tun'yan
-呜咽	wu'ye
-咽炎	yan'yan
+咽喉	yan'hou		manual
+吞咽	tun'yan		manual
+呜咽	wu'ye		manual
+咽炎	yan'yan		manual
 # ── 员 yuan / yun ──────────────────────────────────────────────────────────
-员工	yuan'gong
-人员	ren'yuan
-学员	xue'yuan
-员工	yuan'gong
-服务员	fu'wu'yuan
-售货员	shou'huo'yuan
-售票员	shou'piao'yuan
-运动员	yun'dong'yuan
-教练员	jiao'lian'yuan
-裁判员	cai'pan'yuan
-技术员	ji'shu'yuan
-管理员	guan'li'yuan
-程序员	cheng'xu'yuan
-设计员	she'ji'yuan
-出纳员	chu'na'yuan
-保管员	bao'guan'yuan
-驾驶员	jia'shi'yuan
-乘务员	cheng'wu'yuan
-营业员	ying'ye'yuan
-推销员	tui'xiao'yuan
-采购员	cai'gou'yuan
-通讯员	tong'xun'yuan
-邮递员	you'di'yuan
-快递员	kuai'di'yuan
-保安员	bao'an'yuan
-消防员	xiao'fang'yuan
-公务员	gong'wu'yuan
-参议员	can'yi'yuan
-研究员	yan'jiu'yuan
-观察员	guan'cha'yuan
-调查员	diao'cha'yuan
-检验员	jian'yan'yuan
-统计员	tong'ji'yuan
-记录员	ji'lu'yuan
-播音员	bo'yin'yuan
+员工	yuan'gong		manual
+人员	ren'yuan		manual
+学员	xue'yuan		manual
+服务员	fu'wu'yuan		manual
+售货员	shou'huo'yuan		manual
+售票员	shou'piao'yuan		manual
+运动员	yun'dong'yuan		manual
+教练员	jiao'lian'yuan		manual
+裁判员	cai'pan'yuan		manual
+技术员	ji'shu'yuan		manual
+管理员	guan'li'yuan		manual
+程序员	cheng'xu'yuan		manual
+设计员	she'ji'yuan		manual
+出纳员	chu'na'yuan		manual
+保管员	bao'guan'yuan		manual
+驾驶员	jia'shi'yuan		manual
+乘务员	cheng'wu'yuan		manual
+营业员	ying'ye'yuan		manual
+推销员	tui'xiao'yuan		manual
+采购员	cai'gou'yuan		manual
+通讯员	tong'xun'yuan		manual
+邮递员	you'di'yuan		manual
+快递员	kuai'di'yuan		manual
+保安员	bao'an'yuan		manual
+消防员	xiao'fang'yuan		manual
+公务员	gong'wu'yuan		manual
+参议员	can'yi'yuan		manual
+研究员	yan'jiu'yuan		manual
+观察员	guan'cha'yuan		manual
+调查员	diao'cha'yuan		manual
+检验员	jian'yan'yuan		manual
+统计员	tong'ji'yuan		manual
+记录员	ji'lu'yuan		manual
+播音员	bo'yin'yuan		manual
 # ── 择 ze / zhai ───────────────────────────────────────────────────────────
-选择	xuan'ze
-择优	ze'you
-择菜	zhai'cai
+选择	xuan'ze		manual
+择优	ze'you		manual
+择菜	zhai'cai		manual
 # ── 属 shu / zhu ───────────────────────────────────────────────────────────
-属于	shu'yu
-金属	jin'shu
-家属	jia'shu
-归属	gui'shu
-属性	shu'xing
-属相	shu'xiang
+属于	shu'yu		manual
+金属	jin'shu		manual
+家属	jia'shu		manual
+归属	gui'shu		manual
+属性	shu'xing		manual
+属相	shu'xiang		manual
 # ── 赚 zhuan / zuan ────────────────────────────────────────────────────────
-赚钱	zhuan'qian
-赚头	zhuan'tou
+赚钱	zhuan'qian		manual
+赚头	zhuan'tou		manual
 # ── 幢 zhuang / chuang ─────────────────────────────────────────────────────
-一幢楼	yi'zhuang'lou
-幢幢	zhuang'zhuang
-经幢	jing'chuang
+一幢楼	yi'zhuang'lou		manual
+幢幢	zhuang'zhuang		manual
+经幢	jing'chuang		manual
 # ── 仔 zi / zai ────────────────────────────────────────────────────────────
-仔细	zi'xi
-仔猪	zi'zhu
-牛仔	niu'zai
-仔裤	zai'ku
+仔细	zi'xi		manual
+仔猪	zi'zhu		manual
+牛仔	niu'zai		manual
+仔裤	zai'ku		manual
 
 # ── 中 / 种 zhong ──────────────────────────────────────────────────────────
-中国	zhong'guo
-中心	zhong'xin
-中间	zhong'jian
-其中	qi'zhong
-空中	kong'zhong
-中奖	zhong'jiang
-中暑	zhong'shu
-看中	kan'zhong
-中学	zhong'xue
-中午	zhong'wu
-中文	zhong'wen
-中药	zhong'yao
-中年	zhong'nian
-中断	zhong'duan
-中途	zhong'tu
-中立	zhong'li
-中型	zhong'xing
-种子	zhong'zi
-种类	zhong'lei
-各种	ge'zhong
-种植	zhong'zhi
-播种	bo'zhong
-种地	zhong'di
-种族	zhong'zu
-品种	pin'zhong
-物种	wu'zhong
-人种	ren'zhong
+中国	zhong'guo		manual
+中心	zhong'xin		manual
+中间	zhong'jian		manual
+其中	qi'zhong		manual
+空中	kong'zhong		manual
+中奖	zhong'jiang		manual
+中暑	zhong'shu		manual
+看中	kan'zhong		manual
+中学	zhong'xue		manual
+中午	zhong'wu		manual
+中文	zhong'wen		manual
+中药	zhong'yao		manual
+中年	zhong'nian		manual
+中断	zhong'duan		manual
+中途	zhong'tu		manual
+中立	zhong'li		manual
+中型	zhong'xing		manual
+种子	zhong'zi		manual
+种类	zhong'lei		manual
+各种	ge'zhong		manual
+种植	zhong'zhi		manual
+播种	bo'zhong		manual
+种地	zhong'di		manual
+种族	zhong'zu		manual
+品种	pin'zhong		manual
+物种	wu'zhong		manual
+人种	ren'zhong		manual
 # ── 发 fa ──────────────────────────────────────────────────────────────────
-发现	fa'xian
-发展	fa'zhan
-发生	fa'sheng
-出发	chu'fa
-头发	tou'fa
-理发	li'fa
-发扬	fa'yang
-发布	fa'bu
-发言	fa'yan
-发动	fa'dong
-发票	fa'piao
-沙发	sha'fa
-启发	qi'fa
-激发	ji'fa
-开发	kai'fa
-发达	fa'da
-发挥	fa'hui
-发光	fa'guang
-发火	fa'huo
-发炎	fa'yan
-发烧	fa'shao
-发愁	fa'chou
-发脾气	fa'pi'qi
-发言人	fa'yan'ren
-发电机	fa'dian'ji
-发动机	fa'dong'ji
+发现	fa'xian		manual
+发展	fa'zhan		manual
+发生	fa'sheng		manual
+出发	chu'fa		manual
+头发	tou'fa		manual
+理发	li'fa		manual
+发扬	fa'yang		manual
+发布	fa'bu		manual
+发言	fa'yan		manual
+发动	fa'dong		manual
+发票	fa'piao		manual
+沙发	sha'fa		manual
+启发	qi'fa		manual
+激发	ji'fa		manual
+开发	kai'fa		manual
+发达	fa'da		manual
+发挥	fa'hui		manual
+发光	fa'guang		manual
+发火	fa'huo		manual
+发炎	fa'yan		manual
+发烧	fa'shao		manual
+发愁	fa'chou		manual
+发脾气	fa'pi'qi		manual
+发言人	fa'yan'ren		manual
+发电机	fa'dian'ji		manual
+发动机	fa'dong'ji		manual
 # ── 大 da / dai ────────────────────────────────────────────────────────────
-大家	da'jia
-大学	da'xue
-大夫	dai'fu
-大王	dai'wang
-大方	da'fang
-大概	da'gai
-大约	da'yue
-大量	da'liang
-大批	da'pi
-大声	da'sheng
-大陆	da'lu
-大门	da'men
-大厅	da'ting
-大厦	da'sha
-大自然	da'zi'ran
-大多数	da'duo'shu
-大学生	da'xue'sheng
-大白菜	da'bai'cai
-大城市	da'cheng'shi
-大会	da'hui
-大局	da'ju
-大名	da'ming
-大师	da'shi
-大事	da'shi
-大树	da'shu
-大雁	da'yan
-大衣	da'yi
-大炮	da'pao
-大象	da'xiang
-大雪	da'xue
-大雨	da'yu
-大战	da'zhan
-大致	da'zhi
-大众	da'zhong
+大家	da'jia		manual
+大学	da'xue		manual
+大夫	dai'fu		manual
+大王	dai'wang		manual
+大方	da'fang		manual
+大概	da'gai		manual
+大约	da'yue		manual
+大量	da'liang		manual
+大批	da'pi		manual
+大声	da'sheng		manual
+大陆	da'lu		manual
+大门	da'men		manual
+大厅	da'ting		manual
+大厦	da'sha		manual
+大自然	da'zi'ran		manual
+大多数	da'duo'shu		manual
+大学生	da'xue'sheng		manual
+大白菜	da'bai'cai		manual
+大城市	da'cheng'shi		manual
+大会	da'hui		manual
+大局	da'ju		manual
+大名	da'ming		manual
+大师	da'shi		manual
+大事	da'shi		manual
+大树	da'shu		manual
+大雁	da'yan		manual
+大衣	da'yi		manual
+大炮	da'pao		manual
+大象	da'xiang		manual
+大雪	da'xue		manual
+大雨	da'yu		manual
+大战	da'zhan		manual
+大致	da'zhi		manual
+大众	da'zhong		manual
 # ── 上 shang ───────────────────────────────────────────────────────────────
-上班	shang'ban
-上学	shang'xue
-上午	shang'wu
-上面	shang'mian
-上去	shang'qu
-上来	shang'lai
-上下	shang'xia
-上级	shang'ji
-上班族	shang'ban'zu
-上门	shang'men
-上任	shang'ren
-上台	shang'tai
-上衣	shang'yi
-上游	shang'you
-上涨	shang'zhang
+上班	shang'ban		manual
+上学	shang'xue		manual
+上午	shang'wu		manual
+上面	shang'mian		manual
+上去	shang'qu		manual
+上来	shang'lai		manual
+上下	shang'xia		manual
+上级	shang'ji		manual
+上班族	shang'ban'zu		manual
+上门	shang'men		manual
+上任	shang'ren		manual
+上台	shang'tai		manual
+上衣	shang'yi		manual
+上游	shang'you		manual
+上涨	shang'zhang		manual
 # ── 少 shao ────────────────────────────────────────────────────────────────
-多少	duo'shao
-少数	shao'shu
-少年	shao'nian
-减少	jian'shao
-缺少	que'shao
-至少	zhi'shao
-少量	shao'liang
-少见	shao'jian
-稀少	xi'shao
-老少	lao'shao
+多少	duo'shao		manual
+少数	shao'shu		manual
+少年	shao'nian		manual
+减少	jian'shao		manual
+缺少	que'shao		manual
+至少	zhi'shao		manual
+少量	shao'liang		manual
+少见	shao'jian		manual
+稀少	xi'shao		manual
+老少	lao'shao		manual
 # ── 好 hao ─────────────────────────────────────────────────────────────────
-好人	hao'ren
-好看	hao'kan
-爱好	ai'hao
-好奇	hao'qi
-好学	hao'xue
-好处	hao'chu
-好多	hao'duo
-好久	hao'jiu
-好评	hao'ping
-好客	hao'ke
-好胜	hao'sheng
-好战	hao'zhan
-好高骛远	hao'gao'wu'yuan
+好人	hao'ren		manual
+好看	hao'kan		manual
+爱好	ai'hao		manual
+好奇	hao'qi		manual
+好学	hao'xue		manual
+好处	hao'chu		manual
+好多	hao'duo		manual
+好久	hao'jiu		manual
+好评	hao'ping		manual
+好客	hao'ke		manual
+好胜	hao'sheng		manual
+好战	hao'zhan		manual
+好高骛远	hao'gao'wu'yuan		manual
 # ── 教 jiao ────────────────────────────────────────────────────────────────
-教育	jiao'yu
-教学	jiao'xue
-教师	jiao'shi
-教书	jiao'shu
-教材	jiao'cai
-教室	jiao'shi
-教授	jiao'shou
-教练	jiao'lian
-教训	jiao'xun
-教养	jiao'yang
-宗教	zong'jiao
-佛教	fo'jiao
-教堂	jiao'tang
-教主	jiao'zhu
-教徒	jiao'tu
-教会	jiao'hui
-家教	jia'jiao
-请教	qing'jiao
-领教	ling'jiao
-教育事业	jiao'yu'shi'ye
+教育	jiao'yu		manual
+教学	jiao'xue		manual
+教师	jiao'shi		manual
+教书	jiao'shu		manual
+教材	jiao'cai		manual
+教室	jiao'shi		manual
+教授	jiao'shou		manual
+教练	jiao'lian		manual
+教训	jiao'xun		manual
+教养	jiao'yang		manual
+宗教	zong'jiao		manual
+佛教	fo'jiao		manual
+教堂	jiao'tang		manual
+教主	jiao'zhu		manual
+教徒	jiao'tu		manual
+教会	jiao'hui		manual
+家教	jia'jiao		manual
+请教	qing'jiao		manual
+领教	ling'jiao		manual
+教育事业	jiao'yu'shi'ye		manual
 # ── 当 dang ────────────────────────────────────────────────────────────────
-当然	dang'ran
-当时	dang'shi
-应当	ying'dang
-上当	shang'dang
-当铺	dang'pu
-当心	dang'xin
-当选	dang'xuan
-当代	dang'dai
-当今	dang'jin
-当面	dang'mian
-当年	dang'nian
-当前	dang'qian
-当地	dang'di
-当众	dang'zhong
-充当	chong'dang
-担当	dan'dang
-适当	shi'dang
-恰当	qia'dang
-妥当	tuo'dang
-当家	dang'jia
+当然	dang'ran		manual
+当时	dang'shi		manual
+应当	ying'dang		manual
+上当	shang'dang		manual
+当铺	dang'pu		manual
+当心	dang'xin		manual
+当选	dang'xuan		manual
+当代	dang'dai		manual
+当今	dang'jin		manual
+当面	dang'mian		manual
+当年	dang'nian		manual
+当前	dang'qian		manual
+当众	dang'zhong		manual
+充当	chong'dang		manual
+担当	dan'dang		manual
+适当	shi'dang		manual
+恰当	qia'dang		manual
+妥当	tuo'dang		manual
+当家	dang'jia		manual
 # ── 看 kan ─────────────────────────────────────────────────────────────────
-看见	kan'jian
-看书	kan'shu
-看守	kan'shou
-看望	kan'wang
-看待	kan'dai
-看法	kan'fa
-观看	guan'kan
-难看	nan'kan
-好看	hao'kan
-查看	cha'kan
-看台	kan'tai
-看透	kan'tou
-看中	kan'zhong
-眼看	yan'kan
+看见	kan'jian		manual
+看书	kan'shu		manual
+看守	kan'shou		manual
+看望	kan'wang		manual
+看待	kan'dai		manual
+看法	kan'fa		manual
+观看	guan'kan		manual
+难看	nan'kan		manual
+查看	cha'kan		manual
+看台	kan'tai		manual
+看透	kan'tou		manual
+眼看	yan'kan		manual
 # ── 空 kong ────────────────────────────────────────────────────────────────
-空气	kong'qi
-空间	kong'jian
-有空	you'kong
-空白	kong'bai
-空子	kong'zi
-空中	kong'zhong
-天空	tian'kong
-太空	tai'kong
-空调	kong'tiao
-空想	kong'xiang
-空前	kong'qian
-空手	kong'shou
-空缺	kong'que
-填空	tian'kong
-高空	gao'kong
-真空	zhen'kong
-航空	hang'kong
+空气	kong'qi		manual
+空间	kong'jian		manual
+有空	you'kong		manual
+空白	kong'bai		manual
+空子	kong'zi		manual
+天空	tian'kong		manual
+太空	tai'kong		manual
+空调	kong'tiao		manual
+空想	kong'xiang		manual
+空前	kong'qian		manual
+空手	kong'shou		manual
+空缺	kong'que		manual
+填空	tian'kong		manual
+高空	gao'kong		manual
+真空	zhen'kong		manual
+航空	hang'kong		manual
 # ── 间 jian ────────────────────────────────────────────────────────────────
-时间	shi'jian
-中间	zhong'jian
-房间	fang'jian
-间隔	jian'ge
-间接	jian'jie
-空间	kong'jian
-人间	ren'jian
-期间	qi'jian
-车间	che'jian
-民间	min'jian
-田间	tian'jian
-世间	shi'jian
-间断	jian'duan
+时间	shi'jian		manual
+房间	fang'jian		manual
+间隔	jian'ge		manual
+间接	jian'jie		manual
+人间	ren'jian		manual
+期间	qi'jian		manual
+车间	che'jian		manual
+民间	min'jian		manual
+田间	tian'jian		manual
+世间	shi'jian		manual
+间断	jian'duan		manual
 # ── 传 chuan / zhuan ───────────────────────────────────────────────────────
-传统	chuan'tong
-宣传	xuan'chuan
-传说	chuan'shuo
-传记	zhuan'ji
-自传	zi'zhuan
-传达	chuan'da
-传染	chuan'ran
-传授	chuan'shou
-传送	chuan'song
-传递	chuan'di
-流传	liu'chuan
-遗传	yi'chuan
-传单	chuan'dan
+传统	chuan'tong		manual
+宣传	xuan'chuan		manual
+传说	chuan'shuo		manual
+传记	zhuan'ji		manual
+自传	zi'zhuan		manual
+传达	chuan'da		manual
+传染	chuan'ran		manual
+传授	chuan'shou		manual
+传送	chuan'song		manual
+传递	chuan'di		manual
+流传	liu'chuan		manual
+遗传	yi'chuan		manual
+传单	chuan'dan		manual
 # ── 石 shi ─────────────────────────────────────────────────────────────────
-石头	shi'tou
-石油	shi'you
-宝石	bao'shi
-石灰	shi'hui
-石膏	shi'gao
-石墨	shi'mo
-石英	shi'ying
-石桥	shi'qiao
-石阶	shi'jie
-石壁	shi'bi
-石洞	shi'dong
-石雕	shi'diao
-石碑	shi'bei
-石窟	shi'ku
-石像	shi'xiang
-石柱	shi'zhu
-大理石	da'li'shi
-花岗岩	hua'gang'yan
-石灰石	shi'hui'shi
-陨石	yun'shi
-化石	hua'shi
-矿石	kuang'shi
-岩石	yan'shi
-礁石	jiao'shi
-磨石	mo'shi
+石头	shi'tou		manual
+石油	shi'you		manual
+宝石	bao'shi		manual
+石灰	shi'hui		manual
+石膏	shi'gao		manual
+石墨	shi'mo		manual
+石英	shi'ying		manual
+石桥	shi'qiao		manual
+石阶	shi'jie		manual
+石壁	shi'bi		manual
+石洞	shi'dong		manual
+石雕	shi'diao		manual
+石碑	shi'bei		manual
+石窟	shi'ku		manual
+石像	shi'xiang		manual
+石柱	shi'zhu		manual
+大理石	da'li'shi		manual
+花岗岩	hua'gang'yan		manual
+石灰石	shi'hui'shi		manual
+陨石	yun'shi		manual
+化石	hua'shi		manual
+矿石	kuang'shi		manual
+岩石	yan'shi		manual
+礁石	jiao'shi		manual
+磨石	mo'shi		manual
 # ── 华 hua ─────────────────────────────────────────────────────────────────
-中华	zhong'hua
-华丽	hua'li
-华山	hua'shan
-华人	hua'ren
-华语	hua'yu
-华侨	hua'qiao
-才华	cai'hua
-精华	jing'hua
-繁华	fan'hua
-豪华	hao'hua
-华美	hua'mei
+中华	zhong'hua		manual
+华丽	hua'li		manual
+华山	hua'shan		manual
+华人	hua'ren		manual
+华语	hua'yu		manual
+华侨	hua'qiao		manual
+才华	cai'hua		manual
+精华	jing'hua		manual
+繁华	fan'hua		manual
+豪华	hao'hua		manual
+华美	hua'mei		manual
 # ── 斗 dou ─────────────────────────────────────────────────────────────────
-斗争	dou'zheng
-战斗	zhan'dou
-奋斗	fen'dou
-北斗	bei'dou
-斗篷	dou'peng
-斗志	dou'zhi
-斗士	dou'shi
-斗嘴	dou'zui
-打斗	da'dou
-决斗	jue'dou
+斗争	dou'zheng		manual
+战斗	zhan'dou		manual
+奋斗	fen'dou		manual
+北斗	bei'dou		manual
+斗篷	dou'peng		manual
+斗志	dou'zhi		manual
+斗士	dou'shi		manual
+斗嘴	dou'zui		manual
+打斗	da'dou		manual
+决斗	jue'dou		manual
 # ── 处 chu ─────────────────────────────────────────────────────────────────
-处理	chu'li
-到处	dao'chu
-相处	xiang'chu
-好处	hao'chu
-坏处	huai'chu
-长处	chang'chu
-短处	duan'chu
-处分	chu'fen
-处方	chu'fang
-处境	chu'jing
-处所	chu'suo
-出处	chu'chu
-去处	qu'chu
-深处	shen'chu
-办事处	ban'shi'chu
-售票处	shou'piao'chu
-停车处	ting'che'chu
+处理	chu'li		manual
+到处	dao'chu		manual
+相处	xiang'chu		manual
+坏处	huai'chu		manual
+短处	duan'chu		manual
+处分	chu'fen		manual
+处方	chu'fang		manual
+处境	chu'jing		manual
+处所	chu'suo		manual
+出处	chu'chu		manual
+去处	qu'chu		manual
+深处	shen'chu		manual
+办事处	ban'shi'chu		manual
+售票处	shou'piao'chu		manual
+停车处	ting'che'chu		manual
 # ── 期 qi ──────────────────────────────────────────────────────────────────
-期待	qi'dai
-时期	shi'qi
-学期	xue'qi
-期限	qi'xian
-期望	qi'wang
-期间	qi'jian
-初期	chu'qi
-后期	hou'qi
-假期	jia'qi
-定期	ding'qi
-日期	ri'qi
-周期	zhou'qi
-工期	gong'qi
-过期	guo'qi
-分期	fen'qi
+期待	qi'dai		manual
+时期	shi'qi		manual
+学期	xue'qi		manual
+期限	qi'xian		manual
+期望	qi'wang		manual
+初期	chu'qi		manual
+后期	hou'qi		manual
+假期	jia'qi		manual
+定期	ding'qi		manual
+日期	ri'qi		manual
+周期	zhou'qi		manual
+工期	gong'qi		manual
+过期	guo'qi		manual
+分期	fen'qi		manual
 # ── 观 guan ────────────────────────────────────────────────────────────────
-观点	guan'dian
-参观	can'guan
-道观	dao'guan
-观看	guan'kan
-观察	guan'cha
-观念	guan'nian
-观众	guan'zhong
-乐观	le'guan
-悲观	bei'guan
-宏观	hong'guan
-微观	wei'guan
-壮观	zhuang'guan
-奇观	qi'guan
-景观	jing'guan
-人生观	ren'sheng'guan
-世界观	shi'jie'guan
-价值观	jia'zhi'guan
+观点	guan'dian		manual
+道观	dao'guan		manual
+观察	guan'cha		manual
+观念	guan'nian		manual
+观众	guan'zhong		manual
+悲观	bei'guan		manual
+宏观	hong'guan		manual
+微观	wei'guan		manual
+壮观	zhuang'guan		manual
+奇观	qi'guan		manual
+景观	jing'guan		manual
+人生观	ren'sheng'guan		manual
+世界观	shi'jie'guan		manual
+价值观	jia'zhi'guan		manual
 # ── 号 hao ─────────────────────────────────────────────────────────────────
-号码	hao'ma
-号召	hao'zhao
-号叫	hao'jiao
-口号	kou'hao
-信号	xin'hao
-记号	ji'hao
-编号	bian'hao
-挂号	gua'hao
-代号	dai'hao
-账号	zhang'hao
-符号	fu'hao
-称号	cheng'hao
-型号	xing'hao
-序号	xu'hao
+号码	hao'ma		manual
+号召	hao'zhao		manual
+号叫	hao'jiao		manual
+口号	kou'hao		manual
+信号	xin'hao		manual
+记号	ji'hao		manual
+编号	bian'hao		manual
+挂号	gua'hao		manual
+代号	dai'hao		manual
+账号	zhang'hao		manual
+符号	fu'hao		manual
+称号	cheng'hao		manual
+型号	xing'hao		manual
+序号	xu'hao		manual
 # ── 率 lv / shuai ──────────────────────────────────────────────────────────
-效率	xiao'lv
-频率	pin'lv
-率领	shuai'ling
-轻率	qing'shuai
-增长率	zeng'zhang'lv
-利率	li'lv
-汇率	hui'lv
-概率	gai'lv
-功率	gong'lv
-速率	su'lv
-比率	bi'lv
-成功率	cheng'gong'lv
+效率	xiao'lv		manual
+频率	pin'lv		manual
+率领	shuai'ling		manual
+轻率	qing'shuai		manual
+增长率	zeng'zhang'lv		manual
+利率	li'lv		manual
+汇率	hui'lv		manual
+概率	gai'lv		manual
+功率	gong'lv		manual
+速率	su'lv		manual
+比率	bi'lv		manual
+成功率	cheng'gong'lv		manual
 # ── 划 hua ─────────────────────────────────────────────────────────────────
-计划	ji'hua
-划分	hua'fen
-划船	hua'chuan
-划算	hua'suan
-划清	hua'qing
-划时代	hua'shi'dai
-策划	ce'hua
-规划	gui'hua
-比划	bi'hua
+计划	ji'hua		manual
+划分	hua'fen		manual
+划船	hua'chuan		manual
+划算	hua'suan		manual
+划清	hua'qing		manual
+划时代	hua'shi'dai		manual
+策划	ce'hua		manual
+规划	gui'hua		manual
+比划	bi'hua		manual
 # ── 亲 qin / qing ──────────────────────────────────────────────────────────
-亲人	qin'ren
-父亲	fu'qin
-亲家	qing'jia
-母亲	mu'qin
-亲属	qin'shu
-亲密	qin'mi
-亲切	qin'qie
-亲自	qin'zi
-亲戚	qin'qi
-双亲	shuang'qin
-探亲	tan'qin
-定亲	ding'qin
-结亲	jie'qin
+亲人	qin'ren		manual
+父亲	fu'qin		manual
+亲家	qing'jia		manual
+母亲	mu'qin		manual
+亲属	qin'shu		manual
+亲密	qin'mi		manual
+亲切	qin'qie		manual
+亲自	qin'zi		manual
+亲戚	qin'qi		manual
+双亲	shuang'qin		manual
+探亲	tan'qin		manual
+定亲	ding'qin		manual
+结亲	jie'qin		manual
 # ── 查 cha / zha ───────────────────────────────────────────────────────────
-检查	jian'cha
-调查	diao'cha
-查看	cha'kan
-姓查	xing'zha
-查获	cha'huo
-查询	cha'xun
-查阅	cha'yue
-追查	zhui'cha
-搜查	sou'cha
-审查	shen'cha
-侦查	zhen'cha
-普查	pu'cha
-抽查	chou'cha
-查明	cha'ming
+检查	jian'cha		manual
+调查	diao'cha		manual
+姓查	xing'zha		manual
+查获	cha'huo		manual
+查询	cha'xun		manual
+查阅	cha'yue		manual
+追查	zhui'cha		manual
+搜查	sou'cha		manual
+审查	shen'cha		manual
+侦查	zhen'cha		manual
+普查	pu'cha		manual
+抽查	chou'cha		manual
+查明	cha'ming		manual
 # ── 王 wang ────────────────────────────────────────────────────────────────
-国王	guo'wang
-王八	wang'ba
-王天下	wang'tian'xia
-王子	wang'zi
-王国	wang'guo
-王朝	wang'chao
-王牌	wang'pai
-女王	nv'wang
-亲王	qin'wang
+国王	guo'wang		manual
+王八	wang'ba		manual
+王天下	wang'tian'xia		manual
+王子	wang'zi		manual
+王国	wang'guo		manual
+王朝	wang'chao		manual
+王牌	wang'pai		manual
+女王	nv'wang		manual
+亲王	qin'wang		manual
 # ── 片 pian ────────────────────────────────────────────────────────────────
-照片	zhao'pian
-影片	ying'pian
-片刻	pian'ke
-片子	pian'zi
-片段	pian'duan
-卡片	ka'pian
-名片	ming'pian
-图片	tu'pian
-芯片	xin'pian
-唱片	chang'pian
-胶片	jiao'pian
-相片	xiang'pian
-鸦片	ya'pian
+照片	zhao'pian		manual
+影片	ying'pian		manual
+片刻	pian'ke		manual
+片子	pian'zi		manual
+片段	pian'duan		manual
+卡片	ka'pian		manual
+名片	ming'pian		manual
+图片	tu'pian		manual
+芯片	xin'pian		manual
+唱片	chang'pian		manual
+胶片	jiao'pian		manual
+相片	xiang'pian		manual
+鸦片	ya'pian		manual
 # ── 识 shi / zhi ───────────────────────────────────────────────────────────
-认识	ren'shi
-知识	zhi'shi
-标识	biao'zhi
-识别	shi'bie
-常识	chang'shi
-见识	jian'shi
-意识	yi'shi
-学识	xue'shi
-赏识	shang'shi
+认识	ren'shi		manual
+知识	zhi'shi		manual
+标识	biao'zhi		manual
+识别	shi'bie		manual
+常识	chang'shi		manual
+见识	jian'shi		manual
+意识	yi'shi		manual
+学识	xue'shi		manual
+赏识	shang'shi		manual
 # ── 适 shi ─────────────────────────────────────────────────────────────────
-适合	shi'he
-适应	shi'ying
-舒适	shu'shi
-适当	shi'dang
-合适	he'shi
-适宜	shi'yi
-适中	shi'zhong
-适度	shi'du
+适合	shi'he		manual
+适应	shi'ying		manual
+舒适	shu'shi		manual
+合适	he'shi		manual
+适宜	shi'yi		manual
+适中	shi'zhong		manual
+适度	shi'du		manual
 # ── 调 diao / tiao ─────────────────────────────────────────────────────────
-调查	diao'cha
-调整	tiao'zheng
-调节	tiao'jie
-声调	sheng'diao
-空调	kong'tiao
-调和	tiao'he
-调动	diao'dong
-调解	tiao'jie
-调皮	tiao'pi
-调换	diao'huan
-曲调	qu'diao
-腔调	qiang'diao
-强调	qiang'diao
-情调	qing'diao
-色调	se'diao
-调味	tiao'wei
+调整	tiao'zheng		manual
+调节	tiao'jie		manual
+声调	sheng'diao		manual
+调和	tiao'he		manual
+调动	diao'dong		manual
+调解	tiao'jie		manual
+调皮	tiao'pi		manual
+调换	diao'huan		manual
+曲调	qu'diao		manual
+腔调	qiang'diao		manual
+情调	qing'diao		manual
+色调	se'diao		manual
+调味	tiao'wei		manual
 # ── 假 jia ─────────────────────────────────────────────────────────────────
-假装	jia'zhuang
-假期	jia'qi
-放假	fang'jia
-真假	zhen'jia
-假条	jia'tiao
-假如	jia'ru
-假设	jia'she
-虚假	xu'jia
-造假	zao'jia
-假日	jia'ri
-寒假	han'jia
-暑假	shu'jia
-请假	qing'jia
-休假	xiu'jia
-度假	du'jia
+假装	jia'zhuang		manual
+放假	fang'jia		manual
+真假	zhen'jia		manual
+假条	jia'tiao		manual
+假如	jia'ru		manual
+假设	jia'she		manual
+虚假	xu'jia		manual
+造假	zao'jia		manual
+假日	jia'ri		manual
+寒假	han'jia		manual
+暑假	shu'jia		manual
+请假	qing'jia		manual
+休假	xiu'jia		manual
+度假	du'jia		manual
 # ── 结 jie ─────────────────────────────────────────────────────────────────
-结果	jie'guo
-结婚	jie'hun
-结束	jie'shu
-团结	tuan'jie
-结实	jie'shi
-结构	jie'gou
-结论	jie'lun
-结合	jie'he
-结晶	jie'jing
-结束语	jie'shu'yu
-总结	zong'jie
-联结	lian'jie
-冻结	dong'jie
-勾结	gou'jie
+结果	jie'guo		manual
+结婚	jie'hun		manual
+结束	jie'shu		manual
+团结	tuan'jie		manual
+结实	jie'shi		manual
+结构	jie'gou		manual
+结论	jie'lun		manual
+结合	jie'he		manual
+结晶	jie'jing		manual
+结束语	jie'shu'yu		manual
+总结	zong'jie		manual
+联结	lian'jie		manual
+冻结	dong'jie		manual
+勾结	gou'jie		manual
 # ── 更 geng ────────────────────────────────────────────────────────────────
-更加	geng'jia
-更新	geng'xin
-更换	geng'huan
-三更	san'geng
-更夫	geng'fu
-更好	geng'hao
-更多	geng'duo
-更改	geng'gai
-更正	geng'zheng
+更加	geng'jia		manual
+更新	geng'xin		manual
+更换	geng'huan		manual
+三更	san'geng		manual
+更夫	geng'fu		manual
+更好	geng'hao		manual
+更多	geng'duo		manual
+更改	geng'gai		manual
+更正	geng'zheng		manual
 # ── 单 dan / shan ──────────────────────────────────────────────────────────
-单位	dan'wei
-简单	jian'dan
-单独	dan'du
-姓单	xing'shan
-单县	shan'xian
-单词	dan'ci
-单据	dan'ju
-名单	ming'dan
-订单	ding'dan
-传单	chuan'dan
-菜单	cai'dan
-账单	zhang'dan
-单纯	dan'chun
-单调	dan'diao
-单价	dan'jia
-单身	dan'shen
+单位	dan'wei		manual
+简单	jian'dan		manual
+单独	dan'du		manual
+姓单	xing'shan		manual
+单县	shan'xian		manual
+单词	dan'ci		manual
+单据	dan'ju		manual
+名单	ming'dan		manual
+订单	ding'dan		manual
+菜单	cai'dan		manual
+账单	zhang'dan		manual
+单纯	dan'chun		manual
+单调	dan'diao		manual
+单价	dan'jia		manual
+单身	dan'shen		manual
 # ── 切 qie ─────────────────────────────────────────────────────────────────
-一切	yi'qie
-亲切	qin'qie
-切开	qie'kai
-切实	qie'shi
-切除	qie'chu
-切断	qie'duan
-切磋	qie'cuo
-切片	qie'pian
-切菜	qie'cai
-密切	mi'qie
-关切	guan'qie
-迫切	po'qie
-确切	que'qie
-恳切	ken'qie
+一切	yi'qie		manual
+切开	qie'kai		manual
+切实	qie'shi		manual
+切除	qie'chu		manual
+切断	qie'duan		manual
+切磋	qie'cuo		manual
+切片	qie'pian		manual
+切菜	qie'cai		manual
+密切	mi'qie		manual
+关切	guan'qie		manual
+迫切	po'qie		manual
+确切	que'qie		manual
+恳切	ken'qie		manual
 # ── 场 chang ───────────────────────────────────────────────────────────────
-市场	shi'chang
-现场	xian'chang
-场地	chang'di
-广场	guang'chang
-操场	cao'chang
-农场	nong'chang
-牧场	mu'chang
-机场	ji'chang
-战场	zhan'chang
-商场	shang'chang
-剧场	ju'chang
-菜场	cai'chang
-考场	kao'chang
-球场	qiu'chang
-渔场	yu'chang
-林场	lin'chang
-盐场	yan'chang
-场面	chang'mian
-场合	chang'he
-场所	chang'suo
-场景	chang'jing
+市场	shi'chang		manual
+现场	xian'chang		manual
+广场	guang'chang		manual
+操场	cao'chang		manual
+农场	nong'chang		manual
+牧场	mu'chang		manual
+机场	ji'chang		manual
+战场	zhan'chang		manual
+商场	shang'chang		manual
+剧场	ju'chang		manual
+菜场	cai'chang		manual
+考场	kao'chang		manual
+球场	qiu'chang		manual
+渔场	yu'chang		manual
+林场	lin'chang		manual
+盐场	yan'chang		manual
+场面	chang'mian		manual
+场合	chang'he		manual
+场所	chang'suo		manual
+场景	chang'jing		manual
 # ── 车 che / ju ────────────────────────────────────────────────────────────
-汽车	qi'che
-车站	che'zhan
-火车	huo'che
-车马炮	ju'ma'pao
-车间	che'jian
-车厢	che'xiang
-车票	che'piao
-车轮	che'lun
-车队	che'dui
-车速	che'su
-卡车	ka'che
-轿车	jiao'che
-客车	ke'che
-货车	huo'che
+汽车	qi'che		manual
+车站	che'zhan		manual
+火车	huo'che		manual
+车马炮	ju'ma'pao		manual
+车厢	che'xiang		manual
+车票	che'piao		manual
+车轮	che'lun		manual
+车队	che'dui		manual
+车速	che'su		manual
+卡车	ka'che		manual
+轿车	jiao'che		manual
+客车	ke'che		manual
+货车	huo'che		manual
 # ── 拉 la ──────────────────────────────────────────────────────────────────
-拉手	la'shou
-拉面	la'mian
-拉琴	la'qin
-拉链	la'lian
-拉车	la'che
-拉锯	la'ju
-拉拢	la'long
-拉练	la'lian
-拖拉	tuo'la
-扒拉	ba'la
+拉手	la'shou		manual
+拉面	la'mian		manual
+拉琴	la'qin		manual
+拉链	la'lian		manual
+拉车	la'che		manual
+拉锯	la'ju		manual
+拉拢	la'long		manual
+拉练	la'lian		manual
+拖拉	tuo'la		manual
+扒拉	ba'la		manual
 # ── 委 wei ─────────────────────────────────────────────────────────────────
-委员	wei'yuan
-委托	wei'tuo
-委靡	wei'mi
-委屈	wei'qu
-委婉	wei'wan
-委任	wei'ren
-党委	dang'wei
-常委	chang'wei
-政委	zheng'wei
-省委	sheng'wei
-市委	shi'wei
-县委	xian'wei
+委员	wei'yuan		manual
+委托	wei'tuo		manual
+委靡	wei'mi		manual
+委屈	wei'qu		manual
+委婉	wei'wan		manual
+委任	wei'ren		manual
+党委	dang'wei		manual
+常委	chang'wei		manual
+政委	zheng'wei		manual
+省委	sheng'wei		manual
+市委	shi'wei		manual
+县委	xian'wei		manual
 # ── 约 yue / yao ───────────────────────────────────────────────────────────
-约会	yue'hui
-大约	da'yue
-约定	yue'ding
-约束	yue'shu
-条约	tiao'yue
-合约	he'yue
-签约	qian'yue
-契约	qi'yue
-相约	xiang'yue
-约见	yue'jian
-节约	jie'yue
-制约	zhi'yue
+约会	yue'hui		manual
+约定	yue'ding		manual
+约束	yue'shu		manual
+条约	tiao'yue		manual
+合约	he'yue		manual
+签约	qian'yue		manual
+契约	qi'yue		manual
+相约	xiang'yue		manual
+约见	yue'jian		manual
+节约	jie'yue		manual
+制约	zhi'yue		manual
 # ── 般 ban / pan ───────────────────────────────────────────────────────────
-一般	yi'ban
-般配	ban'pei
-百般	bai'ban
-万般	wan'ban
+一般	yi'ban		manual
+般配	ban'pei		manual
+百般	bai'ban		manual
+万般	wan'ban		manual
 # ── 兴 xing ────────────────────────────────────────────────────────────────
-高兴	gao'xing
-兴趣	xing'qu
-兴奋	xing'fen
-兴旺	xing'wang
-复兴	fu'xing
-兴建	xing'jian
-兴起	xing'qi
-兴办	xing'ban
-兴隆	xing'long
-振兴	zhen'xing
-绍兴	shao'xing
-嘉兴	jia'xing
-兴高采烈	xing'gao'cai'lie
-兴致勃勃	xing'zhi'bo'bo
-兴风作浪	xing'feng'zuo'lang
+高兴	gao'xing		manual
+兴趣	xing'qu		manual
+兴奋	xing'fen		manual
+兴旺	xing'wang		manual
+复兴	fu'xing		manual
+兴建	xing'jian		manual
+兴起	xing'qi		manual
+兴办	xing'ban		manual
+兴隆	xing'long		manual
+振兴	zhen'xing		manual
+绍兴	shao'xing		manual
+嘉兴	jia'xing		manual
+兴高采烈	xing'gao'cai'lie		manual
+兴致勃勃	xing'zhi'bo'bo		manual
+兴风作浪	xing'feng'zuo'lang		manual
 # ── 难 nan ─────────────────────────────────────────────────────────────────
-困难	kun'nan
-难过	nan'guo
-灾难	zai'nan
-难民	nan'min
-难题	nan'ti
-难以	nan'yi
-难受	nan'shou
-难得	nan'de
-难免	nan'mian
-为难	wei'nan
-艰难	jian'nan
-疑难	yi'nan
-避难	bi'nan
-遇难	yu'nan
-难看	nan'kan
+困难	kun'nan		manual
+难过	nan'guo		manual
+灾难	zai'nan		manual
+难民	nan'min		manual
+难题	nan'ti		manual
+难以	nan'yi		manual
+难受	nan'shou		manual
+难得	nan'de		manual
+难免	nan'mian		manual
+为难	wei'nan		manual
+艰难	jian'nan		manual
+疑难	yi'nan		manual
+避难	bi'nan		manual
+遇难	yu'nan		manual
 # ── 数 shu ─────────────────────────────────────────────────────────────────
-数字	shu'zi
-数学	shu'xue
-数量	shu'liang
-数一数	shu'yi'shu
-数落	shu'luo
-数据	shu'ju
-数目	shu'mu
-数额	shu'e
-无数	wu'shu
-多数	duo'shu
-少数	shao'shu
-分数	fen'shu
-岁数	sui'shu
-次数	ci'shu
-度数	du'shu
+数字	shu'zi		manual
+数学	shu'xue		manual
+数量	shu'liang		manual
+数一数	shu'yi'shu		manual
+数落	shu'luo		manual
+数据	shu'ju		manual
+数目	shu'mu		manual
+数额	shu'e		manual
+无数	wu'shu		manual
+多数	duo'shu		manual
+分数	fen'shu		manual
+岁数	sui'shu		manual
+次数	ci'shu		manual
+度数	du'shu		manual
 # ── 为 wei ─────────────────────────────────────────────────────────────────
-因为	yin'wei
-为了	wei'le
-认为	ren'wei
-行为	xing'wei
-为什么	wei'shen'me
-作为	zuo'wei
-成为	cheng'wei
-人为	ren'wei
-以为	yi'wei
-为此	wei'ci
-为何	wei'he
-为期	wei'qi
-为止	wei'zhi
+因为	yin'wei		manual
+认为	ren'wei		manual
+作为	zuo'wei		manual
+成为	cheng'wei		manual
+人为	ren'wei		manual
+以为	yi'wei		manual
+为此	wei'ci		manual
+为何	wei'he		manual
+为期	wei'qi		manual
+为止	wei'zhi		manual
 # ── 尽 jin ─────────────────────────────────────────────────────────────────
-尽管	jin'guan
-尽量	jin'liang
-尽力	jin'li
-尽头	jin'tou
-尽职	jin'zhi
-尽情	jin'qing
-无尽	wu'jin
-穷尽	qiong'jin
-详尽	xiang'jin
-尽兴	jin'xing
+尽管	jin'guan		manual
+尽量	jin'liang		manual
+尽力	jin'li		manual
+尽头	jin'tou		manual
+尽职	jin'zhi		manual
+尽情	jin'qing		manual
+无尽	wu'jin		manual
+穷尽	qiong'jin		manual
+详尽	xiang'jin		manual
+尽兴	jin'xing		manual
 # ── 干 gan ─────────────────────────────────────────────────────────────────
-干净	gan'jing
-干燥	gan'zao
-干活	gan'huo
-干杯	gan'bei
-干脆	gan'cui
-才干	cai'gan
-骨干	gu'gan
-干部	gan'bu
-干事	gan'shi
-干吗	gan'ma
-树干	shu'gan
-主干	zhu'gan
-实干	shi'gan
-苦干	ku'gan
-干粮	gan'liang
+干净	gan'jing		manual
+干燥	gan'zao		manual
+干活	gan'huo		manual
+干杯	gan'bei		manual
+干脆	gan'cui		manual
+才干	cai'gan		manual
+骨干	gu'gan		manual
+干部	gan'bu		manual
+干事	gan'shi		manual
+干吗	gan'ma		manual
+树干	shu'gan		manual
+主干	zhu'gan		manual
+实干	shi'gan		manual
+苦干	ku'gan		manual
+干粮	gan'liang		manual
 # ── 正 zheng ───────────────────────────────────────────────────────────────
-正确	zheng'que
-正常	zheng'chang
-正式	zheng'shi
-正在	zheng'zai
-正面	zheng'mian
-正规	zheng'gui
-正当	zheng'dang
-正直	zheng'zhi
-正义	zheng'yi
-改正	gai'zheng
-纠正	jiu'zheng
-端正	duan'zheng
-反正	fan'zheng
-正月	zheng'yue
+正确	zheng'que		manual
+正常	zheng'chang		manual
+正式	zheng'shi		manual
+正在	zheng'zai		manual
+正面	zheng'mian		manual
+正规	zheng'gui		manual
+正当	zheng'dang		manual
+正直	zheng'zhi		manual
+正义	zheng'yi		manual
+改正	gai'zheng		manual
+纠正	jiu'zheng		manual
+端正	duan'zheng		manual
+反正	fan'zheng		manual
+正月	zheng'yue		manual
 # ── 相 xiang ───────────────────────────────────────────────────────────────
-相信	xiang'xin
-相互	xiang'hu
-相同	xiang'tong
-相似	xiang'si
-相反	xiang'fan
-相对	xiang'dui
-相关	xiang'guan
-相继	xiang'ji
-相机	xiang'ji
-相片	xiang'pian
-相貌	xiang'mao
-相声	xiang'sheng
-相识	xiang'shi
-相中	xiang'zhong
-亮相	liang'xiang
-长相	zhang'xiang
+相信	xiang'xin		manual
+相互	xiang'hu		manual
+相同	xiang'tong		manual
+相似	xiang'si		manual
+相反	xiang'fan		manual
+相对	xiang'dui		manual
+相关	xiang'guan		manual
+相继	xiang'ji		manual
+相机	xiang'ji		manual
+相貌	xiang'mao		manual
+相声	xiang'sheng		manual
+相识	xiang'shi		manual
+相中	xiang'zhong		manual
+亮相	liang'xiang		manual
+长相	zhang'xiang		manual
 # ── 应 ying ────────────────────────────────────────────────────────────────
-应该	ying'gai
-应当	ying'dang
-应用	ying'yong
-应付	ying'fu
-应对	ying'dui
-适应	shi'ying
-响应	xiang'ying
-相应	xiang'ying
-应邀	ying'yao
-应酬	ying'chou
-应聘	ying'pin
-呼应	hu'ying
-供应	gong'ying
-应战	ying'zhan
+应该	ying'gai		manual
+应用	ying'yong		manual
+应付	ying'fu		manual
+应对	ying'dui		manual
+响应	xiang'ying		manual
+相应	xiang'ying		manual
+应邀	ying'yao		manual
+应酬	ying'chou		manual
+应聘	ying'pin		manual
+呼应	hu'ying		manual
+供应	gong'ying		manual
+应战	ying'zhan		manual
 # ── 只 zhi ─────────────────────────────────────────────────────────────────
-只有	zhi'you
-只是	zhi'shi
-一只	yi'zhi
-只好	zhi'hao
-只要	zhi'yao
-船只	chuan'zhi
-只身	zhi'shen
+只有	zhi'you		manual
+只是	zhi'shi		manual
+一只	yi'zhi		manual
+只好	zhi'hao		manual
+只要	zhi'yao		manual
+船只	chuan'zhi		manual
+只身	zhi'shen		manual
 
 # ── 佛 fo / fu ─────────────────────────────────────────────────────────────
-佛教	fo'jiao
-佛手	fo'shou
-仿佛	fang'fu
+佛手	fo'shou		manual
+仿佛	fang'fu		manual
 # ── 番 fan / pan ───────────────────────────────────────────────────────────
-番茄	fan'qie
-番禺	pan'yu
-三番五次	san'fan'wu'ci
+番茄	fan'qie		manual
+番禺	pan'yu		manual
+三番五次	san'fan'wu'ci		manual
 # ── 给 gei / ji ────────────────────────────────────────────────────────────
-给你	gei'ni
-给予	ji'yu
-供给	gong'ji
-补给	bu'ji
-自给自足	zi'ji'zi'zu
+给你	gei'ni		manual
+给予	ji'yu		manual
+供给	gong'ji		manual
+补给	bu'ji		manual
+自给自足	zi'ji'zi'zu		manual
 # ── 夹 jia / ga ────────────────────────────────────────────────────────────
-夹子	jia'zi
-夹菜	jia'cai
-夹袄	jia'ao
-夹肢窝	ga'zhi'wo
+夹子	jia'zi		manual
+夹菜	jia'cai		manual
+夹袄	jia'ao		manual
+夹肢窝	ga'zhi'wo		manual
 # ── 监 jian ────────────────────────────────────────────────────────────────
-监督	jian'du
-监狱	jian'yu
-监考	jian'kao
-太监	tai'jian
+监督	jian'du		manual
+监狱	jian'yu		manual
+监考	jian'kao		manual
+太监	tai'jian		manual
 # ── 禁 jin ─────────────────────────────────────────────────────────────────
-禁止	jin'zhi
-禁不住	jin'bu'zhu
-禁受	jin'shou
+禁止	jin'zhi		manual
+禁不住	jin'bu'zhu		manual
+禁受	jin'shou		manual
 # ── 劲 jin / jing ──────────────────────────────────────────────────────────
-干劲	gan'jin
-劲头	jin'tou
-劲敌	jing'di
-强劲	qiang'jing
+干劲	gan'jin		manual
+劲头	jin'tou		manual
+劲敌	jing'di		manual
+强劲	qiang'jing		manual
 # ── 壳 ke / qiao ───────────────────────────────────────────────────────────
-贝壳	bei'ke
-地壳	di'qiao
-甲壳	jia'qiao
-脑壳	nao'ke
+贝壳	bei'ke		manual
+地壳	di'qiao		manual
+甲壳	jia'qiao		manual
+脑壳	nao'ke		manual
 # ── 累 lei ─────────────────────────────────────────────────────────────────
-劳累	lao'lei
-积累	ji'lei
-累赘	lei'zhui
-连累	lian'lei
-累及	lei'ji
+劳累	lao'lei		manual
+积累	ji'lei		manual
+累赘	lei'zhui		manual
+连累	lian'lei		manual
+累及	lei'ji		manual
 # ── 量 liang ───────────────────────────────────────────────────────────────
-数量	shu'liang
-测量	ce'liang
-量力	liang'li
-量杯	liang'bei
-重量	zhong'liang
-产量	chan'liang
-流量	liu'liang
-容量	rong'liang
+测量	ce'liang		manual
+量力	liang'li		manual
+量杯	liang'bei		manual
+产量	chan'liang		manual
+流量	liu'liang		manual
+容量	rong'liang		manual
 # ── 论 lun ─────────────────────────────────────────────────────────────────
-理论	li'lun
-讨论	tao'lun
-论语	lun'yu
-论调	lun'diao
-论文	lun'wen
-结论	jie'lun
-言论	yan'lun
+理论	li'lun		manual
+讨论	tao'lun		manual
+论语	lun'yu		manual
+论调	lun'diao		manual
+论文	lun'wen		manual
+言论	yan'lun		manual
 # ── 抹 mo / ma ─────────────────────────────────────────────────────────────
-抹布	ma'bu
-抹杀	mo'sha
-涂抹	tu'mo
-抹粉	mo'fen
+抹布	ma'bu		manual
+抹杀	mo'sha		manual
+涂抹	tu'mo		manual
+抹粉	mo'fen		manual
 # ── 宁 ning ────────────────────────────────────────────────────────────────
-安宁	an'ning
-宁愿	ning'yuan
-宁可	ning'ke
-宁死不屈	ning'si'bu'qu
-南宁	nan'ning
+安宁	an'ning		manual
+宁愿	ning'yuan		manual
+宁可	ning'ke		manual
+宁死不屈	ning'si'bu'qu		manual
+南宁	nan'ning		manual
 # ── 迫 po / pai ────────────────────────────────────────────────────────────
-迫切	po'qie
-压迫	ya'po
-迫击炮	pai'ji'pao
-迫使	po'shi
-被迫	bei'po
+压迫	ya'po		manual
+迫击炮	pai'ji'pao		manual
+迫使	po'shi		manual
+被迫	bei'po		manual
 # ── 曲 qu ──────────────────────────────────────────────────────────────────
-歌曲	ge'qu
-弯曲	wan'qu
-曲折	qu'zhe
-曲艺	qu'yi
-戏曲	xi'qu
-曲调	qu'diao
-乐曲	yue'qu
+歌曲	ge'qu		manual
+弯曲	wan'qu		manual
+曲艺	qu'yi		manual
+戏曲	xi'qu		manual
 # ── 散 san ─────────────────────────────────────────────────────────────────
-散步	san'bu
-散文	san'wen
-散会	san'hui
-分散	fen'san
-解散	jie'san
-散漫	san'man
-散落	san'luo
+散步	san'bu		manual
+散文	san'wen		manual
+散会	san'hui		manual
+分散	fen'san		manual
+解散	jie'san		manual
+散漫	san'man		manual
+散落	san'luo		manual
 # ── 扫 sao ─────────────────────────────────────────────────────────────────
-扫地	sao'di
-扫除	sao'chu
-扫帚	sao'zhou
-扫兴	sao'xing
-打扫	da'sao
+扫地	sao'di		manual
+扫除	sao'chu		manual
+扫帚	sao'zhou		manual
+扫兴	sao'xing		manual
+打扫	da'sao		manual
 # ── 舍 she ─────────────────────────────────────────────────────────────────
-宿舍	su'she
-舍不得	she'bu'de
-施舍	shi'she
-取舍	qu'she
-舍弃	she'qi
-校舍	xiao'she
+舍不得	she'bu'de		manual
+施舍	shi'she		manual
+取舍	qu'she		manual
+舍弃	she'qi		manual
+校舍	xiao'she		manual
 # ── 似 si / shi ────────────────────────────────────────────────────────────
-似乎	si'hu
-相似	xiang'si
-似的	shi'de
-好似	hao'si
-类似	lei'si
+似乎	si'hu		manual
+似的	shi'de		manual
+好似	hao'si		manual
+类似	lei'si		manual
 # ── 挑 tiao ────────────────────────────────────────────────────────────────
-挑选	tiao'xuan
-挑战	tiao'zhan
-挑水	tiao'shui
-挑担	tiao'dan
-挑拨	tiao'bo
-挑刺	tiao'ci
-挑剔	tiao'ti
+挑选	tiao'xuan		manual
+挑战	tiao'zhan		manual
+挑水	tiao'shui		manual
+挑担	tiao'dan		manual
+挑拨	tiao'bo		manual
+挑刺	tiao'ci		manual
+挑剔	tiao'ti		manual
 # ── 吐 tu ──────────────────────────────────────────────────────────────────
-吐痰	tu'tan
-吐露	tu'lu
-呕吐	ou'tu
-吐气	tu'qi
-吞吞吐吐	tun'tun'tu'tu
+吐痰	tu'tan		manual
+吐露	tu'lu		manual
+呕吐	ou'tu		manual
+吐气	tu'qi		manual
+吞吞吐吐	tun'tun'tu'tu		manual
 # ── 要 yao ─────────────────────────────────────────────────────────────────
-要求	yao'qiu
-重要	zhong'yao
-需要	xu'yao
-要是	yao'shi
-摘要	zhai'yao
-要点	yao'dian
+要求	yao'qiu		manual
+需要	xu'yao		manual
+要是	yao'shi		manual
+摘要	zhai'yao		manual
+要点	yao'dian		manual
 # ── 与 yu ──────────────────────────────────────────────────────────────────
-与其	yu'qi
-参与	can'yu
-赠与	zeng'yu
-与会	yu'hui
+与其	yu'qi		manual
+赠与	zeng'yu		manual
+与会	yu'hui		manual
 # ── 语 yu ──────────────────────────────────────────────────────────────────
-语言	yu'yan
-汉语	han'yu
-英语	ying'yu
-语文	yu'wen
-成语	cheng'yu
-词语	ci'yu
-语气	yu'qi
-语重心长	yu'zhong'xin'chang
+语言	yu'yan		manual
+汉语	han'yu		manual
+英语	ying'yu		manual
+语文	yu'wen		manual
+成语	cheng'yu		manual
+词语	ci'yu		manual
+语气	yu'qi		manual
+语重心长	yu'zhong'xin'chang		manual
 # ── 熨 yun / yu ────────────────────────────────────────────────────────────
-熨斗	yun'dou
-熨帖	yu'tie
+熨斗	yun'dou		manual
+熨帖	yu'tie		manual
 # ── 攒 zan / cuan ──────────────────────────────────────────────────────────
-攒钱	zan'qian
-攒动	cuan'dong
+攒钱	zan'qian		manual
+攒动	cuan'dong		manual
 # ── 载 zai ─────────────────────────────────────────────────────────────────
-载重	zai'zhong
-装载	zhuang'zai
-记载	ji'zai
-刊载	kan'zai
-载歌载舞	zai'ge'zai'wu
-三年五载	san'nian'wu'zai
+载重	zai'zhong		manual
+装载	zhuang'zai		manual
+记载	ji'zai		manual
+刊载	kan'zai		manual
+载歌载舞	zai'ge'zai'wu		manual
+三年五载	san'nian'wu'zai		manual
 # ── 扎 zha / za ────────────────────────────────────────────────────────────
-扎针	zha'zhen
-挣扎	zheng'zha
-包扎	bao'za
-扎营	zha'ying
+扎针	zha'zhen		manual
+挣扎	zheng'zha		manual
+包扎	bao'za		manual
+扎营	zha'ying		manual
 # ── 占 zhan ────────────────────────────────────────────────────────────────
-占领	zhan'ling
-占有	zhan'you
-占据	zhan'ju
-占用	zhan'yong
-独占	du'zhan
-占卜	zhan'bu
+占领	zhan'ling		manual
+占有	zhan'you		manual
+占据	zhan'ju		manual
+占用	zhan'yong		manual
+独占	du'zhan		manual
+占卜	zhan'bu		manual
 # ── 挣 zheng ───────────────────────────────────────────────────────────────
-挣钱	zheng'qian
-挣扎	zheng'zha
-挣脱	zheng'tuo
+挣钱	zheng'qian		manual
+挣脱	zheng'tuo		manual
 # ── 轴 zhou ────────────────────────────────────────────────────────────────
-轴承	zhou'cheng
-车轴	che'zhou
-轴心	zhou'xin
-主轴	zhu'zhou
+轴承	zhou'cheng		manual
+车轴	che'zhou		manual
+轴心	zhou'xin		manual
+主轴	zhu'zhou		manual
 # ── 转 zhuan ───────────────────────────────────────────────────────────────
-转身	zhuan'shen
-转变	zhuan'bian
-转动	zhuan'dong
-转告	zhuan'gao
-旋转	xuan'zhuan
-转圈	zhuan'quan
-转弯	zhuan'wan
-好转	hao'zhuan
-转业	zhuan'ye
-转让	zhuan'rang
+转身	zhuan'shen		manual
+转变	zhuan'bian		manual
+转动	zhuan'dong		manual
+转告	zhuan'gao		manual
+旋转	xuan'zhuan		manual
+转圈	zhuan'quan		manual
+转弯	zhuan'wan		manual
+好转	hao'zhuan		manual
+转业	zhuan'ye		manual
+转让	zhuan'rang		manual
 # ── 作 zuo ─────────────────────────────────────────────────────────────────
-工作	gong'zuo
-作用	zuo'yong
-作家	zuo'jia
-作文	zuo'wen
-作为	zuo'wei
-操作	cao'zuo
-合作	he'zuo
-作品	zuo'pin
-作风	zuo'feng
-作料	zuo'liao
-作坊	zuo'fang
-做作	zuo'zuo
+工作	gong'zuo		manual
+作用	zuo'yong		manual
+作家	zuo'jia		manual
+作文	zuo'wen		manual
+操作	cao'zuo		manual
+合作	he'zuo		manual
+作品	zuo'pin		manual
+作风	zuo'feng		manual
+作料	zuo'liao		manual
+作坊	zuo'fang		manual
+做作	zuo'zuo		manual
 # ── 恶 e / wu ──────────────────────────────────────────────────────────────
-恶劣	e'lie
-恶意	e'yi
-厌恶	yan'wu
-可恶	ke'wu
-恶习	e'xi
-恶心	e'xin
+恶劣	e'lie		manual
+恶意	e'yi		manual
+厌恶	yan'wu		manual
+可恶	ke'wu		manual
+恶习	e'xi		manual
+恶心	e'xin		manual
 # ── 缝 feng ────────────────────────────────────────────────────────────────
-缝纫	feng'ren
-缝隙	feng'xi
-裂缝	lie'feng
-缝补	feng'bu
+缝纫	feng'ren		manual
+缝隙	feng'xi		manual
+裂缝	lie'feng		manual
+缝补	feng'bu		manual
 # ── 冠 guan ────────────────────────────────────────────────────────────────
-冠军	guan'jun
-皇冠	huang'guan
-冠冕	guan'mian
-冠心病	guan'xin'bing
+冠军	guan'jun		manual
+皇冠	huang'guan		manual
+冠冕	guan'mian		manual
+冠心病	guan'xin'bing		manual
 # ── 骨 gu ──────────────────────────────────────────────────────────────────
-骨头	gu'tou
-骨骼	gu'ge
-骨干	gu'gan
-骨气	gu'qi
-骨折	gu'zhe
-排骨	pai'gu
+骨头	gu'tou		manual
+骨骼	gu'ge		manual
+骨气	gu'qi		manual
+排骨	pai'gu		manual
 # ── 供 gong ────────────────────────────────────────────────────────────────
-供应	gong'ying
-供给	gong'ji
-提供	ti'gong
-供品	gong'pin
-供奉	gong'feng
-口供	kou'gong
+供品	gong'pin		manual
+供奉	gong'feng		manual
+口供	kou'gong		manual
 # ── 咖 ka / ga ─────────────────────────────────────────────────────────────
-咖啡	ka'fei
-咖喱	ga'li
+咖啡	ka'fei		manual
+咖喱	ga'li		manual
 # ── 烙 lao / luo ───────────────────────────────────────────────────────────
-烙饼	lao'bing
-烙印	lao'yin
-炮烙	pao'luo
+烙饼	lao'bing		manual
+烙印	lao'yin		manual
+炮烙	pao'luo		manual
 # ── 勒 le / lei ────────────────────────────────────────────────────────────
-勒令	le'ling
-勒紧	lei'jin
-悬崖勒马	xuan'ya'le'ma
+勒令	le'ling		manual
+勒紧	lei'jin		manual
+悬崖勒马	xuan'ya'le'ma		manual
 # ── 擂 lei ─────────────────────────────────────────────────────────────────
-擂鼓	lei'gu
-擂台	lei'tai
+擂鼓	lei'gu		manual
+擂台	lei'tai		manual
 # ── 俩 lia / liang ─────────────────────────────────────────────────────────
-他俩	ta'lia
-伎俩	ji'liang
+他俩	ta'lia		manual
+伎俩	ji'liang		manual
 # ── 凉 liang ───────────────────────────────────────────────────────────────
-凉水	liang'shui
-凉快	liang'kuai
-凉亭	liang'ting
-着凉	zhao'liang
-凉席	liang'xi
+凉水	liang'shui		manual
+凉快	liang'kuai		manual
+凉亭	liang'ting		manual
+着凉	zhao'liang		manual
+凉席	liang'xi		manual
 # ── 笼 long ────────────────────────────────────────────────────────────────
-笼子	long'zi
-笼罩	long'zhao
-蒸笼	zheng'long
-笼络	long'luo
+笼子	long'zi		manual
+笼罩	long'zhao		manual
+蒸笼	zheng'long		manual
+笼络	long'luo		manual
 # ── 露 lu / lou ────────────────────────────────────────────────────────────
-露水	lu'shui
-暴露	bao'lu
-露面	lou'mian
-露馅	lou'xian
-揭露	jie'lu
-流露	liu'lu
+露水	lu'shui		manual
+暴露	bao'lu		manual
+露面	lou'mian		manual
+露馅	lou'xian		manual
+揭露	jie'lu		manual
+流露	liu'lu		manual
 # ── 埋 mai / man ───────────────────────────────────────────────────────────
-埋藏	mai'cang
-埋怨	man'yuan
-掩埋	yan'mai
-埋伏	mai'fu
+埋藏	mai'cang		manual
+埋怨	man'yuan		manual
+掩埋	yan'mai		manual
+埋伏	mai'fu		manual
 # ── 蔓 man / wan ───────────────────────────────────────────────────────────
-蔓延	man'yan
-瓜蔓	gua'wan
+蔓延	man'yan		manual
+瓜蔓	gua'wan		manual
 # ── 蒙 meng ────────────────────────────────────────────────────────────────
-蒙蔽	meng'bi
-蒙古	meng'gu
-蒙骗	meng'pian
-蒙受	meng'shou
+蒙蔽	meng'bi		manual
+蒙古	meng'gu		manual
+蒙骗	meng'pian		manual
+蒙受	meng'shou		manual
 # ── 秘 mi / bi ─────────────────────────────────────────────────────────────
-秘密	mi'mi
-秘书	mi'shu
-秘鲁	bi'lu
+秘密	mi'mi		manual
+秘书	mi'shu		manual
+秘鲁	bi'lu		manual
 # ── 模 mo / mu ─────────────────────────────────────────────────────────────
-模型	mo'xing
-模仿	mo'fang
-模范	mo'fan
-模样	mu'yang
-模具	mu'ju
+模型	mo'xing		manual
+模仿	mo'fang		manual
+模范	mo'fan		manual
+模样	mu'yang		manual
+模具	mu'ju		manual
 # ── 磨 mo ──────────────────────────────────────────────────────────────────
-磨练	mo'lian
-磨损	mo'sun
-磨坊	mo'fang
-石磨	shi'mo
+磨练	mo'lian		manual
+磨损	mo'sun		manual
+磨坊	mo'fang		manual
+石磨	shi'mo		manual
 # ── 呢 ni ──────────────────────────────────────────────────────────────────
-呢子	ni'zi
-呢绒	ni'rong
+呢子	ni'zi		manual
+呢绒	ni'rong		manual
 # ── 拧 ning ────────────────────────────────────────────────────────────────
-拧螺丝	ning'luo'si
-拧毛巾	ning'mao'jin
-拧脾气	ning'pi'qi
+拧螺丝	ning'luo'si		manual
+拧毛巾	ning'mao'jin		manual
+拧脾气	ning'pi'qi		manual
 # ── 扒 ba / pa ─────────────────────────────────────────────────────────────
-扒手	pa'shou
-扒开	ba'kai
-扒拉	ba'la
+扒手	pa'shou		manual
+扒开	ba'kai		manual
 # ── 铺 pu ──────────────────────────────────────────────────────────────────
-铺路	pu'lu
-铺床	pu'chuang
-店铺	dian'pu
-卧铺	wo'pu
-铺子	pu'zi
+铺路	pu'lu		manual
+铺床	pu'chuang		manual
+店铺	dian'pu		manual
+卧铺	wo'pu		manual
+铺子	pu'zi		manual
 # ── 曝 bao / pu ────────────────────────────────────────────────────────────
-曝光	bao'guang
-曝晒	pu'shai
+曝光	bao'guang		manual
+曝晒	pu'shai		manual
 # ── 奇 qi / ji ─────────────────────────────────────────────────────────────
-奇怪	qi'guai
-奇迹	qi'ji
-奇数	ji'shu
-奇偶	ji'ou
+奇怪	qi'guai		manual
+奇迹	qi'ji		manual
+奇数	ji'shu		manual
+奇偶	ji'ou		manual
 # ── 抢 qiang ───────────────────────────────────────────────────────────────
-抢劫	qiang'jie
-抢救	qiang'jiu
-抢手	qiang'shou
-抢眼	qiang'yan
+抢劫	qiang'jie		manual
+抢救	qiang'jiu		manual
+抢手	qiang'shou		manual
+抢眼	qiang'yan		manual
 # ── 悄 qiao ────────────────────────────────────────────────────────────────
-悄悄	qiao'qiao
-悄然	qiao'ran
+悄悄	qiao'qiao		manual
+悄然	qiao'ran		manual
 # ── 翘 qiao ────────────────────────────────────────────────────────────────
-翘首	qiao'shou
-翘尾巴	qiao'wei'ba
-翘板	qiao'ban
+翘首	qiao'shou		manual
+翘尾巴	qiao'wei'ba		manual
+翘板	qiao'ban		manual
 # ── 雀 que / qiao ──────────────────────────────────────────────────────────
-麻雀	ma'que
-孔雀	kong'que
-雀斑	que'ban
-家雀	jia'qiao
+麻雀	ma'que		manual
+孔雀	kong'que		manual
+雀斑	que'ban		manual
+家雀	jia'qiao		manual
 # ── 丧 sang ────────────────────────────────────────────────────────────────
-丧失	sang'shi
-丧事	sang'shi
-沮丧	ju'sang
-丧气	sang'qi
+丧失	sang'shi		manual
+丧事	sang'shi		manual
+沮丧	ju'sang		manual
+丧气	sang'qi		manual
 # ── 煞 sha ─────────────────────────────────────────────────────────────────
-煞白	sha'bai
-煞车	sha'che
-煞费苦心	sha'fei'ku'xin
+煞白	sha'bai		manual
+煞车	sha'che		manual
+煞费苦心	sha'fei'ku'xin		manual
 # ── 厦 sha / xia ───────────────────────────────────────────────────────────
-大厦	da'sha
-厦门	xia'men
+厦门	xia'men		manual
 # ── 甚 shen ────────────────────────────────────────────────────────────────
-甚至	shen'zhi
-甚好	shen'hao
+甚至	shen'zhi		manual
+甚好	shen'hao		manual
 # ── 盛 sheng / cheng ───────────────────────────────────────────────────────
-盛开	sheng'kai
-茂盛	mao'sheng
-盛饭	cheng'fan
-盛情	sheng'qing
+盛开	sheng'kai		manual
+茂盛	mao'sheng		manual
+盛饭	cheng'fan		manual
+盛情	sheng'qing		manual
 # ── 说 shuo / shui ─────────────────────────────────────────────────────────
-说话	shuo'hua
-说明	shuo'ming
-说服	shuo'fu
-游说	you'shui
-小说	xiao'shuo
-学说	xue'shuo
+说话	shuo'hua		manual
+说明	shuo'ming		manual
+说服	shuo'fu		manual
+游说	you'shui		manual
+小说	xiao'shuo		manual
+学说	xue'shuo		manual
 # ── 台 tai ─────────────────────────────────────────────────────────────────
-台风	tai'feng
-台灯	tai'deng
-台阶	tai'jie
-舞台	wu'tai
-讲台	jiang'tai
-阳台	yang'tai
-平台	ping'tai
-灶台	zao'tai
-灯台	deng'tai
-蜡台	la'tai
-柜台	gui'tai
-前台	qian'tai
-后台	hou'tai
-台词	tai'ci
-台球	tai'qiu
+台风	tai'feng		manual
+台灯	tai'deng		manual
+台阶	tai'jie		manual
+舞台	wu'tai		manual
+讲台	jiang'tai		manual
+阳台	yang'tai		manual
+平台	ping'tai		manual
+灶台	zao'tai		manual
+灯台	deng'tai		manual
+蜡台	la'tai		manual
+柜台	gui'tai		manual
+前台	qian'tai		manual
+后台	hou'tai		manual
+台词	tai'ci		manual
+台球	tai'qiu		manual
 # ── 弹 dan / tan ───────────────────────────────────────────────────────────
-子弹	zi'dan
-炸弹	zha'dan
-导弹	dao'dan
-手榴弹	shou'liu'dan
-原子弹	yuan'zi'dan
-弹弓	dan'gong
-弹片	dan'pian
-弹壳	dan'ke
-弹性	tan'xing
-弹簧	tan'huang
-弹琴	tan'qin
-弹力	tan'li
-反弹	fan'tan
+子弹	zi'dan		manual
+炸弹	zha'dan		manual
+导弹	dao'dan		manual
+手榴弹	shou'liu'dan		manual
+原子弹	yuan'zi'dan		manual
+弹弓	dan'gong		manual
+弹片	dan'pian		manual
+弹壳	dan'ke		manual
+弹性	tan'xing		manual
+弹簧	tan'huang		manual
+弹琴	tan'qin		manual
+弹力	tan'li		manual
+反弹	fan'tan		manual
 # ── 帖 tie ─────────────────────────────────────────────────────────────────
-字帖	zi'tie
-请帖	qing'tie
-喜帖	xi'tie
-帖子	tie'zi
-碑帖	bei'tie
-妥帖	tuo'tie
+字帖	zi'tie		manual
+请帖	qing'tie		manual
+喜帖	xi'tie		manual
+帖子	tie'zi		manual
+碑帖	bei'tie		manual
+妥帖	tuo'tie		manual
 # ── 通 tong ────────────────────────────────────────────────────────────────
-通过	tong'guo
-交通	jiao'tong
-通知	tong'zhi
-通信	tong'xin
-通行	tong'xing
-通顺	tong'shun
-精通	jing'tong
-普通	pu'tong
-通宵	tong'xiao
-通红	tong'hong
+通过	tong'guo		manual
+交通	jiao'tong		manual
+通知	tong'zhi		manual
+通信	tong'xin		manual
+通行	tong'xing		manual
+通顺	tong'shun		manual
+精通	jing'tong		manual
+普通	pu'tong		manual
+通宵	tong'xiao		manual
+通红	tong'hong		manual
 # ── 同 tong ────────────────────────────────────────────────────────────────
-同学	tong'xue
-同意	tong'yi
-相同	xiang'tong
-共同	gong'tong
-同志	tong'zhi
-同心	tong'xin
-胡同	hu'tong
-同胞	tong'bao
-同行	tong'hang
-同情	tong'qing
-同样	tong'yang
+同学	tong'xue		manual
+同意	tong'yi		manual
+共同	gong'tong		manual
+同志	tong'zhi		manual
+同心	tong'xin		manual
+胡同	hu'tong		manual
+同胞	tong'bao		manual
+同情	tong'qing		manual
+同样	tong'yang		manual
 # ── 弯 wan ─────────────────────────────────────────────────────────────────
-弯曲	wan'qu
-弯腰	wan'yao
-拐弯	guai'wan
-转弯	zhuan'wan
-弯路	wan'lu
+弯腰	wan'yao		manual
+拐弯	guai'wan		manual
+弯路	wan'lu		manual
 # ── 尉 wei / yu ────────────────────────────────────────────────────────────
-尉官	wei'guan
-尉迟	yu'chi
-上尉	shang'wei
+尉官	wei'guan		manual
+尉迟	yu'chi		manual
+上尉	shang'wei		manual
 # ── 鲜 xian ────────────────────────────────────────────────────────────────
-新鲜	xin'xian
-鲜花	xian'hua
-鲜艳	xian'yan
-朝鲜	chao'xian
-鲜为人知	xian'wei'ren'zhi
+新鲜	xin'xian		manual
+鲜花	xian'hua		manual
+鲜艳	xian'yan		manual
+鲜为人知	xian'wei'ren'zhi		manual
 # ── 降 jiang / xiang ───────────────────────────────────────────────────────
-下降	xia'jiang
-降低	jiang'di
-投降	tou'xiang
-降落	jiang'luo
-降雨	jiang'yu
-降服	xiang'fu
+下降	xia'jiang		manual
+降低	jiang'di		manual
+投降	tou'xiang		manual
+降落	jiang'luo		manual
+降雨	jiang'yu		manual
+降服	xiang'fu		manual
 # ── 校 xiao / jiao ─────────────────────────────────────────────────────────
-学校	xue'xiao
-校长	xiao'zhang
-校车	xiao'che
-校对	jiao'dui
-校样	jiao'yang
+学校	xue'xiao		manual
+校车	xiao'che		manual
+校对	jiao'dui		manual
+校样	jiao'yang		manual
 # ── 挟 xie / jia ───────────────────────────────────────────────────────────
-挟持	xie'chi
-要挟	yao'xie
+挟持	xie'chi		manual
+要挟	yao'xie		manual
 # ── 熏 xun ─────────────────────────────────────────────────────────────────
-熏陶	xun'tao
-熏肉	xun'rou
+熏陶	xun'tao		manual
+熏肉	xun'rou		manual
 # ── 压 ya ──────────────────────────────────────────────────────────────────
-压力	ya'li
-压迫	ya'po
-压缩	ya'suo
-血压	xue'ya
-压根	ya'gen
+压力	ya'li		manual
+压根	ya'gen		manual
 # ── 呀 ya ──────────────────────────────────────────────────────────────────
-哎呀	ai'ya
-好呀	hao'ya
+哎呀	ai'ya		manual
+好呀	hao'ya		manual
 # ── 燕 yan ─────────────────────────────────────────────────────────────────
-燕子	yan'zi
-燕窝	yan'wo
-姓燕	xing'yan
+燕子	yan'zi		manual
+燕窝	yan'wo		manual
+姓燕	xing'yan		manual
 # ── 钥 yao / yue ───────────────────────────────────────────────────────────
-钥匙	yao'shi
-锁钥	suo'yue
+钥匙	yao'shi		manual
+锁钥	suo'yue		manual
 # ── 叶 ye / xie ────────────────────────────────────────────────────────────
-叶子	ye'zi
-树叶	shu'ye
-茶叶	cha'ye
-叶韵	xie'yun
+叶子	ye'zi		manual
+树叶	shu'ye		manual
+茶叶	cha'ye		manual
+叶韵	xie'yun		manual
 # ── 遗 yi / wei ────────────────────────────────────────────────────────────
-遗产	yi'chan
-遗憾	yi'han
-遗嘱	yi'zhu
-遗失	yi'shi
-遗忘	yi'wang
-遗赠	wei'zeng
+遗产	yi'chan		manual
+遗憾	yi'han		manual
+遗嘱	yi'zhu		manual
+遗失	yi'shi		manual
+遗忘	yi'wang		manual
+遗赠	wei'zeng		manual
 # ── 佣 yong ────────────────────────────────────────────────────────────────
-佣人	yong'ren
-雇佣	gu'yong
-佣金	yong'jin
+佣人	yong'ren		manual
+雇佣	gu'yong		manual
+佣金	yong'jin		manual
 # ── 晕 yun ─────────────────────────────────────────────────────────────────
-晕倒	yun'dao
-晕车	yun'che
-头晕	tou'yun
-晕船	yun'chuan
-红晕	hong'yun
+晕倒	yun'dao		manual
+晕车	yun'che		manual
+头晕	tou'yun		manual
+晕船	yun'chuan		manual
+红晕	hong'yun		manual
 # ── 炸 zha ─────────────────────────────────────────────────────────────────
-爆炸	bao'zha
-炸弹	zha'dan
-油炸	you'zha
-炸糕	zha'gao
+爆炸	bao'zha		manual
+油炸	you'zha		manual
+炸糕	zha'gao		manual
 # ── 粘 zhan / nian ─────────────────────────────────────────────────────────
-粘贴	zhan'tie
-粘住	zhan'zhu
-粘土	nian'tu
-粘性	nian'xing
+粘贴	zhan'tie		manual
+粘住	zhan'zhu		manual
+粘土	nian'tu		manual
+粘性	nian'xing		manual
 # ── 涨 zhang ───────────────────────────────────────────────────────────────
-涨价	zhang'jia
-上涨	shang'zhang
-涨潮	zhang'chao
-涨红	zhang'hong
+涨价	zhang'jia		manual
+涨潮	zhang'chao		manual
+涨红	zhang'hong		manual
 # ── 这 zhe ─────────────────────────────────────────────────────────────────
-这个	zhe'ge
-这里	zhe'li
-这样	zhe'yang
-这些	zhe'xie
-这么	zhe'me
+这个	zhe'ge		manual
+这里	zhe'li		manual
+这样	zhe'yang		manual
+这些	zhe'xie		manual
+这么	zhe'me		manual
 
 # ── 剥 bao / bo ────────────────────────────────────────────────────────────
-剥皮	bao'pi
-剥削	bo'xue
-剥夺	bo'duo
-剥落	bo'luo
+剥皮	bao'pi		manual
+剥夺	bo'duo		manual
+剥落	bo'luo		manual
 # ── 薄 bao / bo ────────────────────────────────────────────────────────────
-薄片	bao'pian
-薄弱	bo'ruo
-薄膜	bo'mo
-单薄	dan'bo
-刻薄	ke'bo
-淡薄	dan'bo
-薄纸	bao'zhi
+薄片	bao'pian		manual
+薄弱	bo'ruo		manual
+薄膜	bo'mo		manual
+单薄	dan'bo		manual
+刻薄	ke'bo		manual
+淡薄	dan'bo		manual
+薄纸	bao'zhi		manual
 # ── 堡 bao / bu / pu ───────────────────────────────────────────────────────
-堡垒	bao'lei
-城堡	cheng'bao
-堡子	bu'zi
-十里堡	shi'li'pu
+堡垒	bao'lei		manual
+城堡	cheng'bao		manual
+堡子	bu'zi		manual
+十里堡	shi'li'pu		manual
 # ── 暴 bao / pu ────────────────────────────────────────────────────────────
-暴露	bao'lu
-暴风	bao'feng
-暴利	bao'li
-暴晒	pu'shai
-暴雨	bao'yu
-暴动	bao'dong
+暴风	bao'feng		manual
+暴利	bao'li		manual
+暴晒	pu'shai		manual
+暴雨	bao'yu		manual
+暴动	bao'dong		manual
 # ── 背 bei ─────────────────────────────────────────────────────────────────
-背包	bei'bao
-背后	bei'hou
-背景	bei'jing
-背诵	bei'song
-背心	bei'xin
-背叛	bei'pan
-背债	bei'zhai
-后背	hou'bei
+背包	bei'bao		manual
+背后	bei'hou		manual
+背景	bei'jing		manual
+背诵	bei'song		manual
+背心	bei'xin		manual
+背叛	bei'pan		manual
+背债	bei'zhai		manual
+后背	hou'bei		manual
 # ── 奔 ben ─────────────────────────────────────────────────────────────────
-奔跑	ben'pao
-奔驰	ben'chi
-奔波	ben'bo
-投奔	tou'ben
-奔头	ben'tou
+奔跑	ben'pao		manual
+奔驰	ben'chi		manual
+奔波	ben'bo		manual
+投奔	tou'ben		manual
+奔头	ben'tou		manual
 # ── 辟 pi / bi ─────────────────────────────────────────────────────────────
-开辟	kai'pi
-复辟	fu'bi
-精辟	jing'pi
+开辟	kai'pi		manual
+复辟	fu'bi		manual
+精辟	jing'pi		manual
 # ── 扁 bian / pian ─────────────────────────────────────────────────────────
-扁担	bian'dan
-扁豆	bian'dou
-扁舟	pian'zhou
+扁担	bian'dan		manual
+扁豆	bian'dou		manual
+扁舟	pian'zhou		manual
 # ── 屏 ping / bing ─────────────────────────────────────────────────────────
-屏幕	ping'mu
-屏障	ping'zhang
-屏风	ping'feng
-屏气	bing'qi
-屏除	bing'chu
+屏幕	ping'mu		manual
+屏障	ping'zhang		manual
+屏风	ping'feng		manual
+屏气	bing'qi		manual
+屏除	bing'chu		manual
 # ── 伯 bo / bai ────────────────────────────────────────────────────────────
-伯父	bo'fu
-伯母	bo'mu
-大伯	da'bo
+伯父	bo'fu		manual
+伯母	bo'mu		manual
+大伯	da'bo		manual
 # ── 泊 bo / po ─────────────────────────────────────────────────────────────
-停泊	ting'bo
-湖泊	hu'po
-漂泊	piao'bo
-泊车	bo'che
+停泊	ting'bo		manual
+湖泊	hu'po		manual
+漂泊	piao'bo		manual
+泊车	bo'che		manual
 # ── 卜 bu / bo ─────────────────────────────────────────────────────────────
-占卜	zhan'bu
-卜卦	bu'gua
-萝卜	luo'bo
+卜卦	bu'gua		manual
+萝卜	luo'bo		manual
 # ── 禅 chan / shan ─────────────────────────────────────────────────────────
-禅宗	chan'zong
-禅让	shan'rang
-坐禅	zuo'chan
+禅宗	chan'zong		manual
+禅让	shan'rang		manual
+坐禅	zuo'chan		manual
 # ── 颤 chan / zhan ─────────────────────────────────────────────────────────
-颤抖	chan'dou
-颤动	chan'dong
-颤栗	zhan'li
-打颤	da'zhan
+颤抖	chan'dou		manual
+颤动	chan'dong		manual
+颤栗	zhan'li		manual
+打颤	da'zhan		manual
 # ── 称 cheng / chen ────────────────────────────────────────────────────────
-称呼	cheng'hu
-名称	ming'cheng
-称赞	cheng'zan
-称心	chen'xin
-对称	dui'chen
-称职	chen'zhi
+称呼	cheng'hu		manual
+名称	ming'cheng		manual
+称赞	cheng'zan		manual
+称心	chen'xin		manual
+对称	dui'chen		manual
+称职	chen'zhi		manual
 # ── 乘 cheng / sheng ───────────────────────────────────────────────────────
-乘车	cheng'che
-乘客	cheng'ke
-乘法	cheng'fa
-乘机	cheng'ji
-千乘	qian'sheng
+乘车	cheng'che		manual
+乘客	cheng'ke		manual
+乘法	cheng'fa		manual
+乘机	cheng'ji		manual
+千乘	qian'sheng		manual
 # ── 澄 cheng / deng ────────────────────────────────────────────────────────
-澄清	cheng'qing
-澄澈	cheng'che
-澄沙	deng'sha
+澄清	cheng'qing		manual
+澄澈	cheng'che		manual
+澄沙	deng'sha		manual
 # ── 匙 chi / shi ───────────────────────────────────────────────────────────
-汤匙	tang'chi
-钥匙	yao'shi
+汤匙	tang'chi		manual
 # ── 冲 chong ───────────────────────────────────────────────────────────────
-冲突	chong'tu
-冲动	chong'dong
-冲刺	chong'ci
-冲洗	chong'xi
-冲床	chong'chuang
-冲锋	chong'feng
+冲突	chong'tu		manual
+冲动	chong'dong		manual
+冲刺	chong'ci		manual
+冲洗	chong'xi		manual
+冲床	chong'chuang		manual
+冲锋	chong'feng		manual
 # ── 臭 chou / xiu ──────────────────────────────────────────────────────────
-臭气	chou'qi
-臭味	chou'wei
-口臭	kou'chou
-乳臭	ru'xiu
+臭气	chou'qi		manual
+臭味	chou'wei		manual
+口臭	kou'chou		manual
+乳臭	ru'xiu		manual
 # ── 畜 chu / xu ────────────────────────────────────────────────────────────
-牲畜	sheng'chu
-家畜	jia'chu
-畜牧	xu'mu
-畜产	xu'chan
+牲畜	sheng'chu		manual
+家畜	jia'chu		manual
+畜牧	xu'mu		manual
+畜产	xu'chan		manual
 # ── 揣 chuai ───────────────────────────────────────────────────────────────
-揣测	chuai'ce
-揣摩	chuai'mo
-揣手	chuai'shou
+揣测	chuai'ce		manual
+揣摩	chuai'mo		manual
+揣手	chuai'shou		manual
 # ── 创 chuang ──────────────────────────────────────────────────────────────
-创造	chuang'zao
-创业	chuang'ye
-创新	chuang'xin
-创伤	chuang'shang
-重创	zhong'chuang
+创造	chuang'zao		manual
+创业	chuang'ye		manual
+创新	chuang'xin		manual
+创伤	chuang'shang		manual
+重创	zhong'chuang		manual
 # ── 绰 chuo / chao ─────────────────────────────────────────────────────────
-绰号	chuo'hao
-阔绰	kuo'chuo
-绰起	chao'qi
+绰号	chuo'hao		manual
+阔绰	kuo'chuo		manual
+绰起	chao'qi		manual
 # ── 刺 ci ──────────────────────────────────────────────────────────────────
-刺激	ci'ji
-讽刺	feng'ci
-刺客	ci'ke
-刺猬	ci'wei
+刺激	ci'ji		manual
+讽刺	feng'ci		manual
+刺客	ci'ke		manual
+刺猬	ci'wei		manual
 # ── 撮 cuo / zuo ───────────────────────────────────────────────────────────
-撮合	cuo'he
-一撮毛	yi'zuo'mao
+撮合	cuo'he		manual
+一撮毛	yi'zuo'mao		manual
 # ── 答 da ──────────────────────────────────────────────────────────────────
-回答	hui'da
-答案	da'an
-答应	da'ying
-答理	da'li
+回答	hui'da		manual
+答案	da'an		manual
+答应	da'ying		manual
+答理	da'li		manual
 # ── 逮 dai ─────────────────────────────────────────────────────────────────
-逮捕	dai'bu
-逮住	dai'zhu
+逮捕	dai'bu		manual
+逮住	dai'zhu		manual
 # ── 担 dan ─────────────────────────────────────────────────────────────────
-担心	dan'xin
-担任	dan'ren
-负担	fu'dan
-担子	dan'zi
-扁担	bian'dan
+担心	dan'xin		manual
+担任	dan'ren		manual
+负担	fu'dan		manual
+担子	dan'zi		manual
 # ── 倒 dao ─────────────────────────────────────────────────────────────────
-倒霉	dao'mei
-倒下	dao'xia
-倒车	dao'che
-倒退	dao'tui
-倒是	dao'shi
-倒立	dao'li
-颠倒	dian'dao
-倒水	dao'shui
+倒霉	dao'mei		manual
+倒下	dao'xia		manual
+倒车	dao'che		manual
+倒退	dao'tui		manual
+倒是	dao'shi		manual
+倒立	dao'li		manual
+颠倒	dian'dao		manual
+倒水	dao'shui		manual
 # ── 读 du / dou ────────────────────────────────────────────────────────────
-读书	du'shu
-阅读	yue'du
-读者	du'zhe
-句读	ju'dou
-朗读	lang'du
+读书	du'shu		manual
+阅读	yue'du		manual
+读者	du'zhe		manual
+句读	ju'dou		manual
+朗读	lang'du		manual
 # ── 度 du / duo ────────────────────────────────────────────────────────────
-温度	wen'du
-程度	cheng'du
-度过	du'guo
-猜度	cai'duo
-度日	du'ri
-制度	zhi'du
+温度	wen'du		manual
+程度	cheng'du		manual
+度过	du'guo		manual
+猜度	cai'duo		manual
+度日	du'ri		manual
+制度	zhi'du		manual
 # ── 坊 fang ────────────────────────────────────────────────────────────────
-牌坊	pai'fang
-作坊	zuo'fang
-磨坊	mo'fang
-街坊	jie'fang
+牌坊	pai'fang		manual
+街坊	jie'fang		manual
 # ── 分 fen ─────────────────────────────────────────────────────────────────
-分开	fen'kai
-部分	bu'fen
-分数	fen'shu
-分析	fen'xi
-分量	fen'liang
-本分	ben'fen
-过分	guo'fen
-分外	fen'wai
+分开	fen'kai		manual
+部分	bu'fen		manual
+分析	fen'xi		manual
+分量	fen'liang		manual
+本分	ben'fen		manual
+过分	guo'fen		manual
+分外	fen'wai		manual
 # ── 服 fu ──────────────────────────────────────────────────────────────────
-衣服	yi'fu
-服务	fu'wu
-服从	fu'cong
-说服	shuo'fu
+衣服	yi'fu		manual
+服务	fu'wu		manual
+服从	fu'cong		manual
 # ── 脯 fu / pu ─────────────────────────────────────────────────────────────
-果脯	guo'fu
-肉脯	rou'fu
-胸脯	xiong'pu
+果脯	guo'fu		manual
+肉脯	rou'fu		manual
+胸脯	xiong'pu		manual
 # ── 盖 gai / ge ────────────────────────────────────────────────────────────
-盖子	gai'zi
-覆盖	fu'gai
-盖房	gai'fang
-姓盖	xing'ge
+盖子	gai'zi		manual
+覆盖	fu'gai		manual
+盖房	gai'fang		manual
+姓盖	xing'ge		manual
 # ── 杆 gan ─────────────────────────────────────────────────────────────────
-杆子	gan'zi
-旗杆	qi'gan
-电线杆	dian'xian'gan
-笔杆	bi'gan
-枪杆	qiang'gan
+杆子	gan'zi		manual
+旗杆	qi'gan		manual
+电线杆	dian'xian'gan		manual
+笔杆	bi'gan		manual
+枪杆	qiang'gan		manual
 # ── 革 ge / ji ─────────────────────────────────────────────────────────────
-革命	ge'ming
-改革	gai'ge
-皮革	pi'ge
+革命	ge'ming		manual
+改革	gai'ge		manual
+皮革	pi'ge		manual
 # ── 颈 jing / geng ─────────────────────────────────────────────────────────
-颈部	jing'bu
-颈椎	jing'zhui
-脖颈	bo'geng
+颈部	jing'bu		manual
+颈椎	jing'zhui		manual
+脖颈	bo'geng		manual
 # ── 勾 gou ─────────────────────────────────────────────────────────────────
-勾画	gou'hua
-勾当	gou'dang
-勾引	gou'yin
-勾销	gou'xiao
+勾画	gou'hua		manual
+勾当	gou'dang		manual
+勾引	gou'yin		manual
+勾销	gou'xiao		manual
 # ── 估 gu ──────────────────────────────────────────────────────────────────
-估计	gu'ji
-评估	ping'gu
-估价	gu'jia
-估衣	gu'yi
+估计	gu'ji		manual
+评估	ping'gu		manual
+估价	gu'jia		manual
+估衣	gu'yi		manual
 # ── 谷 gu / yu ─────────────────────────────────────────────────────────────
-山谷	shan'gu
-谷子	gu'zi
-稻谷	dao'gu
-吐谷浑	tu'yu'hun
+山谷	shan'gu		manual
+谷子	gu'zi		manual
+稻谷	dao'gu		manual
+吐谷浑	tu'yu'hun		manual
 # ── 龟 gui / jun / qiu ─────────────────────────────────────────────────────
-乌龟	wu'gui
-龟甲	gui'jia
-龟裂	jun'lie
-龟兹	qiu'ci
+乌龟	wu'gui		manual
+龟甲	gui'jia		manual
+龟裂	jun'lie		manual
+龟兹	qiu'ci		manual
 # ── 过 guo ─────────────────────────────────────────────────────────────────
-过去	guo'qu
-经过	jing'guo
-过分	guo'fen
-过年	guo'nian
-姓过	xing'guo
+过去	guo'qu		manual
+经过	jing'guo		manual
+过年	guo'nian		manual
+姓过	xing'guo		manual
 # ── 哈 ha ──────────────────────────────────────────────────────────────────
-哈欠	ha'qian
-哈哈	ha'ha
-哈达	ha'da
-姓哈	xing'ha
+哈欠	ha'qian		manual
+哈哈	ha'ha		manual
+哈达	ha'da		manual
+姓哈	xing'ha		manual
 # ── 汗 han ─────────────────────────────────────────────────────────────────
-汗水	han'shui
-出汗	chu'han
-汗衫	han'shan
-可汗	ke'han
+汗水	han'shui		manual
+出汗	chu'han		manual
+汗衫	han'shan		manual
+可汗	ke'han		manual
 # ── 喝 he ──────────────────────────────────────────────────────────────────
-喝水	he'shui
-喝茶	he'cha
-喝彩	he'cai
-吆喝	yao'he
+喝水	he'shui		manual
+喝茶	he'cha		manual
+喝彩	he'cai		manual
+吆喝	yao'he		manual
 # ── 荷 he ──────────────────────────────────────────────────────────────────
-荷花	he'hua
-荷叶	he'ye
-负荷	fu'he
-荷枪	he'qiang
+荷花	he'hua		manual
+荷叶	he'ye		manual
+负荷	fu'he		manual
+荷枪	he'qiang		manual
 # ── 横 heng ────────────────────────────────────────────────────────────────
-横竖	heng'shu
-横向	heng'xiang
-横行	heng'xing
-蛮横	man'heng
-横财	heng'cai
+横竖	heng'shu		manual
+横向	heng'xiang		manual
+横行	heng'xing		manual
+蛮横	man'heng		manual
+横财	heng'cai		manual
 # ── 哄 hong ────────────────────────────────────────────────────────────────
-哄堂大笑	hong'tang'da'xiao
-哄骗	hong'pian
-哄小孩	hong'xiao'hai
-起哄	qi'hong
+哄堂大笑	hong'tang'da'xiao		manual
+哄骗	hong'pian		manual
+哄小孩	hong'xiao'hai		manual
+起哄	qi'hong		manual
 # ── 糊 hu ──────────────────────────────────────────────────────────────────
-糊涂	hu'tu
-糊墙	hu'qiang
-糊弄	hu'nong
-糨糊	jiang'hu
+糊涂	hu'tu		manual
+糊墙	hu'qiang		manual
+糨糊	jiang'hu		manual
 # ── 晃 huang ───────────────────────────────────────────────────────────────
-晃动	huang'dong
-摇晃	yao'huang
-明晃晃	ming'huang'huang
+晃动	huang'dong		manual
+摇晃	yao'huang		manual
+明晃晃	ming'huang'huang		manual
 # ── 混 hun ─────────────────────────────────────────────────────────────────
-混合	hun'he
-混乱	hun'luan
-混淆	hun'xiao
-混水摸鱼	hun'shui'mo'yu
+混合	hun'he		manual
+混乱	hun'luan		manual
+混淆	hun'xiao		manual
+混水摸鱼	hun'shui'mo'yu		manual
 # ── 豁 huo / hua ───────────────────────────────────────────────────────────
-豁达	huo'da
-豁口	huo'kou
-豁出去	huo'chu'qu
-豁拳	hua'quan
+豁达	huo'da		manual
+豁口	huo'kou		manual
+豁出去	huo'chu'qu		manual
+豁拳	hua'quan		manual
 # ── 积 ji ──────────────────────────────────────────────────────────────────
-积极	ji'ji
-积累	ji'lei
-面积	mian'ji
-积攒	ji'zan
+积极	ji'ji		manual
+面积	mian'ji		manual
+积攒	ji'zan		manual
 # ── 几 ji ──────────────────────────────────────────────────────────────────
-几个	ji'ge
-几乎	ji'hu
-茶几	cha'ji
-几案	ji'an
+几个	ji'ge		manual
+几乎	ji'hu		manual
+茶几	cha'ji		manual
+几案	ji'an		manual
 # ── 济 ji ──────────────────────────────────────────────────────────────────
-经济	jing'ji
-救济	jiu'ji
-济南	ji'nan
-人才济济	ren'cai'ji'ji
+经济	jing'ji		manual
+救济	jiu'ji		manual
+济南	ji'nan		manual
+人才济济	ren'cai'ji'ji		manual
 # ── 见 jian / xian ─────────────────────────────────────────────────────────
-看见	kan'jian
-意见	yi'jian
-见面	jian'mian
-见解	jian'jie
-图穷匕见	tu'qiong'bi'xian
+意见	yi'jian		manual
+见面	jian'mian		manual
+见解	jian'jie		manual
+图穷匕见	tu'qiong'bi'xian		manual
 # ── 藉 jie / ji ────────────────────────────────────────────────────────────
-慰藉	wei'jie
-狼藉	lang'ji
-藉口	jie'kou
+慰藉	wei'jie		manual
+狼藉	lang'ji		manual
+藉口	jie'kou		manual
 # ── 巷 xiang / hang ────────────────────────────────────────────────────────
-小巷	xiao'xiang
-巷子	xiang'zi
-街头巷尾	jie'tou'xiang'wei
-巷道	hang'dao
+小巷	xiao'xiang		manual
+巷子	xiang'zi		manual
+街头巷尾	jie'tou'xiang'wei		manual
+巷道	hang'dao		manual
 # ── 剥 (again) ─────────────────────────────────────────────────────────────
-剥皮	bao'pi
-剥削	bo'xue
 # ── 贾 jia / gu ────────────────────────────────────────────────────────────
-姓贾	xing'jia
-商贾	shang'gu
-贾人	gu'ren
+姓贾	xing'jia		manual
+商贾	shang'gu		manual
+贾人	gu'ren		manual
 # ── 与 (again) ─────────────────────────────────────────────────────────────
-与其	yu'qi
 # ── 唯 wei ─────────────────────────────────────────────────────────────────
-唯一	wei'yi
-唯恐	wei'kong
-唯命是从	wei'ming'shi'cong
-唯唯诺诺	wei'wei'nuo'nuo
+唯一	wei'yi		manual
+唯恐	wei'kong		manual
+唯命是从	wei'ming'shi'cong		manual
+唯唯诺诺	wei'wei'nuo'nuo		manual
 # ── 夹 (again) ─────────────────────────────────────────────────────────────
-夹子	jia'zi
 # ── 藉 (again) ─────────────────────────────────────────────────────────────
-慰藉	wei'jie
 
 # ── common words with a polyphonic character ───────────────────────────────
-时间	shi'jian
-地方	di'fang
-东西	dong'xi
-南方	nan'fang
-北方	bei'fang
-东方	dong'fang
-西方	xi'fang
-上面	shang'mian
-下面	xia'mian
-里面	li'mian
-外面	wai'mian
-前面	qian'mian
-后面	hou'mian
-左面	zuo'mian
-右面	you'mian
-中间	zhong'jian
-旁边	pang'bian
-附近	fu'jin
-周围	zhou'wei
-中心	zhong'xin
-重心	zhong'xin
-人心	ren'xin
-内心	nei'xin
-用心	yong'xin
-小心	xiao'xin
-开心	kai'xin
-关心	guan'xin
-放心	fang'xin
-信心	xin'xin
-耐心	nai'xin
-细心	xi'xin
-粗心	cu'xin
-虚心	xu'xin
-热心	re'xin
-专心	zhuan'xin
-决心	jue'xin
-点心	dian'xin
-心脏	xin'zang
-动手	dong'shou
-分手	fen'shou
-助手	zhu'shou
-对手	dui'shou
-选手	xuan'shou
-歌手	ge'shou
-旗手	qi'shou
-鼓手	gu'shou
-水手	shui'shou
-能手	neng'shou
-身手	shen'shou
-手法	shou'fa
-手工	shou'gong
-手术	shou'shu
-手段	shou'duan
-手续	shou'xu
-手指	shou'zhi
-手掌	shou'zhang
-手腕	shou'wan
-手臂	shou'bi
-手中	shou'zhong
-力量	li'liang
-能力	neng'li
-努力	nu'li
-动力	dong'li
-压力	ya'li
-电力	dian'li
-人力	ren'li
-物力	wu'li
-财力	cai'li
-智力	zhi'li
-体力	ti'li
-精力	jing'li
-实力	shi'li
-活力	huo'li
-魅力	mei'li
-引力	yin'li
-重力	zhong'li
-阻力	zu'li
-摩擦力	mo'ca'li
-生产力	sheng'chan'li
-事情	shi'qing
-心情	xin'qing
-感情	gan'qing
-爱情	ai'qing
-友情	you'qing
-热情	re'qing
-同情	tong'qing
-表情	biao'qing
-病情	bing'qing
-灾情	zai'qing
-风情	feng'qing
-实情	shi'qing
-物品	wu'pin
-食品	shi'pin
-用品	yong'pin
-药品	yao'pin
-商品	shang'pin
-作品	zuo'pin
-礼品	li'pin
-人品	ren'pin
-精品	jing'pin
-语言	yu'yan
-名言	ming'yan
-留言	liu'yan
-发言	fa'yan
-方言	fang'yan
-谣言	yao'yan
-诺言	nuo'yan
-誓言	shi'yan
-格言	ge'yan
-预言	yu'yan
-证据	zheng'ju
-根据	gen'ju
-依据	yi'ju
-单据	dan'ju
-收据	shou'ju
-票据	piao'ju
-占据	zhan'ju
-邻居	lin'ju
-居民	ju'min
-居住	ju'zhu
-定居	ding'ju
-聚居	ju'ju
-新居	xin'ju
-故居	gu'ju
-电影	dian'ying
-影片	ying'pian
-影子	ying'zi
-影响	ying'xiang
-摄影	she'ying
-合影	he'ying
-背影	bei'ying
-剪影	jian'ying
-电车	dian'che
-电池	dian'chi
-电器	dian'qi
-电工	dian'gong
-电费	dian'fei
-电压	dian'ya
-电源	dian'yuan
-电路	dian'lu
-电视	dian'shi
-电话	dian'hua
-电脑	dian'nao
-电梯	dian'ti
-火电	huo'dian
-水电	shui'dian
-发电	fa'dian
-火车	huo'che
-汽车	qi'che
-水车	shui'che
-风车	feng'che
-马车	ma'che
-牛车	niu'che
-车票	che'piao
-车厢	che'xiang
-车轮	che'lun
-车速	che'su
-车队	che'dui
-车站	che'zhan
-车间	che'jian
-火炉	huo'lu
-火灾	huo'zai
-火柴	huo'chai
-火花	huo'hua
-火星	huo'xing
-烟火	yan'huo
-灯火	deng'huo
-战火	zhan'huo
-怒火	nu'huo
-鬼火	gui'huo
-水火	shui'huo
-水果	shui'guo
-水杯	shui'bei
-水壶	shui'hu
-水瓶	shui'ping
-水桶	shui'tong
-水龙头	shui'long'tou
-水电站	shui'dian'zhan
-水平	shui'ping
-水泥	shui'ni
-水稻	shui'dao
-水产	shui'chan
-水果店	shui'guo'dian
-河水	he'shui
-江水	jiang'shui
-湖水	hu'shui
-海水	hai'shui
-雨水	yu'shui
-泉水	quan'shui
-山水	shan'shui
-墨水	mo'shui
-茶水	cha'shui
-糖水	tang'shui
-盐水	yan'shui
-药水	yao'shui
-胶水	jiao'shui
-水土	shui'tu
-天气	tian'qi
-天空	tian'kong
-天上	tian'shang
-天下	tian'xia
-天真	tian'zhen
-天文	tian'wen
-天文台	tian'wen'tai
-白天	bai'tian
-蓝天	lan'tian
-晴天	qing'tian
-阴天	yin'tian
-雨天	yu'tian
-雪天	xue'tian
-春天	chun'tian
-夏天	xia'tian
-秋天	qiu'tian
-冬天	dong'tian
-昨天	zuo'tian
-今天	jin'tian
-明天	ming'tian
-前天	qian'tian
-后天	hou'tian
-每天	mei'tian
-天天	tian'tian
-天地	tian'di
-地面	di'mian
-地上	di'shang
-地下	di'xia
-地方	di'fang
-地图	di'tu
-地址	di'zhi
-地形	di'xing
-地势	di'shi
-地震	di'zhen
-地铁	di'tie
-地产	di'chan
-当地	dang'di
-外地	wai'di
-本地	ben'di
-各地	ge'di
-内地	nei'di
-土地	tu'di
-田地	tian'di
-草地	cao'di
-大地	da'di
-平地	ping'di
-高地	gao'di
-山地	shan'di
-林地	lin'di
-耕地	geng'di
-盆地	pen'di
-湿地	shi'di
-旱地	han'di
-沙地	sha'di
-人气	ren'qi
-人才	ren'cai
-人生	ren'sheng
-人民	ren'min
-人口	ren'kou
-人员	ren'yuan
-人工	ren'gong
-人间	ren'jian
-人类	ren'lei
-人物	ren'wu
-人情	ren'qing
-人质	ren'zhi
-民族	min'zu
-民间	min'jian
-民歌	min'ge
-民谣	min'yao
-民主	min'zhu
-民生	min'sheng
-国民	guo'min
-居民	ju'min
-农民	nong'min
-市民	shi'min
-公民	gong'min
-国家	guo'jia
-国王	guo'wang
-国土	guo'tu
-国旗	guo'qi
-国歌	guo'ge
-国际	guo'ji
-国产	guo'chan
-国庆	guo'qing
-外国	wai'guo
-中国	zhong'guo
-美国	mei'guo
-英国	ying'guo
-法国	fa'guo
-德国	de'guo
-祖国	zu'guo
-大国	da'guo
-小国	xiao'guo
-家庭	jia'ting
-家长	jia'zhang
-家乡	jia'xiang
-家人	jia'ren
-家具	jia'ju
-家务	jia'wu
-家属	jia'shu
-家园	jia'yuan
-家教	jia'jiao
-家畜	jia'chu
-大家	da'jia
-专家	zhuan'jia
-作家	zuo'jia
-画家	hua'jia
-音乐家	yin'yue'jia
-科学家	ke'xue'jia
-城市	cheng'shi
-市长	shi'zhang
-市民	shi'min
-市场	shi'chang
-集市	ji'shi
-都市	du'shi
-城镇	cheng'zhen
-城区	cheng'qu
-进城	jin'cheng
-长城	chang'cheng
-山城	shan'cheng
-县城	xian'cheng
-省城	sheng'cheng
-山峰	shan'feng
-山谷	shan'gu
-山腰	shan'yao
-山脚	shan'jiao
-山顶	shan'ding
-山坡	shan'po
-山脉	shan'mai
-山水	shan'shui
-山花	shan'hua
-山村	shan'cun
-山区	shan'qu
-火山	huo'shan
-雪山	xue'shan
-高山	gao'shan
-群山	qun'shan
-矿山	kuang'shan
-河边	he'bian
-河面	he'mian
-河口	he'kou
-河流	he'liu
-河水	he'shui
-黄河	huang'he
-长江	chang'jiang
-江水	jiang'shui
-江山	jiang'shan
-江南	jiang'nan
-花草	hua'cao
-花园	hua'yuan
-花朵	hua'duo
-花瓣	hua'ban
-花卉	hua'hui
-花木	hua'mu
-棉花	mian'hua
-雪花	xue'hua
-浪花	lang'hua
-烟花	yan'hua
-开花	kai'hua
-鲜花	xian'hua
-草原	cao'yuan
-草地	cao'di
-草帽	cao'mao
-草鞋	cao'xie
-草药	cao'yao
-稻草	dao'cao
-烟草	yan'cao
-树木	shu'mu
-树林	shu'lin
-树枝	shu'zhi
-树干	shu'gan
-树叶	shu'ye
-树根	shu'gen
-果树	guo'shu
-柳树	liu'shu
-松树	song'shu
-桃树	tao'shu
-杨树	yang'shu
-榆树	yu'shu
-槐树	huai'shu
-枫树	feng'shu
-橡树	xiang'shu
-杉树	shan'shu
-樟树	zhang'shu
-桦树	hua'shu
-木匠	mu'jiang
-木工	mu'gong
-木料	mu'liao
-木船	mu'chuan
-木屋	mu'wu
-木头	mu'tou
-木材	mu'cai
-木板	mu'ban
-木炭	mu'tan
-鱼虾	yu'xia
-鱼肉	yu'rou
-鱼头	yu'tou
-鱼片	yu'pian
-鱼缸	yu'gang
-金鱼	jin'yu
-鲤鱼	li'yu
-带鱼	dai'yu
-木鱼	mu'yu
-鱼塘	yu'tang
-鸟语	niao'yu
-鸟巢	niao'chao
-鸟笼	niao'long
-小鸟	xiao'niao
-候鸟	hou'niao
-益鸟	yi'niao
-虫害	chong'hai
-虫子	chong'zi
-昆虫	kun'chong
-害虫	hai'chong
-毛毛虫	mao'mao'chong
-风雨	feng'yu
-雨季	yu'ji
-雨伞	yu'san
-雨衣	yu'yi
-雨点	yu'dian
-大雨	da'yu
-小雨	xiao'yu
-暴雨	bao'yu
-雷雨	lei'yu
-降雨	jiang'yu
-云彩	yun'cai
-云朵	yun'duo
-白云	bai'yun
-乌云	wu'yun
-云雾	yun'wu
-雪白	xue'bai
-雪人	xue'ren
-雪山	xue'shan
-大雪	da'xue
-冰雪	bing'xue
-打雷	da'lei
-雷声	lei'sheng
-雷电	lei'dian
-闪电	shan'dian
-冰凉	bing'liang
-冰箱	bing'xiang
-冰块	bing'kuai
-冰水	bing'shui
-光线	guang'xian
-光明	guang'ming
-阳光	yang'guang
-月光	yue'guang
-灯光	deng'guang
-火光	huo'guang
-目光	mu'guang
-眼光	yan'guang
-光彩	guang'cai
-光荣	guang'rong
-观光	guan'guang
-时光	shi'guang
-声音	sheng'yin
-音响	yin'xiang
-录音	lu'yin
-配音	pei'yin
-口音	kou'yin
-乡音	xiang'yin
-杂音	za'yin
-噪音	zao'yin
-回音	hui'yin
-拼音	pin'yin
-注音	zhu'yin
-音节	yin'jie
-颜色	yan'se
-特色	te'se
-出色	chu'se
-夜色	ye'se
-春色	chun'se
-秋色	qiu'se
-红色	hong'se
-黄色	huang'se
-蓝色	lan'se
-绿色	lv'se
-白色	bai'se
-黑色	hei'se
-灰色	hui'se
-紫色	zi'se
-粉色	fen'se
-棕色	zong'se
-金色	jin'se
-银色	yin'se
-味道	wei'dao
-香味	xiang'wei
-臭味	chou'wei
-口味	kou'wei
-风味	feng'wei
-意味	yi'wei
-趣味	qu'wei
-香气	xiang'qi
-香水	xiang'shui
-香料	xiang'liao
-香蕉	xiang'jiao
-香甜	xiang'tian
-甜味	tian'wei
-甜食	tian'shi
-甜蜜	tian'mi
-苦味	ku'wei
-苦笑	ku'xiao
-苦难	ku'nan
-辛苦	xin'ku
-辣味	la'wei
-辣椒	la'jiao
-咸味	xian'wei
-咸菜	xian'cai
-酸味	suan'wei
-酸奶	suan'nai
-酸痛	suan'tong
-油菜	you'cai
-油条	you'tiao
-油田	you'tian
-油灯	you'deng
-油墨	you'mo
-酱油	jiang'you
-石油	shi'you
-盐分	yan'fen
-盐业	yan'ye
-糖分	tang'fen
-糖果	tang'guo
-米饭	mi'fan
-米酒	mi'jiu
-米粉	mi'fen
-大米	da'mi
-小米	xiao'mi
-玉米	yu'mi
-面条	mian'tiao
-面粉	mian'fen
-面包	mian'bao
-面食	mian'shi
-汤面	tang'mian
-菜市场	cai'shi'chang
-菜地	cai'di
-菜园	cai'yuan
-菜刀	cai'dao
-菜油	cai'you
-蔬菜	shu'cai
-白菜	bai'cai
-青菜	qing'cai
-果品	guo'pin
-果汁	guo'zhi
-果肉	guo'rou
-果园	guo'yuan
-果树	guo'shu
-水果	shui'guo
-苹果	ping'guo
-肉食	rou'shi
-肉片	rou'pian
-肉丝	rou'si
-肉汤	rou'tang
-牛肉	niu'rou
-羊肉	yang'rou
-猪肉	zhu'rou
-鸡蛋	ji'dan
-蛋类	dan'lei
-蛋黄	dan'huang
-蛋白	dan'bai
-奶油	nai'you
-奶酪	nai'lao
-奶粉	nai'fen
-牛奶	niu'nai
-茶叶	cha'ye
-茶馆	cha'guan
-茶壶	cha'hu
-茶杯	cha'bei
-茶水	cha'shui
-红茶	hong'cha
-绿茶	lv'cha
-花茶	hua'cha
-酒店	jiu'dian
-酒馆	jiu'guan
-酒杯	jiu'bei
-酒席	jiu'xi
-白酒	bai'jiu
-红酒	hong'jiu
-啤酒	pi'jiu
-药方	yao'fang
-药店	yao'dian
-药片	yao'pian
-药材	yao'cai
-中药	zhong'yao
-西药	xi'yao
-吃药	chi'yao
-病假	bing'jia
-病房	bing'fang
-病人	bing'ren
-病因	bing'yin
-疾病	ji'bing
-生病	sheng'bing
-看病	kan'bing
-医院	yi'yuan
-医生	yi'sheng
-医术	yi'shu
-中医	zhong'yi
-西医	xi'yi
-医疗	yi'liao
-医药	yi'yao
-住院	zhu'yuan
-院子	yuan'zi
-院长	yuan'zhang
-书院	shu'yuan
-法院	fa'yuan
-书房	shu'fang
-书店	shu'dian
-书架	shu'jia
-书包	shu'bao
-书本	shu'ben
-书桌	shu'zhuo
-书画	shu'hua
-书籍	shu'ji
-报纸	bao'zhi
-报告	bao'gao
-报到	bao'dao
-报名	bao'ming
-汇报	hui'bao
-情报	qing'bao
-简报	jian'bao
-电报	dian'bao
-日报	ri'bao
-晚报	wan'bao
-周报	zhou'bao
-海报	hai'bao
-预报	yu'bao
-警报	jing'bao
-举报	ju'bao
-笔杆	bi'gan
-笔尖	bi'jian
-笔迹	bi'ji
-笔名	bi'ming
-笔记	bi'ji
-铅笔	qian'bi
-毛笔	mao'bi
-钢笔	gang'bi
-纸张	zhi'zhang
-纸币	zhi'bi
-白纸	bai'zhi
-图纸	tu'zhi
-画笔	hua'bi
-油画	you'hua
-国画	guo'hua
-年画	nian'hua
-壁画	bi'hua
-漫画	man'hua
-画册	hua'ce
-画报	hua'bao
-画展	hua'zhan
-字画	zi'hua
-写字	xie'zi
-字典	zi'dian
-字母	zi'mu
-汉字	han'zi
-文字	wen'zi
-名字	ming'zi
-签字	qian'zi
-数字	shu'zi
-错别字	cuo'bie'zi
-词典	ci'dian
-词语	ci'yu
-词汇	ci'hui
-单词	dan'ci
-生词	sheng'ci
-名词	ming'ci
-动词	dong'ci
-台词	tai'ci
-歌词	ge'ci
-措辞	cuo'ci
-句子	ju'zi
-语句	yu'ju
-诗句	shi'ju
-词句	ci'ju
-造句	zao'ju
-句号	ju'hao
-文章	wen'zhang
-章节	zhang'jie
-篇章	pian'zhang
-图章	tu'zhang
-印章	yin'zhang
-奖章	jiang'zhang
-勋章	xun'zhang
-规章	gui'zhang
-简章	jian'zhang
-春节	chun'jie
-节日	jie'ri
-节目	jie'mu
-季节	ji'jie
-环节	huan'jie
-细节	xi'jie
-情节	qing'jie
-节奏	jie'zou
-节省	jie'sheng
-节制	jie'zhi
-段落	duan'luo
-阶段	jie'duan
-地段	di'duan
-片段	pian'duan
-线段	xian'duan
-小组	xiao'zu
-组长	zu'zhang
-组织	zu'zhi
-组合	zu'he
-组成	zu'cheng
-词组	ci'zu
-分组	fen'zu
-编组	bian'zu
-机组	ji'zu
-队伍	dui'wu
-球队	qiu'dui
-排队	pai'dui
-插队	cha'dui
-归队	gui'dui
-带队	dai'dui
-部队	bu'dui
-军队	jun'dui
-乐队	yue'dui
-班级	ban'ji
-班长	ban'zhang
-上班	shang'ban
-下班	xia'ban
-值班	zhi'ban
-加班	jia'ban
-换班	huan'ban
-交班	jiao'ban
-接班	jie'ban
-航班	hang'ban
-班车	ban'che
-班机	ban'ji
-年级	nian'ji
-级别	ji'bie
-高级	gao'ji
-中级	zhong'ji
-初级	chu'ji
-上级	shang'ji
-下级	xia'ji
-同级	tong'ji
-升级	sheng'ji
-降级	jiang'ji
-等级	deng'ji
-学校	xue'xiao
-校长	xiao'zhang
-校门	xiao'men
-校园	xiao'yuan
-校车	xiao'che
-校对	jiao'dui
-教师	jiao'shi
-教室	jiao'shi
-教学	jiao'xue
-教材	jiao'cai
-教育	jiao'yu
-教练	jiao'lian
-师生	shi'sheng
-老师	lao'shi
-大师	da'shi
-师傅	shi'fu
-学生	xue'sheng
-招生	zhao'sheng
-考生	kao'sheng
-新生	xin'sheng
-先生	xian'sheng
-卫生	wei'sheng
-生日	sheng'ri
-生长	sheng'zhang
-生活	sheng'huo
-生命	sheng'ming
-生意	sheng'yi
-生物	sheng'wu
-生态	sheng'tai
-生产	sheng'chan
-生存	sheng'cun
-生气	sheng'qi
-生病	sheng'bing
-发生	fa'sheng
-产生	chan'sheng
-员工	yuan'gong
-工作	gong'zuo
-工人	gong'ren
-工业	gong'ye
-工资	gong'zi
-工具	gong'ju
-工程	gong'cheng
-工厂	gong'chang
-工会	gong'hui
-工艺	gong'yi
-加工	jia'gong
-施工	shi'gong
-农业	nong'ye
-农村	nong'cun
-农民	nong'min
-农户	nong'hu
-农田	nong'tian
-农忙	nong'mang
-菜农	cai'nong
-商人	shang'ren
-商业	shang'ye
-商品	shang'pin
-商场	shang'chang
-商店	shang'dian
-经商	jing'shang
-兵士	bing'shi
-士兵	shi'bing
-兵力	bing'li
-兵器	bing'qi
-军队	jun'dui
-军官	jun'guan
-军人	jun'ren
-军车	jun'che
-将军	jiang'jun
-参军	can'jun
-官兵	guan'bing
-官员	guan'yuan
-法官	fa'guan
-警官	jing'guan
-官场	guan'chang
-民警	min'jing
-警察	jing'cha
-警告	jing'gao
-警报	jing'bao
-刑警	xing'jing
-警车	jing'che
+东西	dong'xi		manual
+南方	nan'fang		manual
+北方	bei'fang		manual
+东方	dong'fang		manual
+西方	xi'fang		manual
+下面	xia'mian		manual
+里面	li'mian		manual
+外面	wai'mian		manual
+前面	qian'mian		manual
+后面	hou'mian		manual
+左面	zuo'mian		manual
+右面	you'mian		manual
+旁边	pang'bian		manual
+附近	fu'jin		manual
+周围	zhou'wei		manual
+人心	ren'xin		manual
+内心	nei'xin		manual
+用心	yong'xin		manual
+小心	xiao'xin		manual
+开心	kai'xin		manual
+关心	guan'xin		manual
+放心	fang'xin		manual
+信心	xin'xin		manual
+耐心	nai'xin		manual
+细心	xi'xin		manual
+粗心	cu'xin		manual
+虚心	xu'xin		manual
+热心	re'xin		manual
+专心	zhuan'xin		manual
+决心	jue'xin		manual
+点心	dian'xin		manual
+心脏	xin'zang		manual
+动手	dong'shou		manual
+分手	fen'shou		manual
+助手	zhu'shou		manual
+对手	dui'shou		manual
+选手	xuan'shou		manual
+歌手	ge'shou		manual
+旗手	qi'shou		manual
+鼓手	gu'shou		manual
+水手	shui'shou		manual
+能手	neng'shou		manual
+身手	shen'shou		manual
+手法	shou'fa		manual
+手工	shou'gong		manual
+手术	shou'shu		manual
+手段	shou'duan		manual
+手续	shou'xu		manual
+手指	shou'zhi		manual
+手掌	shou'zhang		manual
+手腕	shou'wan		manual
+手臂	shou'bi		manual
+手中	shou'zhong		manual
+力量	li'liang		manual
+能力	neng'li		manual
+努力	nu'li		manual
+动力	dong'li		manual
+电力	dian'li		manual
+人力	ren'li		manual
+物力	wu'li		manual
+财力	cai'li		manual
+智力	zhi'li		manual
+体力	ti'li		manual
+精力	jing'li		manual
+实力	shi'li		manual
+活力	huo'li		manual
+魅力	mei'li		manual
+引力	yin'li		manual
+重力	zhong'li		manual
+阻力	zu'li		manual
+摩擦力	mo'ca'li		manual
+生产力	sheng'chan'li		manual
+事情	shi'qing		manual
+心情	xin'qing		manual
+感情	gan'qing		manual
+爱情	ai'qing		manual
+友情	you'qing		manual
+热情	re'qing		manual
+表情	biao'qing		manual
+病情	bing'qing		manual
+灾情	zai'qing		manual
+风情	feng'qing		manual
+实情	shi'qing		manual
+物品	wu'pin		manual
+食品	shi'pin		manual
+用品	yong'pin		manual
+药品	yao'pin		manual
+商品	shang'pin		manual
+礼品	li'pin		manual
+人品	ren'pin		manual
+精品	jing'pin		manual
+名言	ming'yan		manual
+留言	liu'yan		manual
+方言	fang'yan		manual
+谣言	yao'yan		manual
+诺言	nuo'yan		manual
+誓言	shi'yan		manual
+格言	ge'yan		manual
+预言	yu'yan		manual
+证据	zheng'ju		manual
+根据	gen'ju		manual
+依据	yi'ju		manual
+收据	shou'ju		manual
+票据	piao'ju		manual
+邻居	lin'ju		manual
+居民	ju'min		manual
+居住	ju'zhu		manual
+定居	ding'ju		manual
+聚居	ju'ju		manual
+新居	xin'ju		manual
+故居	gu'ju		manual
+电影	dian'ying		manual
+影子	ying'zi		manual
+影响	ying'xiang		manual
+摄影	she'ying		manual
+合影	he'ying		manual
+背影	bei'ying		manual
+剪影	jian'ying		manual
+电车	dian'che		manual
+电池	dian'chi		manual
+电器	dian'qi		manual
+电工	dian'gong		manual
+电费	dian'fei		manual
+电压	dian'ya		manual
+电源	dian'yuan		manual
+电路	dian'lu		manual
+电视	dian'shi		manual
+电话	dian'hua		manual
+电脑	dian'nao		manual
+电梯	dian'ti		manual
+火电	huo'dian		manual
+水电	shui'dian		manual
+发电	fa'dian		manual
+水车	shui'che		manual
+风车	feng'che		manual
+马车	ma'che		manual
+牛车	niu'che		manual
+火炉	huo'lu		manual
+火灾	huo'zai		manual
+火柴	huo'chai		manual
+火花	huo'hua		manual
+火星	huo'xing		manual
+烟火	yan'huo		manual
+灯火	deng'huo		manual
+战火	zhan'huo		manual
+怒火	nu'huo		manual
+鬼火	gui'huo		manual
+水火	shui'huo		manual
+水果	shui'guo		manual
+水杯	shui'bei		manual
+水壶	shui'hu		manual
+水瓶	shui'ping		manual
+水桶	shui'tong		manual
+水龙头	shui'long'tou		manual
+水电站	shui'dian'zhan		manual
+水平	shui'ping		manual
+水泥	shui'ni		manual
+水稻	shui'dao		manual
+水产	shui'chan		manual
+水果店	shui'guo'dian		manual
+河水	he'shui		manual
+江水	jiang'shui		manual
+湖水	hu'shui		manual
+海水	hai'shui		manual
+雨水	yu'shui		manual
+泉水	quan'shui		manual
+山水	shan'shui		manual
+墨水	mo'shui		manual
+茶水	cha'shui		manual
+糖水	tang'shui		manual
+盐水	yan'shui		manual
+药水	yao'shui		manual
+胶水	jiao'shui		manual
+水土	shui'tu		manual
+天气	tian'qi		manual
+天上	tian'shang		manual
+天下	tian'xia		manual
+天真	tian'zhen		manual
+天文	tian'wen		manual
+天文台	tian'wen'tai		manual
+白天	bai'tian		manual
+蓝天	lan'tian		manual
+晴天	qing'tian		manual
+阴天	yin'tian		manual
+雨天	yu'tian		manual
+雪天	xue'tian		manual
+春天	chun'tian		manual
+夏天	xia'tian		manual
+秋天	qiu'tian		manual
+冬天	dong'tian		manual
+昨天	zuo'tian		manual
+今天	jin'tian		manual
+明天	ming'tian		manual
+前天	qian'tian		manual
+后天	hou'tian		manual
+每天	mei'tian		manual
+天天	tian'tian		manual
+天地	tian'di		manual
+地上	di'shang		manual
+地形	di'xing		manual
+地势	di'shi		manual
+地震	di'zhen		manual
+地产	di'chan		manual
+本地	ben'di		manual
+各地	ge'di		manual
+内地	nei'di		manual
+大地	da'di		manual
+人气	ren'qi		manual
+人才	ren'cai		manual
+人生	ren'sheng		manual
+人民	ren'min		manual
+人口	ren'kou		manual
+人工	ren'gong		manual
+人类	ren'lei		manual
+人物	ren'wu		manual
+人情	ren'qing		manual
+人质	ren'zhi		manual
+民族	min'zu		manual
+民歌	min'ge		manual
+民谣	min'yao		manual
+民主	min'zhu		manual
+民生	min'sheng		manual
+国民	guo'min		manual
+农民	nong'min		manual
+市民	shi'min		manual
+公民	gong'min		manual
+国家	guo'jia		manual
+国土	guo'tu		manual
+国旗	guo'qi		manual
+国歌	guo'ge		manual
+国际	guo'ji		manual
+国产	guo'chan		manual
+国庆	guo'qing		manual
+外国	wai'guo		manual
+美国	mei'guo		manual
+英国	ying'guo		manual
+法国	fa'guo		manual
+德国	de'guo		manual
+祖国	zu'guo		manual
+大国	da'guo		manual
+小国	xiao'guo		manual
+家庭	jia'ting		manual
+家乡	jia'xiang		manual
+家人	jia'ren		manual
+家具	jia'ju		manual
+家务	jia'wu		manual
+家园	jia'yuan		manual
+专家	zhuan'jia		manual
+画家	hua'jia		manual
+科学家	ke'xue'jia		manual
+城市	cheng'shi		manual
+集市	ji'shi		manual
+城镇	cheng'zhen		manual
+城区	cheng'qu		manual
+进城	jin'cheng		manual
+山城	shan'cheng		manual
+县城	xian'cheng		manual
+省城	sheng'cheng		manual
+山峰	shan'feng		manual
+山腰	shan'yao		manual
+山脚	shan'jiao		manual
+山顶	shan'ding		manual
+山坡	shan'po		manual
+山脉	shan'mai		manual
+山花	shan'hua		manual
+山村	shan'cun		manual
+山区	shan'qu		manual
+火山	huo'shan		manual
+雪山	xue'shan		manual
+高山	gao'shan		manual
+群山	qun'shan		manual
+矿山	kuang'shan		manual
+河边	he'bian		manual
+河面	he'mian		manual
+河口	he'kou		manual
+河流	he'liu		manual
+黄河	huang'he		manual
+江山	jiang'shan		manual
+江南	jiang'nan		manual
+花草	hua'cao		manual
+花园	hua'yuan		manual
+花朵	hua'duo		manual
+花瓣	hua'ban		manual
+花卉	hua'hui		manual
+花木	hua'mu		manual
+棉花	mian'hua		manual
+雪花	xue'hua		manual
+浪花	lang'hua		manual
+烟花	yan'hua		manual
+开花	kai'hua		manual
+草原	cao'yuan		manual
+草帽	cao'mao		manual
+草鞋	cao'xie		manual
+草药	cao'yao		manual
+稻草	dao'cao		manual
+烟草	yan'cao		manual
+树木	shu'mu		manual
+树林	shu'lin		manual
+树枝	shu'zhi		manual
+树根	shu'gen		manual
+果树	guo'shu		manual
+柳树	liu'shu		manual
+松树	song'shu		manual
+桃树	tao'shu		manual
+杨树	yang'shu		manual
+榆树	yu'shu		manual
+槐树	huai'shu		manual
+枫树	feng'shu		manual
+橡树	xiang'shu		manual
+杉树	shan'shu		manual
+樟树	zhang'shu		manual
+桦树	hua'shu		manual
+木匠	mu'jiang		manual
+木工	mu'gong		manual
+木料	mu'liao		manual
+木船	mu'chuan		manual
+木屋	mu'wu		manual
+木头	mu'tou		manual
+木材	mu'cai		manual
+木板	mu'ban		manual
+木炭	mu'tan		manual
+鱼虾	yu'xia		manual
+鱼肉	yu'rou		manual
+鱼头	yu'tou		manual
+鱼片	yu'pian		manual
+鱼缸	yu'gang		manual
+金鱼	jin'yu		manual
+鲤鱼	li'yu		manual
+带鱼	dai'yu		manual
+木鱼	mu'yu		manual
+鱼塘	yu'tang		manual
+鸟语	niao'yu		manual
+鸟巢	niao'chao		manual
+鸟笼	niao'long		manual
+小鸟	xiao'niao		manual
+候鸟	hou'niao		manual
+益鸟	yi'niao		manual
+虫害	chong'hai		manual
+虫子	chong'zi		manual
+昆虫	kun'chong		manual
+害虫	hai'chong		manual
+毛毛虫	mao'mao'chong		manual
+风雨	feng'yu		manual
+雨季	yu'ji		manual
+雨伞	yu'san		manual
+雨衣	yu'yi		manual
+雨点	yu'dian		manual
+小雨	xiao'yu		manual
+雷雨	lei'yu		manual
+云彩	yun'cai		manual
+云朵	yun'duo		manual
+白云	bai'yun		manual
+乌云	wu'yun		manual
+云雾	yun'wu		manual
+雪白	xue'bai		manual
+雪人	xue'ren		manual
+冰雪	bing'xue		manual
+打雷	da'lei		manual
+雷声	lei'sheng		manual
+雷电	lei'dian		manual
+闪电	shan'dian		manual
+冰凉	bing'liang		manual
+冰箱	bing'xiang		manual
+冰块	bing'kuai		manual
+冰水	bing'shui		manual
+光线	guang'xian		manual
+光明	guang'ming		manual
+阳光	yang'guang		manual
+月光	yue'guang		manual
+灯光	deng'guang		manual
+火光	huo'guang		manual
+目光	mu'guang		manual
+眼光	yan'guang		manual
+光彩	guang'cai		manual
+光荣	guang'rong		manual
+观光	guan'guang		manual
+时光	shi'guang		manual
+声音	sheng'yin		manual
+音响	yin'xiang		manual
+录音	lu'yin		manual
+配音	pei'yin		manual
+口音	kou'yin		manual
+乡音	xiang'yin		manual
+杂音	za'yin		manual
+噪音	zao'yin		manual
+回音	hui'yin		manual
+拼音	pin'yin		manual
+注音	zhu'yin		manual
+音节	yin'jie		manual
+夜色	ye'se		manual
+春色	chun'se		manual
+秋色	qiu'se		manual
+红色	hong'se		manual
+黄色	huang'se		manual
+蓝色	lan'se		manual
+绿色	lv'se		manual
+白色	bai'se		manual
+黑色	hei'se		manual
+灰色	hui'se		manual
+紫色	zi'se		manual
+粉色	fen'se		manual
+棕色	zong'se		manual
+金色	jin'se		manual
+银色	yin'se		manual
+味道	wei'dao		manual
+香味	xiang'wei		manual
+口味	kou'wei		manual
+风味	feng'wei		manual
+意味	yi'wei		manual
+趣味	qu'wei		manual
+香气	xiang'qi		manual
+香水	xiang'shui		manual
+香料	xiang'liao		manual
+香蕉	xiang'jiao		manual
+香甜	xiang'tian		manual
+甜味	tian'wei		manual
+甜食	tian'shi		manual
+甜蜜	tian'mi		manual
+苦味	ku'wei		manual
+苦笑	ku'xiao		manual
+苦难	ku'nan		manual
+辛苦	xin'ku		manual
+辣味	la'wei		manual
+辣椒	la'jiao		manual
+咸味	xian'wei		manual
+咸菜	xian'cai		manual
+酸味	suan'wei		manual
+酸奶	suan'nai		manual
+酸痛	suan'tong		manual
+油菜	you'cai		manual
+油条	you'tiao		manual
+油田	you'tian		manual
+油灯	you'deng		manual
+油墨	you'mo		manual
+酱油	jiang'you		manual
+盐分	yan'fen		manual
+盐业	yan'ye		manual
+糖分	tang'fen		manual
+糖果	tang'guo		manual
+米饭	mi'fan		manual
+米酒	mi'jiu		manual
+米粉	mi'fen		manual
+大米	da'mi		manual
+小米	xiao'mi		manual
+玉米	yu'mi		manual
+面条	mian'tiao		manual
+面粉	mian'fen		manual
+面包	mian'bao		manual
+面食	mian'shi		manual
+汤面	tang'mian		manual
+菜市场	cai'shi'chang		manual
+菜地	cai'di		manual
+菜园	cai'yuan		manual
+菜刀	cai'dao		manual
+菜油	cai'you		manual
+蔬菜	shu'cai		manual
+白菜	bai'cai		manual
+青菜	qing'cai		manual
+果品	guo'pin		manual
+果汁	guo'zhi		manual
+果肉	guo'rou		manual
+果园	guo'yuan		manual
+苹果	ping'guo		manual
+肉食	rou'shi		manual
+肉片	rou'pian		manual
+肉丝	rou'si		manual
+肉汤	rou'tang		manual
+牛肉	niu'rou		manual
+羊肉	yang'rou		manual
+猪肉	zhu'rou		manual
+鸡蛋	ji'dan		manual
+蛋类	dan'lei		manual
+蛋黄	dan'huang		manual
+蛋白	dan'bai		manual
+奶油	nai'you		manual
+奶酪	nai'lao		manual
+奶粉	nai'fen		manual
+牛奶	niu'nai		manual
+茶馆	cha'guan		manual
+茶壶	cha'hu		manual
+茶杯	cha'bei		manual
+红茶	hong'cha		manual
+绿茶	lv'cha		manual
+花茶	hua'cha		manual
+酒店	jiu'dian		manual
+酒馆	jiu'guan		manual
+酒杯	jiu'bei		manual
+酒席	jiu'xi		manual
+白酒	bai'jiu		manual
+红酒	hong'jiu		manual
+啤酒	pi'jiu		manual
+药方	yao'fang		manual
+药店	yao'dian		manual
+药片	yao'pian		manual
+药材	yao'cai		manual
+西药	xi'yao		manual
+吃药	chi'yao		manual
+病假	bing'jia		manual
+病房	bing'fang		manual
+病人	bing'ren		manual
+病因	bing'yin		manual
+疾病	ji'bing		manual
+生病	sheng'bing		manual
+看病	kan'bing		manual
+医院	yi'yuan		manual
+医生	yi'sheng		manual
+医术	yi'shu		manual
+中医	zhong'yi		manual
+西医	xi'yi		manual
+医疗	yi'liao		manual
+医药	yi'yao		manual
+住院	zhu'yuan		manual
+院子	yuan'zi		manual
+院长	yuan'zhang		manual
+书院	shu'yuan		manual
+法院	fa'yuan		manual
+书房	shu'fang		manual
+书店	shu'dian		manual
+书架	shu'jia		manual
+书包	shu'bao		manual
+书本	shu'ben		manual
+书桌	shu'zhuo		manual
+书画	shu'hua		manual
+书籍	shu'ji		manual
+报纸	bao'zhi		manual
+报告	bao'gao		manual
+报到	bao'dao		manual
+报名	bao'ming		manual
+汇报	hui'bao		manual
+情报	qing'bao		manual
+简报	jian'bao		manual
+电报	dian'bao		manual
+日报	ri'bao		manual
+晚报	wan'bao		manual
+周报	zhou'bao		manual
+海报	hai'bao		manual
+预报	yu'bao		manual
+警报	jing'bao		manual
+举报	ju'bao		manual
+笔尖	bi'jian		manual
+笔迹	bi'ji		manual
+笔名	bi'ming		manual
+笔记	bi'ji		manual
+铅笔	qian'bi		manual
+毛笔	mao'bi		manual
+钢笔	gang'bi		manual
+纸张	zhi'zhang		manual
+纸币	zhi'bi		manual
+白纸	bai'zhi		manual
+图纸	tu'zhi		manual
+画笔	hua'bi		manual
+油画	you'hua		manual
+国画	guo'hua		manual
+年画	nian'hua		manual
+壁画	bi'hua		manual
+漫画	man'hua		manual
+画册	hua'ce		manual
+画报	hua'bao		manual
+画展	hua'zhan		manual
+字画	zi'hua		manual
+写字	xie'zi		manual
+字典	zi'dian		manual
+字母	zi'mu		manual
+汉字	han'zi		manual
+文字	wen'zi		manual
+名字	ming'zi		manual
+签字	qian'zi		manual
+错别字	cuo'bie'zi		manual
+词典	ci'dian		manual
+词汇	ci'hui		manual
+生词	sheng'ci		manual
+名词	ming'ci		manual
+动词	dong'ci		manual
+歌词	ge'ci		manual
+措辞	cuo'ci		manual
+句子	ju'zi		manual
+语句	yu'ju		manual
+诗句	shi'ju		manual
+词句	ci'ju		manual
+造句	zao'ju		manual
+句号	ju'hao		manual
+文章	wen'zhang		manual
+章节	zhang'jie		manual
+篇章	pian'zhang		manual
+图章	tu'zhang		manual
+印章	yin'zhang		manual
+奖章	jiang'zhang		manual
+勋章	xun'zhang		manual
+规章	gui'zhang		manual
+简章	jian'zhang		manual
+春节	chun'jie		manual
+节日	jie'ri		manual
+节目	jie'mu		manual
+季节	ji'jie		manual
+环节	huan'jie		manual
+细节	xi'jie		manual
+情节	qing'jie		manual
+节奏	jie'zou		manual
+节制	jie'zhi		manual
+段落	duan'luo		manual
+阶段	jie'duan		manual
+地段	di'duan		manual
+线段	xian'duan		manual
+小组	xiao'zu		manual
+组织	zu'zhi		manual
+组合	zu'he		manual
+组成	zu'cheng		manual
+词组	ci'zu		manual
+分组	fen'zu		manual
+编组	bian'zu		manual
+机组	ji'zu		manual
+队伍	dui'wu		manual
+球队	qiu'dui		manual
+排队	pai'dui		manual
+插队	cha'dui		manual
+归队	gui'dui		manual
+带队	dai'dui		manual
+部队	bu'dui		manual
+军队	jun'dui		manual
+班级	ban'ji		manual
+下班	xia'ban		manual
+值班	zhi'ban		manual
+加班	jia'ban		manual
+换班	huan'ban		manual
+交班	jiao'ban		manual
+接班	jie'ban		manual
+航班	hang'ban		manual
+班车	ban'che		manual
+班机	ban'ji		manual
+年级	nian'ji		manual
+级别	ji'bie		manual
+高级	gao'ji		manual
+中级	zhong'ji		manual
+初级	chu'ji		manual
+下级	xia'ji		manual
+同级	tong'ji		manual
+升级	sheng'ji		manual
+降级	jiang'ji		manual
+等级	deng'ji		manual
+校门	xiao'men		manual
+校园	xiao'yuan		manual
+师生	shi'sheng		manual
+老师	lao'shi		manual
+师傅	shi'fu		manual
+学生	xue'sheng		manual
+招生	zhao'sheng		manual
+考生	kao'sheng		manual
+新生	xin'sheng		manual
+先生	xian'sheng		manual
+卫生	wei'sheng		manual
+生日	sheng'ri		manual
+生活	sheng'huo		manual
+生命	sheng'ming		manual
+生意	sheng'yi		manual
+生物	sheng'wu		manual
+生态	sheng'tai		manual
+生产	sheng'chan		manual
+生存	sheng'cun		manual
+生气	sheng'qi		manual
+产生	chan'sheng		manual
+工人	gong'ren		manual
+工业	gong'ye		manual
+工资	gong'zi		manual
+工具	gong'ju		manual
+工程	gong'cheng		manual
+工厂	gong'chang		manual
+工会	gong'hui		manual
+工艺	gong'yi		manual
+加工	jia'gong		manual
+施工	shi'gong		manual
+农业	nong'ye		manual
+农村	nong'cun		manual
+农户	nong'hu		manual
+农田	nong'tian		manual
+农忙	nong'mang		manual
+菜农	cai'nong		manual
+商人	shang'ren		manual
+商业	shang'ye		manual
+商店	shang'dian		manual
+经商	jing'shang		manual
+兵士	bing'shi		manual
+士兵	shi'bing		manual
+兵力	bing'li		manual
+兵器	bing'qi		manual
+军官	jun'guan		manual
+军人	jun'ren		manual
+军车	jun'che		manual
+参军	can'jun		manual
+官兵	guan'bing		manual
+官员	guan'yuan		manual
+法官	fa'guan		manual
+警官	jing'guan		manual
+官场	guan'chang		manual
+民警	min'jing		manual
+警察	jing'cha		manual
+警告	jing'gao		manual
+刑警	xing'jing		manual
+警车	jing'che		manual
 
 # ── common words with a polyphonic character, continued ────────────────────
-学习	xue'xi
-学期	xue'qi
-学年	xue'nian
-学费	xue'fei
-学位	xue'wei
-学者	xue'zhe
-学术	xue'shu
-学院	xue'yuan
-小学	xiao'xue
-中学	zhong'xue
-大学	da'xue
-化学	hua'xue
-数学	shu'xue
-科学	ke'xue
-学科	xue'ke
-学问	xue'wen
-同学	tong'xue
-自学	zi'xue
-留学	liu'xue
-好学	hao'xue
-希望	xi'wang
-失望	shi'wang
-盼望	pan'wang
-愿望	yuan'wang
-欲望	yu'wang
-指望	zhi'wang
-威望	wei'wang
-望远镜	wang'yuan'jing
-看望	kan'wang
-仰望	yang'wang
-展望	zhan'wang
-认识	ren'shi
-知识	zhi'shi
-常识	chang'shi
-见识	jian'shi
-意识	yi'shi
-识别	shi'bie
-标记	biao'ji
-记号	ji'hao
-记忆	ji'yi
-忘记	wang'ji
-日记	ri'ji
-记性	ji'xing
-记录	ji'lu
-记者	ji'zhe
-变化	bian'hua
-文化	wen'hua
-化妆	hua'zhuang
-化装	hua'zhuang
-消化	xiao'hua
-融化	rong'hua
-恶化	e'hua
-绿化	lv'hua
-现代化	xian'dai'hua
-工业化	gong'ye'hua
-正确	zheng'que
-确切	que'qie
-确认	que'ren
-确定	que'ding
-确保	que'bao
-明确	ming'que
-的确	di'que
-和平	he'ping
-平时	ping'shi
-平常	ping'chang
-平凡	ping'fan
-平静	ping'jing
-平等	ping'deng
-平稳	ping'wen
-平坦	ping'tan
-公平	gong'ping
-问题	wen'ti
-题目	ti'mu
-话题	hua'ti
-主题	zhu'ti
-课题	ke'ti
-题材	ti'cai
-提问	ti'wen
-问答	wen'da
-询问	xun'wen
-疑问	yi'wen
-访问	fang'wen
-新闻	xin'wen
-问候	wen'hou
-过问	guo'wen
-问路	wen'lu
-时候	shi'hou
-气候	qi'hou
-等候	deng'hou
-问候	wen'hou
-守候	shou'hou
-候车	hou'che
-候选	hou'xuan
-候补	hou'bu
-气候	qi'hou
-时间	shi'jian
-房间	fang'jian
-空间	kong'jian
-人间	ren'jian
-世间	shi'jian
-田间	tian'jian
-车间	che'jian
-间隔	jian'ge
-间接	jian'jie
-间断	jian'duan
-期间	qi'jian
-民间	min'jian
-中间	zhong'jian
-一间房	yi'jian'fang
-之间	zhi'jian
-其中	qi'zhong
-中间	zhong'jian
-集中	ji'zhong
-空中	kong'zhong
-心中	xin'zhong
-手中	shou'zhong
-脑中	nao'zhong
-途中	tu'zhong
-梦中	meng'zhong
-心中	xin'zhong
-中年	zhong'nian
-中型	zhong'xing
-中型	zhong'xing
-中文	zhong'wen
-中午	zhong'wu
-中秋	zhong'qiu
-中断	zhong'duan
-中立	zhong'li
-中途	zhong'tu
-中旬	zhong'xun
-中游	zhong'you
-中餐	zhong'can
-中药	zhong'yao
-中奖	zhong'jiang
-中暑	zhong'shu
-看中	kan'zhong
-命中	ming'zhong
-选中	xuan'zhong
-打中	da'zhong
-中意	zhong'yi
-中听	zhong'ting
-中看	zhong'kan
-种子	zhong'zi
-种类	zhong'lei
-种族	zhong'zu
-种植	zhong'zhi
-播种	bo'zhong
-耕种	geng'zhong
-种地	zhong'di
-种田	zhong'tian
-种菜	zhong'cai
-种树	zhong'shu
-种花	zhong'hua
-品种	pin'zhong
-物种	wu'zhong
-人种	ren'zhong
-各种	ge'zhong
-两种	liang'zhong
-几种	ji'zhong
-多种	duo'zhong
-那种	na'zhong
-这种	zhe'zhong
-一种	yi'zhong
-重点	zhong'dian
-重量	zhong'liang
-重视	zhong'shi
-重要	zhong'yao
-重大	zhong'da
-重心	zhong'xin
-重新	chong'xin
-重复	chong'fu
-重叠	chong'die
-重建	chong'jian
-重温	chong'wen
-重演	chong'yan
-重来	chong'lai
-重庆	chong'qing
-体重	ti'zhong
-严重	yan'zhong
-尊重	zun'zhong
-加重	jia'zhong
-轻重	qing'zhong
-超重	chao'zhong
-举重	ju'zhong
+学习	xue'xi		manual
+学年	xue'nian		manual
+学费	xue'fei		manual
+学位	xue'wei		manual
+学者	xue'zhe		manual
+学术	xue'shu		manual
+学院	xue'yuan		manual
+小学	xiao'xue		manual
+化学	hua'xue		manual
+科学	ke'xue		manual
+学科	xue'ke		manual
+学问	xue'wen		manual
+自学	zi'xue		manual
+留学	liu'xue		manual
+希望	xi'wang		manual
+失望	shi'wang		manual
+盼望	pan'wang		manual
+愿望	yuan'wang		manual
+欲望	yu'wang		manual
+指望	zhi'wang		manual
+威望	wei'wang		manual
+望远镜	wang'yuan'jing		manual
+仰望	yang'wang		manual
+展望	zhan'wang		manual
+标记	biao'ji		manual
+记忆	ji'yi		manual
+忘记	wang'ji		manual
+日记	ri'ji		manual
+记性	ji'xing		manual
+记录	ji'lu		manual
+记者	ji'zhe		manual
+变化	bian'hua		manual
+文化	wen'hua		manual
+化妆	hua'zhuang		manual
+化装	hua'zhuang		manual
+消化	xiao'hua		manual
+融化	rong'hua		manual
+恶化	e'hua		manual
+绿化	lv'hua		manual
+现代化	xian'dai'hua		manual
+工业化	gong'ye'hua		manual
+确认	que'ren		manual
+确定	que'ding		manual
+确保	que'bao		manual
+明确	ming'que		manual
+的确	di'que		manual
+平时	ping'shi		manual
+平常	ping'chang		manual
+平凡	ping'fan		manual
+平静	ping'jing		manual
+平等	ping'deng		manual
+平稳	ping'wen		manual
+平坦	ping'tan		manual
+公平	gong'ping		manual
+问题	wen'ti		manual
+题目	ti'mu		manual
+话题	hua'ti		manual
+主题	zhu'ti		manual
+课题	ke'ti		manual
+题材	ti'cai		manual
+提问	ti'wen		manual
+问答	wen'da		manual
+询问	xun'wen		manual
+疑问	yi'wen		manual
+访问	fang'wen		manual
+新闻	xin'wen		manual
+问候	wen'hou		manual
+过问	guo'wen		manual
+问路	wen'lu		manual
+时候	shi'hou		manual
+气候	qi'hou		manual
+等候	deng'hou		manual
+守候	shou'hou		manual
+候车	hou'che		manual
+候选	hou'xuan		manual
+候补	hou'bu		manual
+一间房	yi'jian'fang		manual
+之间	zhi'jian		manual
+集中	ji'zhong		manual
+心中	xin'zhong		manual
+脑中	nao'zhong		manual
+途中	tu'zhong		manual
+梦中	meng'zhong		manual
+中秋	zhong'qiu		manual
+中旬	zhong'xun		manual
+中游	zhong'you		manual
+中餐	zhong'can		manual
+命中	ming'zhong		manual
+选中	xuan'zhong		manual
+打中	da'zhong		manual
+中意	zhong'yi		manual
+中听	zhong'ting		manual
+中看	zhong'kan		manual
+耕种	geng'zhong		manual
+种田	zhong'tian		manual
+种菜	zhong'cai		manual
+种树	zhong'shu		manual
+种花	zhong'hua		manual
+两种	liang'zhong		manual
+几种	ji'zhong		manual
+多种	duo'zhong		manual
+那种	na'zhong		manual
+这种	zhe'zhong		manual
+一种	yi'zhong		manual
+重温	chong'wen		manual
+重演	chong'yan		manual
+重来	chong'lai		manual
+加重	jia'zhong		manual
+轻重	qing'zhong		manual
+超重	chao'zhong		manual
+举重	ju'zhong		manual

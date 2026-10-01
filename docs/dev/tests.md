@@ -40,7 +40,7 @@
 | `ASM-T-04` | 延迟预算：`key_to_present_p99=16ms`、`decode_p99=3ms`、`raster_p99=1.5ms`、`first_key_to_visible_p99=8ms`、`addon_load=120ms` | 延迟用例 |
 | `ASM-T-05` | 空闲：`idle=0.3%` 单核、`idle_redraw_count=0`、`idle_poll_timer_count=0` | 空闲占用用例 |
 | `ASM-T-06` | 内存：`ui_rss=18MB`、`plugin_rss=45MB`、`dict_mmap_rss=25MB`；体积：`so_stripped=12MB`、`base_dict=20MB` | 内存与体积用例 |
-| `ASM-T-07` | 开发词库 `base.tsv` = 5,871 行、`base.dict` = 248KB；完整 40 万词库不在仓库 | 规模类断言用合成词库 |
+| `ASM-T-07` | 开发词库 `base.tsv` = 5,871 行（显式编译用）；`base.dict` = 15.62MiB 全量（2026-10-01 起）；完整 40 万词库不在仓库 | 规模类断言用合成词库 |
 | `ASM-T-08` | 本机不可验证：Wayland 三档、真实亚克力、多显示器热插拔、8 小时长稳 | 标注而非跳过 |
 | `ASM-T-10` | `raw ≤ 64` 字节；候选 ≤ 45；单候选 ≤ 32 字符 | 边界用例 |
 | `ASM-T-11` | 基准仅在**空闲机器**上有效（实测教训：并行 agent 下 511ns vs 空闲 726ns，criterion 报告假回归） | 全部 `[性能]` 用例 |

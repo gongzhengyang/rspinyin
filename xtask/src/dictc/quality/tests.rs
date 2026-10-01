@@ -444,14 +444,18 @@ fn test_audit_refuses_a_table_below_the_floor_and_one_without_origins() {
         ..OriginMix::default()
     };
     let failure = audit(path, &short, 0, BOUNDS).expect_err("a short table");
-    assert!(failure.to_string().contains("5000 are required"));
+    assert!(
+        failure
+            .to_string()
+            .contains(&format!("{} are required", MIN_CORRECTIONS))
+    );
     let full = OriginMix {
-        unihan: 5_000,
+        unihan: MIN_CORRECTIONS as u32,
         ..OriginMix::default()
     };
     audit(path, &full, 0, BOUNDS).expect("a table at the floor, fully annotated");
     let unannotated = OriginMix {
-        unihan: 4_999,
+        unihan: MIN_CORRECTIONS as u32 - 1,
         unspecified: 1,
         ..OriginMix::default()
     };

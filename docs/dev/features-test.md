@@ -78,7 +78,7 @@
 | `ASM-T-04` | 性能预算 | 引用 `budgets.json`：`key_to_present_p99 = 16.0ms`、`decode_p99 = 3.0ms`、`raster_p99 = 1.5ms`、`first_key_to_visible_p99 = 8.0ms`、`addon_load = 120.0ms` | 延迟与帧率用例 | 阈值变更须同步 `budgets.json` 与 features.md 0.5.3（三处一致） |
 | `ASM-T-05` | 性能预算 | `idle = 0.3%` 单核、`idle_redraw_count = 0`、`idle_poll_timer_count = 0` | 空闲占用用例 | 若实测超限，先查是否引入了轮询定时器（0.4 规则 9） |
 | `ASM-T-06` | 资源预算 | `ui_rss = 18MB`、`plugin_rss = 45MB`、`dict_mmap_rss = 25MB`、`so_stripped = 12MB`、`base_dict = 20MB` | 内存与体积用例 | 体积用例需在 packaging 后测（release profile **不得设 `strip`**，见 ADR-0002） |
-| `ASM-T-07` | 数据量级 | 开发词库 `data/raw/base.tsv` = 5,871 行；`data/compiled/base.dict` = 248KB。完整 40 万词库不在仓库内 | 词库规模用例 | 规模类断言以**合成词库**为基准（`xtask dictc` 生成），不依赖真实大词库 |
+| `ASM-T-07` | 数据量级 | 开发词库 `data/raw/base.tsv` = 5,871 行（供显式 `--input` 编译与调优）；`data/compiled/base.dict` = 15.62MiB（348,972 词条，2026-10-01 起为全量 jieba 词表）。完整 40 万词库不在仓库内 | 词库规模用例 | 规模类断言以**合成词库**为基准（`xtask dictc` 生成），不依赖真实大词库——测试保持封闭，不读 `data/compiled/` |
 | `ASM-T-08` | 硬件边界 | **本机不可验证**：`wlr-layer-shell` / KWin / Mutter 三档、真实亚克力模糊、多显示器热插拔、8 小时长稳 | Wayland 与长稳用例 | 必须标注"本机不可验证"并给出所需环境；**不得当作已通过**（features.md 0.5.5） |
 | `ASM-T-09` | 并发模型 | 宿主线程与 UI 线程物理隔离；跨线程仅 SPSC 队列 + `eventfd`；**无异步运行时** | 并发与背压用例 | 若引入异步运行时，`BUDGET-NET-01` 与 `check-no-network.sh` 会直接失败 |
 | `ASM-T-10` | 数据量级 | 单会话 `raw ≤ 64` 字节；候选 ≤ 45（5 页 × 9）；单候选文本 ≤ 32 字符 | 边界与容错用例 | 超限行为必须命中 `decode/too-long` 等**已冻结**错误码 |

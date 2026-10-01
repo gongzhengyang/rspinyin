@@ -50,7 +50,9 @@ pub mod collisions;
 pub mod reader;
 pub mod writer;
 
-pub use crate::format::collisions::find_colliding_hashes;
+pub use crate::format::collisions::{
+    collision_limit, count_colliding_hashes, find_colliding_hashes,
+};
 
 use ime_types::DictError;
 
