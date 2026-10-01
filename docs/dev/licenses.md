@@ -52,7 +52,7 @@
 <!-- BEGIN GENERATED: dependency inventory -->
 <!-- 由 `scripts/gen-licenses.sh --write` 生成；请勿手工编辑本块 -->
 
-- 包总数：**431**（与 `cargo metadata` 报告一致，含工作区自身 9 个）
+- 包总数：**432**（与 `cargo metadata` 报告一致，含工作区自身 10 个）
 - 第三方依赖：**422**；随 `librspinyin.so` 发布的 Linux 构建闭包：**361** 个包（不含 dev / build 依赖与 `xtask`）
 - 禁止的许可证：**0**（`GPL-*`、`AGPL-*`、未知/缺失一律禁止）；书面豁免：**0**
 
@@ -60,6 +60,7 @@
 
 | 包 | 版本 | 声明许可证 | 主张分支 | 结论 |
 |---|---|---|---|---|
+| `alloc-count` | 0.1.0 | `MIT OR Apache-2.0` | `MIT` | 本项目自有 |
 | `ime-config` | 0.1.0 | `MIT OR Apache-2.0` | `MIT` | 本项目自有 |
 | `ime-core` | 0.1.0 | `MIT OR Apache-2.0` | `MIT` | 本项目自有 |
 | `ime-diag` | 0.1.0 | `MIT OR Apache-2.0` | `MIT` | 本项目自有 |
@@ -133,10 +134,10 @@
 | 义务 | 条款依据（许可原文摘录） | 核对方式 | 复核结论 |
 |---|---|---|---|
 | `OB-1` 归属展示 | (b) Display the [Slint attribution badge](https://github.com/slint-ui/slint/tree/master/logo/MadeWithSlint-logo-whitebg.png) on a public webpage, preferably where the binaries of your Application can be downloaded from, in such a way that it can be easily found by any visitor to that page. | 断言 `README.md` 与 `README.zh.md` 含 Slint 归属徽章与 `https://slint.dev` 链接（`--check-links` 时另做可达性探测） | 已达成（README.md 与 README.zh.md 的第一个二级标题之前均含 Slint 归属徽章，链接 https://slint.dev；公开页面 https://github.com/gongzhengyang/rspinyin） |
-| `OB-2` 不得单独分发 Slint | The License does not permit to distribute or make the Software publicly available alone and without integration into an Application. For this purpose you may use the Software under the GNU General Public License, version 3. | 扫描 `packaging/` 与构建产物，断言不存在独立的 Slint 库文件（只允许 `librspinyin.so`） | 已达成（`packaging/` 与构建产物中均无独立 Slint 库） |
+| `OB-2` 不得单独分发 Slint | The License does not permit to distribute or make the Software publicly available alone and without integration into an Application. For this purpose you may use the Software under the GNU General Public License, version 3. | 扫描 `packaging/` 与构建产物，断言不存在独立的 Slint 库文件（只允许 `librspinyin.so`） | 已达成（`packaging/` 中无独立 Slint 库；构建产物尚未生成，未核对 target/） |
 | `OB-3` 不得用于嵌入式系统 | The License does not permit the use of the Software within Embedded Systems. An **Embedded System** is a computer system designed to perform a specific task within a larger mechanical or electrical system. | 断言本文件第 6 节含显式的嵌入式/自助终端/车机排除声明 | 已达成（第 6 节声明） |
 | `OB-4` 不得暴露 Slint API | The License does not permit the distribution of Application that exposes the APIs, in part or in total, of the Software. | 由 `scripts/check-slint-leak.sh` 解析 `cargo public-api -p ime-ui` 强制（0.4 规则 11） | 已达成（`scripts/check-slint-leak.sh` 强制） |
-| `OB-5` 不得移除许可声明 | You may not remove or alter any license notices (including copyright notices, disclaimers of warranty, or limitations of liability) contained within the source code form of the Software. | 断言 `LICENSES/` 存在且非空、其中的许可原文与 Slint 发行包内的同名原文逐字一致、`docs/dev/NOTICE` 引用的每个 `LICENSES/` 路径都真实存在，并断言 `git status` 无 `LICENSES/` 下的改动 | 已达成（LICENSES/ 下 `LicenseRef-Slint-Royalty-free-2.0.md` 与 Slint 发行包内的原文一致，且无本地改动） |
+| `OB-5` 不得移除许可声明 | You may not remove or alter any license notices (including copyright notices, disclaimers of warranty, or limitations of liability) contained within the source code form of the Software. | 断言 `LICENSES/` 存在且非空、其中的许可原文与 Slint 发行包内的同名原文逐字一致、`docs/dev/NOTICE` 引用的每个 `LICENSES/` 路径都真实存在，并断言 `git status` 无 `LICENSES/` 下的改动 | 未达成：LICENSES/ 下有本地改动 |
 | `OB-6` 按现状提供、无担保 | SixtyFPS is only liable for conflicting rights of third parties if SixtyFPS was aware of these rights without informing you. Unless required by applicable law or agreed to in writing, SixtyFPS provides the Software on an "as is" basis, without warranties or conditions of any kind, either express or implied, including, without limitation, any warranties or conditions of merchantability, or fitness for a particular purpose. | 断言本文件第 7 节与 `README` 许可段含“按现状提供、无担保”的转述 | 已达成（第 7 节转述） |
 
 <!-- END GENERATED: slint obligations -->

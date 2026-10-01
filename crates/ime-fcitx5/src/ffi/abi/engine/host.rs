@@ -37,6 +37,9 @@
 //! exists so the workspace's tests and audits need no Fcitx5 development package; the
 //! plugin never runs in it.
 
+// Only the `fcitx5-host` wrappers below spell a `c_char`; the dependency-free build has
+// no glue to declare and would otherwise carry an unused import into `-D warnings`.
+#[cfg(fcitx5_host)]
 use std::ffi::c_char;
 
 use ime_types::{ImeError, UiCommand};

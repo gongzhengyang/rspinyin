@@ -787,7 +787,18 @@ def inject(document, case):
     nodes = {node["id"]: node for node in document["resolve"]["nodes"]}
     nodes[identifier] = {"id": identifier, "features": [], "deps": []}
     if case != "exempt-unnamed":
-        nodes[sorted(document["workspace_members"])[0]].setdefault("deps", []).append({
+        # The injected crate must reach the *shipped* closure for the cases that assert
+        # on it, and the shipping closure is rooted at the `ime-*` workspace members.
+        # `sorted(workspace_members)[0]` used to be one, but `alloc-count` sorts before
+        # every `ime-*` member and is a test-only crate outside the closure, so the
+        # injection landed nowhere the shipped rule could see and the
+        # "exemption reaching the shipped closure" case passed while asserting a
+        # violation. Rooting at the first `ime-*` member keeps the case honest.
+        names = {pkg["id"]: pkg["name"] for pkg in document["packages"]}
+        shippable = sorted(member for member in document["workspace_members"]
+                           if names.get(member, "").startswith("ime-"))
+        root_member = shippable[0] if shippable else sorted(document["workspace_members"])[0]
+        nodes[root_member].setdefault("deps", []).append({
             "name": name.replace("-", "_"), "pkg": identifier,
             "dep_kinds": [{"kind": None, "target": None}],
         })

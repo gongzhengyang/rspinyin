@@ -112,7 +112,8 @@ fn test_expect_packages_refuses_the_neighbours() {
         // matrix does, which is the mistake that would publish a package nobody built.
         "deb:amd64".to_owned(),
     ] {
-        let failure = expect_packages(&[entry.clone()]).expect_err("not a declared package");
+        let failure =
+            expect_packages(std::slice::from_ref(&entry)).expect_err("not a declared package");
         assert!(
             failure.to_string().starts_with("release:"),
             "{entry}: {failure}"

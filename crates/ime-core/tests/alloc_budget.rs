@@ -256,17 +256,15 @@ fn steady_state(
 /// the file resolves the same path from the repository root, which is the same
 /// directory as long as the workspace is built in place.
 ///
-/// # Panics
+/// # Returns
 ///
-/// When this crate is not two levels below a repository root, which is a layout the
-/// tests cannot run in.
-fn report_path() -> PathBuf {
+/// `None` when this crate is not two levels below a repository root, which is a layout
+/// the tests cannot run in; the `#[test]` caller turns that into a failure.
+fn report_path() -> Option<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
-        .expect("crates/ime-core sits two levels below the repository root")
-        .join("target")
-        .join("alloc-report.txt")
+        .map(|root| root.join("target").join("alloc-report.txt"))
 }
 
 /// Writes the measurements of one run, in the line-oriented form the gate reads.
@@ -275,13 +273,15 @@ fn report_path() -> PathBuf {
 /// which is the whole format: a report a human can read, a gate can parse strictly,
 /// and no library had to be added to produce.
 ///
-/// # Panics
+/// # Errors
 ///
 /// When the report cannot be written. A measurement that could not be recorded is a
 /// failed run rather than a quiet one: the gate treats an absent report as a budget
 /// nobody measured, which is a failure, and a test that left it absent while claiming
-/// to have measured would be the same failure with the cause hidden.
-fn write_report(records: &[(&str, u64)]) {
+/// to have measured would be the same failure with the cause hidden. The `#[test]`
+/// caller surfaces the error with an `expect` of its own -- test code may -- so a run
+/// whose report could not be written fails loudly instead of passing on stale numbers.
+fn write_report(records: &[(&str, u64)]) -> std::io::Result<()> {
     let mut text = String::from(REPORT_HEADER);
     text.push('\n');
     for (name, value) in records {
@@ -290,10 +290,20 @@ fn write_report(records: &[(&str, u64)]) {
         text.push_str(&value.to_string());
         text.push('\n');
     }
-    let path = report_path();
-    std::fs::create_dir_all(path.parent().expect("the report path has a parent"))
-        .expect("the target directory is writable");
-    std::fs::write(&path, text).expect("the report is writable");
+    let Some(path) = report_path() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "crate sits fewer than two levels below a repository root",
+        ));
+    };
+    let Some(parent) = path.parent() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "the report path has no parent directory",
+        ));
+    };
+    std::fs::create_dir_all(parent)?;
+    std::fs::write(&path, text)
 }
 
 /// The steady-state ceiling the budget states, in allocations per decode.
@@ -444,7 +454,8 @@ fn test_decode_into_steady_state_costs_the_budgeted_allocation() {
         ("decode_steady", steady as u64),
         ("decode_steady_short", steady_short as u64),
         ("bytes_decode_steady", bytes as u64),
-    ]);
+    ])
+    .expect("the target directory is writable");
 
     assert_eq!(
         steady, BUDGETED_STEADY,

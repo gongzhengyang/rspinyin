@@ -40,7 +40,7 @@
 //! # The scratch
 //!
 //! A frame is rasterized into a scratch this crate owns -- the pixel format and the reason
-//! for the extra buffer are in [`raster`] -- and the scratch grows to the largest surface
+//! for the extra buffer are in `raster` -- and the scratch grows to the largest surface
 //! the window has had. That allocation is given back only once the window has stayed small
 //! long enough for the new size to be a settled one rather than a drag, and the frame that
 //! gives it back is a full repaint, because the smaller buffer no longer holds what the

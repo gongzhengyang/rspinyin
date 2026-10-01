@@ -527,8 +527,10 @@ fn test_session_host_with_client_preedit_writes_the_composing_text() {
     // `[ui] client_preedit` on is the configuration that makes the application's own
     // preedit area a carrier of the composing text; with it off the area is emptied
     // instead, which is what every other test here exercises.
-    let mut config = RoutingConfig::default();
-    config.client_preedit = true;
+    let config = RoutingConfig {
+        client_preedit: true,
+        ..RoutingConfig::default()
+    };
     let mut sessions = host_with(config);
     let mut host = RecordingHost::default();
     sessions.activate(IC);
