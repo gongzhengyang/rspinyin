@@ -7,6 +7,7 @@
 
 use std::rc::Rc;
 
+use ime_types::ui::{OverlayEntry, OverlayFrame, OverlayKind, OverlaySection};
 use ime_types::{
     Anchor, Candidate, CandidateSource, ColorScheme, LayoutHint, PageState, Placement, Preedit,
     PreeditSpan, RectI, Rgba8, ScreenId, SpanKind, StatusStrip, ThemeSpec, UiFrame,
@@ -1096,4 +1097,53 @@ fn test_adapter_page_turn_slides_the_grid_and_leaves_the_header_still() {
         "the header does not move: the preedit did not change page"
     );
     assert!(grid_moved, "the candidate grid does slide");
+}
+
+/// One cheat-sheet frame, as the engine builds it from the bindings in force.
+fn overlay_frame() -> OverlayFrame {
+    OverlayFrame {
+        kind: OverlayKind::CheatSheet,
+        title: String::from("按键速查"),
+        sections: vec![OverlaySection {
+            title: String::from("组字"),
+            entries: vec![OverlayEntry {
+                keys: String::from("tab"),
+                label: String::from("移动候选高亮"),
+            }],
+        }],
+        selected: None,
+        query: String::new(),
+    }
+}
+
+#[test]
+fn test_adapter_apply_overlay_writes_the_overlay_properties() {
+    // The properties are what the binding actually produced, so reading them back covers
+    // the write path -- the component-side half of "the overlay draws" -- and not only
+    // the mapping that feeds it.
+    let (visible, title, sections, entries, hidden_after) = with_adapter(|adapter| {
+        let frame = overlay_frame();
+        adapter.apply_overlay(Some(&frame));
+        let window = adapter.window();
+        let open = (
+            window.get_overlay_visible(),
+            window.get_overlay_title().to_string(),
+            window.get_overlay_sections().row_count(),
+            window
+                .get_overlay_sections()
+                .row_data(0)
+                .map(|section| section.entries.row_count()),
+        );
+        adapter.apply_overlay(None);
+        let hidden_after = adapter.window().get_overlay_visible();
+        (open.0, open.1, open.2, open.3, hidden_after)
+    });
+    assert!(visible, "the overlay mode is on while a frame is drawn");
+    assert_eq!(title, "按键速查", "the title arrives from the frame");
+    assert_eq!(sections, 1, "one model row per frame section");
+    assert_eq!(entries, Some(1), "the group's rows travel with it");
+    assert!(
+        !hidden_after,
+        "closing the overlay uncovers the candidate panel the adapter still holds"
+    );
 }

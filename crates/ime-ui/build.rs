@@ -16,6 +16,7 @@ fn main() {
     // line means an edit to the grid regenerates nothing until something else happens to
     // touch `candidate.slint` too.
     println!("cargo::rerun-if-changed=ui/candidate_grid.slint");
+    println!("cargo::rerun-if-changed=ui/overlay.slint");
     println!("cargo::rerun-if-changed=ui/theme.slint");
     compile();
 }

@@ -19,7 +19,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track B 命令接入与键位矩阵`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine.rs`（`shift_tolerant_action` 与 `bare_action` 的重构）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   | 配置 | `Tab` | `Shift+Tab` | `Up` | `Down` | `Left` | `Right` |
@@ -77,6 +77,10 @@
   - [ ] 默认配置下 `translate_key` 的输出与改动前**逐键一致**（用 `engine.rs:373` 的 `assert_rows` 对拍全表）；
   - [ ] `engine.rs:625` 的 `test_translate_key_maps_the_global_mode_chords` 与 `:572` 的 `test_translate_key_moves_the_highlight_and_the_caret` 更新后仍全绿。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/src/engine.rs` 的路由表（`flip_keys`/`highlight_keys` 四配置×24 键的表驱动映射，`assert_rows` 全表对拍）、`crates/ime-fcitx5/src/engine/tests/table.rs`（`test_translate_key_maps_the_global_mode_chords`、`test_translate_key_moves_the_highlight_and_the_caret` 更新后全绿）、`highlight_keys = []` 时 `Tab`/`Shift+Tab` 交还宿主而 `Up`/`Down` 仍翻页的分支。
+  - **验证**：`cargo nextest run --workspace --all-features` 全绿（2026-10-01，nextest 2797+443 项）；默认配置下 `translate_key` 输出与改动前逐键一致由对拍测试固定。
+
 ---
 
 ### 任务 ID：KEY-P1.02.02 路由表补齐：翻页键全集与音节分隔符
@@ -88,7 +92,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track B 命令接入与键位矩阵`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine.rs`（keysym 常量区与行表）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   | 键 | keysym | 默认行为 | 可配置 | 本次改动 |
@@ -130,6 +134,10 @@
   - [ ] Idle 下按 `'` 交还宿主，应用收到单引号字符，候选框不出现；
   - [ ] `engine.rs:391-410` 的 `is_routed` 集合更新为包含 `KEY_APOSTROPHE`/`KEY_PAGE_UP`/`KEY_PAGE_DOWN`，`:675` 的"绝不吞键"扫描仍通过。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/src/engine.rs`（`flip_keys` 六键白名单全集、`KEY_APOSTROPHE`/`KEY_PAGE_UP`/`KEY_PAGE_DOWN` 进入 `is_routed` 集合、"绝不吞键"扫描）、`crates/ime-core/src/input` 侧分隔符 `'` 的 Composing/Idle 分流、preedit `SpanKind::Separator` 分段。
+  - **验证**：随 `cargo nextest run --workspace --all-features` 全绿；`engine/tests/table.rs` 的 `is_routed` 完整性扫描断言不吞键。
+
 ---
 
 ### 任务 ID：KEY-P1.02.03 大写字母形态归一
@@ -141,7 +149,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track B 命令接入与键位矩阵`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine.rs`（字母行）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   关闭 `KEY-DEF-08`：路由行为不得取决于宿主是否把大小写折进 keysym。
@@ -199,6 +207,10 @@
   - [ ] `Ctrl+Shift+E` 仍产生 `EnterTempEnglish`（两种形态各一条用例）；
   - [ ] `fold_shifted_letter` 是纯函数，有独立的边界测试（`0x40`、`0x5b` 不在范围内）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/src/engine.rs` 的 `fold_shifted_letter`（纯函数，`0x40`/`0x5b` 边界独立测试）、26 字母两种到达形态（小写 sym / 大写+Shift）归一、无修饰大写 keysym 交还宿主、`Ctrl+Shift+E` 两形态各一条用例（`crates/ime-core/src/passthrough/tests.rs` 同步补齐）。
+  - **验证**：随 `cargo nextest run --workspace --all-features` 全绿（含 `passthrough` 临时英文链路）。
+
 ---
 
 ### 任务 ID：KEY-P1.02.04 修饰键自身行与和弦消歧
@@ -210,7 +222,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track B 命令接入与键位矩阵`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine.rs`（`chord_action` 的重构）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   关闭 `KEY-DEF-07`（修饰键自身行抢先）与 `KEY-DEF-22`（裸空格在任何上下文都返回 `CommitHighlighted`）。
@@ -279,6 +291,10 @@
   - [ ] `CHORDS` 表的每一条都有对应测试用例（表驱动，新增一条和弦必须同时新增一条用例）；
   - [ ] `translate_key` 对 `Shift_L`/`Shift_R` 的 press 返回 `Ignore`。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/src/engine.rs` 的 `CHORDS` 表（表驱动，每条和弦对应一条用例，超集修饰键全落 `Ignore`）、`Shift_L`/`Shift_R` press 返回 `Ignore`、`Shift+Space` 只产 `ToggleFullWidth`。
+  - **验证**：`crates/ime-fcitx5/src/engine/tests/table.rs` 的和弦表测试与 `crates/ime-fcitx5/tests/keymap_matrix/`（13 个端到端用例）随 `cargo nextest run --workspace --all-features` 全绿。
+
 ---
 
 ### 任务 ID：KEY-P1.02.05 `apply_effects`：Effect → 宿主调用
@@ -290,7 +306,7 @@
   - 关键路径：`CP: 是`
   - 并行通道：`Track B 命令接入与键位矩阵`
   - 代码落地锚点：`crates/ime-fcitx5/src/effects.rs`（新建）、`crates/ime-fcitx5/src/ffi/abi/engine.rs`（`on_key_event` 接线）、`crates/ime-fcitx5/src/ffi/cpp/engine_glue.cpp`（新增宿主调用导出）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   关闭 `KEY-DEF-02`：让 `on_key_event` 第一次真正消费按键。本卡是**最早可交付里程碑**的最后一张（前两张是 `KEY-P0.01.01`、`KEY-P0.01.02`）。
@@ -388,6 +404,11 @@
   - [ ] `apply_effects` 不读文件、不取锁、不格式化日志字符串（`ASM-04` 的 100µs 预算）；
   - [ ] 日志中不出现任何用户输入内容（`AGENTS.md` 禁止事项 21）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/src/effects.rs`（Effect → 宿主调用执行器：commit/preedit/toggle/post/diagnose）、`crates/ime-fcitx5/src/ffi/abi/engine/host.rs`（生产 `FcitxHost`：commit/set_preedit/clear_preedit/`is_enabled` 读回/`post` 降级记录）、`crates/ime-fcitx5/src/ffi/cpp/engine_glue.cpp`（C++ 侧落点，含 `inputpanel.h` 修正）、`crates/ime-fcitx5/src/effects/tests.rs`（8 项 Effect-宿主测试）。
+  - **验证**：随 `cargo nextest run --workspace --all-features` 全绿（360 项 ime-fcitx5 + keymap_matrix 端到端）；`handle_key` 返回 `true` 必有非 `Diagnose` Effect、release 一律返回 `false` 由 routing 测试固定；`just check-host` 通过（本机 Fcitx5 5.1.7，真机 X11 档可用性在 UI 侧登记）。
+  - **已知限制**：`post` 的 `UiCommand` 在引擎 addon 内无通道可递送（ADR-0003 的跨 addon 交接由 UI addon 承担），按 2.2.4 记 `ui/not-ready` 降级，不影响按键路径。
+
 ---
 
 ### 任务 ID：KEY-P1.02.06 会话生命周期接线
@@ -399,7 +420,7 @@
   - 关键路径：`CP: 是`
   - 并行通道：`Track B 命令接入与键位矩阵`
   - 代码落地锚点：`crates/ime-fcitx5/src/ffi/abi/engine.rs`（`on_activate`/`on_deactivate`/`on_reset` 三个 Stub）、`crates/ime-fcitx5/src/session_host.rs`、`crates/ime-fcitx5/src/addon.rs`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   `on_activate` / `on_deactivate` / `on_reset` 三个回调当前是空 Stub（`ffi/abi/engine.rs:23-43`），而状态机侧的 `SessionEvent::Reset` 已实现。本卡把会话的生命周期接到宿主事件上。
@@ -447,6 +468,10 @@
   - [ ] 插件卸载时 `SessionHost` 为空，无残留会话（`ps -T` 无 `rspinyin-ui` 线程，`TC-RT-05` 不回归）；
   - [ ] `on_reset` 与 `on_deactivate` 产生完全相同的宿主侧调用序列。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/src/session_host.rs` 与 `session_host/tests.rs`（722 行：activate/deactivate/reset/shutdown 的会话回收矩阵、同 `ic_id` 重进的干净起点、`on_reset` 与 `on_deactivate` 调用序列一致断言）、`crates/ime-fcitx5/src/addon.rs` 的 destroy 序列（先收会话再 flush，`lifecycle/destroy` 计数）。
+  - **验证**：随 `cargo nextest run --workspace --all-features` 全绿；切换输入法丢弃进行中 composition 且不提交任何候选由测试固定。
+
 ---
 
 ### 任务 ID：KEY-P1.02.07 临时英文模式的键位语义修正
@@ -458,7 +483,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track B 命令接入与键位矩阵`
   - 代码落地锚点：`crates/ime-core/src/state/transitions.rs`（`on_key_temp_english`）、`crates/ime-fcitx5/src/engine.rs`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   关闭 `KEY-DEF-09`。features.md 3.5 的规格是「`Ctrl+Shift+E` 进入临时英文模式（所有键透传，直到 `Enter` 或 `Escape`）」。
@@ -513,6 +538,10 @@
   - [ ] `enter_commit_raw = true` 时 `Return` 的退出行为与默认配置一致；
   - [ ] `transitions.rs` 的 `on_key_temp_english` 不再引用 `CommitHighlighted`。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-core/src/state/transitions.rs` 的 `on_key_temp_english`（空格不退出、`Return`/`Escape` 退出、`enter_commit_raw` 行为与默认一致；不再引用 `CommitHighlighted`）、判定顺序先于大写提交与 URL 规则的修正。
+  - **验证**：`crates/ime-core/src/passthrough/tests.rs`（55 行新增）与 state 测试随 `cargo nextest run --workspace --all-features` 全绿；`tests.md` 的 `TC-CORE-26`/`TC-CORE-28`/`TC-CORE-30` 断言同一批行为。
+
 ---
 
 ### 任务 ID：KEY-P1.02.08 命令面板与诊断面板的键位预留
@@ -524,7 +553,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track B 命令接入与键位矩阵`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine/sequence.rs`、`crates/ime-fcitx5/src/engine/context.rs`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   features.md 3.5 登记了两个 Phase 2 入口（`TASK-2.03.03` 命令面板、`TASK-2.08.01` 诊断面板），路由表里没有行。本卡**只做键位预留与上下文占位**，不实现面板本体（面板是 `KEY-P2.02.01` 的速查面板之外的另一条产品线）。
@@ -580,6 +609,10 @@
   - [ ] `Overlay` 的三种取值都有对应测试；
   - [ ] Phase 1 不新增任何 `KeyAction` 变体（`ime-types` 零改动，`scripts/check-*` 全绿）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/src/engine/context/panel.rs`（`Ctrl+Shift+/`、`Ctrl+Shift+P` 消费并记 `ui/not-implemented`，额外修饰键交还宿主；`UI_NOT_IMPLEMENTED_CODE` 常量）、`crates/ime-types/src/ui.rs` 的 `Overlay` 三取值（冻结契约的扩展随 ADR-0003 双 cdylib 架构登记）、`crates/ime-fcitx5/src/engine/context/tests.rs`（:868 常量断言 + 三取值用例）。
+  - **验证**：随 `cargo nextest run --workspace --all-features` 全绿；`scripts/check-deps.sh`/`check-unsafe.sh`/`check-net.sh` 全 PASS。
+
 ---
 
 ### 任务 ID：KEY-P1.03.01 白名单与路由表一致性断言
@@ -591,7 +624,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track C 速查面板·持久化·基建`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine/binding_audit.rs`（新建）、`crates/ime-config/src/schema.rs`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   关闭 `KEY-DEF-05`（白名单大于路由能力）与 `KEY-DEF-19`（`MAX_KEY_BINDINGS = 8` 与路由容量不一致）。
@@ -649,6 +682,10 @@
   - [ ] `MAX_KEY_BINDINGS` 与两个位标志集合的容量关系有明确断言；
   - [ ] `KeyName` 的文档注释包含与 `binding_audit` 的联动说明。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/src/engine/binding_audit.rs`（386 行：白名单 10 项可路由断言、删除任一表行即红并报出键名、`MAX_KEY_BINDINGS` 与两个位标志集合的容量关系断言）、`KeyName` 文档注释与 `binding_audit` 的联动说明。
+  - **验证**：负路径（人为删行）在审计模块的注入测试中固定；随 `cargo nextest run --workspace --all-features` 全绿。
+
 ---
 
 ### 任务 ID：KEY-P1.03.02 跨列表键位冲突校验与诊断
@@ -660,7 +697,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track C 速查面板·持久化·基建`
   - 代码落地锚点：`crates/ime-config/src/schema.rs`（`Config::repaired` 与 `repair_bindings`）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   关闭 `KEY-DEF-17`：`repair_bindings`（`schema.rs:640-653`）只在单列表内去重，跨列表冲突无人检查。
@@ -713,6 +750,10 @@
   - [ ] 配置层保留的键（`highlight_keys`）与路由层优先的键（`KEY-P1.02.01`）一致，有测试交叉验证；
   - [ ] 不重叠的默认配置零诊断（`schema.rs:697` 的 `test_repaired_restores_the_default_of_every_scalar_key` 不回归）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-config/src/schema.rs` 的跨列表冲突校验（`keys.flip_keys` ∩ `keys.highlight_keys` 恰好一条 `config/invalid`、修复幂等、修复后零诊断）、与路由层优先键一致的交叉验证测试。
+  - **验证**：`cargo nextest run -p ime-config`（schema 测试 171 行新增随 stage 2 落地）随 `cargo nextest run --workspace --all-features` 全绿；`test_repaired_restores_the_default_of_every_scalar_key` 不回归。
+
 ---
 
 ### 任务 ID：KEY-P1.03.03 候选网格数字标签与高亮态渲染
@@ -724,7 +765,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track C 速查面板·持久化·基建`
   - 代码落地锚点：`crates/ime-ui/ui/candidate.slint`（`CandidateGrid` 与新增 `CandidateCell`）、`crates/ime-ui/src/adapter.rs`（新建）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   关闭 `KEY-DEF-15`。这是 `CMD-06`（`1`~`9` 选词）与 `CMD-11`/`CMD-12`（高亮移动）的**视觉半边**——键位已存在，用户看不见它对应哪个候选。
@@ -807,6 +848,11 @@
   - [ ] `.slint` 中不出现任何 `TextInput`、`forward-focus` 或 `focus()` 调用（`AGENTS.md` 禁止事项 20 的静态检查）；
   - [ ] `crates/ime-ui` 的公共 API 不导出任何 `slint::` 类型（`scripts/check-slint-leak.sh` 通过）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-ui/ui/candidate_grid.slint`（1-based 数字标签固定槽位、五态背景/描边、Focus Ring 单一性）、`crates/ime-ui/src/adapter/highlight.rs` 与 `cell.rs`（高亮矩形跟随拉伸后单元格、五态优先级 `Disabled > Active > Focus Ring > Hover > Default` 的适配器解析）、`crates/ime-ui/src/adapter/cell/tests.rs`（`test_visual_state_resolve_follows_the_design_priority` 等）。
+  - **验证**：随 `cargo nextest run --workspace --all-features` 全绿（ime-ui 497 项）；`grep` 静态检查确认 `.slint` 无 `TextInput`/`forward-focus`/`focus()`；`scripts/check-slint-leak.sh` PASS。
+  - **已知限制**：`show_annotation = false` 时注解不占位（`annotation_width` 归零），但本机软件渲染器上 `opacity` 的淡出不生效（登记于 `opt-ui.md` P0 卡验收记录第 5 条），淡出层次以字重与颜色承担。
+
 ---
 
 ### 任务 ID：KEY-P1.03.04 鼠标路径与键盘路径同源
@@ -818,7 +864,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track C 速查面板·持久化·基建`
   - 代码落地锚点：`crates/ime-ui/src/interaction.rs`（新建，即 `TASK-1.05.06` 的 Code Anchor）、`crates/ime-ui/src/ui_thread/surface.rs`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   关闭 `KEY-DEF-14`。features.md 3.5 明写"输入法的一切操作必须可纯键盘完成，鼠标只是补充"——**补充路径也必须存在**，否则 `CMD-23`~`CMD-25` 三条命令永远不可达。
@@ -873,6 +919,10 @@
   - [ ] `Select` 走 `post_select`（永不丢弃），`Hover` 走 `post_hover`（16ms 节流），`Page`/`Dismiss` 走 `post_ordered`（有序合并）；
   - [ ] 全部测试在**无显示服务器**下通过（`MockBackend`）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-ui/src/interaction/route.rs` 与 `route/tests.rs`（683 行：点击与数字键提名同一候选的交叉验证、阴影带 `hit_test` 返回 None、首页上滚 `Dismiss{ScrollUpEmpty}`/非首页 `Page{Prev}`、`Select` 走永不丢弃槽、`Hover` 16ms 节流、`Page`/`Dismiss` 有序合并、`MockBackend` 无显示服务器运行）、`crates/ime-ui/src/platform/mod.rs` 的 `set_input_region` 接线（容器矩形之外点击穿透）。
+  - **验证**：随 `cargo nextest run --workspace --all-features` 全绿；`test_route_round_trips_every_cell_at_every_supported_scale` 覆盖多档缩放。
+
 ---
 
 ### 任务 ID：KEY-P1.03.05 键位映射的端到端表驱动测试
@@ -884,7 +934,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track C 速查面板·持久化·基建`
   - 代码落地锚点：`crates/ime-fcitx5/tests/keymap_matrix.rs`（新建）、`xtask/src/testd/engine/builtin.rs`（`ASM-11` 的缺口）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   关闭 `ASM-11` 登记的测试缺口：测试平台当前**直接注入 `KeyAction`**（`xtask/src/testd/engine/builtin.rs:318`），绕过路由表。于是"表驱动测试通过"只证明了状态机，没证明按键能被翻译成那些动作。
@@ -932,3 +982,8 @@
   - [ ] `TC-RT-08`：全部 `is_release` 返回 `false`（`KEY-P0.01.03` 的修饰键例外有独立用例并计数）；
   - [ ] 键位矩阵往返测试通过，`translate_key` 与 `dispatch` 零分歧；
   - [ ] `xtask` 的 keysym 级注入至少跑通一条端到端场景（`nihao` + `Space` → `你好`）。
+
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/tests/keymap_matrix/main.rs`（1055 行）与 `support.rs`（531 行）：3.5 表逐行用例、`KeyAction` 全变体可达、"绝不吞键"随机 keysym 扫描、release 一律 `false`（修饰键例外独立用例并计数）、`translate_key` 与 `dispatch` 零分歧的往返矩阵、keysym 级注入的 `nihao` + `Space` → `你好` 端到端场景。
+  - **验证**：13 个端到端用例随 `cargo nextest run --workspace --all-features` 全绿（2026-10-01）。
+

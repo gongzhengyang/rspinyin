@@ -777,6 +777,10 @@ fn disconnected<T>(_: T) -> PlatformError {
 mod tests {
     use super::*;
 
+    // The display-free half of this file's never-takes-focus policy is pinned by
+    // the source scans in `crates/ime-ui/tests/focus_policy.rs`: this file sits at
+    // its line budget, so those tests live beside the platform module's own suite.
+
     #[test]
     fn test_connect_with_unparsable_display_reports_unavailable() {
         // A display name without a colon cannot be parsed, so the call fails before any

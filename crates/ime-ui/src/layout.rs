@@ -8,9 +8,9 @@
 //! The flow is one pass, each step feeding the next:
 //!
 //! ```text
-//! cell_width  -> the shared cell width the grid can afford
+//! cell_width  -> the shared cell width the grid can afford, before the panel is settled
 //! grid        -> rows, columns and paging for the candidates on screen
-//! container_size -> the panel's logical size
+//! panel_and_cells -> the panel's logical size, then the cells stretched to fill it
 //! window_size -> the surface's physical size, shadow reserve included
 //! container_rect -> the panel's physical rectangle, which is also the input region
 //! ```
@@ -269,6 +269,82 @@ pub fn container_size(
     }
 }
 
+/// The one-pass form the adapter calls: sizes the panel, then stretches the cells into it.
+///
+/// The container's width and the cell width depend on each other: the cells decide how wide
+/// the panel wants to be, and the panel's minimum width decides how much room the cells have
+/// to share. Sizing the panel from stretched cells would never terminate, and stretching
+/// before the minimum-width floor is applied would leave the floor's own void unfilled --
+/// the panel would read as "not full" precisely on the pages that lifted it to
+/// [`Metrics::min_width`]. The cycle is therefore broken in one direction only: the panel is
+/// sized from the *natural* cells, the floor is applied, and the cells are then stretched to
+/// share whatever the settled panel leaves, up to the 3.1.3 text limit plus the cell's own
+/// chrome. What the stretch cannot absorb (a page wider than the text cap allows) is centred
+/// by the component, which is why the width this returns is the one the highlight box and
+/// the hit map consume too.
+///
+/// # Parameters
+///
+/// * `natural_widths` -- the cells' unconstrained widths in logical pixels, measured by
+///   the adapter; an empty slice means "no candidate", which yields the minimum cell.
+/// * `on_row` -- the column count the natural budget protects: the cells the widest row
+///   actually holds, so a page shorter than a row spends the room its empty slots leave.
+/// * `grid` -- the geometry from [`grid`], whose `cols` is also the denominator the stretch
+///   shares the settled panel across.
+/// * `max_container_width` -- widest panel the screen allows.
+/// * `metrics` -- the constants from [`fn@metrics`].
+///
+/// # Returns
+///
+/// The panel size and the cell width that fills it, so the caller cannot use one without
+/// the other.
+///
+/// # Panics
+///
+/// Never panics: the column counts are clamped to at least one before anything is divided
+/// by them, and a non-finite measurement is ignored by `f32::max`.
+pub fn panel_and_cells(
+    natural_widths: &[f32],
+    on_row: u8,
+    grid: &GridLayout,
+    max_container_width: f32,
+    metrics: &Metrics,
+) -> (ContainerSize, CellWidth) {
+    let natural = cell_width(natural_widths, on_row, max_container_width, metrics);
+    let container = container_size(grid, natural.width, max_container_width, metrics);
+    // An empty page draws no row, so there is nothing to stretch and the width stays the
+    // minimum the grid would use had it a cell: a phantom stretch would only churn the
+    // property the next real page has to write back.
+    if grid.cols == 0 {
+        return (container, natural);
+    }
+    // The widest text as it was measured, before any cap: the elide flag has to be judged
+    // against the width the cell finally draws at, and `cell_width`'s own answer carries
+    // its already-capped width, from which the measurement can no longer be recovered.
+    let measured = natural_widths
+        .iter()
+        .copied()
+        .fold(metrics.cell_min_width, f32::max);
+    let columns = f32::from(grid.cols.max(1));
+    let chrome = 2.0 * metrics.container_padding + (columns - 1.0) * metrics.grid_gap;
+    // The share one cell has of the settled panel. Only the per-cell content limit caps it:
+    // the row budget the other cap comes from was already paid when the panel was sized,
+    // and re-subtracting it here would shrink the cells below the width the panel is
+    // already committed to.
+    let text_cap = metrics.max_text_width + metrics.cell_chrome_width;
+    let share = ((container.width - chrome) / columns).clamp(0.0, text_cap);
+    let width = natural
+        .width
+        .max(share)
+        .min(text_cap)
+        .max(metrics.cell_min_width);
+    let stretched = CellWidth {
+        width,
+        truncated: measured > width,
+    };
+    (container, stretched)
+}
+
 /// Candidates per row, clamped into the range 3.1.1 allows and never zero.
 ///
 /// `max_per_row` comes from configuration, so a value outside the range is corrected here
@@ -408,6 +484,86 @@ mod tests {
         let measured = cell_width(&[600.0], 3, 204.0, &parsed());
         assert_eq!(measured.width, 64.0);
         assert!(measured.truncated);
+    }
+
+    /// The one-pass form the adapter calls, with the same arguments it passes.
+    fn panel_and(
+        item_count: usize,
+        per_row: u8,
+        measured: f32,
+        max_container_width: f32,
+    ) -> (ContainerSize, CellWidth) {
+        let metrics = parsed();
+        let grid = grid(item_count, 1, per_row, &metrics);
+        let on_row = item_count
+            .min(usize::from(u8::MAX))
+            .min(usize::from(per_row))
+            .max(1);
+        let on_row = u8::try_from(on_row).unwrap_or(u8::MAX);
+        panel_and_cells(
+            &uniform_widths(item_count, measured),
+            on_row,
+            &grid,
+            max_container_width,
+            &metrics,
+        )
+    }
+
+    #[test]
+    fn test_panel_and_cells_stretches_a_short_page_to_fill_the_minimum_width_floor() {
+        let (container, cell) = panel_and(1, 5, 64.0, 720.0);
+        // The floor lifts the single 64dp cell's panel to the 220dp minimum; the stretch
+        // then shares that panel across the row: (220 - 2x8 - 0) / 1 = 204, capped at the
+        // 156dp the 120dp text limit plus its 36dp chrome allows. What the cap cannot
+        // absorb -- 220 - 16 - 156 = 48dp -- is what the component centres.
+        assert_eq!(container.width, 220.0);
+        assert_eq!(cell.width, 156.0);
+        // The stretch never elides: a wider cell has more room than the text needs.
+        assert!(!cell.truncated);
+    }
+
+    #[test]
+    fn test_panel_and_cells_leaves_a_full_natural_row_unchanged() {
+        let (container, cell) = panel_and(9, 5, 80.0, 720.0);
+        // Nine candidates size the panel from their own width: 5 x 80 + 4 x 6 gaps + 2 x 8
+        // padding = 440dp, above the floor, so the share one cell has of it --
+        // (440 - 16 - 24) / 5 = 80dp -- is exactly the natural width and the stretch is a
+        // no-op. The floor is what makes the stretch engage, and here it did not.
+        assert_eq!(container.width, 440.0);
+        assert_eq!(cell.width, 80.0);
+        assert!(!cell.truncated);
+    }
+
+    #[test]
+    fn test_panel_and_cells_keeps_the_elide_flag_of_a_capped_page() {
+        let (_, cell) = panel_and(9, 5, 200.0, 720.0);
+        // The natural pass caps the 200dp text at the row budget (720 - 16 - 24) / 5 =
+        // 136dp; the panel is then exactly full, the share is that same 136dp, and the
+        // elide flag is computed against the stretched width, which is the width the cell
+        // really draws at -- still shorter than the text, so still elided.
+        assert_eq!(cell.width, 136.0);
+        assert!(cell.truncated);
+    }
+
+    #[test]
+    fn test_panel_and_cells_of_an_empty_page_keeps_the_minimum_cell() {
+        let (container, cell) = panel_and(0, 5, 80.0, 720.0);
+        // No cells, nothing to stretch: the panel is the floor's 220dp and the width stays
+        // the minimum rather than being inflated by a phantom share.
+        assert_eq!(container.width, 220.0);
+        assert_eq!(cell.width, 64.0);
+        assert!(!cell.truncated);
+    }
+
+    #[test]
+    fn test_panel_and_cells_on_a_narrow_screen_stops_at_the_text_cap() {
+        let (container, cell) = panel_and(1, 3, 64.0, 180.0);
+        // 3.1.3: the window follows the 180dp screen, the floor is min(220, 180) = 180dp,
+        // and the share (180 - 16) / 1 = 164dp is capped at the 156dp text limit -- a cell
+        // wider than its text plus chrome would be mostly empty padding.
+        assert_eq!(container.width, 180.0);
+        assert_eq!(cell.width, 156.0);
+        assert!(!cell.truncated);
     }
 
     #[test]

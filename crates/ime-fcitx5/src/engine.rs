@@ -73,6 +73,8 @@ pub mod sequence;
 
 mod rows;
 
+mod badge;
+
 pub use arbiter::{Executability, arbitrate, arbitrate_sequence, executability, is_mode_chord};
 pub use context::{Consumed, Dispatcher, KeyContext, KeyEvent, Overlay, SessionView};
 pub use ime_config::DigitZero;
@@ -101,10 +103,11 @@ mod tests;
 // header's own `SimpleMask`, so a host that renumbers these bits fails a test rather than
 // silently misreading every chord.
 
-/// `fcitx::KeyState::Shift`.
-const SHIFT: u32 = 1 << 0;
-/// `fcitx::KeyState::Ctrl`.
-const CTRL: u32 = 1 << 2;
+/// `fcitx::KeyState::Shift`; crate-visible so the cheat sheet spells chords from the
+/// same bits this table matches on, and the two cannot drift.
+pub(crate) const SHIFT: u32 = 1 << 0;
+/// `fcitx::KeyState::Ctrl`; crate-visible for the cheat sheet, like [`SHIFT`].
+pub(crate) const CTRL: u32 = 1 << 2;
 /// `fcitx::KeyState::Alt`.
 const ALT: u32 = 1 << 3;
 /// `fcitx::KeyState::Hyper`, the `Mod3` alias.
@@ -132,8 +135,8 @@ const NON_SHIFT_MODIFIERS: u32 = MODIFIER_MASK & !SHIFT;
 // XKB keysyms as the installed `fcitx-utils/keysymgen.h` defines them; `FcitxKeyEvent::sym`
 // carries `fcitx::Key::sym()` unchanged.
 
-/// `FcitxKey_space`.
-const KEY_SPACE: u32 = 0x0020;
+/// `FcitxKey_space`; crate-visible so the cheat sheet names chords from the table's keysyms.
+pub(crate) const KEY_SPACE: u32 = 0x0020;
 /// `FcitxKey_apostrophe`, the syllable separator the input buffer accepts.
 const KEY_APOSTROPHE: u32 = 0x0027;
 /// The character the [`KEY_APOSTROPHE`] row produces.
@@ -143,8 +146,8 @@ const KEY_APOSTROPHE: u32 = 0x0027;
 const SYLLABLE_SEPARATOR: char = '\'';
 /// `FcitxKey_minus`.
 const KEY_MINUS: u32 = 0x002d;
-/// `FcitxKey_period`.
-const KEY_PERIOD: u32 = 0x002e;
+/// `FcitxKey_period`; crate-visible like [`KEY_SPACE`].
+pub(crate) const KEY_PERIOD: u32 = 0x002e;
 /// `FcitxKey_0`, the low end of the digit row.
 const KEY_0: u32 = 0x0030;
 /// `FcitxKey_1`, the low end of the selectable digits: `0` is routed by configuration
@@ -160,8 +163,9 @@ const KEY_A_UPPER: u32 = 0x0041;
 const KEY_Z_UPPER: u32 = 0x005a;
 /// `FcitxKey_a`, the low end of the letter row.
 const KEY_A: u32 = 0x0061;
-/// `FcitxKey_e`, the letter of the temporary-English chord.
-const KEY_E: u32 = 0x0065;
+/// `FcitxKey_e`, the letter of the temporary-English chord; crate-visible like
+/// [`KEY_SPACE`].
+pub(crate) const KEY_E: u32 = 0x0065;
 /// `FcitxKey_z`, the high end of the letter row.
 const KEY_Z: u32 = 0x007a;
 /// `FcitxKey_BackSpace`.
@@ -256,17 +260,22 @@ pub fn translate_key(event: &FcitxKeyEvent, keys: &KeyBindings) -> KeyAction {
 // ── The chords ───────────────────────────────────────────────────────────────────
 
 /// One global mode chord: a key plus the exact modifier set it requires.
-struct Chord {
+///
+/// Crate-visible because the cheat sheet is generated from the chord table rather
+/// than from a second spelling of it: a chord added here reaches the panel as soon
+/// as a name and a label are decided for it, and one removed here cannot leave a row
+/// the keyboard no longer answers.
+pub(crate) struct Chord {
     /// XKB keysym of the chord's key.
-    sym: u32,
+    pub(crate) sym: u32,
     /// The modifier set, compared for equality against `state & MODIFIER_MASK`.
     ///
     /// Equality rather than a subset test: `Ctrl+Space` and `Ctrl+Shift+Space` are
     /// different keys, and a chord that accepted a superset would take keys the desktop
     /// environment owns.
-    mask: u32,
+    pub(crate) mask: u32,
     /// What the chord means.
-    action: KeyAction,
+    pub(crate) action: KeyAction,
 }
 
 /// The global mode chords, in match order.
@@ -279,7 +288,9 @@ struct Chord {
 /// and treating it as one made every capital letter toggle the input mode; the held key is
 /// the host's own temporary switch, and [`is_shift_press`] is what keeps the routing layer
 /// from taking it. The hold semantics that replaced the chord live in [`modifier`].
-const CHORDS: &[Chord] = &[
+///
+/// Crate-visible for the reason [`Chord`] states.
+pub(crate) const CHORDS: &[Chord] = &[
     Chord {
         sym: KEY_SPACE,
         mask: CTRL,

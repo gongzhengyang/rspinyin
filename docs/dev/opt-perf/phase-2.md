@@ -19,7 +19,7 @@
   - 关键路径：`CP: 是`
   - 并行通道：`Track A 数据与并发引擎`
   - 代码落地锚点 (Code Anchor)：`crates/ime-core/src/lm/ngram.rs`、`crates/ime-core/src/lm/mod.rs`、`crates/ime-dict/src/fst_index.rs`、`crates/ime-dict/src/format/mod.rs`、`xtask/src/dictc/build.rs`、`crates/ime-core/benches/decode.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **瓶颈定位与机理剖析**：
   - **现有代码缺陷**：`crates/ime-core/src/lm/ngram.rs:70-74` 的 `InMemoryLm` 以 `BTreeMap<String, i32>`（unigram）与 `BTreeMap<String, BTreeMap<String, i32>>`（bigram）为存储。`Scorer::edge_score`（`crates/ime-core/src/lm/score.rs:289-313`）每次调用触发 **3 次字符串键 B 树遍历**：`:304` 的 `lm.unigram(word)`，`:298` 的 `lm.bigram(prev, word)` 的外层与内层。每次树节点比较是一次 `strcmp`，每次节点跳转是一次指针追逐型 cache miss。按 `HOT-03` 的同一量级估算，一次 12 音节解码可触发数百至数千次。
@@ -202,6 +202,11 @@
   - [ ] `cargo nextest run -p ime-dict -p ime-core -p xtask` 全绿；`cargo test -p ime-dict -p ime-core --doc` 全绿
   - [ ] `ime-core` 未新增对 `ime-dict` 的依赖（`crates/ime-core/Cargo.toml` 依赖方向不变，`scripts/check-deps.sh` 通过）
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-dict/src/fst_index/dict_lm.rs`（`DictLm`：UNIGRAM 段上的整数二分查找 + Q12→Q8.8 预计算换算表；落点为 `fst_index/` 子模块而非卡内草稿的顶层文件，可见性走 `pub(crate)` 路线）、`crates/ime-dict/src/format/collisions.rs`（编译期 FNV-1a 哈希唯一性拒绝，正反两路测试）、`crates/ime-fcitx5/src/addon/session.rs`（lexicon 步骤装配 `DictLm::new(&lexicon)`，`InMemoryLm` 退出生产装配，仅存测试替身与调优器模型）、`crates/ime-core/benches/decode.rs`（`decode/viterbi_dict_lm` 与 `decode/viterbi_memory_lm` 对照基准）。
+  - **验证**：`cargo nextest run --workspace --all-features` 全绿（2026-10-01，nextest 2797+443 项）；`scripts/check-deps.sh` PASS（10 crates、21 内部边，`ime-core` 无 `ime-dict` 依赖）；`just fuzz 60` 通过（`Done 2018532 runs in 61 second(s)`，`fuzz/artifacts/` 无新增）；对照基准由 `just bench`（criterion）本机采集。
+  - **已知限制**：P50 ≤ 50ns 与 ≥ 20% 的改善口径为开发机相对基线（`ASM-P06`），未跨机器复现；bigram 按容器版本 1 契约恒为 miss 惩罚（`SectionKind::Bigram` 预留）。
+
 ---
 
 ### 任务 ID：PERF-P1.01.02 Lattice 边表结构瘦身与字符计数下沉
@@ -213,7 +218,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track A 数据与并发引擎`
   - 代码落地锚点 (Code Anchor)：`crates/ime-core/src/viterbi/lattice.rs`、`crates/ime-dict/src/format/mod.rs`、`crates/ime-dict/src/fst_index/read.rs`、`xtask/src/dictc/build.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **瓶颈定位与机理剖析**：
   - **现有代码缺陷（`HOT-17`，本次审计新增）**：`crates/ime-core/src/viterbi/lattice.rs:382` 与 `:404` 对**每一条格边**执行 `u16::try_from(word.text.chars().count())`。`chars().count()` 是一次完整的 UTF-8 解码扫描，与词长线性相关。同一条词在多条跨度上被反复计数（同一 `WordRef` 在不同 `frame` 下被 push 多次），因此重复计算是结构性的。按 `HOT-03` 的同一量级（12 音节输入约 500 条边），这是每键约 500 次冗余 UTF-8 扫描。
@@ -335,6 +340,13 @@
   - [ ] 格式变更影响点清单已交付主 agent，`FORMAT_VERSION` 递增由主 agent 完成
   - [ ] `cargo nextest run -p ime-dict -p ime-core -p xtask` 全绿；`cargo test -p ime-dict -p ime-core --doc` 全绿
 
+- **验收记录**（2026-10-01，含与卡内方案的一处偏离，理由如下）：
+  - **交付物**：`crates/ime-dict/src/format/mod.rs`（`DictEntry` 增加 `char_count` 字段并随 `encode`/`decode`/校验落地，写入侧 `set_char_count`、编码偏移 `out[12]`、合法性断言一并生效）；`crates/ime-core/src/viterbi/lattice/chars.rs`（每边字符计数收敛为单一模块：UTF-8 连续字节判定 + 饱和转换，含与 `chars().count()` 逐样本一致性与饱和测试）；`crates/ime-core/benches/decode.rs` 的 `lattice/build` 基准；`source_of` 前向约束注释随实现保留。
+  - **对偏离的说明**：卡内首选方案（`WordIter::char_count_at` 随边携带容器计数）落地时发现 `WordRef` 为冻结契约、间接层把计数推给一次查表，收益被间接本身吃掉，故按卡内预留的第二路径落地——容器字段已写入（格式变更完成），格边计数用向量化字节扫描（与 `chars()` 语义等价，7 组样本含四字节字符与组合记号逐一断言）。`lattice.rs` 及其子模块的生产路径不再出现 `chars().count()`，该调用仅存于 `chars.rs` 的一致性测试与文档注释中。
+  - **尺寸断言**：`test_lattice_edge_stays_within_its_size_budget` 以 ≤ 40 字节钉住实测——卡内 ≤ 24 字节目标不可达（借用的 `WordRef` 一项即 24 字节），实测值与推导已写入测试注释，符合卡内"记录实测值并说明理由，不强行压"的豁免条款。
+  - **错误码**：卡内提议的 `dict/format/entry-layout` 未新增——条目校验（`char_count` 超上界、非零 padding、`syl_count` 越界）折叠进既有 `DictError::LengthOutOfRange` 的布局契约分支（`format/mod.rs::decode`），同一形态的畸形输入本就经由该错误上报，新增一个同义码只会让 grep 命中一半。
+  - **验证**：`cargo nextest run -p ime-dict -p ime-core -p xtask` 全绿；`lattice/build` 基准随 `just bench` 采集。
+
 ---
 
 ### 任务 ID：PERF-P1.02.01 词频写入路径批量合并与去锁
@@ -346,7 +358,7 @@
   - 关键路径：`CP: 是`
   - 并行通道：`Track A 数据与并发引擎`
   - 代码落地锚点 (Code Anchor)：`crates/ime-dict/src/user_db.rs`、`crates/ime-dict/src/user_db/evict.rs`、`crates/ime-dict/benches/userdb.rs`、`crates/ime-dict/src/user_db/tests.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **瓶颈定位与机理剖析**：
   - **现有代码缺陷**：`P0.02.02` 已把落盘搬离宿主线程，但 `record` 本身仍在宿主线程上执行：`user_db.rs:716-740` 依次做 `clock.now_nanos()`（系统调用）、`clock.now_ms()`（系统调用）、一次原子写、一次 `Mutex<PendingState>` 加解锁、一次 `HashMap::entry(Box::from(key))`（**每次新键一次堆分配**）、一次 `Mutex<LruCache>` 加解锁与 `bump`（又一次哈希查找）。即**两次系统调用 + 两次加解锁 + 一次分配 + 两次哈希**，全在宿主回调内。
@@ -430,6 +442,11 @@
   - [ ] `cargo nextest run -p ime-dict` 全绿；`cargo test -p ime-dict --doc` 全绿
   - [ ] `MissCache` 只在 `hydrated == false` 时被构造（代码审查项）
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-dict/src/user_db/flush.rs`（`record` 只取 `pending` 一把锁、时钟读取移入分支、批量阈值与间隔触发的 flush 状态机、`settle` 化的 flush 线程收尾）、`crates/ime-dict/src/user_db/cache.rs`（`MissCache` 收敛为降级态专用，`Option<Mutex<MissCache>>` 仅在未水化时构造）、`crates/ime-dict/src/user_db/evict.rs`（按 `last_used_ms` 的淘汰语义）、`crates/ime-dict/benches/userdb.rs`（`userdb/record_existing_key` / `record_new_key` / `freq_hit` / `freq_miss` / `freq_degraded` 基准）。
+  - **验证**：`test_user_db_batch_trigger_flushes_at_the_batch_size`、`test_user_db_interval_trigger_flushes_after_the_interval`、`test_user_db_freq_reads_the_pending_delta_before_the_flush`（flush 前后 `committed + pending` 读数无负增长）、`test_user_db_evicts_the_oldest_records` 与 `test_user_db_eviction_forgets_the_evicted_counts`（注入时钟驱动淘汰）随 `cargo nextest run --workspace --all-features` 全绿（2026-10-01，nextest 2797+443 项）；本机一次真实 flush 竞态缺陷（`Arc::get_mut` 被弱引用永久阻塞导致的重复开库失败）在该卡改造后的 flush 线程上发现并修复（`OnceLock` 安装 + `UserDb::Drop` 收尾），回归测试 `test_user_db_final_commit_writes_what_the_batch_left_behind` 固定。
+  - **已知限制**：`record_existing_key` P99 ≤ 5µs 与 `record_new_key` P99 ≤ 20µs 为开发机相对口径（`ASM-P06`），数值随 `just bench` 采集。
+
 ---
 
 ### 任务 ID：PERF-P1.02.02 跨线程通道契约固化（容量·背压·语义分类）
@@ -441,7 +458,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track A 数据与并发引擎`
   - 代码落地锚点 (Code Anchor)：`crates/ime-ui/src/channel.rs`、`crates/ime-ui/src/channel/command.rs`、`crates/ime-ui/src/channel/event.rs`、`crates/ime-ui/src/channel/queue.rs`、`crates/ime-ui/src/ui_thread.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **瓶颈定位与机理剖析**：
   - **现有代码缺陷**：`P0.02.02` 消除了 `CollapsingQueue` 的持锁自旋，但**通道的语义分类与容量数值没有集中定义**。`ChannelConfig`（`crates/ime-ui/src/channel.rs`）把容量与等待预算作为可配置项暴露，而 `features.md` 2.2.1/2.2.2 已把容量与溢出行为定为**契约**。二者的关系目前只存在于注释里，没有任何断言把配置与契约绑在一起——一个把 `control_capacity` 调到 1 的配置可以让 `Show`/`Hide` 对在溢出时坍缩，破坏窗口可见性状态。
@@ -537,6 +554,10 @@
   - [ ] `cargo nextest run -p ime-ui` 全绿；`cargo test -p ime-ui --doc` 全绿
   - [ ] 新增错误码已登记（主 agent 执行）
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-ui/src/channel.rs`（`ChannelSemantics` 三类语义枚举、`ChannelConfig::validate` 构造期拒绝、稳定错误码 `ui/channel/config-invalid`（`CONFIG_INVALID_CODE`，channel.rs:173）及语义分类表文档）、`crates/ime-ui/src/channel/command.rs`（`CommandChannels::new` 内调用 `validate()`，帧/控制通道实现）、`crates/ime-ui/src/channel/queue.rs`（有序控制通道）。
+  - **验证**：`test_command_sender_frames_are_latest_wins`、`test_command_sender_keeps_control_commands_in_order`（`Show`/`Hide` 保序）、`test_command_channels_reject_an_illegal_configuration`、`test_channel_config_default_matches_the_contract` 随 `cargo nextest run --workspace --all-features` 全绿（2026-10-01，nextest 2797+443 项）；`ui/channel/config-invalid` 已登记进 `features.md` 2.2.4 诊断表。
+
 ---
 
 ### 任务 ID：PERF-P1.03.01 动画期差量渲染与 damage 合并
@@ -548,7 +569,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track B 渲染与视图管线`
   - 代码落地锚点 (Code Anchor)：`crates/ime-ui/src/renderer.rs`、`crates/ime-ui/src/spring.rs`、`crates/ime-ui/src/spring/set.rs`、`crates/ime-ui/src/renderer/tests.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **瓶颈定位与机理剖析**：
   - **现有代码缺陷**：`P0.03.01` 把"本次改动区"与"上帧 damage 区"合并为一次包围盒拷贝，但**动画期的 damage 面积本身没有被约束**。Spring 动效（`spring.rs:305` 的 `step`）每帧改变高亮的位移/缩放/透明度，Slint 的软件光栅返回的 `PhysicalRegion`（`renderer.rs:305`）会覆盖高亮单元及其邻域；`record_damage`（`renderer.rs:125-155`）只在 `pending.len() > PENDING_COLLAPSE_LIMIT = 8` 时才坍缩为包围盒，即**动画期往往维持在 8 个矩形以内**，而每个矩形都要独立 blit。
@@ -645,6 +666,11 @@
   - [ ] `RenderOutcome::Rendered.rectangles` 的语义变化已写入其文档注释
   - [ ] `cargo nextest run -p ime-ui` 全绿；`cargo test -p ime-ui --doc` 全绿
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-ui/src/renderer.rs`（damage 记录即合并的 pending 列表、折叠上限、`RenderOutcome::Rendered.rectangles` 语义文档）、`crates/ime-ui/src/renderer/tests/damage.rs`（合并/裁剪/上限折叠/全量回退六项测试）、`crates/ime-ui/src/renderer/tests/animation.rs`（动画稳态帧的 blit 次数与 `full` 断言）、`crates/ime-ui/src/renderer/tests/copy.rs`（`blit_into` 计数后端）、`crates/ime-ui/benches/frame.rs` 的 `frame/animate_steady`（高亮框两格滑动的 60 帧稳态）。
+  - **验证**：`cargo nextest run --workspace --all-features` 全绿（2026-10-01，nextest 2797+443 项）；`frame/animate_steady` 随 `just bench`（criterion）采集，单帧 P99 对照 `BUDGET-LAT-03`（本机相对口径）。
+  - **已知限制**：damage 面积 ≤ 候选区 30% 的稳态断言依赖测试场景的固定几何（高亮框单格移动），非任意动画轨迹的通量上界。
+
 ---
 
 ### 任务 ID：PERF-P1.03.02 像素暂存池化与窗口回缩
@@ -656,7 +682,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track B 渲染与视图管线`
   - 代码落地锚点 (Code Anchor)：`crates/ime-ui/src/renderer/raster.rs`、`crates/ime-ui/src/renderer.rs`、`crates/ime-ui/src/platform/wayland/shm.rs`、`crates/ime-ui/src/platform/x11.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **优化定位与机理剖析**：
   - **现有代码缺陷**：`PixelScratch::ensure`（`raster.rs:127-136`）**只增不减**——其文档（`raster.rs:120-126`）明确说这是刻意的（"shrinking would hand the allocation back to the system only to ask for it again"）。该理由对**小幅波动**成立，但窗口尺寸的合法范围很宽（多屏 + 缩放 1.0–2.0 + 候选数 1–45），一次大窗口（如 2.0 缩放的 45 候选）之后的长时间小窗口（如 1.0 缩放的 1 候选）会一直背着峰值面积。
@@ -709,6 +735,11 @@
   - [ ] `BUDGET-MEM-01` 的实测值记录在案（峰值场景后的 UI 渲染层 RSS）
   - [ ] `cargo nextest run -p ime-ui` 全绿；`cargo test -p ime-ui --doc` 全绿
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-ui/src/renderer/raster.rs`（暂存池化与缩小判定：`SHRINK_AFTER_FRAMES` 帧持续小尺寸后回落容量，缩小当帧走 `full` 全量重绘分支）、`crates/ime-ui/src/renderer/tests/shrink.rs`（`test_a_shrinking_scratch_repaints_the_whole_surface`、`test_a_sustained_smaller_surface_gives_the_allocation_back`、`test_a_jittering_size_never_gives_the_allocation_back`——与增长路径共用的既有语义保留）。
+  - **验证**：`cargo nextest run --workspace --all-features` 全绿（2026-10-01，nextest 2797+443 项）；缩小的正确性断言（当帧 `full == true` 且整幅重绘）由上述测试固定。
+  - **已知限制**：`BUDGET-MEM-01` 的 RSS 实测值经由 `crates/ime-diag/src/probe/memory.rs` 的探针采集（`xtask budget --memory` 消费），其绝对数为本机口径；容量回落的上限倍数（≤ 1.5× 需求）由测试以固定场景断言。
+
 ---
 
 ### 任务 ID：PERF-P1.04.01 内存峰值与 RSS 预算断言
@@ -720,7 +751,7 @@
   - 关键路径：`CP: 是`（**关键路径第 2 环**）
   - 并行通道：`Track C 基准·监控·基建`
   - 代码落地锚点 (Code Anchor)：`crates/ime-diag/src/probe.rs`、`xtask/src/budget.rs`、`docs/dev/budgets.json`、`docs/dev/features.md`、`crates/ime-dict/src/mmap.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **瓶颈定位与机理剖析**：
   - **现有能力缺口**：`docs/dev/budgets.json` 已定义 `memory_mb.ui_rss = 18.0`、`plugin_rss = 45.0`、`dict_mmap_rss = 25.0`，`xtask budget --validate` 会把它们与 `features.md` 0.5.3 的表格双向比对——但**比对的是文档之间的数值一致性，不是实测值**。`xtask/src/budget.rs:13` 明写：「Comparing criterion output against these thresholds is a separate action.」该 action 至今不存在。
@@ -797,6 +828,11 @@
   - [ ] `cargo nextest run -p ime-diag -p xtask` 全绿；`cargo test -p ime-diag --doc` 全绿
   - [ ] 探针实现中不出现互斥锁（代码审查项：`probe/alloc.rs` 中不出现 `Mutex`）
   - [ ] 探针不记录分配内容（代码审查项）
+
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-diag/src/probe/memory.rs` 与 `probe/memory_tests.rs`（窗口化 RSS 探针：`/proc/self/status` + `smaps_rollup` 的 `Anonymous`/`Private_Dirty` 口径，arm/disarm 生命周期，483 行测试）、`crates/ime-diag/src/probe/alloc.rs`（无锁分配计数探针，`alloc-count` crate 的 `#[global_allocator]` 供集成测试安装）、`xtask/src/budget.rs`（`budget --measure`/`--check`/`--memory` 与 `budgets.json` 的比较门）、`docs/dev/budgets.json` 与 `features.md` 0.5.3 的新增行（`memory_mb.*` 窗口与 `budget/memory-exceeded`/`budget/memory-unmeasured` 诊断码）。
+  - **验证**：`cargo nextest run --workspace --all-features` 全绿（2026-10-01，nextest 2797+443 项，含 `probe/memory_tests.rs` 全部窗口断言）；`xtask budget --measure` 与 `--check` 在本机跑通；`probe/alloc.rs` 无 `Mutex`、不记录分配内容（grep 审查通过）。
+  - **已知限制**：40% 压减目标的实测对比依赖改造前基线复现（历史 commit 构建），本机 2026-09-30 的门禁记录与本次 `budget --check` 均按 `budgets.json` 现行口径判定通过；探针对容器的 cgroup 内存口径不做补偿（本机为 WSL2 直通 `/proc`）。
 
 ---
 

@@ -85,10 +85,9 @@ pub struct CandidateSurface {
     adoption_pending: bool,
     /// The overlay the engine last asked for, or `None` when none is open.
     ///
-    /// Retained rather than drawn: the component declares no overlay surface yet, so the
-    /// window keeps showing the candidate panel instead of blanking itself. Holding the
-    /// frame is what lets the overlay be drawn the moment the component can, and it keeps
-    /// the value observable rather than silently discarded.
+    /// Retained as well as drawn: the component draws the overlay as a mode of the
+    /// window, and the retained frame is what a caller observes. Holding the frame is
+    /// also what lets the overlay be redrawn the moment the component can.
     overlay: Option<Box<OverlayFrame>>,
     /// The panel's rectangle, as the interactive region last applied.
     region: Option<RectI>,
@@ -199,11 +198,12 @@ impl CandidateSurface {
                 self.apply_theme(&spec);
                 Ok(())
             }
-            // The overlay is a mode of the window rather than part of the frame, and the
-            // component declares no surface to draw it into yet. The frame is therefore
-            // retained and reported through [`Self::overlay`]; blanking the window instead
-            // would take the candidate panel away from a user who is still typing.
+            // The overlay is a mode of the window rather than part of the frame. The
+            // frame is drawn through the adapter -- `Some` covers the panel with the
+            // overlay component, `None` uncovers it -- and retained beside the frame, so
+            // a caller can observe what the window is showing.
             SurfaceUpdate::Overlay(frame) => {
+                self.adapter.apply_overlay(frame.as_deref());
                 self.overlay = frame;
                 Ok(())
             }
@@ -333,10 +333,10 @@ impl CandidateSurface {
 
     /// The overlay the engine last asked for, or `None` when none is open.
     ///
-    /// The frame is carried rather than drawn: the component declares no overlay surface
-    /// yet, so this is what a caller observes until it does. A closed overlay and one that
-    /// was never opened are the same value, which is the contract's own reading of the
-    /// latest-wins channel (`UiCommand::Overlay(None)` means "close it").
+    /// The frame is drawn through the adapter and carried beside the drawn candidate
+    /// frame. A closed overlay and one that was never opened are the same value, which
+    /// is the contract's own reading of the latest-wins channel (`UiCommand::Overlay(None)`
+    /// means "close it").
     ///
     /// # Errors
     ///

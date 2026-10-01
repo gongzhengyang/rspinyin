@@ -126,6 +126,9 @@ check-deps:
     bash scripts/check-deps.sh
 
 # unsafe and extern "C" isolation plus SAFETY comments (0.4 rule 3).
+check-no-grab:
+    bash scripts/check-no-grab.sh
+
 check-unsafe:
     bash scripts/check-unsafe.sh
 
@@ -240,6 +243,7 @@ check-self-tests:
     set -euo pipefail
     bash scripts/check-deps.sh --self-test
     bash scripts/check-unsafe.sh --self-test
+    bash scripts/check-no-grab.sh --self-test
     bash scripts/check-no-network.sh --self-test
     bash scripts/runtime-socket-check.sh --self-test
     bash scripts/check-slint-leak.sh --self-test
@@ -282,7 +286,7 @@ bench-quick:
 # Every architecture, licence, budget and self-test audit, in one list. `just ci` is
 # `check audits check-host`, so this is the only place the audit set is written down:
 # the CI workflow runs `just ci` and never names an audit of its own.
-audits: check-deps check-unsafe check-net check-slint check-ui check-dict check-licenses check-budget check-versions check-self-tests
+audits: check-deps check-unsafe check-no-grab check-net check-slint check-ui check-dict check-licenses check-budget check-versions check-self-tests
 
 # The full gate suite: the four commands of features.md 0.3, every architecture and
 # licence audit, and the host-ABI half. This is the single definition of "done", and

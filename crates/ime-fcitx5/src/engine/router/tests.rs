@@ -1,6 +1,7 @@
-//! What the router does with the configuration and with a phrase the session saves.
+//! What the router does with the configuration, with a phrase the session saves, and
+//! with the badge the header's right-hand slot shows.
 //!
-//! Two things are tested here. The first is the label the status strip carries: it comes
+//! Three things are tested here. The first is the label the status strip carries: it comes
 //! from the configuration — the active layout's name, or the engine's own Chinese /
 //! English label when the user turned the hint off — so the window shows what the document
 //! says rather than a value the router decided on its own.
@@ -11,6 +12,10 @@
 //! user's document, the table the decode reads is rebuilt around it, the key is kept when
 //! that worked, and a save that could not happen leaves the key to the application and
 //! reports why.
+//!
+//! The third is the badge: the first-run key hint and the page indicator that share the
+//! label's slot. The resolution runs where frames are posted, so these tests drive the
+//! router and read the strip off the frames the host was handed.
 //!
 //! Everything is in memory except the document itself, which is the point of the test: a
 //! phrase is saved by writing a file, so the assertion is made against what the file
@@ -47,6 +52,12 @@ const KEY_N: u32 = 0x006e;
 
 /// `FcitxKey_i`.
 const KEY_I: u32 = 0x0069;
+
+/// `FcitxKey_minus`, a page key of the shipped configuration.
+const KEY_MINUS: u32 = 0x002d;
+
+/// `FcitxKey_equal`, the other page key of the shipped configuration.
+const KEY_EQUAL: u32 = 0x003d;
 
 /// How long a test waits for the phrase writer thread to publish a row.
 ///
@@ -476,4 +487,100 @@ fn test_key_event_labels_english_mode_whatever_the_layout_is() {
     assert!(router.key_event(IC, &press(KEY_SPACE, CTRL), &mut host));
     let status = host.status.clone().expect("a frame reached the window");
     assert_eq!(status.mode_label, "小鹤");
+}
+
+// ── the badge the header's right-hand slot shows ─────────────────────────────────
+//
+// The slot is `StatusStrip::mode_label`, and the engine resolves who shows in it where the
+// frame is posted: the first-run key hint once per process, then the page indicator of a
+// multi-page list, then the mode name the three tests above assert. The hint is resolved
+// against the bindings in force, and its text is built from key names and numbers only, so
+// every assertion below is an exact string.
+
+/// The hint the shipped bindings spell out, the design's example text.
+const FIRST_RUN_HINT: &str = "Tab 换词 · ↑↓ 翻页 · Ctrl+Shift+/ 全部";
+
+#[test]
+fn test_first_frame_of_a_session_carries_the_hint_and_the_next_carries_the_mode_name() {
+    let fixture = Fixture::new("first-hint");
+    let mut router = KeyRouter::new(fixture.env(), shipped_privacy(), RoutingConfig::default());
+    router.activate_reported(IC, ordinary_report());
+    let mut host = RecordingHost::default();
+
+    // The process's first frame with candidates borrows the slot for the hint, whatever
+    // the configuration's layout name is.
+    assert!(router.key_event(IC, &press(KEY_N, 0), &mut host));
+    let status = host.status.clone().expect("a frame reached the window");
+    assert_eq!(
+        status.mode_label, FIRST_RUN_HINT,
+        "the first frame with candidates shows the key hint"
+    );
+
+    // The next frame gives the slot back: the hint shows once per process, not once per
+    // composition, so the layout's name returns inside the same composition.
+    router.key_event(IC, &press(KEY_I, 0), &mut host);
+    let status = host.status.clone().expect("a frame reached the window");
+    assert_eq!(status.mode_label, "全拼", "the layout's name returns");
+
+    // And the second composition never sees the hint again.
+    assert!(router.key_event(IC, &press(KEY_SPACE, 0), &mut host));
+    assert!(router.key_event(IC, &press(KEY_N, 0), &mut host));
+    let status = host.status.clone().expect("a frame reached the window");
+    assert_eq!(status.mode_label, "全拼");
+}
+
+#[test]
+fn test_multi_page_frame_carries_the_page_indicator() {
+    // A list that spans two pages at the shipped page size of nine (`max_candidates`
+    // of the decode contract), so the frame's own paging state has something to report.
+    let lexicon = TestLexicon::new(&[
+        ("ni", "你", 110_000, 1),
+        ("ni", "尼", 100_000, 1),
+        ("ni", "泥", 90_000, 1),
+        ("ni", "妮", 80_000, 1),
+        ("ni", "倪", 70_000, 1),
+        ("ni", "霓", 60_000, 1),
+        ("ni", "鲵", 50_000, 1),
+        ("ni", "坭", 40_000, 1),
+        ("ni", "猊", 30_000, 1),
+        ("ni", "伲", 20_000, 1),
+        ("ni", "祢", 10_000, 1),
+    ]);
+    let user = SilentUser;
+    let lm = InMemoryLm::new();
+    let decoder = Decoder::default();
+    let env = SessionEnv {
+        decoder: &decoder,
+        lexicon: &lexicon,
+        user_freq: &user,
+        lm: &lm,
+    };
+    let mut router = KeyRouter::new(env, shipped_privacy(), RoutingConfig::default());
+    router.activate_reported(IC, ordinary_report());
+    let mut host = RecordingHost::default();
+
+    // The first frame — one passthrough candidate on one page — borrows the slot for
+    // the hint, even though the list the next keystroke brings will span pages.
+    assert!(router.key_event(IC, &press(KEY_N, 0), &mut host));
+    let status = host.status.clone().expect("a frame reached the window");
+    assert_eq!(
+        status.mode_label, FIRST_RUN_HINT,
+        "the hint's one showing outranks the page indicator"
+    );
+
+    // The next frame shows the eleven-candidate list of two pages: the indicator takes
+    // the slot the hint gave back, and reads the page the frame itself is showing.
+    assert!(router.key_event(IC, &press(KEY_I, 0), &mut host));
+    let status = host.status.clone().expect("a frame reached the window");
+    assert_eq!(status.mode_label, "1/2");
+
+    // Page forward: the current page moves with the frame.
+    assert!(router.key_event(IC, &press(KEY_EQUAL, 0), &mut host));
+    let status = host.status.clone().expect("a frame reached the window");
+    assert_eq!(status.mode_label, "2/2");
+
+    // And back, because the current page is the other half of the indicator.
+    assert!(router.key_event(IC, &press(KEY_MINUS, 0), &mut host));
+    let status = host.status.clone().expect("a frame reached the window");
+    assert_eq!(status.mode_label, "1/2");
 }

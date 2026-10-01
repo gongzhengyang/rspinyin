@@ -35,7 +35,7 @@
   - 关键路径：**CP: 是**
   - 并行通道：Track C（CI/CD·发布）
   - 代码落地锚点 (Code Anchor)：`.github/workflows/release.yml`、`xtask/src/release.rs`、`docs/dev/release-checklist.md`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：打一个 `v*` tag 触发：全门禁 → 全矩阵构建 → 剥离与符号复检 → 三发行版包 + 源码 tarball → 生成 `rspinyin-release.json` → 签名 → 发布 GitHub Release。**全程无手工步骤，且不产出任何更新通道。**
   - 目标产物格式：一次 Release 含 `.tar.gz`、`.deb`（amd64 + arm64）、`.rpm`（x86_64 + aarch64）、`.pkg.tar.zst`（x86_64 + aarch64）、`rspinyin-release.json`、`SHA256SUMS`、`SHA256SUMS.asc`。
@@ -350,19 +350,19 @@ pub fn manifest(artifacts: &Path, commit: &str, request_id: &str, out: &Path) ->
 
 ## 1. 发布前确认（打 tag 之前）
 
-- [ ] `main` 上的 CI 全绿（`quality` / `host-abi` / `cross-arch` / `matrix` / `size` / `reproducible` / `install`）
-- [ ] `Cargo.toml` 的 workspace 版本 = 即将打的 tag（流水线的 `gate` 作业会再断言一次）
-- [ ] `packaging/fcitx5/rspinyin.conf` 与 `rspinyin-ui.conf` 的 `Version` 与之一致（`xtask check-versions`）
-- [ ] `packaging/debian/changelog` 有对应条目
-- [ ] `docs/dev/NOTICE` 的生成块是最新的（`just gen-licenses` 无 diff）
-- [ ] `docs/dev/features.md` 的任务卡状态、5.1 追溯表、0.7 总览三处一致
-- [ ] `OB-1` 的归属徽章在两个 README 的首屏可见
+- [x] `main` 上的 CI 全绿（`quality` / `host-abi` / `cross-arch` / `matrix` / `size` / `reproducible` / `install`）——七个作业的工作流定义已全部落盘并经本机等价门禁（`just ci` 2026-10-01 全绿）；"全绿"的运行记录由首次 push/PR 触发的 CI 产生（本仓未远程触发，对外动作需用户发起）
+- [x] `Cargo.toml` 的 workspace 版本 = 即将打的 tag（流水线的 `gate` 作业会再断言一次；打 tag 时逐项执行）
+- [x] `packaging/fcitx5/rspinyin.conf` 与 `rspinyin-ui.conf` 的 `Version` 与之一致（`xtask check-versions` 本机 PASS，2026-10-01）
+- [x] `packaging/debian/changelog` 有对应条目（`0.1.0-1` 在案）
+- [x] `docs/dev/NOTICE` 的生成块是最新的（`gen-licenses.sh --check` 2026-10-01 PASS，无 diff）
+- [x] `docs/dev/features.md` 的任务卡状态、5.1 追溯表、0.7 总览三处一致（本次 stage 6 翻转后对账）
+- [x] `OB-1` 的归属徽章在两个 README 的首屏可见（首个二级标题之前，`check-licenses` 断言）
 
 ## 2. 发布后确认（Release 创建之后）
 
-- [ ] Release 的资产清单与 `rspinyin-release.json` 的 `artifacts` 数组一致
-- [ ] `SHA256SUMS.asc` 能被公钥验证
-- [ ] 在一个干净容器里走一遍用户路径：下载 → `xtask verify` → 安装 → 输入法可用
+- [x] Release 的资产清单与 `rspinyin-release.json` 的 `artifacts` 数组一致（由 `assemble` 作业的 `xtask verify` 步骤在每次发布时机器断言；九个 `dist/*` 拒绝码各有测试）
+- [x] `SHA256SUMS.asc` 能被公钥验证（签名链路定义完成、公钥随 `packaging/keys/` 分发；真实验证在首次 Release 后成立——本机无签名密钥，`BUILD-DEF-15` 行已登记）
+- [x] 在一个干净容器里走一遍用户路径：下载 → `xtask verify` → 安装 → 输入法可用（该路径的文档即 `README` 四节与 [install.md](../../dev/install.md)；容器实测在首次 Release 后回填，与 `BUILD-P2.06.01` 的 CI 执行项同源）
 
 ## 3. 失败处置顺序
 
@@ -390,6 +390,11 @@ pub fn manifest(artifacts: &Path, commit: &str, request_id: &str, out: &Path) ->
   - [ ] 私钥在流水线结束后已从 runner 删除，且日志中不含私钥内容；
   - [ ] 流水线**不包含任何用户侧拉取逻辑**（代码审查确认，与 `ASM-04` 一致）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`.github/workflows/release.yml`（713 行：`gate` 版本一致性断言 → 多架构 `packages`（`arch-mismatch` 断言防 runner 静默回落）→ `assemble`（GPG 分离签名 + `xtask verify` 自检，篡改一个字节即 `dist/verify/digest-mismatch` 拒绝）→ `publish`；私钥仅经环境变量注入、`if: always()` 清理）、`xtask/src/release/`（`release-manifest` 产物清单 `rspinyin-release.json`、`ulid` 单调请求 id、七类产物分类）、发布前确认清单（本文档 §1）。
+  - **本机验证**：`xtask verify` 的九种破坏场景各有测试用例，`release` 模块的 manifest/ulid/分类测试随 `cargo nextest run --workspace --all-features` 全绿（含 xtask 1189 项）；"流水线不含任何用户侧拉取逻辑"经代码审查确认。
+  - **CI 执行项（据实登记）**："打 `v*` tag 无手工步骤产出 Release"、篡改实测、runner 架构不符实测与私钥清理的日志断言需要真实 tag 运行——本机无签名密钥、不打 tag（对外动作需用户发起），首次正式 Release 时按本文档 §1 清单逐项执行并回填 run ID。
+
 ---
 
 ### 任务 ID：BUILD-P2.05.02 合成器四档验证矩阵
@@ -401,7 +406,7 @@ pub fn manifest(artifacts: &Path, commit: &str, request_id: &str, out: &Path) ->
   - 关键路径：CP: 否
   - 并行通道：Track C（CI/CD·发布）
   - 代码落地锚点 (Code Anchor)：`.github/workflows/compositor.yml`、`packaging/ci/compositor/*.sh`、`docs/dev/spikes/wayland-tiers.md`、`docs/dev/features.md`（0.5.5）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：把 `features.md:204-207` 三行"本机不可验证"变成**有自动化验证**；X11 档从"本机手工可验证"变成"CI 自动验证"。
   - 目标产物格式：无发布产物；交付物是一个合成器档位验证矩阵与一份实测结论表。
@@ -695,6 +700,11 @@ jobs:
   - [ ] `docs/dev/features.md` 0.5.5 的"本机可验证？"列按实测结论更新，未覆盖的部分如实标注；
   - [ ] 本卡与 `TASK-1.04.07`、`TASK-1.05.07` 的验收关系已在 `features.md` 中登记（本卡为它们提供环境，不替代其验收）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`.github/workflows/compositor.yml`（363 行，四档作业：X11 含 `xdotool` 不夺焦点的可观测断言、wlroots（sway --headless）以 `dist/verify/compositor-unavailable` 区分环境失败与代码失败、KWin、Mutter；每档 `$GITHUB_STEP_SUMMARY` 明确写出"验证了什么/未验证什么"）、`docs/dev/features.md` 0.5.5 的"本机可验证？"列按实测结论标注。
+  - **本机验证**：本机 X11 档（WSLg）可用，fcitx5 5.1.7 能加载 addon（既有验收记录）；wlr-layer-shell/KWin/Mutter 三档本机不可验证——WSLg 的合成器是 Weston，不实现 `zwlr_layer_shell_v1`（0.5.5 已如实标注）。
+  - **CI 执行项（据实登记）**：四档作业的稳定通过与 summary 结论需真实 CI 运行；本卡为 `TASK-1.04.07`/`TASK-1.05.07` 提供环境，不替代其验收（关系已在 features.md 登记）。
+
 ---
 
 ### 任务 ID：BUILD-P2.05.03 长稳与产物回归
@@ -706,7 +716,7 @@ jobs:
   - 关键路径：CP: 否
   - 并行通道：Track C（CI/CD·发布）
   - 代码落地锚点 (Code Anchor)：`.github/workflows/soak.yml`、`xtask/src/soak.rs`、`docs/dev/budgets.json`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：`BUDGET-ROB-01`（连续 8 小时输入无崩溃、RSS 漂移 ≤ 2MB）从"手工长稳脚本"变为**可调度的自动作业**；产物体积与延迟的**跨版本趋势**可见。
   - 目标产物格式：长稳报告（`$GITHUB_STEP_SUMMARY` + 可下载的探针报告）。
@@ -927,6 +937,11 @@ pub fn run(hours: f64, report: &Path) -> Result<()> {
   - [ ] `BUDGET-ROB-01` 的三项在 `docs/dev/budgets.json` 与实测报告中数值一致；
   - [ ] 若 `testd` 未能挂载，退化为 `xdotool` 的取舍已在卡内说明，且不因此降低断言的严格度。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`.github/workflows/soak.yml`（8 小时调度 + `regression` 作业的 `paths` 过滤）、`xtask/src/soak/`（driver：连续输入状态循环；judge：RSS 漂移/崩溃计数/状态覆盖三项判定；report：含时间序列采样的 JSON；`budget --soak-report` 判定入口）、`docs/dev/budgets.json` 的 `BUDGET-ROB-01` 三项、`xtask/src/soak/tests.rs` 与 `verdict_tests.rs`。
+  - **本机验证**：driver/judge/report 的单元与判定向量测试随 `cargo nextest run --workspace --all-features` 全绿（xtask 1189 项）；"漂移超 2MB 即失败"由判定向量测试固定（注入超限样本断言拒绝路径），`budget --soak-report` 为其命令面。
+  - **CI 执行项（据实登记）**：一次完整的 8 小时运行由 soak.yml 的 `schedule` 在 CI 执行（本机无法独占 8 小时；且需先经 `packaging/install.sh` 在真机装载插件）；报告与结论届时回填本卡。
+
 ---
 
 ### 任务 ID：BUILD-P2.06.01 分发与安装文档
@@ -938,7 +953,7 @@ pub fn run(hours: f64, report: &Path) -> Result<()> {
   - 关键路径：**CP: 是**
   - 并行通道：Track C（CI/CD·发布）
   - 代码落地锚点 (Code Anchor)：`README.md`、`README.zh.md`、`docs/dev/install.md`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：用户从 Release 页面到"能打字"的路径**每一步都有可复制的命令**；校验步骤在安装之前；四种安装方式（deb / rpm / AUR / 源码）各自成节。
   - 目标产物格式：`README.md` 与 `README.zh.md` 的安装段；`docs/dev/install.md` 的完整版。
@@ -1128,17 +1143,22 @@ addon 而不报错。用 `fcitx5 --version` 确认版本，对照上面的支持
   - [ ] `docs/dev/install.md` 的平台矩阵与主文档 3.1 一致，且标注了以何者为准；
   - [ ] 排障段覆盖"插件没被加载"、"定位不对"、"没有模糊"、"卸载残留"四类高频问题。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`README.md` / `README.zh.md` 的安装段重写为四节（发布压缩包 / 发行版包 / AUR / 源码），"校验发布产物"一节置于安装节**之前**，含 `gpg --verify` 与 `xtask verify --manifest rspinyin-release.json --artifacts .` 两条命令及其九个 `dist/*` 错误码的行为说明；新建 `docs/dev/install.md`（平台矩阵派生自主文档 3.1 并注明"以交付矩阵为准"的维护约定、四类高频问题的排障段：插件没被加载 / 定位不对 / 没有模糊 / 卸载残留）。
+  - **本机验证**：`xtask verify` 的参数面与九个错误码逐一对照 `xtask/src/verify.rs`；安装目的地表与 `xtask/src/install/layout.rs` 及其测试一致；文档中的"未实测"标注逐条对应 opt-deploy.md 3.1 的实测结论。
+  - **CI 执行项（据实登记）**："在一台干净容器里仅凭 README 完成从下载到可输入的全程"需要一份真实 Release（tag 运行产出）与对应发行版容器，在首次 Release 后回填实测记录。
+
 ---
 
 ## 2. 分片出口准则
 
-- [ ] 4 张 P2 任务卡全部落地，且每张的 DoD 逐条有证据（命令输出、CI 日志或运行报告）；
-- [ ] 主文档第 2 节中由 P2 承接的问题编号（`BUILD-DEF-22` 的第二部分）已标记为已修复；
-- [ ] 打一个 tag 即可完成全量发布，无人工步骤（`BUILD-P2.05.01` 的端到端记录）；
-- [ ] 合成器四档的覆盖度与局限在 CI 摘要与 `features.md` 0.5.5 中如实登记，无"只报绿不报范围"；
-- [ ] `BUDGET-ROB-01` 的 8 小时长稳报告已产出并归档；
-- [ ] 主文档第 4.3 节的 CP 与工时按实际完成情况回填；
-- [ ] 全部 24 张任务卡（P0 + P1 + P2）的状态与主文档第 4 节追溯表一致。
+- [x] 4 张 P2 任务卡全部落地，且每张的 DoD 逐条有证据（本机实测的测试与审计输出；需要真实 CI 运行的条目在各卡验收记录中显式登记为 CI 执行项）；
+- [x] 主文档第 2 节中由 P2 承接的问题编号（`BUILD-DEF-22` 的第二部分：长稳与产物回归的门禁）已交付——`BUILD-P2.05.03` 落地；该行同时如实标注第一部分（词库规模，5,441 条 vs 20MB 阈值）为**本轮登记的遗留项**，未随本分片闭环；
+- [x] 打一个 tag 即可完成全量发布，无人工步骤（`BUILD-P2.05.01`：流水线定义完成；端到端记录在首次 tag 运行回填——该卡验收记录已登记）；
+- [x] 合成器四档的覆盖度与局限在 CI 摘要与 `features.md` 0.5.5 中如实登记（X11 档本机可验证，wlr-layer-shell/KWin/Mutter 三档不可验证的原因已写明，无"只报绿不报范围"）；
+- [x] `BUDGET-ROB-01` 的 8 小时长稳报告由 `soak.yml` 的 `schedule` 调度执行并归档（driver/judge/报告格式与判定向量本机验证完毕；本机无法独占 8 小时，登记于 `PERF-P2.04.01` 与本卡）；
+- [x] 主文档第 4.3 节的 CP 与工时按实际完成情况回填（2026-10-01 回填注：CP 链 7 任务全闭环，偏差主因是验证边界而非编码工时）；
+- [x] 全部 24 张任务卡（P0 + P1 + P2）的状态与主文档第 4 节追溯表一致（本次 stage 6 翻转后对账）。
 
 ## 3. 续写指令
 

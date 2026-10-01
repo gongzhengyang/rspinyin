@@ -8,6 +8,12 @@
 //! recorded through the privacy gate, a phrase the user saved is appended to their own
 //! document, and a condition the host should know about is reported.
 //!
+//! The one value it rewrites on the way through is the header's right-hand slot. The
+//! status strip the engine wrote before the step carries the standing answer, and a frame
+//! is only resolved when it is posted — the point at which the frame carries its own
+//! candidates and page state, which is what the badge resolution reads. See the
+//! `engine::badge` module for the ordering it applies.
+//!
 //! # The two effects with a sequel
 //!
 //! [`Effect::Commit`] and [`Effect::SetClientPreedit`] with `None` both describe work the
@@ -25,9 +31,11 @@
 //! Plain Rust over the [`Host`] trait: nothing here holds a host object of its own, and
 //! every call that leaves the process goes through the boundary the caller passed in.
 
+use ime_core::state::paging::MAX_REACHABLE_CANDIDATES;
 use ime_core::state::{AnchorHint, Effect, Effects, SessionEvent, step};
-use ime_types::{HideReason, ImeError, UiCommand};
+use ime_types::{HideReason, ImeError, UiCommand, UiFrame};
 
+use crate::engine::badge;
 use crate::engine::host::Host;
 use crate::ffi::emit_diagnostic;
 use crate::privacy_impl::LearningGate;
@@ -74,7 +82,7 @@ impl Context {
     pub(super) fn run(
         &mut self,
         event: SessionEvent,
-        ctx: &StepCtx<'_, '_>,
+        ctx: &mut StepCtx<'_, '_>,
         host: &mut dyn Host,
     ) -> bool {
         let mut acted = false;
@@ -94,12 +102,15 @@ impl Context {
 
     /// Executes one effect list against the host.
     ///
+    /// Takes the context mutably because a posted frame consumes the process-local badge
+    /// state: the first-run hint is shown once, and showing it is a write.
+    ///
     /// # Panics
     ///
     /// Never.
     fn apply_effects(
-        &self,
-        ctx: &StepCtx<'_, '_>,
+        &mut self,
+        ctx: &mut StepCtx<'_, '_>,
         effects: Effects,
         host: &mut dyn Host,
     ) -> Applied {
@@ -119,7 +130,12 @@ impl Context {
                     applied.acted = true;
                     applied.preedit_cleared = true;
                 }
-                Effect::SendFrame(frame) => {
+                Effect::SendFrame(mut frame) => {
+                    // The frame is complete here — the step's candidates and the page
+                    // they fill are in it — which is what the header's slot resolution
+                    // reads and what the pre-step write into the frame context could
+                    // not have known.
+                    self.write_badge(ctx, &mut frame);
                     host.post_ui(self.ic, UiCommand::Frame(frame));
                     applied.acted = true;
                 }
@@ -181,6 +197,45 @@ impl Context {
             }
         }
         applied
+    }
+
+    /// Resolves the header's right-hand slot into a frame about to be posted.
+    ///
+    /// The frame context the engine wrote before the step carries the standing answer —
+    /// the mode name — and the frame the step produced now carries what that write could
+    /// not have known: whether it has candidates, and which page they fill. That is what
+    /// the badge resolution reads, and the process-local state it consumes travels in the
+    /// step context, so the first-run hint is shown exactly once for the whole process,
+    /// whatever input context the first frame happens to belong to. The mode label the
+    /// resolver falls back to is read from the same mode bits the standing answer was,
+    /// so the two can never disagree about what the mode is.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    fn write_badge(&mut self, ctx: &mut StepCtx<'_, '_>, frame: &mut UiFrame) {
+        let mode = self
+            .modes
+            .mode_label(self.session.temp_english, ctx.config.scheme_hint);
+        let has_candidates = !frame.candidates.is_empty();
+        // The overflow is a fact about the whole decoded list, which the frame cannot
+        // carry: its own page total is capped at the display limit, so a sixth page
+        // reaches the window as a fifth. The session's full list is what the question
+        // is asked of.
+        let overflow =
+            self.session.decoded().candidates.len() > usize::from(MAX_REACHABLE_CANDIDATES);
+        let (label, overflow_started) = badge::resolve(
+            mode,
+            &ctx.config.keys,
+            frame.page,
+            has_candidates,
+            overflow,
+            &mut *ctx.badge,
+        );
+        if overflow_started {
+            emit_diagnostic(badge::UI_CANDIDATE_OVERFLOW_CODE);
+        }
+        frame.status.mode_label = label;
     }
 
     /// Writes the composing text where the configuration says it goes.

@@ -27,7 +27,7 @@
   - 关键路径：**是**
   - 并行通道：Track C 控件与动态反馈
   - 代码落地锚点：`crates/ime-ui/src/surface.rs`（新建）、`crates/ime-ui/src/hit.rs`（新建）、`crates/ime-ui/src/geometry.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **现有代码具体病灶**：`geometry.rs:296` 的 `Geometry::hit_map` 已经算出「每个可见候选在**容器坐标**下的物理像素矩形 + 全局候选索引」，
@@ -217,6 +217,11 @@
   - [ ] **性能**：一次命中查找为 ≤ 9 次矩形判定，**零分配**；指针事件处理不阻塞 `poll` 循环（一次最多 64 个事件，`platform/x11.rs:56`）。
   - [ ] `DismissReason::OutsideClick` 不可达的结论写入验收记录并上报主 agent（冻结契约说明，不改契约）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-ui/src/interaction.rs` 与 `interaction/route.rs`（命中图消费：窗口相对物理像素 → 容器坐标 → `hit_map` 命中 → 全局候选索引的唯一换算链；`route/tests.rs` 683 行）、`crates/ime-ui/src/platform/mod.rs` 的 `set_input_region` 生产接线（容器矩形之外点击穿透，:660/:675 两处调用）、16ms 悬停节流与"仅索引变化时投递"（`test_route_hover_inside_the_throttle_window_keeps_the_newest_index`）、滚轮翻页与首页上滚 `Dismiss`、右键经有序队列消散、`adopt` 后静止指针重命中。
+  - **验证**：`cargo nextest run --workspace --all-features` 全绿（2026-10-01，ime-ui 497 项，全部 MockBackend 无显示服务器）；`test_route_round_trips_every_cell_at_every_supported_scale` 逐格×逐缩放档往返；阴影带点击不选中（`test_route_pointer_in_the_shadow_band_selects_nothing`）。
+  - **已知限制**：拉伸后单元格一致性由 `UI-OPT-P1.05.02` 的 `panel_and_cells` 保证（命中图与高亮框共用同一 `DrawState.cell_width`）。
+
 ---
 
 #### 任务 ID：`UI-OPT-P2.03.01` 候选单元五态与键盘 Focus Ring
@@ -229,7 +234,7 @@
   - 关键路径：**是**
   - 并行通道：Track C 控件与动态反馈
   - 代码落地锚点：`crates/ime-ui/ui/candidate.slint`（`CandidateCell`、`CandidateWindow`）、`crates/ime-ui/src/surface.rs`、`crates/ime-ui/src/spring/transition.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **五态零实现（`UI-DEF-10`）**：3.4 的整张表（`Default` / `Hover` / `Active` / `Focus Ring` / `Disabled`）
@@ -403,6 +408,11 @@
     结论写入验收记录。
   - [ ] **性能**：按下动效的损伤区 ≤ 单个单元格矩形；`idle_redraw_count = 0` 在动效结束后成立。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-ui/src/adapter/cell.rs` 的 `VisualState`（`Disabled > Active > Focus Ring > Hover > Default` 排序在适配器解析、组件只画三个互斥布尔）与 `PointerState::for_page`（全局编号→页内位置的唯一换算）、`crates/ime-ui/ui/candidate_grid.slint` 的五态绘制（Active 实底、Focus Ring 的 `1dp` 内缩描边 + `state-selected-bg`——三层景深 `Elevated` 层的首次落点、Hover 底色、Disabled `0.32` 可辨淡化——非"变灰消失"）、`crates/ime-ui/src/adapter/highlight.rs`（高亮框格间弹簧滑动的矩形源）、`crates/ime-ui/src/renderer/tests/animation.rs`（181ms 弹簧、飞行中改向、动效后静止）。
+  - **验证**：`test_visual_state_resolve_follows_the_design_priority`（键盘高亮压过悬停）、`test_cell_resolve_press_outranks_the_highlight_on_one_cell`、`test_highlight_rect_lands_on_the_named_cell` 等随 `cargo nextest run --workspace --all-features` 全绿（2026-10-01）。
+  - **对偏离的说明**：Active 的"0.97 缩小 60ms"按压动效未在组件内实现——`candidate_grid.slint` 注释写明理由：静态 transform 是跳变不是按压，动效帧须由 3.3.2 的帧序列驱动；软件渲染器无 transform 属性，几何缩放属于渲染器工作。该 DoD 项据实登记为待 3.3.2 承接。指针形状：`SurfaceBackend` 无光标 API，Hover/Disabled 均不改变指针（天然满足，写入交付记录）。
+
 ---
 
 #### 任务 ID：`UI-OPT-P2.07.01` 降级态、加载占位与状态反馈
@@ -415,7 +425,7 @@
   - 关键路径：否
   - 并行通道：Track C 控件与动态反馈
   - 代码落地锚点：`crates/ime-ui/ui/candidate.slint`（`CandidateWindow`、新增 `Placeholder`）、`crates/ime-ui/src/adapter/frame.rs`、`crates/ime-ui/src/surface.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **状态反馈缺失（`UI-DEF-19`）**：`StatusStrip` 的五个字段中只有 `mode_label` 有落点（`P1.02.01` 把它作为回退文本），
@@ -581,6 +591,11 @@
     只读模式的状态簇锁图标可见（`P1.02.01`）。
   - [ ] `StatusStrip` 五个字段与 3.6 的三类降级文本**全部**有落点。
 
+- **验收记录**（2026-10-01，含两处与本卡定位的收敛，理由如下）：
+  - **交付物**：①**已达上限**：`crates/ime-ui/src/adapter/frame.rs` 的 `input_full` 派生（preedit 字符数 ≥ `PREEDIT_MAX_CHARS`，视图层自有知识）+ `DrawDelta.input_full` 增量 + `candidate.slint` 的 Header `input-full` 属性与 `已达上限` 提示文本（状态簇左侧、11sp 档、无色彩告警），adapter `set_input_full` 写入，4 个测试（到达上限、增量只写变化、面板几何不受扰）；②**`5/5+` 溢出**：`crates/ime-fcitx5/src/engine/badge.rs` 的 `BadgeState::note_overflow`（每会话一次）+ `UI_CANDIDATE_OVERFLOW_CODE`（`ui/candidate/overflow`，已登记 features.md 2.2.4）+ `render` 的 `+` 后缀（页数封顶后第五页不再读作最后一页），`write_badge` 从会话全列表判溢出（帧内 `PageState.total` 已封顶，帧载不动这一事实），3 个测试；③**状态反馈收敛**：页码指示与 `KEY-P2.02.03` 的徽章在同一 `mode_label` 槽落地（`1/2`/`5/5+`），五字段中 `mode_label`/`full_width`/`punctuation_full`/`readonly` 已有落点，`has_user_dict_hit` 无槽（`P1.02.01` 记录的刻意取舍）。
+  - **对偏离的说明**：①**加载占位与词库不可用文案未落地**——`dict_loading`/`dict_unavailable` 是引擎侧事实，而 ADR-0003 拆分后两个 cdylib 各持一份静态、`StatusStrip` 为冻结契约无字段可载（本卡写作早于拆分定案）；在契约携带该信号前，占位组件只能是不可达的死 UI，按零桩代码纪律不落地，登记为**需 ADR 扩展的后续任务**；②卡内的 α 0.35↔1.0 翻页渐变未实现——本机软件渲染器 opacity 不生效（P0 卡登记的缺陷），且徽章页码经引擎 `mode_label` 常显，渐变失去对象。
+  - **验证**：`test_draw_state_input_full_follows_the_preedit_ceiling`、`test_draw_state_input_full_is_written_only_when_it_changes`、`test_render_overflow_appends_the_plus_to_the_indicator`、`test_resolve_reports_the_overflow_once_and_only_once` 随 `cargo nextest run --workspace --all-features` 全绿（2026-10-01）。
+
 ---
 
 #### 任务 ID：`UI-OPT-P2.01.01` 主题 crossfade 与光学微调
@@ -593,7 +608,7 @@
   - 关键路径：否
   - 并行通道：Track C 控件与动态反馈
   - 代码落地锚点：`crates/ime-ui/ui/theme.slint`、`crates/ime-ui/src/theme.rs`、`crates/ime-ui/src/surface.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **切换硬闪（`UI-DEF-25`）**：`theme.rs:467-471` 的 `apply()` 直写 `set_dark` / `set_accent` / `set_base_alpha`
@@ -755,6 +770,11 @@
     总延迟 ≤ 300ms。
   - [ ] **光学校准**：1x 与 2x 下 CJK 字面框中心与容器中线偏差 ≤ **0.5dp**；`optical-nudge` 的最终值写入验收记录。
   - [ ] `check-ui-spec.py` 的端点比对通过；两份调色板（`.slint` 与 `theme.rs`）仍逐项一致。
+
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-ui/src/spring/transition.rs`（主题 crossfade 用 ease-in-out 曲线：`test_theme_crossfade_uses_the_ease_in_out_curve`、`test_status_crossfade_completes_in_the_configured_time`、`test_ease_in_out_is_symmetric_about_the_midpoint`；appear/disappear 的 90ms 通道）、`crates/ime-ui/src/theme.rs` 双调色板（亮/暗主题切换的渐变源）、`Theme.optical-nudge` 光学对齐（`candidate_grid.slint:153` 候选文本与 Header 共用一条光学基线）。
+  - **验证**：随 `cargo nextest run --workspace --all-features` 全绿（2026-10-01，ime-ui 497 项，含 transition 模块全部曲线端点/单调性/收敛测试）；`scripts/check-ui-spec.sh` PASS（颜色三向比对含 theme.rs 两个调色板，调色板改动不可能漂移）。
+  - **已知限制**：crossfade 的中间帧在软件渲染器上以每帧全量重绘为代价（damage 测试记录其上界），幅度受 120ms 通道时长约束。
 
 ---
 

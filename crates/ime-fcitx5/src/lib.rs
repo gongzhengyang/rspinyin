@@ -22,6 +22,7 @@
 //! tests run on machines without the Fcitx5 development packages installed.
 
 pub mod addon;
+pub mod cheatsheet;
 pub mod effects;
 pub mod engine;
 pub mod privacy_impl;

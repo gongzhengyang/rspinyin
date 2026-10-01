@@ -53,6 +53,65 @@ asserts that a live Fcitx5 session holding the plugin has no IP socket at all.
 
 ## Install
 
+Four ways to install, each in its own section below. Whichever you pick, verify what
+you downloaded **before** installing it — [Verify a release](#verify-a-release) is the
+same first step for every path.
+
+1. [From a release archive](#from-a-release-archive) — no Rust toolchain needed.
+2. [From a distribution package](#from-a-distribution-package) — `.deb` / `.rpm`.
+3. [From the AUR](#from-the-aur) — Arch Linux.
+4. [From source](#from-source) — the development path.
+
+### Verify a release
+
+A release set is a directory holding the artifacts, the manifest
+`rspinyin-release.json` that describes them, the checksum list `SHA256SUMS` and its
+detached signature `SHA256SUMS.asc`. Two independent checks, checksum first:
+
+```bash
+# Import the signing key once (bundled with the release; no keyserver is contacted).
+gpg --import packaging/keys/rspinyin-signing-key.asc
+gpg --verify SHA256SUMS.asc SHA256SUMS
+
+# Then let the release's own verifier check every artifact against the manifest.
+xtask verify --manifest rspinyin-release.json --artifacts .
+```
+
+`xtask verify` exits non-zero and names one of nine stable `dist/*` reasons if a file
+is missing, altered, unsigned or mismatched; it writes nothing, so it is safe to run
+on a read-only mount. A verification that failed must not be installed.
+
+### From a release archive
+
+The archive ships a compiled `base.dict`, so the only tool it needs is a C compiler
+and the Fcitx5 development packages:
+
+```bash
+tar xf rspinyin-<version>-x86_64.tar.gz && cd rspinyin-<version>
+bash packaging/install.sh
+```
+
+### From a distribution package
+
+The packages carry the same payloads and install them where each distribution's own
+Fcitx5 looks for addons:
+
+```bash
+sudo apt install ./rspinyin_<version>_amd64.deb     # Debian / Ubuntu
+sudo dnf install ./rspinyin-<version>-1.x86_64.rpm  # Fedora
+```
+
+### From the AUR
+
+```bash
+# With an AUR helper:
+paru -S rspinyin
+# Or by hand:
+git clone https://aur.archlinux.org/rspinyin.git && cd rspinyin && makepkg -si
+```
+
+### From source
+
 ```bash
 # 1. Fetch the dictionary sources and compile them (writes data/compiled/base.dict).
 data/fetch.sh

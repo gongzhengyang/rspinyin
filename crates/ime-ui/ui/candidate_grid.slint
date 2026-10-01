@@ -96,6 +96,23 @@ export component CandidateGrid inherits VerticalLayout {
     padding: root.area-padding;
     spacing: root.grid-gap;
 
+    // The row's share of the panel, and the centring of what is left over. The reference
+    // frame is a *full* row -- `max-per-row` cells -- rather than the count this page
+    // happens to hold: the last row of a short page then lines up on the left with the
+    // rows above it instead of drifting to its own centre, and a page the stretch has
+    // already filled computes a lead of zero and loses nothing.
+    //
+    // The width is read from the grid itself rather than passed in: the component knows
+    // both numbers, and a second copy of the arithmetic on the Rust side would be one
+    // more thing to keep in step.
+    private property <length> row-width:
+        root.max-per-row * root.cell-width
+        + (root.max-per-row - 1) * root.grid-gap;
+    private property <length> lead:
+        max(0px, (root.width - 2 * root.area-padding - self.row-width) / 2);
+
+    padding-left: root.area-padding + self.lead;
+
     // The adapter's count clamped against the model it wrote with it: the two always agree,
     // and clamping means a mismatched pair draws the cells that exist rather than reaching
     // past the end of the model.

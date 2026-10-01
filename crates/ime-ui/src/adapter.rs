@@ -34,6 +34,7 @@
 
 use std::rc::Rc;
 
+use ime_types::ui::OverlayFrame;
 use ime_types::{ImeError, PageDir, Placement, Rgba8, ThemeSpec, UiFrame};
 use slint::{Color, ComponentHandle as _, SharedString, VecModel};
 
@@ -48,6 +49,7 @@ mod arrow;
 mod cell;
 mod frame;
 mod highlight;
+mod overlay;
 mod preedit;
 
 #[cfg(test)]
@@ -289,6 +291,39 @@ impl Adapter {
         theme::apply(&mut sink, tokens);
         self.window
             .set_container_radius(f32::from(spec.corner_radius_dp));
+    }
+
+    /// Draws the overlay mode, or returns the window to the candidate view.
+    ///
+    /// `Some(frame)` covers the panel with the overlay component and fills it from the
+    /// engine's frame; `None` hides the overlay and uncovers the candidate panel the
+    /// window was drawing, which has been untouched since the overlay went up -- that is
+    /// what makes closing a panel restore the candidates without a re-decode.
+    ///
+    /// Every call writes, and the caller repaints: the overlay channel is a mode rather
+    /// than a frame, so the call runs when the host opens or closes a panel and never per
+    /// keystroke, and the cost is a handful of property stores beside one repaint
+    /// request.
+    ///
+    /// # Parameters
+    ///
+    /// * `frame` -- the overlay frame to draw, or `None` when no panel is open.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn apply_overlay(&mut self, frame: Option<&OverlayFrame>) {
+        self.window.set_overlay_visible(frame.is_some());
+        if let Some(frame) = frame {
+            self.window
+                .set_overlay_title(SharedString::from(frame.title.as_str()));
+            self.window.set_overlay_sections(overlay::sections(frame));
+        }
+        self.request_repaint();
     }
 
     /// Writes the font family the window draws with.
@@ -548,6 +583,9 @@ impl Adapter {
         if delta.mode_label {
             self.window
                 .set_mode_label(SharedString::from(self.state.mode_label.as_str()));
+        }
+        if delta.input_full {
+            self.window.set_input_full(self.state.input_full);
         }
         if delta.item_count {
             self.window.set_item_count(self.state.item_count);

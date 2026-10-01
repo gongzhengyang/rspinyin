@@ -34,7 +34,7 @@
 use ime_types::{Candidate, StatusStrip, UiFrame};
 
 use super::cell::{CellGeometry, CellState, Measure, PointerState, replace, write_text};
-use super::preedit::PreeditLayout;
+use super::preedit::{PREEDIT_MAX_CHARS, PreeditLayout};
 use crate::layout::{self, GridLayout, Metrics};
 
 /// The window's drawable state, as the component's properties hold it.
@@ -75,6 +75,9 @@ pub struct DrawState {
     pub punctuation_full: bool,
     /// Whether the status strip reports read-only mode (3.6's lock).
     pub readonly: bool,
+    /// Whether the preedit sits at the input cap, which the header answers with the
+    /// "已达上限" hint.
+    pub input_full: bool,
     /// The cells of the page, in the order the frame holds them.
     ///
     /// Empty for a frame with no candidate, which is what makes the grid take no height and
@@ -118,6 +121,8 @@ pub struct DrawDelta {
     pub status: bool,
     /// What a cell draws changed: a candidate, its text or its state.
     pub cells: bool,
+    /// Whether the input-full hint changed.
+    pub input_full: bool,
 }
 
 impl DrawDelta {
@@ -146,7 +151,8 @@ impl DrawDelta {
             || self.header_height
             || self.show_annotation
             || self.status
-            || self.cells)
+            || self.cells
+            || self.input_full)
     }
 }
 
@@ -231,13 +237,18 @@ impl DrawState {
             .unwrap_or(u8::MAX)
             .min(columns)
             .max(1);
-        let cell = layout::cell_width(
+        // One call, not two: the panel is sized from the natural cells, the minimum-width
+        // floor is applied, and the cells are then stretched into whatever the settled
+        // panel leaves. Splitting the steps would let a caller pair a container with a
+        // cell width that does not fill it, and an unfilled panel is the void this pass
+        // exists to remove.
+        let (container, cell) = layout::panel_and_cells(
             &[widest_cell(frame, show_annotation, metrics, measure)],
             on_row,
+            &grid,
             max_container_width,
             metrics,
         );
-        let container = layout::container_size(&grid, cell.width, max_container_width, metrics);
         let geometry = CellGeometry {
             position: 0,
             width: cell.width,
@@ -263,8 +274,14 @@ impl DrawState {
             metrics.font_size_header,
             &mut header_measure,
         );
+        // The input cap is the one degraded state the view can know on its own: the
+        // preedit is the input, and a preedit at the character ceiling means further
+        // keys are dropped. 3.6 answers it with a short hint beside the status cluster
+        // rather than with silence, which is what a user would read as breakage.
+        let input_full = frame.preedit.text.chars().count() >= PREEDIT_MAX_CHARS;
         DrawDelta {
             preedit,
+            input_full: replace(&mut self.input_full, input_full),
             mode_label: write_text(&mut self.mode_label, &frame.status.mode_label),
             item_count: replace(&mut self.item_count, count(frame.candidates.len())),
             max_per_row: replace(&mut self.max_per_row, i32::from(columns)),

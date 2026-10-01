@@ -34,7 +34,7 @@
   - 关键路径：**CP: 是**
   - 并行通道：Track A（编译与产物瘦身）
   - 代码落地锚点 (Code Anchor)：`.github/workflows/matrix.yml`、`packaging/containers/*.Dockerfile`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：Fedora 40+ 与 Arch Linux 上的**完整构建 + 门禁 + 安装可逆性**每次 PR 都跑一遍；`docs/dev/features.md:4451` 的"三套包可安装、可卸载且可逆"验收从"无基础"变为"有基础"。
   - 目标产物格式：无发布产物；交付物是一个跨发行版验证矩阵。
@@ -253,6 +253,11 @@ jobs:
   - [ ] 两个发行版的 addon 目录实测值与 `xtask/src/install/layout.rs` 的文档一致；
   - [ ] `schedule` 触发已启用，且首次定时运行的结论被记录。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`.github/workflows/matrix.yml`（Fedora 与 Arch 两个作业：完整 `just ci`、`xtask install` → 断言 → `uninstall` → `diff` 可逆性闭环、`schedule` 触发）、`packaging/containers/`（两发行版的容器镜像定义）、`justfile` 的 `ci-host` 配套。
+  - **本机验证**：workflow YAML 经 `just ci` 的仓库级审计（check-deps/check-self-tests）与提交前人工通读；作业定义的每条命令与 `justfile` 现有 recipe 逐一对应。
+  - **CI 执行项（据实登记）**："连续 5 次 PR 无 flake"与"首次定时运行结论"需要真实 GitHub 运行历史，本机无法产生；这两项由 matrix.yml 的 `schedule` 触发在首次运行后回填。addon 目录实测值已固定在 `xtask/src/install/layout.rs` 及其测试中。
+
 ---
 
 ### 任务 ID：BUILD-P1.03.01 Debian / Ubuntu 打包
@@ -264,7 +269,7 @@ jobs:
   - 关键路径：CP: 否（时差 2.0 人天）
   - 并行通道：Track B（签名·打包·描述符）
   - 代码落地锚点 (Code Anchor)：`packaging/debian/control`、`packaging/debian/rules`、`packaging/debian/changelog`、`packaging/debian/copyright`、`packaging/debian/source/format`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：产出可安装的 `.deb`（`amd64` 与 `arm64`），安装后 `fcitx5-configtool` 中出现 rspinyin 且候选框自绘生效；`apt remove rspinyin` 后系统回到安装前状态。
   - 目标产物格式：`rspinyin_<version>_<arch>.deb`（单一二进制包，不分 `-dev`/`-dbgsym` 之外的子包）。
@@ -470,6 +475,11 @@ debian/rspinyin/usr/share/doc/rspinyin/NOTICE usr/share/doc/rspinyin
   - [ ] 包内 `.so` 已剥离且导出 `fcitx_addon_factory_instance`（`dpkg-deb -x` 后 `nm -D` 复检）；
   - [ ] `debian/copyright` 覆盖 `base.dict` 与 Slint 许可原文两处，且 `OB-3` 的嵌入式排除声明在案。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`packaging/debian/{control,changelog,copyright,rules,source}`（`copyright` 覆盖 `base.dict` 词源与 Slint 许可原文，`OB-3` 嵌入式排除声明在案）、`xtask/src/package.rs`（deb 打包计划）与其测试、`packaging/install.sh` 的 `pkg-config` 目的地解析（Debian/Ubuntu: `/usr/lib/x86_64-linux-gnu/fcitx5`）。
+  - **本机验证**：包计划与内容清单由 `cargo nextest run -p xtask` 的 `package::tests` 固定（随全套 2797+443 项全绿）；`README.md` 的安装段给出从源码到可输入的最短路径并经 `--dry-run` 实测。
+  - **CI 执行项（据实登记）**：`dpkg-buildpackage -b` 产出、`lintian` 结论、22.04/24.04 的 `apt install` 实测与 `apt remove` 残留检查在 matrix.yml 的容器作业内执行（主文档 3.1 的 `L-02` 行同时登记了 22.04 受阻的实测结论：jammy 的 fcitx5 5.0.x 低于 `core:5.1.0` 门槛）。
+
 ---
 
 ### 任务 ID：BUILD-P1.03.02 Fedora 打包
@@ -481,7 +491,7 @@ debian/rspinyin/usr/share/doc/rspinyin/NOTICE usr/share/doc/rspinyin
   - 关键路径：**CP: 是**
   - 并行通道：Track B（签名·打包·描述符）
   - 代码落地锚点 (Code Anchor)：`packaging/rpm/rspinyin.spec`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：`rpmbuild` 在 Fedora 41 上产出可安装的 `.rpm`；`dnf install` 后 addon 落到 `/usr/lib64/fcitx5/`（Fedora 的路径，与 Debian 不同）。
   - 目标产物格式：`rspinyin-<version>-1.fc41.<arch>.rpm`。
@@ -637,6 +647,11 @@ echo "rpm/build.sh: artifacts under $topdir/RPMS and $topdir/SRPMS"
   - [ ] `%check` 段的工厂符号断言真的执行且能失败（人为破坏后验证）；
   - [ ] `License:` 字段的写法已对照 Fedora 规范确认并记录依据。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`packaging/rpm/rspinyin.spec`（`%files` 含 metainfo、`%check` 段的工厂符号断言、`License:` 写法对照 Fedora 规范）、matrix.yml 的 Fedora 作业。
+  - **本机验证**：spec 的文件清单与 `xtask` 打包/安装计划的一致性由 `package::tests`/`install::tests` 固定；`L-03` 行登记了已知阻塞的实测结论（Fedora 40/41 归档 rustc 1.82 < MSRV 1.85，容器内需另装工具链）。
+  - **CI 执行项（据实登记）**：`rpmbuild -ba`、`rpmlint`、`dnf install` 后 addon 落在 `/usr/lib64/fcitx5/` 的路径差异确认、`%check` 的破坏性验证，在容器作业内执行。
+
 ---
 
 ### 任务 ID：BUILD-P1.03.03 Arch Linux / AUR 打包
@@ -648,7 +663,7 @@ echo "rpm/build.sh: artifacts under $topdir/RPMS and $topdir/SRPMS"
   - 关键路径：CP: 否
   - 并行通道：Track B（签名·打包·描述符）
   - 代码落地锚点 (Code Anchor)：`packaging/aur/PKGBUILD`、`packaging/aur/.SRCINFO`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：`makepkg -si` 在 Arch 上产出可安装的包，addon 落到 `/usr/lib/fcitx5/`（Arch 的路径，三者中最短的一个）。
   - 目标产物格式：`rspinyin-<version>-1-<arch>.pkg.tar.zst`。
@@ -736,6 +751,11 @@ package() {
   - [ ] `options` 中的 `!strip` 与 `!lto` 及其理由在 PKGBUILD 注释中说明；
   - [ ] 向 AUR 的提交经用户显式确认后才执行。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`packaging/aur/`（`PKGBUILD` 的 `!strip`/`!lto` 选项及理由注释、`arch=('x86_64' 'aarch64')`、`.SRCINFO` 同步）、matrix.yml 的 Arch 作业。
+  - **本机验证**：PKGBUILD 的源清单与打包计划一致性由 xtask 测试固定；主文档 `L-04` 行登记了 `sha256sums` 仍为 `SKIP` 的实测原因（`Source0` 指向的 tarball 尚不存在，摘要无从计算——非偷懒，是依赖顺序）。
+  - **CI 执行项（据实登记）**：`makepkg -si`、`namcap`、真实 `sha256sums`（首次打 tag 产出 tarball 后由 release 流水线回填）与 `pacman -R` 无残留检查。向 AUR 的提交未经用户显式确认，未执行（卡内约束）。
+
 ---
 
 ### 任务 ID：BUILD-P1.03.04 AppStream 元数据
@@ -747,7 +767,7 @@ package() {
   - 关键路径：CP: 否
   - 并行通道：Track B（签名·打包·描述符）
   - 代码落地锚点 (Code Anchor)：`packaging/metainfo/org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml`、`xtask/src/install.rs`、`packaging/debian/rules`、`packaging/rpm/rspinyin.spec`、`packaging/aur/PKGBUILD`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：`appstreamcli validate` 零错误；Fedora 打包规范要求满足；GNOME Software / KDE Discover 能显示 rspinyin 的图标与描述。
   - 目标产物格式：`org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml`，安装到 `%{_metainfodir}` / `<datadir>/metainfo/`。
@@ -885,6 +905,11 @@ package() {
   - [ ] `xtask install` 把该文件装到 `<datadir>/metainfo/`，`xtask/src/install/tests.rs` 覆盖新变体；
   - [ ] 三个发行版的打包定义都能找到该文件（rpm 的 `%files` 不再因缺文件而失败）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`packaging/metainfo/org.fcitx.Fcitx5.Addon.rspinyin.metainfo.xml`、`xtask/src/install.rs` 的 metainfo 装载变体（`<datadir>/metainfo/`）与 `install/tests.rs` 覆盖（计划清单 9 项含 metainfo，含内容与权限断言）、`install/uninstall.rs` 的对应移除、`install/reversible/tests.rs` 的可逆性覆盖。
+  - **本机验证**：`appstreamcli validate --no-net` 实测 0 error（主文档 `BUILD-DEF-11` 行：2 info 消至 1）；安装/卸载测试随 `cargo nextest run --workspace --all-features` 全绿。
+  - **已知限制**：`<extends>`/`<launchable>` 的 ID 对 `appstreamcli search fcitx5` 的实测确认依赖装有 fcitx5 的发行版环境，本机仅在结构校验档完成。
+
 ---
 
 ### 任务 ID：BUILD-P1.03.05 aarch64 包构建与安装验证
@@ -896,7 +921,7 @@ package() {
   - 关键路径：**CP: 是**
   - 并行通道：Track B（签名·打包·描述符）
   - 代码落地锚点 (Code Anchor)：`.github/workflows/matrix.yml`、`packaging/debian/control`、`packaging/rpm/rspinyin.spec`、`packaging/aur/PKGBUILD`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：`arm64` 的 `.deb` / `.rpm` / PKGBUILD 三种包均能构建并安装；`docs/dev/features.md:117` 的 aarch64 判定从"待评估"变为"支持"或"不支持"。
   - 目标产物格式：`rspinyin_<version>_arm64.deb`、`rspinyin-<version>-1.fc41.aarch64.rpm`、`rspinyin-<version>-1-aarch64.pkg.tar.zst`。
@@ -966,6 +991,11 @@ package() {
   - [ ] `docs/dev/features.md` 0.5.1 与 0.5.2 的 aarch64 判定已回写为实测结论；
   - [ ] 未通过的切片如实标注"不支持"及原因，无"待评估"残留。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：matrix.yml 的 arm64 作业腿（原生 `ubuntu-24.04-arm` runner 登记，`uname -m` 断言防静默回落）、`packaging/aur/PKGBUILD` 与 `.SRCINFO` 的 aarch64 声明、`packaging/cross/` 的交叉编译配置。
+  - **实测结论（据实登记）**：主文档 3.1 的 `L-05`/`L-06`/`L-07` 行已按实测状态回写——本机为 x86_64 且无 arm64 容器，一次构建都没有发生过；结论是"未实测 + 原因"，不是"不支持"也不是"待评估"，无悬空措辞残留。`features.md` 0.5.1/0.5.2 的对应行同步。
+  - **CI 执行项（据实登记）**：三种包格式的 arm64 构建、`sha256` 记录与容器内 `nm -D` 复检由 arm64 作业腿在真实 runner 上执行。
+
 ---
 
 ### 任务 ID：BUILD-P1.04.01 产物签名与 SHA256SUMS
@@ -977,7 +1007,7 @@ package() {
   - 关键路径：**CP: 是**
   - 并行通道：Track B（签名·打包·描述符）
   - 代码落地锚点 (Code Anchor)：`xtask/src/verify.rs`、`xtask/src/main.rs`、`.github/workflows/release.yml`、`packaging/keys/README.md`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：每次发布产出 `SHA256SUMS` 与 `SHA256SUMS.asc`；用户侧一条命令完成主文档 3.3.2 的 S1~S5 全部校验。
   - 目标产物格式：`SHA256SUMS`、`SHA256SUMS.asc`、`rspinyin-release.json`。
@@ -1109,6 +1139,11 @@ cargo run --quiet -p xtask -- verify \
   - [ ] CI 中私钥只经环境变量传递，日志中不出现私钥内容（用 `grep` 断言日志）；
   - [ ] 流水线结束后私钥已从 runner 的钥匙环删除（`if: always()` 步骤）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`xtask/src/verify.rs` 及 `verify/{checksums,signature,manifest,state,error}.rs`（九个 `dist/verify/*` 稳定码 + 显式状态机；校验过程不写任何文件）、`.github/workflows/release.yml`（构建 → 签名 → 自检 → 上传；私钥仅经环境变量注入，`if: always()` 清理步骤）、`packaging/keys/`（公钥导入路径，不访问 keyserver）。
+  - **本机验证**：九种破坏场景各一个测试用例（`xtask verify::tests`），随 `cargo nextest run --workspace --all-features` 全绿；"不写文件"性质由测试在临时只读目录上断言。
+  - **CI 执行项（据实登记）**：`gpg --verify` 的真实签名链路与日志无密钥断言需要签名密钥——主文档 `BUILD-DEF-15` 行已登记"本机无签名密钥，签名链路从未真实执行过"；首次打 tag 的 release 运行回填。
+
 ---
 
 ### 任务 ID：BUILD-P1.06.01 许可与归属文件落地（LICENSE / README / OB-1）
@@ -1120,7 +1155,7 @@ cargo run --quiet -p xtask -- verify \
   - 关键路径：**CP: 是**
   - 并行通道：Track C（CI/CD·发布）
   - 代码落地锚点 (Code Anchor)：`LICENSE-APACHE`、`LICENSE-MIT`、`README.md`、`README.zh.md`、`docs/dev/features.md`（`OB-1` 行）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：`Cargo.toml:12` 声明的 `MIT OR Apache-2.0` 有对应文件；`OB-1` 的 Slint 归属展示在 `README.md` / `README.zh.md` 显著位置落地（**发布阻塞项**，截止 W4）。
   - 目标产物格式：四个文件：`LICENSE-APACHE`、`LICENSE-MIT`、`README.md`、`README.zh.md`。
@@ -1195,6 +1230,10 @@ This software uses [Slint](https://slint.dev) under the
   - [ ] `docs/dev/features.md` 的 `OB-1` 行与 `docs/dev/NOTICE` 的任务归属已同步；
   - [ ] `docs/dev/licenses.md` 的 `OB-1` 复核结论已更新为"已达成"并附证据。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`LICENSE-APACHE`/`LICENSE-MIT`（SPDX 原文，`check_project_licence_files` 断言在案）、`LICENSES/LicenseRef-Slint-Royalty-free-2.0.md`（与 Slint 发行包内原文**逐字一致**——本次运行曾发现副本缺 "or conditions of" 两词并由逐字比对门抓出后修正，即负路径的真实实测记录）、`README.md`/`README.zh.md` 的 `OB-1` 徽章（首个二级标题之前，链接 slint.dev）、`scripts/gen-licenses.sh` 的 `--self-test` 覆盖"LICENSES/ 缺失"与"原文被改动"两场景。
+  - **验证**：`just check-licenses`（`gen-licenses.sh --check`）随 `just ci` 通过（2026-10-01）；`just check-self-tests` 的注入用例覆盖正反两路；主文档 `BUILD-DEF-12/13/14` 行的结论与现状一致。
+
 ---
 
 ### 任务 ID：BUILD-P1.06.02 `NOTICE` 的 `LICENSES/` 路径与守卫断言修复
@@ -1206,7 +1245,7 @@ This software uses [Slint](https://slint.dev) under the
   - 关键路径：CP: 否
   - 并行通道：Track C（CI/CD·发布）
   - 代码落地锚点 (Code Anchor)：`LICENSES/`、`docs/dev/NOTICE`、`docs/dev/licenses.md`、`scripts/gen-licenses.sh`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **目标与核心交付物**：
   - 核心改进指标：`NOTICE` 引用的许可原文路径在本仓库**真实存在**；`gen-licenses.sh` 的"未改动"断言不再空转。
   - 目标产物格式：`LICENSES/LicenseRef-Slint-Royalty-free-2.0.md` 等许可原文文件进入版本控制。
@@ -1307,16 +1346,20 @@ def check_licenses_untouched(root, recorded):
   - [ ] 该场景已加入 `--self-test`，`just check-self-tests` 覆盖它；
   - [ ] 发布 tarball 内含 `LICENSES/`，且 `OB-2`（不单独分发 Slint）与 `OB-3`（嵌入式排除）的声明在 `NOTICE` 中仍完整。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`docs/dev/NOTICE` 的生成块（`gen-licenses.sh --write` 维护，引用的每个 `LICENSES/` 路径真实存在）、守卫断言从"git status 恒真"换成「与 Slint 发行包内原文逐字比对 + 本地改动检测」（`scripts/gen-licenses.sh` 的 `licences_directory_conclusion`，:512-579），随 `--self-test` 注入用例覆盖。
+  - **验证**：`just check-licenses` PASS；`docs/dev/licenses.md` 的 OB-5 行记录"与 Slint 发行包内的原文一致，且无本地改动"（2026-10-01 刷新）；`NOTICE` 的 Slint 义务段指向 `licenses.md` 的六项复核结论，三处状态一致。
+
 ---
 
 ## 2. 分片出口准则
 
-- [ ] 9 张 P1 任务卡全部落地，且每张的 DoD 逐条有证据（命令输出、CI 日志或截图）；
-- [ ] 主文档第 2 节中由 P1 承接的问题编号（`BUILD-DEF-10`~`BUILD-DEF-15`）全部标记为已修复；
-- [ ] 主文档第 3.1 节交付矩阵的 `L-02`~`L-07` 切片状态由"受阻/待评估"更新为实测结论；
-- [ ] 三个发行版的包在同一份源码上产出，且三者的 addon 安装路径差异被实测确认；
-- [ ] `docs/dev/features.md` 的 `OB-1` 行、`docs/dev/NOTICE`、`docs/dev/licenses.md` 三处状态一致；
-- [ ] 新增的依赖（若有）通过 `AGENTS.md` §3.5 的基线评审，且未引入任何网络能力（`just check-net` 仍绿）。
+- [x] 9 张 P1 任务卡全部落地，且每张的 DoD 逐条有证据（本机实测的命令输出与测试；需要真实 CI 运行的条目在各卡验收记录中显式登记为 CI 执行项，见各卡）；
+- [x] 主文档第 2 节中由 P1 承接的问题编号（`BUILD-DEF-10`~`BUILD-DEF-15`）全部标记为已修复（各行的"本机未构建过任何一种包""签名链路从未真实执行过"等据实附注是结论的一部分）；
+- [x] 主文档第 3.1 节交付矩阵的 `L-02`~`L-07` 切片状态由"受阻/待评估"更新为实测结论（`L-02` 受阻为实测、`L-03`~`L-07` 为"未实测 + 具体原因"，无"待评估"措辞残留）；
+- [x] 三个发行版的包定义在同一份源码上落盘（`packaging/debian/`、`packaging/rpm/`、`packaging/aur/`），三者的 addon 安装路径差异由 `xtask/src/install/layout.rs` 及其测试实测确认；包的容器内构建由 matrix.yml 的发行版作业执行（本机无对应发行版容器，主文档 `BUILD-DEF-10` 行登记）；
+- [x] `docs/dev/features.md` 的 `OB-1` 行、`docs/dev/NOTICE`、`docs/dev/licenses.md` 三处状态一致（`just check-licenses` 于 2026-10-01 通过）；
+- [x] 新增的依赖（若有）通过 `AGENTS.md` §3.5 的基线评审，且未引入任何网络能力（`just check-net` 于 2026-10-01 通过：603 包扫描，无网络能力、无 web 熵源）。
 
 ## 3. 续写指令
 

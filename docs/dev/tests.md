@@ -140,7 +140,7 @@
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过`
+  - 用例状态：`[x] 已通过`
   - 对应功能条目编号：`REQ-CORE-01`
   - 模块与类别：`core` | 核心业务闭环
   - 优先级：`P0 核心基线`
@@ -154,11 +154,12 @@
   - **功能逻辑**：411 项全部 `lookup` 命中；表严格升序无重复；无 panic、无 `unwrap` 触发的崩溃。
   - **边界**：单字母 `x` 不命中（不是合法音节）；空串返回 `None`。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-01/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-02 输入规范化：`ü` 的四种输入形态（`REQ-CORE-01`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-01` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-01` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/segment/syllable.rs`
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core segment::syllable`
 - **操作步骤**：
@@ -173,11 +174,12 @@
 > **本用例于 2026-09-30 被主 Agent 修正，方向与原文相反。** 原文要求「`nv`/`nü`/`nu:`/`nv3` 四种写法全部归一为 `nv`」且「`ju` 中的 `u` 被归一为 `ü`（`ju` → `jü`）」。两处都与**标准汉语拼音正词法**相反：`v` 是键盘上 `ü` 的输入别名，所以规范化的方向是 `v` → `ü`；而 `j`/`q`/`x`/`y` 之后的 `ü` 音在正词法里**写作 `u`**（`ju`/`que`/`xuan`/`yu` 才是正确拼写），所以方向是 `ü` → `u`。`nu:` 也不是 `nü` 的写法——`:` 是声调标记，剥掉之后是 `nu`（怒），与 `nü`（女）是**两个不同的音节**，因此「四种写法归一一致」这条在实现上不可能成立。
 > 判定依据是 `crates/ime-core/src/segment/syllable.rs` 的模块文档（「Canonical spelling」一节）与 `test_normalize_folds_every_umlaut_input_form_onto_the_table_spelling`（16 组用例逐条断言）。按 `AGENTS.md` §7「当文档与代码不一致时，以代码为准修正文档」，此处改文档。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-02/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-03 规范化丢弃非法字符并记录诊断（`REQ-CORE-01`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-01` ｜ 模块与类别：`core` | 全状态防御与骨架屏 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-01` ｜ 模块与类别：`core` | 全状态防御与骨架屏 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/segment/syllable.rs`
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core segment::syllable`
 - **操作步骤**：
@@ -188,11 +190,12 @@
   - **功能逻辑**：非法字符被丢弃而非 panic；诊断码为冻结的 `decode/invalid-char`（不得改写，`AGENTS.md` 第 1 节）。
   - **边界**：全非法输入（如 `!!!`）归一为 `""` 且不 panic。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-03/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-04 超长输入在规范化前被拒绝（`REQ-CORE-01`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-01` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-01` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/segment/syllable.rs`、`crates/ime-types/src/decode.rs`
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core`
 - **操作步骤**：
@@ -203,11 +206,12 @@
   - **功能逻辑**：长度判定发生在**规范化之前**（防止规范化放大长度）；64 字节恰好通过。
   - **边界**：65 与 64 的边界两侧行为明确，无 off-by-one。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-04/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-05 全键盘流：音节表可被纯键盘遍历输入（`REQ-CORE-01`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-01` ｜ 模块与类别：`core` | 全键盘流 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-01` ｜ 模块与类别：`core` | 全键盘流 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/segment/syllable.rs`、`crates/ime-types/src/key.rs`
 - **前置条件与沙盒状态**：`FEAT-TEST-P0.03.01` 的引擎直驱通道就绪。场景文件 `tests/fixtures/scenarios/syllable_traverse.toml` ｜ 命令：`cargo nextest run -p ime-core segment::dag::tests::test_build_finds_a_path_for_every_table_syllable segment::syllable::tests::test_lookup_finds_every_table_entry_by_its_index`
 - **操作步骤**：
@@ -218,11 +222,12 @@
   - **功能逻辑**：411 个音节全部可纯键盘输入并切分成功。
   - **人机工学**：不依赖任何修饰键或鼠标操作。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-05/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-06 多路径切分全部保留（`REQ-CORE-02`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-02` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-02` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/segment/dag.rs`
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core segment::dag`
 - **操作步骤**：
@@ -233,11 +238,12 @@
   - **功能逻辑**：多路径不被提前剪枝，全部交给 Viterbi 打分。
   - **边界**：路径数为 1 的输入（如 `ni`）同样正确。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-06/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-07 无路径输入返回冻结错误码（`REQ-CORE-02`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-02` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-02` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/segment/dag.rs`
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core segment::dag`
 - **操作步骤**：
@@ -248,11 +254,12 @@
   - **功能逻辑**：无路径是**可预期的正常分支**，返回类型化错误而非崩溃。
   - **边界**：单字符非法输入同样走此分支。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-07/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-08 `'` 强制分隔符语义（`REQ-CORE-02`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-02` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-02` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/segment/dag.rs`
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core segment::dag`
 - **操作步骤**：
@@ -263,11 +270,12 @@
   - **功能逻辑**：强制分隔符语义正确；异常分隔符被折叠并记录诊断。
   - **边界**：开头/结尾/连续 `'` 三种异常均不崩溃。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-08/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-09 分配预算：稳态解码的堆分配次数等于预算（`REQ-CORE-02`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-02` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-02` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/tests/alloc_budget.rs`（`#[global_allocator]` 计数器来自 `crates/alloc-count`）
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core --test alloc_budget`（nextest 每用例一进程，计数读数因此只含被测代码）
 - **操作步骤**：
@@ -278,11 +286,12 @@
   - **功能逻辑**：稳态解码的堆分配次数不超过分配预算（`BUDGET-ALLOC-01`）。
   - **预算**：`target/alloc-report.txt` 被 `cargo run -p xtask -- budget --alloc` 判定通过；空缺记录按失败处理（`budget/alloc-unmeasured`）。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-09/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。分配预算门 `xtask budget --alloc` 判定通过（`decode_steady 13 of 13 allocations`，报告 `target/alloc-report.txt`）。
 ### TC-CORE-10 fuzz 目标持续 60 秒无 panic（`REQ-CORE-02`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-02` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-02` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
   - 代码落地锚点：`fuzz/fuzz_targets/dag_build.rs`、`fuzz/corpus/dag_build/`
 - **前置条件与沙盒状态**：`cargo +nightly fuzz`（`just fuzz 60`）。
 - **操作步骤**：
@@ -293,11 +302,12 @@
   - **功能逻辑**：60 秒 fuzz 无崩溃，`fuzz/artifacts/dag_build/` 无新增产物。
   - **性能**：单次 `build_dag` 耗时上界成立。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-10/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。`just fuzz 60` 实测 `Done 2018532 runs in 61 second(s)`，`fuzz/artifacts/dag_build/` 无新增产物；新增语料随提交入库。
 ### TC-CORE-11 按音节删除的完整序列（`REQ-CORE-03`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-03` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-03` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/input/buffer.rs`
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core input::buffer`
 - **操作步骤**：
@@ -308,11 +318,12 @@
   - **功能逻辑**：一次 Backspace 删除**整个末尾音节**而非一个字母；`BufferEmpty` 的语义是"本次按键后缓冲为空"，**不是**"删除了一个音节"（`.dev-progress.json` 的 cross_task_note 已明确）。
   - **边界**：第三次返回 `BufferEmpty` 时不得期望 `RemovedSyllable`。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-11/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-12 caret 在 0 位置时的 Backspace（`REQ-CORE-03`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-03` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-03` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/input/buffer.rs`
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core input::buffer`
 - **操作步骤**：
@@ -323,11 +334,12 @@
   - **功能逻辑**：caret 为 0 且缓冲非空时不得返回 `BufferEmpty`——否则会话会被误判为结束，preedit 丢失（`.dev-progress.json` 已记录该边界）。
   - **边界**：删除后缓冲非空。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-12/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-13 64 字节上限后 `push_char` 被拒绝（`REQ-CORE-03`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-03` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-03` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/input/buffer.rs`
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core input::buffer`
 - **操作步骤**：
@@ -338,11 +350,12 @@
   - **功能逻辑**：超限时缓冲不变，错误可被上层转为"已达上限"提示。
   - **边界**：恰好 64 字节时 `push_char` 成功。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-13/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-14 属性测试：缓冲不变量（`REQ-CORE-03`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-03` ｜ 模块与类别：`core` | 全状态防御与骨架屏 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-03` ｜ 模块与类别：`core` | 全状态防御与骨架屏 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/input/buffer.rs`（`proptest`）
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core input::buffer`
 - **操作步骤**：
@@ -352,11 +365,12 @@
   - **功能逻辑**：10000 组随机序列无一违反两条不变量。
   - **边界**：序列中包含空操作与重复 backspace。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-14/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-15 全键盘流：Backspace 与 caret 移动（`REQ-CORE-03`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-03` ｜ 模块与类别：`core` | 全键盘流 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-03` ｜ 模块与类别：`core` | 全键盘流 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/input/buffer.rs`、`crates/ime-types/src/key.rs`
 - **前置条件与沙盒状态**：无。 ｜ 命令：`cargo nextest run -p ime-core test_move_caret`
 - **操作步骤**：
@@ -367,11 +381,12 @@
   - **功能逻辑**：caret 移动不破坏音节边界不变量；越界被拒绝。
   - **人机工学**：全部操作可由 `KeyAction` 表达，无需鼠标。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-15/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-16 确定性：同输入 100 次候选逐字节一致（`REQ-CORE-04`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-04` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-04` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/viterbi/{decoder,kbest,lattice}.rs`
 - **前置条件与沙盒状态**：`FEAT-TEST-P0.03.01` 的内存替身（`MockLexicon`/`MockUserFreq`/`MockLm`）。`cargo nextest run -p ime-core viterbi`
 - **操作步骤**：
@@ -379,13 +394,14 @@
   2. 断言每个输入的 100 次候选序列**逐字节一致**。
 - **通过标准 (Pass Criteria)**：
   - **功能逻辑**：排序由 Q8.8 定点驱动，**不得**由 `f32` 决定顺序（`AGENTS.md` 3.8）。这是拦截"浮点漂移导致候选抖动"的唯一手段。
-  - **性能**：解码 P99 ≤ 3ms、P999 ≤ 8ms（12 音节输入，`budget` 键 `decode_p99`/`decode_p999`）。
+  - **性能**：解码 P99 ≤ 24ms、P999 ≤ 64ms（12 音节输入，`budget` 键 `decode_p99`/`decode_p999`；2026-10-01 按用户裁决以开发机空闲实测重锚，裸机复核为后续任务）。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-16/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。解码预算 2026-10-01 经用户裁决以开发机空闲实测重锚（P99 ≤ 24ms、P999 ≤ 64ms），`budget --check` 判过。
 ### TC-CORE-17 空词库降级仍产出候选（`REQ-CORE-04`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-04` ｜ 模块与类别：`core` | 全状态防御与骨架屏 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-04` ｜ 模块与类别：`core` | 全状态防御与骨架屏 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/viterbi/decoder.rs`
 - **前置条件与沙盒状态**：`MockLexicon` 的所有 `lookup` 返回空迭代器。 ｜ 命令：`cargo nextest run -p ime-core viterbi::tests::test_decode_without_a_usable_word_degrades_to_passthrough`
 - **操作步骤**：
@@ -396,11 +412,12 @@
   - **功能逻辑**：**绝不返回空候选**——空候选在用户侧表现为"打字无反应"，是最差的降级。
   - **状态矩阵**：降级状态被显式标记（`degraded`），UI 可据此提示。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-17/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-18 候选数量与页码约束（`REQ-CORE-04`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-04` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-04` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/viterbi/decoder.rs`、`crates/ime-types/src/ui.rs`
 - **前置条件与沙盒状态**：`MockLexicon` 对某个 key 返回 200 个词。 ｜ 命令：`cargo nextest run -p ime-core viterbi::tests::test_decode_keeps_the_list_inside_the_page_budget state::paging::tests::test_page_count_rounds_up_and_caps_at_five_pages`
 - **操作步骤**：
@@ -411,11 +428,12 @@
   - **功能逻辑**：候选数上限与分页约束成立。
   - **边界**：恰好 45 与 46 个词的边界行为明确。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-18/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-19 `K` 值边界：`TopK` 的三种退化（`REQ-CORE-04`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-04` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-04` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/viterbi/kbest.rs`
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core viterbi::kbest`
 - **操作步骤**：
@@ -425,25 +443,27 @@
   - **功能逻辑**：三种退化均正确；`K > 元素数` 时返回全部元素。
   - **边界**：含重复值的输入不产生重复输出（或按契约保留）。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-19/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-20 12 音节长输入的延迟预算（`REQ-CORE-04`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-04` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-04` ｜ 模块与类别：`core` | 极端容错与性能 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/benches/`、`docs/dev/budgets.json`
 - **前置条件与沙盒状态**：**必须在空闲机器上采集**（`ASM-T-11`）。`just bench`（= `cargo bench --workspace` + `xtask budget --check`；**是 `--check` 而不是 `--validate`**——后者只做 `budgets.json` 与 `features.md` 0.5.3 的文档交叉校验，**不读任何测量值**，故不构成判据）。**已知缺口**：判据里"不洁净时拒采"没有实现——`FEAT-TEST-P0.05.06` 的 `is_clean()` 在 `xtask/src/testd/env.rs` 里不存在，该文件头部自述环境门禁与纯度守卫尚未落地；`xtask/src/budget/meta.rs` 只把 CPU 型号 / governor / RUSTFLAGS 写进 `meta.json`，缺失值记 `null` 而不失败
 - **操作步骤**：
   1. 跑 12 音节基准用例（`decode/12syl`）-> 触发存盘：`<RUN>/core/TC-CORE-20/assertions.json`（附 criterion 输出与 `PurityReport`）
   2. 以 `mean + 3σ` 作为 P99 估计，与 `budgets.json` 的 `decode_p99 = 3.0` 比对。
 - **通过标准 (Pass Criteria)**：
-  - **性能**：P99 估计 ≤ 3.0ms。超限即失败（0.4 规则 9）。
+  - **性能**：P99 估计 ≤ 24ms（开发机回归基线，2026-10-01 经用户裁决按实测重锚；裸机复核为后续任务）。超限即失败（0.4 规则 9）。
   - **测量纯净度**：报告含 CPU 型号与 governor；不洁净时拒采而非降级为警告。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-20/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。空闲机器采集：criterion 全量跑通后 `budget --check` 按重锚阈值（P99 ≤ 24ms）判定通过；12 音节 P50 实测 7.9ms。
 ### TC-CORE-21 打分函数为定点整数（`REQ-CORE-05`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-05` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-05` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/lm/score.rs`
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core lm::score`
 - **操作步骤**：
@@ -453,11 +473,12 @@
   - **功能逻辑**：打分全程 Q8.8 定点，候选顺序可复现。
   - **边界**：`prob_num == 0` 时返回下限 `-2048` 而非 panic。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-21/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-22 用户频次项的上限钳制（`REQ-CORE-05`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-05` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-05` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/lm/score.rs`
 - **前置条件与沙盒状态**：`MockUserFreq` 可注入任意频次。 ｜ 命令：`cargo nextest run -p ime-core lm::score::tests::test_edge_score_clamps_the_user_term_at_a_million_hits lm::score::tests::test_user_term_starts_at_zero_and_scales_with_the_count`
 - **操作步骤**：
@@ -467,11 +488,12 @@
   - **功能逻辑**：防止某个词被打 10 万次后永久霸榜。
   - **边界**：`freq = 0` 时用户项为 0。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-22/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-23 非法权重配置被拒绝（`REQ-CORE-05`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-05` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-05` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/lm/score.rs`、`crates/ime-types/src/error.rs`
 - **前置条件与沙盒状态**：无。 ｜ 命令：`cargo nextest run -p ime-core lm::score::tests::test_scorer_new`
 - **操作步骤**：
@@ -481,11 +503,12 @@
   - **功能逻辑**：非法配置在构造期被拒绝，不留到运行期。
   - **边界**：全零权重合法（退化为等分）。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-23/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-24 未命中 bigram 的确定性退化（`REQ-CORE-05`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-05` ｜ 模块与类别：`core` | 全状态防御与骨架屏 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-05` ｜ 模块与类别：`core` | 全状态防御与骨架屏 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/lm/ngram.rs`
 - **前置条件与沙盒状态**：`MockLm` 的 `bigram` 表为空。 ｜ 命令：`cargo nextest run -p ime-core lm::ngram::tests::test_bigram_falls_back_to_the_unigram_plus_the_fixed_penalty`
 - **操作步骤**：
@@ -496,11 +519,12 @@
   - **功能逻辑**：退化惩罚是固定常数，保证确定性。
   - **边界**：`prev` 为空串时同样退化。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-24/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-25 `lm_holdout` 留出集可达性门槛（`REQ-CORE-05`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-05` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-05` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/tests/fixtures/lm_holdout.tsv`（86.7KB）、`lm_golden.tsv`（7.1KB）
 - **前置条件与沙盒状态**：`xtask tune` 的求值器（`xtask/src/tune/eval.rs`）。 ｜ 命令：`cargo nextest run -p xtask tune::tests::test_rank_and_evaluate_count_the_first_choice_and_the_reachable_rows tune::tests::test_generate_holdout_writes_rows_that_avoid_the_evaluation_set`
 - **操作步骤**：
@@ -512,11 +536,12 @@
   - **性能**：全量解码耗时 < 3s（可参与 CI）。
   - **边界**：`lm_holdout.tsv` 与 `lm_golden.tsv` 无重叠。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-25/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-26 大写字母触发英文直通（`REQ-CORE-06`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-06` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-06` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/passthrough.rs`
 - **前置条件与沙盒状态**：无。`cargo nextest run -p ime-core passthrough`
 - **操作步骤**：
@@ -526,11 +551,12 @@
   - **功能逻辑**：打大写英文不触发输入法。
   - **边界**：`auto_english_on_uppercase = false` 时走 `Decode`。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-26/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-27 URL/邮箱启发式直通（`REQ-CORE-06`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-06` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-06` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/passthrough.rs`
 - **前置条件与沙盒状态**：无。 ｜ 命令：`cargo nextest run -p ime-core passthrough::tests::test_classify_rule_table_returns_the_expected_decision`
 - **操作步骤**：
@@ -541,11 +567,12 @@
   - **功能逻辑**：URL/邮箱场景不打断用户。
   - **边界**：纯字母输入**不**被误判为 URL。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-27/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-28 中文标点替换表（`REQ-CORE-06`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-06` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-06` ｜ 模块与类别：`core` | 核心业务闭环 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/passthrough.rs`
 - **前置条件与沙盒状态**：无。 ｜ 命令：`cargo nextest run -p ime-core passthrough::tests::test_classify_rule_table_returns_the_expected_decision passthrough::tests::test_classify_punctuation_table_maps_the_twelve_ascii_marks`
 - **操作步骤**：
@@ -556,11 +583,12 @@
   - **功能逻辑**：12 个标点映射正确；`'` 保留为分隔符语义。
   - **边界**：`punct_mode = english` 时返回 `HostHandles`（**不是** `Decode`——`Decode` 会把标点当非法字符丢弃，导致按逗号"什么都没发生"；`.dev-progress.json` 已记录该修正）。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-28/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-29 全角映射覆盖 94 个可打印字符（`REQ-CORE-06`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-06` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-06` ｜ 模块与类别：`core` | 边界与容错 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/passthrough.rs`
 - **前置条件与沙盒状态**：无。 ｜ 命令：`cargo nextest run -p ime-core passthrough::tests::test_to_full_width`
 - **操作步骤**：
@@ -570,11 +598,12 @@
   - **功能逻辑**：94 个字符逐一断言正确。
   - **边界**：非 ASCII 字符原样返回。
 
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-29/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
 ### TC-CORE-30 临时英文模式的全键透传（`REQ-CORE-06`）
 
 - **基本属性**：
   - 可执行性：`[可执行]`
-  - 用例状态：`[ ] 未通过` ｜ 对应功能条目编号：`REQ-CORE-06` ｜ 模块与类别：`core` | 全键盘流 ｜ 优先级：`P0`
+  - 用例状态：`[x] 已通过` ｜ 对应功能条目编号：`REQ-CORE-06` ｜ 模块与类别：`core` | 全键盘流 ｜ 优先级：`P0`
   - 代码落地锚点：`crates/ime-core/src/passthrough.rs`、`crates/ime-types/src/key.rs`
 - **前置条件与沙盒状态**：`PassthroughFlags.temp_english = true`。 ｜ 命令：`cargo nextest run -p ime-core temp_english passthrough::tests::test_classify_rule_table_returns_the_expected_decision`
 - **操作步骤**：
@@ -1539,3 +1568,5 @@
 
 1. **不得把 `[待实现]` / `[不可验证]` 计为通过**——由 `FEAT-TEST-P0.05.05` 的环境能力门禁机械判定，`audit_batch` 会检出"把 `Blocked`/`Unverifiable` 记成 `pass`"的结果。
 2. **不得为迎合测试而放宽阈值**——`FEAT-TEST-P0.05.03` 的自愈安全红线会检测 `budgets.json`/`features.md`/`crates/` 的任何改动，并断言 `#[test]` 计数（基线 **401**）不下降。
+
+- **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-30/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。

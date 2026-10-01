@@ -40,6 +40,62 @@ rspinyin 是面向 Linux 桌面的中文拼音输入法。它是一个 Fcitx5 �
 
 ## 安装
 
+四种安装方式，各自成节。无论选哪一种，都请在安装**之前**先校验下载内容——
+[校验发布产物](#校验发布产物)是每条路径共同的第一步。
+
+1. [从发布压缩包安装](#从发布压缩包安装)——无需 Rust 工具链。
+2. [从发行版包安装](#从发行版包安装)——`.deb` / `.rpm`。
+3. [从 AUR 安装](#从-aur-安装)——Arch Linux。
+4. [从源码安装](#从源码安装)——开发路径。
+
+### 校验发布产物
+
+一份发布集是一个目录，内含产物本身、描述它们的清单 `rspinyin-release.json`、
+校验和清单 `SHA256SUMS` 及其分离签名 `SHA256SUMS.asc`。两道相互独立的检查，
+先校验签名：
+
+```bash
+# 导入签名密钥（随发布集附带；不访问任何 keyserver）。
+gpg --import packaging/keys/rspinyin-signing-key.asc
+gpg --verify SHA256SUMS.asc SHA256SUMS
+
+# 再让发布集自带的校验器逐个对照清单检查产物。
+xtask verify --manifest rspinyin-release.json --artifacts .
+```
+
+`xtask verify` 在文件缺失、被改动、未签名或不匹配时以非零码退出，并点名九个稳定
+`dist/*` 错误码之一；它不写任何文件，在只读挂载上运行也是安全的。校验失败的产物
+不得安装。
+
+### 从发布压缩包安装
+
+压缩包内带已编译的 `base.dict`，因此只需要 C 编译器与 Fcitx5 开发包：
+
+```bash
+tar xf rspinyin-<version>-x86_64.tar.gz && cd rspinyin-<version>
+bash packaging/install.sh
+```
+
+### 从发行版包安装
+
+各包携带相同的载荷，并安装到各发行版自己的 Fcitx5 查找 addon 的位置：
+
+```bash
+sudo apt install ./rspinyin_<version>_amd64.deb     # Debian / Ubuntu
+sudo dnf install ./rspinyin-<version>-1.x86_64.rpm  # Fedora
+```
+
+### 从 AUR 安装
+
+```bash
+# 使用 AUR 助手：
+paru -S rspinyin
+# 或手动：
+git clone https://aur.archlinux.org/rspinyin.git && cd rspinyin && makepkg -si
+```
+
+### 从源码安装
+
 ```bash
 # 1. 获取词库源并编译（产物写入 data/compiled/base.dict）。
 data/fetch.sh

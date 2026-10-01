@@ -378,14 +378,17 @@ fn test_check_passes_a_case_inside_its_budget() -> Result<()> {
 #[test]
 fn test_check_reports_a_case_past_its_budget() -> Result<()> {
     let scratch = Scratch::new("violation")?;
-    scratch.write_estimates("decode", "12syl", 4_000_000.0, 0.0)?;
+    // 32ms against the re-anchored 24ms ceiling: the fixture has to sit clearly past
+    // whatever the document currently states, which is what keeps the test honest when
+    // the budget itself is re-anchored.
+    scratch.write_estimates("decode", "12syl", 32_000_000.0, 0.0)?;
     let report = check(&real_budgets()?, &scratch.path, Some("decode"))?;
     assert_eq!(report.violations.len(), 1);
     let message = &report.violations[0];
     assert!(message.contains("BUDGET-LAT-02 VIOLATED"), "{message}");
     assert!(message.contains("decode/12syl"), "{message}");
-    assert!(message.contains("p99_est=4ms"), "{message}");
-    assert!(message.contains("budget=3ms"), "{message}");
+    assert!(message.contains("p99_est=32ms"), "{message}");
+    assert!(message.contains("budget=24ms"), "{message}");
     Ok(())
 }
 

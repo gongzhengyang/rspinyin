@@ -20,6 +20,7 @@
 // is what keeps the render path a pure function of the frame.
 
 import { CandidateData, CandidateGrid } from "candidate_grid.slint";
+import { OverlayPanel, OverlaySectionData } from "overlay.slint";
 import { Theme } from "theme.slint";
 
 // Re-exported, and that is not cosmetic. `slint_build::compile` generates Rust only for
@@ -32,6 +33,10 @@ import { Theme } from "theme.slint";
 // the same reason: the adapter builds the model the grid draws from.
 export { Theme } from "theme.slint";
 export { CandidateData } from "candidate_grid.slint";
+// The overlay's row structs are re-exported for the same reason `CandidateData` is: the
+// adapter builds the model the overlay panel draws from, and only the roots of this file
+// get Rust accessors.
+export { OverlayEntryData, OverlaySectionData } from "overlay.slint";
 
 // One run of the preedit line, as the header draws it.
 //
@@ -352,6 +357,10 @@ export component Header inherits Rectangle {
     in property <bool> truncated: false;
 
     in property <string> mode-label: "";
+    // 3.6's input-limit state: the preedit sits at the character ceiling, so further keys
+    // are dropped. The hint says so beside the status cluster instead of leaving the
+    // user to read silence as breakage.
+    in property <bool> input-full: false;
     in property <bool> full-width: false;
     in property <bool> punctuation-full: false;
     in property <bool> readonly: false;
@@ -459,6 +468,19 @@ export component Header inherits Rectangle {
             wrap: no-wrap;
         }
 
+        // 3.6's input-limit hint: one short phrase, no spinner and no colour alarm. It
+        // borrows the small size the strip already draws at and sits to the cluster's
+        // left, which is where 3.6 puts the state texts.
+        if root.input-full: Text {
+            text: "已达上限";
+            font-family: Theme.font-family;
+            font-size: CandidateMetrics.font-size-small;
+            font-weight: 500;
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+            wrap: no-wrap;
+        }
+
         // The status cluster is a fixed-width block (3.1.1: 16dp icons, 8dp apart). Its
         // width never depends on which modes are on, so toggling one cannot reflow the
         // preedit and the header never jitters. The mode dot reads the mode from the label
@@ -504,6 +526,14 @@ export component CandidateWindow inherits Window {
     // compares a frame against the state the component is already drawing, so the two have
     // to start out equal for a frame that turns the annotation off to take effect.
     in property <bool> show-annotation: false;
+
+    // The modal overlay (ADR-0006), as the adapter resolved the engine's `OverlayFrame`.
+    // While `overlay-visible` is true the panel below covers the candidates; the frame
+    // beneath is left untouched, so clearing the overlay restores the candidate view
+    // without a re-decode.
+    in property <bool> overlay-visible: false;
+    in property <string> overlay-title: "";
+    in property <[OverlaySectionData]> overlay-sections: [];
 
     // Geometry, written by `src/layout.rs`. The geometry task reads `window-width` and
     // `window-height` to place and flip the window, and needs the shadow reserve included
@@ -561,6 +591,10 @@ export component CandidateWindow inherits Window {
     // 3.3.2's page-content slide: the candidate grid enters displaced by up to 12dp and
     // springs home. The header does not move -- the preedit did not change page.
     in property <length> page-offset-dp: 0px;
+
+    // 3.6's input-limit state, bound down to the Header: the adapter computes it from
+    // the preedit's own length, so the window needs no logic of its own.
+    in property <bool> input-full: false;
 
     // The caret indicator (3.1.1), in container-relative dp. `arrow-visible` is false when
     // the placement pass declined to draw one -- a window that was flipped above the caret
@@ -694,6 +728,7 @@ export component CandidateWindow inherits Window {
                 truncated: root.preedit-truncated;
                 show-secondary-status: root.show-secondary-status;
                 mode-label: root.mode-label;
+                input-full: root.input-full;
                 full-width: root.full-width;
                 punctuation-full: root.punctuation-full;
                 readonly: root.readonly;
@@ -763,5 +798,32 @@ export component CandidateWindow inherits Window {
             border-color: Theme.state-selected-stroke;
             visible: root.highlight-visible;
         }
+    }
+
+    // The overlay panel (ADR-0006), a sibling of the panel declared after it so it
+    // paints on top: while a panel is open it covers the candidates, and closing it
+    // uncovers the frame beneath untouched. It rides the panel's own geometry -- the
+    // shadow-margin inset, the appear-motion rectangle -- so the overlay and the panel
+    // it replaces are one surface, and the shadow the panel casts keeps holding it up.
+    // Gated with `visible`, the way every conditional element in this window is: the
+    // software renderer this project ships does not honour an opacity.
+    OverlayPanel {
+        x: CandidateMetrics.shadow-margin + root.panel-x;
+        y: CandidateMetrics.shadow-margin + root.panel-y;
+        width: root.panel-width;
+        height: root.panel-height;
+        visible: root.overlay-visible;
+        panel-title: root.overlay-title;
+        sections: root.overlay-sections;
+        radius: root.container-radius;
+        stroke-width: CandidateMetrics.stroke-width;
+        panel-padding: CandidateMetrics.container-padding;
+        group-gap: CandidateMetrics.grid-gap;
+        entry-gap: CandidateMetrics.number-gap;
+        keys-label-gap: CandidateMetrics.header-text-gap;
+        rule-height: CandidateMetrics.separator-height;
+        title-font-size: CandidateMetrics.font-size-header;
+        group-font-size: CandidateMetrics.font-size-small;
+        entry-font-size: CandidateMetrics.font-size-small;
     }
 }

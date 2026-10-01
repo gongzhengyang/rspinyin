@@ -120,8 +120,11 @@ MISSING
 fi
 
 if [ "$skip_build" -eq 0 ]; then
-    echo "install: building the addon"
-    cargo build --release -p ime-fcitx5 --features fcitx5-host
+    echo "install: building the two addons"
+    # Both cdylibs: the engine and the candidate-window addon (ADR-0003's split).
+    # Building only the first would leave the install plan's second payload missing,
+    # which the installer reports as a missing artifact rather than a failed build.
+    cargo build --release -p ime-fcitx5 -p ime-ui-addon --features fcitx5-host
 fi
 
 # The dictionary is either compiled here or staged from `--dict`. `--skip-build` skips

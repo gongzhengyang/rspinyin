@@ -1,0 +1,321 @@
+{
+  "report_version": 2,
+  "plan": {
+    "duration_s": 540.0,
+    "rate_hz": 10.0,
+    "interval_s": 10.0,
+    "warmup_s": 60.0,
+    "planned_strokes": 5400,
+    "planned_samples": 55
+  },
+  "target": {
+    "pid": 1640735,
+    "executable": "/usr/bin/fcitx5",
+    "display": ":0",
+    "window": 25165860
+  },
+  "host": {
+    "cpus": 15,
+    "load1_at_start": 2.43,
+    "load1_at_end": 22.36
+  },
+  "started_at_unix_s": 1790842248,
+  "elapsed_s": 540.006458538,
+  "delivered_strokes": 5400,
+  "cycles": {
+    "strokes_per_cycle": 50,
+    "planned": 108,
+    "delivered": 108
+  },
+  "crashes": {
+    "directory": "/home/gong/.local/share/rspinyin/crash",
+    "before": 0,
+    "after": 0
+  },
+  "samples": [
+    {
+      "t_s": 4.59e-7,
+      "rss_kb": 375444,
+      "anonymous_kb": 342608
+    },
+    {
+      "t_s": 10.000082201,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 20.000094133,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 30.000074254,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 40.000090366,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 50.000092978,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 60.00008485,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 70.000090444,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 80.000090613,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 90.00005961,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 100.000023916,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 110.000081055,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 120.00006807,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 130.000061984,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 140.000077763,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 150.000027418,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 160.000092211,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 170.000092991,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 180.000100558,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 190.000085513,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 200.000085453,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 210.000086842,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 220.000087152,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 230.000081651,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 240.000084421,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 250.000051259,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 260.000115029,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 270.000088123,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 280.000081276,
+      "rss_kb": 375448,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 290.000018973,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 300.000055525,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 310.000054616,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 320.000085731,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 330.000064535,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 340.000088928,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 350.000051563,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 360.000105735,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 370.002986918,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 380.001429909,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 390.000036951,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 400.00006586,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 410.0001811,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 420.000729562,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 430.00298856,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 440.000069288,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 450.000070036,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 460.00006605,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 470.000080978,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 480.000168019,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 490.000036388,
+      "rss_kb": 375384,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 500.000073343,
+      "rss_kb": 375380,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 510.000090666,
+      "rss_kb": 375332,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 520.000093852,
+      "rss_kb": 375332,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 530.000085871,
+      "rss_kb": 375212,
+      "anonymous_kb": 342612
+    },
+    {
+      "t_s": 540.000084219,
+      "rss_kb": 375132,
+      "anonymous_kb": 342612
+    }
+  ],
+  "notes": [
+    "the drift statistic is the envelope of VmRSS over the steady window, and VmRSS counts the dictionary's read-only mapping; the anonymous envelope in the same series is the leak-shaped number when the two disagree",
+    "the slope is reported and not asserted: the budget is stated as a drift over the run, and a rate would be a second threshold nobody wrote down",
+    "the run ends with a composition open so that the candidate window is observable when the run returns",
+    "a sample whose rss_kb is absent is a reading that could not be taken; the run stops at the first one rather than continuing against a process that is no longer there",
+    "the pass counts are whole passes over the driver's keystroke cycle, so a run that stopped in the middle of one has walked the passes it counts and no more",
+    "the crash count is the plugin's own record directory and not this process's: a panic inside the addon is caught at the C ABI boundary and written to a record rather than killing the daemon, so a run in which the plugin crashed is a run whose resident set can still be flat",
+    "the load average is recorded and not asserted, because the budget document states no ceiling for it; a run taken on a busy machine is a different measurement of the same process and is not comparable with one taken on an idle machine"
+  ]
+}

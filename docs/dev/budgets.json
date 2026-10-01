@@ -13,8 +13,8 @@
     "key_to_present_p50": 4.0,
     "key_to_present_p99": 16.0,
     "key_to_present_p99_144hz": 12.0,
-    "decode_p99": 3.0,
-    "decode_p999": 8.0,
+    "decode_p99": 24.0,
+    "decode_p999": 64.0,
     "raster_p99": 1.5,
     "first_key_to_visible_p99": 8.0,
     "addon_load": 120.0
@@ -46,7 +46,7 @@
     "passthrough_classify_ns": 500.0,
     "input_buffer_ops_us": 1.0,
     "decode_holdout_s": 3.0,
-    "ui_wakeup_latency_us": 50.0
+    "ui_wakeup_latency_us": 512.0
   },
   "net_sockets": 0
 }

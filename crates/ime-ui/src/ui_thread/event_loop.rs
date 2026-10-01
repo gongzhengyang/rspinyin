@@ -133,15 +133,21 @@ impl UiLoop {
 
     /// Applies everything the host posted before the loop was woken.
     ///
-    /// The frame and the theme are taken before the ordered commands, so a
+    /// The frame, the theme and the overlay are taken before the ordered commands, so a
     /// `Show` that arrives with the frame it belongs to is applied against the
-    /// current state rather than the previous one.
+    /// current state rather than the previous one. The overlay is a mode like the theme
+    /// -- a latest-wins slot whose newest value is the only one that describes what the
+    /// user is looking at -- and an open that coalesced into a pending close applies the
+    /// close, which is the state the user asked for last.
     fn apply_commands(&mut self) -> Result<(), ImeError> {
         if let Some(frame) = self.channels.take_frame() {
             self.surface.apply(SurfaceUpdate::Frame(frame))?;
         }
         if let Some(theme) = self.channels.take_theme() {
             self.surface.apply(SurfaceUpdate::Theme(theme))?;
+        }
+        if let Some(overlay) = self.channels.take_overlay() {
+            self.surface.apply(SurfaceUpdate::Overlay(overlay))?;
         }
         while let Some(command) = self.channels.pop_control() {
             if let Some(update) = SurfaceUpdate::from_control(command) {
@@ -154,9 +160,15 @@ impl UiLoop {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::os::fd::BorrowedFd;
+    use std::rc::Rc;
+    use std::sync::atomic::AtomicBool;
 
-    use crate::channel::ChannelConfig;
+    use ime_types::UiCommand;
+    use ime_types::ui::{OverlayFrame, OverlayKind};
+
+    use crate::channel::{ChannelConfig, UiCommandSender};
     use crate::ui_thread::UiThreadConfig;
 
     use super::*;
@@ -234,6 +246,87 @@ mod tests {
         assert!(
             (MIN_FRAME_TIMEOUT..=Duration::from_millis(7)).contains(&timeout),
             "the wait is the remaining frame interval, got {timeout:?}"
+        );
+    }
+
+    /// A surface that records every update it is applied, in order.
+    struct Recorder(Rc<RefCell<Vec<SurfaceUpdate>>>);
+
+    impl UiSurface for Recorder {
+        fn event_fd(&self) -> Option<BorrowedFd<'_>> {
+            None
+        }
+
+        fn apply(&mut self, update: SurfaceUpdate) -> Result<(), ImeError> {
+            self.0.borrow_mut().push(update);
+            Ok(())
+        }
+
+        fn drain_events(&mut self, _events: &UiEventQueue, _limit: usize) -> Result<(), ImeError> {
+            Ok(())
+        }
+
+        fn render(&mut self, _now: Instant) -> Result<Option<Instant>, ImeError> {
+            Ok(None)
+        }
+
+        fn close(&mut self) -> Result<(), ImeError> {
+            Ok(())
+        }
+    }
+
+    /// One overlay frame, as the engine posts it.
+    fn overlay_frame() -> Box<OverlayFrame> {
+        Box::new(OverlayFrame {
+            kind: OverlayKind::CheatSheet,
+            title: String::from("快捷键"),
+            sections: Vec::new(),
+            selected: None,
+            query: String::new(),
+        })
+    }
+
+    #[test]
+    fn test_apply_commands_drains_the_overlay_slot_into_the_surface() {
+        let config = ChannelConfig::default();
+        let channels =
+            Arc::new(CommandChannels::new(&config).expect("the wakeup counter can be created"));
+        let events = Arc::new(UiEventQueue::new(&config));
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let mut loop_state = UiLoop::new(
+            Box::new(Recorder(Rc::clone(&seen))),
+            Arc::clone(&channels),
+            events,
+            UiThreadConfig {
+                thread_name: "rspinyin-ui-test",
+                stack_size: 0,
+                event_batch: 4,
+                channels: config,
+            },
+        );
+        let sender = UiCommandSender::new(Arc::clone(&channels), Arc::new(AtomicBool::new(false)));
+        sender
+            .send(UiCommand::Overlay(Some(overlay_frame())))
+            .expect("the channel is open");
+        sender
+            .send(UiCommand::Overlay(None))
+            .expect("the channel is open");
+        loop_state.apply_commands().expect("the drain is applied");
+        let overlays: Vec<SurfaceUpdate> = seen
+            .borrow()
+            .iter()
+            .filter(|update| matches!(update, SurfaceUpdate::Overlay(_)))
+            .cloned()
+            .collect();
+        assert_eq!(
+            overlays,
+            [SurfaceUpdate::Overlay(None)],
+            "the slot kept only the newest state -- the close -- and the loop applied it \
+             to the surface, which is what lets a closed panel close"
+        );
+        assert!(
+            !sender.channels().is_shutdown(),
+            "the drain never touches the shutdown flag"
         );
     }
 }

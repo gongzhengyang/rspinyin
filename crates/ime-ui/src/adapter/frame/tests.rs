@@ -184,8 +184,11 @@ fn test_draw_state_mode_label_follows_the_status_strip() {
 #[test]
 fn test_draw_state_cell_width_follows_the_text_length() {
     let metrics = parsed();
-    let short = mapped(&frame_with(9, "ni", 1));
-    let mut long_frame = frame_with(10, "ni", 1);
+    // Nine candidates: the page sits above the 220dp minimum-width floor, so the cells
+    // keep their natural width and the width is free to follow the text. A page the floor
+    // lifted stretches to the text cap instead, which the layout tests pin.
+    let short = mapped(&frame_with(9, "ni", 9));
+    let mut long_frame = frame_with(10, "ni", 9);
     long_frame.candidates[0].text = String::from("你好世界");
     let long = mapped(&long_frame);
     // Two glyphs at the cell font size plus the chrome every cell spends around its text.
@@ -245,12 +248,15 @@ fn test_draw_state_reports_the_properties_a_frame_changed() {
     let delta = state.update(&frame_with(14, "ni", 9), cap, &metrics);
     assert!(delta.item_count && delta.grid_rows);
     assert!(delta.container_width && delta.container_height);
+    // The one-candidate page the floor lifted drew its cell stretched to the text cap;
+    // the nine-candidate page is wider than the floor, so its cells fall back to their
+    // natural width and the property is written.
+    assert!(delta.cell_width);
     assert!(
         !delta.preedit
             && !delta.mode_label
             && !delta.status
             && !delta.header_height
-            && !delta.cell_width
             && !delta.max_per_row,
         "a property whose value did not change is not written: {delta:?}"
     );
@@ -357,8 +363,10 @@ fn test_draw_state_unchanged_frame_changes_no_cell() {
 #[test]
 fn test_draw_state_cell_width_reserves_room_for_the_annotation() {
     let metrics = parsed();
-    let plain = mapped(&frame_with(40, "ni", 1));
-    let mut annotated_frame = frame_with(41, "ni", 1);
+    // Nine candidates, so the page sits above the minimum-width floor and the cell width
+    // is the cells' natural width -- the width a reading hint visibly adds to.
+    let plain = mapped(&frame_with(40, "ni", 9));
+    let mut annotated_frame = frame_with(41, "ni", 9);
     annotated_frame.candidates[0].annotation = Some(String::from("自造词"));
     let annotated = mapped(&annotated_frame);
     assert!(
@@ -400,8 +408,9 @@ fn test_draw_state_annotation_yields_whole_when_the_text_fills_its_budget() {
     );
 
     // A text with room to spare keeps its annotation, and the cell grows by exactly what the
-    // hint costs.
-    let mut short = frame_with(44, "ni", 1);
+    // hint costs. Nine candidates, so the page sits above the minimum-width floor and the
+    // width is the cells' own rather than the stretch of a lifted panel.
+    let mut short = frame_with(44, "ni", 9);
     short.candidates[0].annotation = Some(reading.clone());
     let annotated = mapped(&short);
     assert_eq!(annotated.cells[0].annotation, reading);
@@ -416,7 +425,7 @@ fn test_draw_state_annotation_yields_whole_when_the_text_fills_its_budget() {
 
 #[test]
 fn test_draw_state_show_annotation_follows_the_layout_hint() {
-    let mut frame = frame_with(42, "ni", 1);
+    let mut frame = frame_with(42, "ni", 9);
     frame.candidates[0].annotation = Some(String::from("自造词"));
     frame.layout.show_annotation = false;
     let state = mapped(&frame);
@@ -438,6 +447,44 @@ fn test_draw_state_truncated_cell_keeps_the_full_text() {
     assert_eq!(cell.text, text, "the text a selection commits is never cut");
     assert_ne!(cell.display_text, text, "the drawn text is cut");
     assert!(cell.display_text.ends_with('…'), "and marked as cut");
+}
+
+#[test]
+fn test_draw_state_input_full_follows_the_preedit_ceiling() {
+    let mut short = frame_with(60, "ni", 1);
+    let state = mapped(&short);
+    assert!(!state.input_full, "a short preedit is not at the cap");
+    // Fill the preedit to the character ceiling: the same preedit the header draws,
+    // grown to exactly the cap, is what the engine's own limit produces.
+    short.preedit.text = "a".repeat(crate::adapter::preedit::PREEDIT_MAX_CHARS);
+    short.preedit.spans.clear();
+    let state = mapped(&short);
+    assert!(
+        state.input_full,
+        "a preedit at the ceiling is the input-full state"
+    );
+    assert!(
+        state.container_width >= 220.0,
+        "the panel geometry is unaffected"
+    );
+}
+
+#[test]
+fn test_draw_state_input_full_is_written_only_when_it_changes() {
+    let metrics = parsed();
+    let cap = 720.0;
+    let mut state = DrawState::default();
+    let mut short = frame_with(61, "ni", 1);
+    state.update(&short, cap, &metrics);
+    let delta = state.update(&short, cap, &metrics);
+    assert!(
+        !delta.input_full,
+        "a frame that keeps the preedit short writes nothing"
+    );
+    short.preedit.text = "a".repeat(crate::adapter::preedit::PREEDIT_MAX_CHARS);
+    short.preedit.spans.clear();
+    let delta = state.update(&short, cap, &metrics);
+    assert!(delta.input_full, "reaching the ceiling is a change");
 }
 
 #[test]

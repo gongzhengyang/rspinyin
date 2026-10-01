@@ -1,0 +1,165 @@
+// The cheat-sheet overlay panel: the key reference the engine builds from the bindings
+// actually in force, drawn over the candidate panel while it is open (ADR-0006's
+// `OverlayFrame`).
+//
+// Declaration only, like the rest of the view. Which rows the panel draws, how they are
+// grouped and what the title says all arrive already resolved in the frame the engine
+// posted: a `.slint` source holds no business logic, and the render path stays a pure
+// function of the frame. The panel is a *mode* of the window rather than part of the
+// frame -- it covers the candidate panel while it is open, and the panel beneath is left
+// untouched, which is what makes closing the overlay restore the candidates without a
+// re-decode.
+//
+// # Why the geometry is an input
+//
+// `CandidateMetrics` is declared in `candidate.slint`, which imports this file, and a
+// document cannot import what imports it. Every constant below is therefore an input,
+// bound by the window from that global: the numbers still have exactly one declaration,
+// and this component can be instantiated anywhere.
+//
+// The type tokens are the exception, and they are read straight from `theme.slint`,
+// which this file imports for its colours.
+//
+// # Focus
+//
+// This window must never take keyboard focus. No `TextInput`, no `forward-focus` and no
+// `focus()` call may appear here or in anything that includes this file.
+//
+// # The renderer this project ships
+//
+// Rectangles and Text only: the software renderer draws a `Path` as nothing and ignores
+// an element opacity, so the panel is built from neither. Visibility is gated with the
+// `visible` property of the window's instance of this component, never with a fade.
+
+import { Theme } from "theme.slint";
+
+// One `keys -> description` row of the panel, as the engine's `OverlayEntry` carries it.
+export struct OverlayEntryData {
+    // The key chord as the user should press it, e.g. `Ctrl+Shift+/` or `page_up`.
+    keys: string,
+    // What the chord does, in the window's own language.
+    label: string,
+}
+
+// One titled group of rows, as the engine's `OverlaySection` carries it.
+export struct OverlaySectionData {
+    // The group heading, e.g. `组字`.
+    title: string,
+    // The group's rows, in display order.
+    entries: [OverlayEntryData],
+}
+
+// The cheat-sheet panel: a title, a rule, and the groups side by side.
+//
+// The groups are laid out in a row rather than in a stack so that the panel reads in one
+// glance at the height a candidate panel has: the overlay opens mid-composition, where
+// the window is sized for the candidate grid, and a stack of every row would run past
+// the panel the placement pass chose. The content is clipped to the panel, which is what
+// a window that cannot grow here draws instead of overflowing into the shadow reserve.
+export component OverlayPanel inherits Rectangle {
+    // The panel's title, from the frame.
+    in property <string> panel-title: "";
+    // The groups and their rows, from the frame.
+    in property <[OverlaySectionData]> sections: [];
+
+    // Geometry and type scale, bound by the window from `CandidateMetrics`, which this
+    // file cannot import.
+    in property <length> radius: 0px;
+    in property <length> stroke-width: 0px;
+    in property <length> panel-padding: 0px;
+    in property <length> group-gap: 0px;
+    in property <length> entry-gap: 0px;
+    in property <length> keys-label-gap: 0px;
+    in property <length> rule-height: 0px;
+    in property <length> title-font-size: 0px;
+    in property <length> group-font-size: 0px;
+    in property <length> entry-font-size: 0px;
+
+    // The overlay covers the panel with the opaque base rather than with the acrylic
+    // fill: the panel beneath is already painted, and a translucent fill over it would
+    // composite the acrylic alpha twice and read darker than either layer alone. The
+    // base is what hides the candidates cleanly while the mode is open.
+    background: Theme.surface-base;
+    border-radius: root.radius;
+    border-width: root.stroke-width;
+    border-color: Theme.surface-stroke;
+    clip: true;
+
+    VerticalLayout {
+        padding: root.panel-padding;
+        spacing: root.group-gap;
+
+        // The title, on the header strip's type size and optical nudge, so the overlay
+        // reads as the same window's surface rather than as a card pasted onto it.
+        Text {
+            text: root.panel-title;
+            font-family: Theme.font-family;
+            font-size: root.title-font-size;
+            font-weight: 500;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+            overflow: elide;
+            wrap: no-wrap;
+        }
+
+        // The rule the header strip draws under itself; one here for the same reason.
+        Rectangle {
+            height: root.rule-height;
+            background: Theme.separator;
+        }
+
+        HorizontalLayout {
+            spacing: root.group-gap;
+
+            for section in root.sections: VerticalLayout {
+                spacing: root.entry-gap;
+
+                // The group heading, at the small size and in the secondary token: the
+                // rows are the content, the heading is where they start.
+                Text {
+                    text: section.title;
+                    font-family: Theme.font-family;
+                    font-size: root.group-font-size;
+                    font-weight: 500;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    wrap: no-wrap;
+                }
+
+                for entry in section.entries: HorizontalLayout {
+                    spacing: root.keys-label-gap;
+
+                    // The chord, in the accent token: it is the half of the row the
+                    // user scans for, and the one half that is the same in every row of
+                    // the group.
+                    Text {
+                        text: entry.keys;
+                        font-family: Theme.font-family;
+                        font-size: root.entry-font-size;
+                        font-weight: 500;
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        wrap: no-wrap;
+                    }
+
+                    // What the chord does, in the secondary token and stretched to the
+                    // group's remaining width, which is what keeps the keys column of
+                    // the rows above one another.
+                    Text {
+                        text: entry.label;
+                        font-family: Theme.font-family;
+                        font-size: root.entry-font-size;
+                        font-weight: 400;
+                        color: Theme.text-secondary;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                        wrap: no-wrap;
+                    }
+                }
+            }
+        }
+    }
+}

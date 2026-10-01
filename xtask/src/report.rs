@@ -179,8 +179,10 @@ mod tests {
         assert_eq!(checks[0].limit_us, 4_000.0);
         assert_eq!(checks[1].limit_us, 16_000.0);
         let decode: Vec<&ime_diag::report::BudgetCheck> = limits.checks(Metric::Decode).collect();
-        assert_eq!(decode[0].limit_us, 3_000.0);
-        assert_eq!(decode[1].limit_us, 8_000.0);
+        // The re-anchored ceilings of 2026-10-01 (user ruling): the test reads the
+        // document rather than restating a constant, so it moved with the document.
+        assert_eq!(decode[0].limit_us, 24_000.0);
+        assert_eq!(decode[1].limit_us, 64_000.0);
         // The two thresholds the cards fix but the document does not carry yet are
         // reported without a budget rather than against a number invented here.
         assert_eq!(limits.checks(Metric::Wakeup).count(), 0);

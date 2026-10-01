@@ -9,6 +9,9 @@ pub mod migrate;
 pub mod reload;
 pub mod schema;
 pub mod scheme;
+pub mod writeback;
+
+pub use crate::writeback::{WRITEBACK_RACE_CODE, WritebackError, write_keys};
 
 pub use crate::reload::{ConfigStore, FILE_NAME, ReloadOutcome, default_path};
 pub use crate::schema::{

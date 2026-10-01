@@ -39,6 +39,10 @@
 //! rows for the modifier's own press therefore carry no expected action, and the gesture
 //! is asserted by [`test_holding_shift_never_switches_the_input_mode`] instead.
 
+// The keyboard-only end-to-end walks, one per row of the scenario table; the module
+// itself holds the id-to-test mapping and the walks' shared strokes.
+mod scenarios;
+
 mod support;
 
 use std::collections::BTreeSet;

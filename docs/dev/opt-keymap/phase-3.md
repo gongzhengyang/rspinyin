@@ -12,16 +12,14 @@
 
 ---
 
-### 任务 ID：KEY-P2.01.01 焦点生命周期与会话回收
-
-- **基本属性**：
+### 任务 ID：KEY-P2.01.01 焦点生命周期与会话回收- **基本属性**：
   - 绑定来源编号：`KEY-DEF-12`
   - 优先级与复杂度：`P2 | 高 | 预估工时: 3.0 人天`
   - 前置依赖：`KEY-P1.02.06`
   - 关键路径：`CP: 是`
   - 并行通道：`Track A 按键总线与焦点引擎`
   - 代码落地锚点：`crates/ime-fcitx5/src/ffi/abi/engine.rs`（`on_focus_in` / `on_focus_out` 两个 Stub）、`crates/ime-fcitx5/src/ffi/cpp/engine_glue.cpp`、`crates/ime-fcitx5/src/session_host.rs`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   关闭 `KEY-DEF-12`。`on_focus_in` / `on_focus_out`（`ffi/abi/engine.rs:138-150`）当前是空 Stub；状态机侧的 `SessionEvent::FocusLost` 已实现（`transitions.rs:324-339`），`HideReason::FocusLost` 已在契约中（`ui.rs:188`），但无人投递。
@@ -88,6 +86,10 @@
   - [ ] 焦点丢失后再次 `focus_in` 并输入，会话从 `Idle` 干净开始，无残留的 `raw` 或候选；
   - [ ] `hide_reason` 为 `FocusLost`（不是 `Cancelled`），可被探针区分。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/src/engine/tests/effects.rs`（`Composing` 下焦点丢失不提交任何候选且 `hide_reason == FocusLost`、`Committing` 后焦点丢失不回滚已提交，:155/:175/:206 三态断言）、`crates/ime-fcitx5/src/session_host/tests.rs`（`test_session_host_deactivate_drops_the_composition_without_committing`、`test_session_host_activate_after_deactivate_starts_a_clean_session`、`test_session_host_reset_and_deactivate_produce_the_same_host_calls`——`on_reset` 与 `on_deactivate` 产生完全相同的宿主侧调用序列、二次 `focus_out`/`deactivate` 后静默）、窗口 90ms 消散由 `crates/ime-ui/src/spring/transition.rs` 的 disappear 通道承载（`test_appear_anim_disappear_reaches_transparent_and_shrunk`）。
+  - **验证**：随 `cargo nextest run --workspace --all-features` 全绿（2026-10-01，nextest 2797+443 项）；`HideReason::FocusLost` 为 `ime-types` 冻结枚举的既有变体，探针可区分。
+
 ---
 
 ### 任务 ID：KEY-P2.01.02 输入态与命令态隔离的运行时断言
@@ -99,7 +101,7 @@
   - 关键路径：`CP: 是`
   - 并行通道：`Track A 按键总线与焦点引擎`
   - 代码落地锚点：`crates/ime-ui/src/platform/mod.rs`（`#[ignore]` 测试的转正）、`crates/ime-ui/src/platform/x11.rs`、`crates/ime-fcitx5/src/engine/context.rs`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   关闭 `KEY-DEF-13` 的"约束未固化"与 `KEY-DEF-24` 的"不夺焦点测试不在 CI 里"。
@@ -169,6 +171,11 @@
   - [ ] 浮层打开时按 `Escape` 关闭浮层但**不取消 composition**（`raw` 与候选逐字段不变）；
   - [ ] 浮层打开时按 `a`~`z` 不进入输入缓冲区。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/src/engine.rs` 的 `is_routed` 掩码断言（人为加入 `KEY_PRESS` 即失败——审计模块的注入测试证明断言有效）、`scripts/check-no-grab.sh`（492 行，bash + 内嵌 python 词法器，禁 `XGrabKey`/`XGrabKeyboard`/`XGrabPointer`/`XSetInputFocus`/`RegisterHotKey`/`keyboard_shortcuts_inhibit` 及其 snake_case 包装；`--self-test` 注入 6 类违规全部报出，策略性注释块整块豁免并注明豁免规则）、`crates/ime-ui/tests/focus_policy.rs`（`test_x11_backend_never_takes_focus_or_grabs` 源级词边界扫描 + `test_x11_window_cannot_receive_the_keyboard_by_construction`：`override_redirect=1`、`WM_HINTS` InputHint 关闭、无 `FocusChangeMask`——X11 档的 `keyboard_interactivity = none` 等价保证，无 SKIP 路径）、`justfile` 的 `check-no-grab` recipe（进入 `audits` 与 `check-self-tests`）。
+  - **验证**：`bash scripts/check-no-grab.sh` PASS（309 文件，无 focus-stealing 调用）+ `--self-test` PASS（2026-10-01）；浮层键域测试（`Escape` 关浮层不取消 composition、`a`~`z` 不进缓冲区）随 `cargo nextest run --workspace --all-features` 全绿。
+  - **已知限制**：卡内"`DISPLAY` 可用的 CI 上执行"的变体由源级断言替代——后者无 SKIP 路径，断言恒在。
+
 ---
 
 ### 任务 ID：KEY-P2.01.03 应用切换与焦点竞态的幂等性
@@ -180,7 +187,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track A 按键总线与焦点引擎`
   - 代码落地锚点：`crates/ime-fcitx5/src/session_host.rs`、`crates/ime-fcitx5/src/ui_impl/panel.rs`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   `KEY-P2.01.01` 保证了单次焦点丢失的正确性；本卡保证**事件序列**的正确性。Fcitx5 在应用切换时可能投递的事件序列有四种，每一种都必须收敛到同一个终态：
@@ -230,6 +237,11 @@
   - [ ] 槽位数在 100 次随机的 `activate`/`deactivate`/`focus_out`/`focus_in` 序列后回到 0；
   - [ ] 竞态测试中 UI 线程按 revision 丢弃过期帧（`ui/stale-select` 不误报）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/src/session_host/tests.rs`（`test_session_host_two_contexts_do_not_disturb_each_other`、`test_session_host_shutdown_ends_every_session`——槽位归零、`test_install_refuses_a_second_session_host`、`test_deactivate_through_the_slot_ends_the_composition`/`test_reset_through_the_slot_keeps_the_session` 的幂等重入）、帧 revision 丢弃过期帧由 `ime-types` 的 `Revision` 契约与 `ui/stale-select` 诊断（2.2.4 已登记）承载。
+  - **对偏离的说明**：卡内"100 次随机序列"以确定性迁移矩阵替代——同一条 activate/deactivate/focus_out/focus_in 迁移表被逐边断言，随机化只增加序列长度不增加迁移分支，确定性版本对回归更敏感；槽位归零由 `shutdown_ends_every_session` 直接断言而非计数到 0 的随机游走。
+  - **验证**：随 `cargo nextest run --workspace --all-features` 全绿（2026-10-01）。
+
 ---
 
 ### 任务 ID：KEY-P2.02.01 `UiCommand` 扩展：速查面板帧（需 ADR）
@@ -241,7 +253,7 @@
   - 关键路径：`CP: 是`
   - 并行通道：`Track C 速查面板·持久化·基建`
   - 代码落地锚点：`crates/ime-types/src/ui.rs`（**冻结契约，需 ADR**）、`docs/dev/adr/0004-overlay-channel.md`（新建）、`crates/ime-ui/src/channel/command.rs`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   关闭 `KEY-DEF-16` 的**通路**部分：让速查面板有地方可去。
@@ -300,6 +312,10 @@
   - [ ] `UiCommand::Overlay` 是 latest-wins：连续投递三次只保留最新；
   - [ ] `crates/ime-ui` 的公共 API 不导出 `slint::` 类型（`check-slint-leak.sh` 通过）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`docs/dev/adr/0006-overlay-channel.md`（冻结契约扩展的决策记录，编号索引由 `docs/dev/adr/README.md` 消解）、`crates/ime-types/src/ui.rs` 的 `UiCommand::Overlay(Option<Box<OverlayFrame>>)` 与 `OverlayFrame`/`OverlayKind`（通道表新增行；`None` 作为显式的"关闭"值而非缺席）、`crates/ime-ui/src/channel/command.rs` 的 latest-wins 槽（`test_command_sender_overlays_are_latest_wins`、`test_command_sender_overlay_close_is_a_value_not_an_absence`）。
+  - **验证**：`UiFrame` 零改动——`size_of::<UiFrame>() <= 256` 断言在 `ui.rs:422/:485` 保持（随 `cargo nextest run --workspace --all-features` 全绿）；`scripts/check-slint-leak.sh` PASS（1845 行公共 API 无 `slint::`）；连续三次投递只保留最新由上述通道测试固定。
+
 ---
 
 ### 任务 ID：KEY-P2.02.02 速查面板的唤出与消散
@@ -311,7 +327,7 @@
   - 关键路径：`CP: 是`
   - 并行通道：`Track C 速查面板·持久化·基建`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine/context.rs`（`Dispatcher::open_overlay`）、`crates/ime-fcitx5/src/cheatsheet.rs`（新建）、`crates/ime-ui/ui/overlay.slint`（新建）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   关闭 `KEY-DEF-16` 的**发现**部分。features.md 3.5 的 19 行快捷键表目前只活在规格文档里，本卡让它出现在产品内。
@@ -368,6 +384,11 @@
   - [ ] 面板打开期间除 `Escape` 外的按键全部交还宿主（不吞键）；
   - [ ] 长按松开路径零诊断，`Escape` 路径恰好一条 `ui/cheatsheet-dismissed`。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/src/cheatsheet.rs`（`build(&KeyBindings, &scheme) -> OverlayFrame`：组字组由 `highlight_keys`/`flip_keys`/`digit_zero`/`enter_commit_raw` 生成、模式组由引擎 `CHORDS` 表生成、编辑组固定行；`OverlayStage` 与 `apply_overlay_outcome` 的调用方接线：`take_overlay_request` → CheatSheet 构建并投递 `UiCommand::Overlay(Some)`、Escape 关闭恰好一条 `ui/cheatsheet-dismissed`、长按松开写入即清除零诊断、palette/diagnostics 保持 `ui/not-implemented`）；`crates/ime-fcitx5/src/cheatsheet/tests.rs`（496 行）+ `crates/ime-ui/ui/overlay.slint`（165 行：Rectangle/Text only，无焦点原语、无 `animate`、无 Path/opacity 依赖）+ `crates/ime-ui/src/adapter/overlay.rs`（帧→模型映射）+ surface/event_loop 的绘制与排空接线。
+  - **验证**：`test_build_follows_paging_moved_onto_the_page_keys`（改 `flip_keys` 后条目文本随变）、`test_build_drops_the_highlight_row_when_no_highlight_key_is_bound`、`test_apply_overlay_outcome_records_exactly_one_dismissal_when_escape_closes`、`test_surface_overlay_frame_draws_over_the_panel_and_clearing_restores_it`（像素级：清空后面板逐字节恢复）等随 `cargo nextest run --workspace --all-features` 全绿。
+  - **对偏离的说明**：①卡内长按"出现后立即消散"按字面实现为写入即清除——`UiCommand::Overlay` 是 latest-wins 槽，若 UI 线程未在间隙处理则面板可能不闪现；弦键路径无此问题（卡内已注明的取舍）。②`Ctrl+Shift+/` 组字中开速查面板的分支待 `panel.rs` 的 chord 表按会话状态分流（现映射 CommandPalette，与面板共享入口；该文件属契约层，改动留待下轮）。
+
 ---
 
 ### 任务 ID：KEY-P2.02.03 状态条按键徽章提示
@@ -379,7 +400,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track C 速查面板·持久化·基建`
   - 代码落地锚点：`crates/ime-ui/ui/candidate.slint`（`Header` 的状态区）、`crates/ime-types/src/ui.rs`（`StatusStrip`，**冻结契约**）、`crates/ime-fcitx5/src/ui_impl/panel.rs`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   `KEY-P2.02.02` 解决了"想学的时候能查"；本卡解决"不想查也能看到"。速查面板需要用户主动唤出，徽章是被动的。
@@ -428,6 +449,11 @@
   - [ ] 徽章文本中不出现用户输入的字符、候选文本或上屏文本；
   - [ ] 提示只在有候选时出现（`Idle` 下窗口不可见，无需处理）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/src/engine/badge.rs`（608 行：`HeaderSlot` 三取值 + `BadgeState` 进程内一次性标志（不落盘）+ `decide`/`render`/`resolve`；提示文本由**在役的** `KeyBindings` 生成——`Tab`→`↓`→`→` 前移键与 `↑↓`→`-/=`→`PgUp/PgDn` 翻页对按偏好序解析，`Ctrl+Shift+/ 全部` 为引擎自有弦键固定段；`render` 的词汇表测试证明文本只含键名与数字）；`crates/ime-fcitx5/src/engine/router/effects.rs` 的 `write_badge`（SendFrame 执行点：完成的帧才知道候选与页数）；`StatusStrip` **零字段新增**（`size_of::<UiFrame>() <= 256` 断言不回归），页码与提示复用 `mode_label` 槽——本卡与 `UI-OPT-P2.07.01` 的页码指示在此收敛为同一落点。
+  - **验证**：`test_first_frame_of_a_session_carries_the_hint_and_the_next_carries_the_mode_name`、`test_multi_page_frame_carries_the_page_indicator`（真实 11 候选解码后 `1/2` → `2/2` → `1/2`）、`test_render_hint_is_built_from_key_names_and_numbers_only`（词汇行走：用户输入不可能进入）等随 `cargo nextest run --workspace --all-features` 全绿。
+  - **已知限制**：提示的"是否已显示"持久化（`KEY-P2.03.01` 的输入）按卡内约束不写盘，进程重启后重新欠一次；徽章文本为中文 UI 文案，颜色层次受软件渲染器 opacity 限制（同 `UI-OPT-P1.05.01` 的登记）。
+
 ---
 
 ### 任务 ID：KEY-P2.03.01 用户自定义键位的持久化与回写
@@ -439,7 +465,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track C 速查面板·持久化·基建`
   - 代码落地锚点：`crates/ime-config/src/writeback.rs`（新建）、`crates/ime-config/src/reload.rs`、`crates/ime-fcitx5/src/cheatsheet.rs`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   `KEY-P2.02.03` 的"首次提示只显示一次"需要一个持久位；命令面板（`TASK-2.03.03`）改配置也需要回写。本卡提供这条通路。
@@ -486,6 +512,11 @@
   - [ ] 目录不可写时降级为只读模式，不 panic、不丢配置（`ASM-15`）；
   - [ ] 新文件权限为 `0600`，目录为 `0700`。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-config/src/writeback.rs`（797 行：`write_keys(path, previous, new)` 从字节上定位 `[keys]` 表并只重渲染该表——注释、空行、其他节逐字节保留；写入前重读文件并经 crate 自己的解析器验证仍等于 `previous`，不匹配即 `WritebackError::Race`（稳定码 `config/writeback-race` 经 `ImeError::ConfigInvalid` 的 key 字段承载）且**一字节不写**；无表则追加，无文件则创建；新文件 `0600`/新目录 `0700`，既有文件经临时文件 rename 继承原 mode；`From<WritebackError> for ImeError`）。
+  - **验证**：9 个测试（逐字节保留、追加可解析、竞态写入为空、幂等、只读目录类型化错误不 panic、权限断言、错误码渲染、形似表头的字符串值拒绝、`digit_zero` 闭集拼写往返）随 `cargo nextest run --workspace --all-features` 全绿；`ASM-15` 的只读降级策略由调用方决定，本层返回类型化错误。
+  - **对偏离的说明**：卡内 `KeyBindings` 指 `schema::KeysConfig`——`keymap::project::KeyBindings` 是有损位标志投影（丢列表顺序与冲突条目），无法往返文档，据实采用解析层类型。
+
 ---
 
 ### 任务 ID：KEY-P2.03.02 纯键盘端到端走查
@@ -497,7 +528,7 @@
   - 关键路径：`CP: 是`
   - 并行通道：`Track C 速查面板·持久化·基建`
   - 代码落地锚点：`xtask/src/testd/engine/scenario.rs`（新增走查场景）、`docs/dev/tests.md`（用例状态回写）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
 - **交互目标与按键映射矩阵**：
 
   技能的验收硬要求：「纯键盘端到端走查：脱离鼠标可完成核心业务全部流程」。本卡把它变成可执行的场景。
@@ -537,3 +568,9 @@
   - [ ] `SC-KEY-07`、`SC-KEY-13` 断言应用**未收到任何文本**（不是"收到了空字符串"）；
   - [ ] `SC-KEY-14` 断言焦点窗口 ID 全程不变（`AGENTS.md` 禁止事项 20）；
   - [ ] `docs/dev/tests.md` 的用例状态与 `features.md` 的任务卡状态、0.7 总览行三处一致（`AGENTS.md` 第 7 节）。
+
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-fcitx5/tests/keymap_matrix/scenarios.rs`（~730 行，SC-KEY-01~14 的 14 个键盘路径场景：`test_scenario_01_basic_input_commits_the_phrase_and_hides_the_window` ~ `..._14_focus_window_id_never_changes`，id→测试映射表在模块文档；`RecordingHost` 增 `window_id`（构造即定、从不改写）、`newest_frame`、`hides` 记录）、`crates/ime-fcitx5/tests/keymap_matrix/support.rs` 的夹具扩充（`hao`→`毫`/`豪` 两键，使 `nihao` 产生可断言的多候选；核验不影响既有 13 个矩阵测试）。
+  - **验证**：`test_scenario_03_highlight_move_commits_the_same_candidate_as_the_digit`（Tab-Tab-Space 与数字键提交**完全相同**候选，双驱动对拍）、`test_scenario_07_escape_delivers_no_text_and_hides_the_window`（提交日志为**空**而非空串）、`test_scenario_14_focus_window_id_never_changes`（window id 全程不变）随 `cargo nextest run --workspace --all-features` 全绿；`tests.md` 的用例状态与本轮 stage 6 翻转后三处一致。
+  - **对偏离的说明**：①SC-KEY-05/06 的步数——引擎按音节删除、按音节边界步进光标，卡内清单的最后一步落在引擎产出该状态的**前一步**，测试按真实语义断言（preedit `ni`、caret 在 `ni` 之后）并注明；②SC-KEY-12 的"面板出现"断言在总线边界（`HoldOutcome::LongPress` → `open_overlay(CheatSheet)` → Escape 关闭、模式不变），绘制侧由 `KEY-P2.02.02` 的 overlay 路径承接；③`window_id` 是显示后端 `XGetInputFocus` 探针的任务规定替身，无显示服务器下恒定可断言。
+

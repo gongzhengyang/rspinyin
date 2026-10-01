@@ -26,7 +26,7 @@
   - 关键路径：**是**
   - 并行通道：Track B 结构与操作流线
   - 代码落地锚点：`crates/ime-ui/ui/candidate.slint`（`CandidateGrid`、新增 `CandidateCell`）、`crates/ime-ui/src/adapter/frame.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **现有代码具体病灶**：`candidate.slint:200-206` 的候选单元是 `Rectangle { background: transparent; }`——
@@ -264,6 +264,11 @@
   - [ ] **性能**：稳态（同候选数、同文本长度）适配的堆分配次数为 **0**。
   - [ ] 上屏文本始终完整：`Candidate.text` 不被任何截断改写（断言 `UiEvent::Select` 携带的 index 对应的 `text` 与帧内一致）。
 
+- **验收记录**（2026-10-01，含与卡内样例的一处偏离）：
+  - **交付物**：`crates/ime-ui/ui/candidate_grid.slint`（新文件承载网格：`CandidateData` 契约结构、`CandidateGrid`、固定槽位序号标签 8dp、`number-gap`/`annotation-gap` 接线、`overflow: elide`、高亮字重 500/400 之差）——卡内草稿把组件写进 `candidate.slint`，落地拆为独立文件以保持主窗口可读，行为等价；`crates/ime-ui/src/adapter/cell.rs` 与 `cell/tests.rs`（注音整块让位、LRU 宽度缓存、elide 字符边界、五态优先级解析）；`crates/ime-ui/src/adapter/frame.rs` 与 `frame/tests.rs`（模型构建）；`crates/ime-ui/src/layout/metrics.rs` 的 `number-slot-width` 等常量接线。
+  - **验证**：`cargo nextest run --workspace --all-features` 全绿（2026-10-01，ime-ui 497 项）；`test_cell_write_carries_the_candidate_and_its_number_label`（序号-文本一一对应）、`test_cell_write_hides_an_annotation_the_cell_has_no_room_for`（注音整块省略）、`test_write_elided_long_texts_all_end_with_the_ellipsis_and_fit`（截断出 `…` 且不撑宽）等固定。
+  - **已知限制**：`opacity: 0.55/0.50` 的淡出在本机软件渲染器上不生效（登记于 opt-ui.md P0 卡验收记录第 5 条），序号/注音的层次由字重与颜色承担；`UI-DEF-26` 的「取代」读法已按 v1.4 裁决回写 features.md 3.2，无遗留裁决动作。
+
 ---
 
 #### 任务 ID：`UI-OPT-P1.02.01` Header 状态簇、preedit 切分高亮、光标与左截断
@@ -276,7 +281,7 @@
   - 关键路径：**是**
   - 并行通道：Track B 结构与操作流线
   - 代码落地锚点：`crates/ime-ui/ui/candidate.slint`（`Header`）、`crates/ime-ui/src/adapter/frame.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **状态簇缺失（`UI-DEF-06`）**：`candidate.slint:143-181` 的 Header 只有两个 `Text`（preedit + mode-label）。
@@ -495,6 +500,11 @@
   - [ ] **性能**：`layout_preedit()` 为 O(n) 单遍扫描，**零分配**（`before`/`after` 复用调用方提供的缓冲区）。
   - [ ] `StatusStrip` 的五个字段全部有落点（`mode_label` 作为 fallback 文本、其余四个驱动图标）。
 
+- **验收记录**（2026-10-01）：
+  - **交付物**：`crates/ime-ui/ui/candidate.slint` 的 `Header`/`PreeditSpan`/`StatusCluster`（切分符 `text.separator` 弱化、音节 500/直通 400、固定宽度状态簇不随模式重排、8dp 左截断渐变以面板同色叠加实现、`1px` 光标随零宽 Cursor span 位置拆分插入）、`crates/ime-ui/src/adapter/preedit.rs` 与 `preedit/tests.rs`（`layout_preedit` 单遍扫描、复用调用方缓冲区零分配、按字符边界截断、`available_dp < 48dp` 降级只留模式点与只读锁）、`crates/ime-ui/src/adapter/tests/header.rs`（状态簇四布尔接线、次级图标让位、光标箭头表面写入）。
+  - **验证**：`test_layout_preedit_splits_the_runs_around_a_caret_in_the_middle`（含中间位置）、`test_layout_preedit_cuts_the_head_and_keeps_the_newest_input`（左截断尾部可见）、`test_adapter_writes_the_status_cluster_flags_from_a_frame`、`test_secondary_status_width_matches_the_cluster_the_component_draws` 等随 `cargo nextest run --workspace --all-features` 全绿（2026-10-01）。
+  - **已知限制**：`StatusStrip.has_user_dict_hit` 无渲染槽位——3.1.1 的固定四槽已满，字段随帧携带但无处绘制（`DrawState::write_status` 的文档注明这是刻意取舍，非遗漏）。
+
 ---
 
 #### 任务 ID：`UI-OPT-P1.02.02` 光标指示箭头
@@ -507,7 +517,7 @@
   - 关键路径：否
   - 并行通道：Track B 结构与操作流线
   - 代码落地锚点：`crates/ime-ui/ui/candidate.slint`（`CandidateWindow`）、`crates/ime-ui/src/adapter/frame.rs`
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **链路断尾**：光标箭头三段链路里，前两段都已完成——① metrics 声明了 `cursor-arrow-width: 12px` / `cursor-arrow-height: 6px`
@@ -617,6 +627,11 @@
   - [ ] **降级**：翻转、水平夹取、垂直夹取三种情形下箭头均不绘制（三种反例各一条测试）。
   - [ ] 合成器模糊开启与降级为不透明两种情况下，箭头与面板**无可见接缝**。
 
+- **验收记录**（2026-10-01，含与卡内样例的一处偏离）：
+  - **交付物**：`crates/ime-ui/ui/candidate.slint` 的箭头绘制（`arrow-x/y/visible` 三属性 + 12 列阶梯 Rectangle：1..6..1px 高度表）；`crates/ime-ui/src/adapter/arrow.rs` 与 `arrow/tests.rs`（`arrow_in_container` 物理像素→容器 dp 换算、`arrow = None` 三种反例——翻转/水平夹取/垂直夹取——各一条测试）。
+  - **对偏离的说明**：卡内草稿用两段 `Path`（填充 + 描边）——本机 Slint 1.13 软件渲染器的 `draw_path` 是 TODO 空实现（`i-slint-core-1.13.1/software_renderer.rs:2448`），路径零像素、描边随路径一起消失；实测左右缘像素后改为**阶梯 Rectangle 方案**（12 根 1px 竖条拼三角），描边语义由阶梯底色与面板同色承接，底边无描边线随之成立。若更换渲染器或升级 Slint，需按表重推导（表旁注释已注明）。
+  - **验证**：随 `cargo nextest run --workspace --all-features` 全绿；真机 X11 档走查确认底边与面板上边缘零间隙（`placement.rs::Pass::arrow` 的锚点由 `P0.02.03` 修正后为负 dp，换算测试钉住）。
+
 ---
 
 #### 任务 ID：`UI-OPT-P1.05.02` 行内宽度分配与容器填充
@@ -629,7 +644,7 @@
   - 关键路径：否
   - 并行通道：Track B 结构与操作流线
   - 代码落地锚点：`crates/ime-ui/src/layout.rs`（`cell_width`、`container_size`）、`crates/ime-ui/ui/candidate.slint`（`CandidateGrid`）
-  - 当前状态：`[ ] 待优化`
+  - 当前状态：`[x] 已完成`
 
 - **原实现弊端与微观质感缺失剖析**：
   - **现有代码具体病灶**：`layout.rs:265` 的 `width: (cells + 2.0 * metrics.container_padding).clamp(floor, cap)`——
@@ -784,6 +799,11 @@
   - [ ] **性能**：`panel_and_cells()` 为单遍计算，无分配（除已有的 `natural_widths` 切片）。
   - [ ] **规范一致性**：3.1.1 的「单元格最小宽度 64dp」「容器最小宽度 220dp」两条下界仍成立（断言）。
   - [ ] 所有被修改的测试断言都带推导注释；`just check` 全绿。
+
+- **验收记录**（2026-10-01，本卡为本次运行收口时补齐的实现）：
+  - **交付物**：`crates/ime-ui/src/layout.rs` 的 `panel_and_cells()`（单向打破循环：先按自然宽定容器并施加 220dp 下限，再把单元格拉伸到容器均分值，上限为 120dp 文本限 + 36dp chrome 的 156dp 卡；空页守卫返回最小宽度）、`crates/ime-ui/src/adapter/frame.rs` 改走单次调用（调用方无法只取其一）、`crates/ime-ui/ui/candidate_grid.slint` 的 `row-width`/`lead` 派生属性（**末行参照满行宽度**居中——逐行居中会得到锯齿排布，卡内点名的反直觉取舍）、`layout.rs` 新增 5 个带推导注释的测试（`test_panel_and_cells_stretches_a_short_page_to_fill_the_minimum_width_floor` 等，220−16−156=48dp 居中的推导逐字写入）。
+  - **验证**：`cargo nextest run -p ime-ui` 497 项全绿（2026-10-01）；受影响的 5 个旧断言（"宽度跟随文本长度""注音加宽"等）改以"下限之上的页面宽度跟随文本、下限抬起的页面拉伸到上限"的新契约重写并注明；拉伸后宽度经 `DrawState.cell_width` 流入几何侧，高亮框与命中图自动跟随（`surface/placement.rs:44`）。
+  - **已知限制**：卡内"无超过 32dp 连续空白"以居中留白豁免条款成立——单候选时 48dp 为**对称居中**留白（每侧 24dp ≤ 32dp），符合卡内"一个 156dp 宽的单元格居中"的有意设计。
 
 ---
 

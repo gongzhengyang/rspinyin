@@ -25,8 +25,8 @@ use ime_core::privacy::DefaultPolicy;
 use ime_core::state::{Session, SessionEnv, SessionEvent, step};
 use ime_core::viterbi::Decoder;
 use ime_types::{
-    ImeError, Lexicon, PageState, SyllableId, UiCommand, UserFreqSource, WordFlags, WordIter,
-    WordRef,
+    HideReason, ImeError, Lexicon, PageState, SyllableId, UiCommand, UiFrame, UserFreqSource,
+    WordFlags, WordIter, WordRef,
 };
 use rspinyin::engine::host::Host;
 use rspinyin::engine::{KeyBindings, KeyRouter, RoutingConfig, translate_key};
@@ -43,6 +43,9 @@ use rspinyin::privacy_impl::{AppBlacklist, ContextPrivacy, ContextReport};
 pub const KEY_SPACE: u32 = 0x0020;
 /// `FcitxKey_apostrophe`, the syllable separator the input alphabet accepts.
 pub const KEY_APOSTROPHE: u32 = 0x0027;
+/// `FcitxKey_comma`, the punctuation key the scenario walk presses with the
+/// punctuation mode switched to English.
+pub const KEY_COMMA: u32 = 0x002c;
 /// `FcitxKey_minus`, the shipped configuration's "page back" key.
 pub const KEY_MINUS: u32 = 0x002d;
 /// `FcitxKey_period`, the key of the punctuation chord.
@@ -53,6 +56,8 @@ pub const KEY_SLASH: u32 = 0x002f;
 pub const KEY_0: u32 = 0x0030;
 /// `FcitxKey_1`, the low end of the selectable digits.
 pub const KEY_1: u32 = 0x0031;
+/// `FcitxKey_3`, the digit the scenario walk names the third candidate with.
+pub const KEY_3: u32 = 0x0033;
 /// `FcitxKey_9`, the high end of the digit row.
 pub const KEY_9: u32 = 0x0039;
 /// `FcitxKey_equal`, the shipped configuration's "page forward" key.
@@ -69,10 +74,14 @@ pub const KEY_BRACKET_LEFT: u32 = 0x005b;
 pub const KEY_A: u32 = 0x0061;
 /// `FcitxKey_e`, the letter of the temporary-English chord.
 pub const KEY_E: u32 = 0x0065;
+/// `FcitxKey_h`, a letter of the phrase the scenario walk types.
+pub const KEY_H: u32 = 0x0068;
 /// `FcitxKey_i`.
 pub const KEY_I: u32 = 0x0069;
 /// `FcitxKey_n`.
 pub const KEY_N: u32 = 0x006e;
+/// `FcitxKey_o`, the last letter of the phrase the scenario walk types.
+pub const KEY_O: u32 = 0x006f;
 /// `FcitxKey_p`, the letter of the diagnostics-panel chord.
 pub const KEY_P: u32 = 0x0070;
 /// `FcitxKey_z`, the high end of the letter row.
@@ -132,6 +141,15 @@ pub const DESKTOP_MODIFIERS: u32 = HYPER | SUPER | SUPER2 | META;
 
 /// The input context every case routes keys for.
 pub const IC: u64 = 1;
+
+/// The focus window the recorder reports for its context.
+///
+/// A constant rather than a live query, because the harness runs with no display
+/// server: the value exists so that a scenario walk can assert the record never
+/// moved from the value the host set. Nothing in the routing layer can write it --
+/// that is the never-take-focus policy the record pins -- and a walk that could
+/// would show up here.
+pub const FOCUS_WINDOW_ID: u64 = 0x0000_beef;
 
 /// The timestamp every synthetic key carries.
 ///
@@ -212,6 +230,13 @@ pub struct Entry {
 /// somewhere to go and the digits have a boundary to fall off: `1` names a candidate and
 /// `9` names none. A dictionary with fewer readings than a page holds would make every
 /// page key inert and the matrix would be asserting nothing about them.
+///
+/// `hao` carries two readings so that the typed-out phrase `nihao` decodes to more
+/// candidates than the two-syllable entry alone: with only `ni'hao` in the dictionary a
+/// full path covers the input exactly once, and the digit, highlight and page rows of
+/// the scenario walks would have nothing to name. The two texts pair with the `ni`
+/// readings into combinations no entry spells, which keeps the phrase itself the one
+/// candidate that reads 你好 and the top of the list unambiguous.
 pub const DICTIONARY: &[(&str, &str, u32, u8)] = &[
     ("ni", "你", 900_000, 1),
     ("ni", "尼", 800_000, 1),
@@ -221,6 +246,8 @@ pub const DICTIONARY: &[(&str, &str, u32, u8)] = &[
     ("ni", "匿", 400_000, 1),
     ("ni", "腻", 300_000, 1),
     ("ni", "溺", 200_000, 1),
+    ("hao", "毫", 900_000, 1),
+    ("hao", "豪", 800_000, 1),
     ("ni'hao", "你好", 900_000, 2),
 ];
 
@@ -332,6 +359,26 @@ pub struct RecordingHost {
     pub newest_page: Option<PageState>,
     /// The composing text of the newest frame.
     pub newest_preedit: Option<String>,
+    /// The newest frame, whole.
+    ///
+    /// The scalar fields above are what the matrix reads; the whole frame is what the
+    /// scenario walks read, because they assert on the caret, on the status strip and
+    /// on the candidates of the page on show rather than on the three scalars alone.
+    pub newest_frame: Option<UiFrame>,
+    /// The reason of every hide the window was told about, in order.
+    ///
+    /// A commit hides the window with `Committed`, an Escape with `Cancelled`, a focus
+    /// change with `FocusLost` and an emptied input with `EmptyInput`; which of them a
+    /// walk produced is part of what the scenario walks assert.
+    pub hides: Vec<HideReason>,
+    /// The focus window the host reported for this context, set once at creation and
+    /// never written again.
+    ///
+    /// The routing layer has no call that could move the keyboard focus -- that is
+    /// the never-take-focus policy this record pins -- so a whole keyboard walk must
+    /// leave it exactly as the host reported it. It stands in for the focus probe a
+    /// display-backed harness would read before and after the walk.
+    pub window_id: u64,
     /// How many times the host's input-method state was flipped.
     pub toggles: usize,
     /// Whether the host has the input method enabled.
@@ -350,6 +397,9 @@ impl Default for RecordingHost {
             newest_candidates: 0,
             newest_page: None,
             newest_preedit: None,
+            newest_frame: None,
+            hides: Vec::new(),
+            window_id: FOCUS_WINDOW_ID,
             toggles: 0,
             is_enabled: true,
             diagnostics: Vec::new(),
@@ -377,6 +427,9 @@ impl Host for RecordingHost {
             self.newest_candidates = frame.candidates.len();
             self.newest_page = Some(frame.page);
             self.newest_preedit = Some(frame.preedit.text.clone());
+            self.newest_frame = Some(*frame);
+        } else if let UiCommand::Hide { reason, .. } = command {
+            self.hides.push(reason);
         }
     }
 

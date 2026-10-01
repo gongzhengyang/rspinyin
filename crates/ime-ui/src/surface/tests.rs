@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use ime_types::ui::{OverlayEntry, OverlayFrame, OverlayKind, OverlaySection};
 use ime_types::{HideReason, SelectTrigger, SurfaceEvent, UiEvent};
 
 use super::*;
@@ -299,6 +300,138 @@ fn motion(state: &Arc<Mutex<MockState>>, x: i32, y: i32) {
         .expect("the mock is not poisoned")
         .pending
         .push(SurfaceEvent::PointerMotion { x, y });
+}
+
+/// One cheat-sheet frame, as the engine builds it from the bindings in force.
+fn cheat_sheet() -> Box<OverlayFrame> {
+    Box::new(OverlayFrame {
+        kind: OverlayKind::CheatSheet,
+        title: String::from("按键速查"),
+        sections: vec![OverlaySection {
+            title: String::from("编辑"),
+            entries: vec![
+                OverlayEntry {
+                    keys: String::from("Esc"),
+                    label: String::from("取消输入"),
+                },
+                OverlayEntry {
+                    keys: String::from("Space"),
+                    label: String::from("上屏"),
+                },
+            ],
+        }],
+        selected: None,
+        query: String::new(),
+    })
+}
+
+/// One command-palette frame, as a second panel that replaces the first.
+fn command_palette() -> Box<OverlayFrame> {
+    Box::new(OverlayFrame {
+        kind: OverlayKind::CommandPalette,
+        title: String::from("命令面板"),
+        sections: Vec::new(),
+        selected: Some(0),
+        query: String::from("n"),
+    })
+}
+
+#[test]
+fn test_surface_overlay_frame_draws_over_the_panel_and_clearing_restores_it() {
+    let (before, during, after, committed, retained, region) = with_surface(|surface, state| {
+        show_and_draw(surface, 1);
+        let settled = settle(surface);
+        let before = state
+            .lock()
+            .expect("the mock is not poisoned")
+            .pixels
+            .clone();
+        let region = surface.input_region().expect("the panel was placed");
+        surface
+            .apply(SurfaceUpdate::Overlay(Some(cheat_sheet())))
+            .expect("the overlay opens");
+        surface
+            .render(settled + Duration::from_millis(16))
+            .expect("the overlay frame is drawn");
+        let committed = surface.committed_frames();
+        let retained = surface.overlay().map(|frame| frame.title.to_string());
+        let during = state
+            .lock()
+            .expect("the mock is not poisoned")
+            .pixels
+            .clone();
+        surface
+            .apply(SurfaceUpdate::Overlay(None))
+            .expect("the overlay closes");
+        surface
+            .render(settled + Duration::from_millis(32))
+            .expect("the closed frame is drawn");
+        let after = state
+            .lock()
+            .expect("the mock is not poisoned")
+            .pixels
+            .clone();
+        (before, during, after, committed, retained, region)
+    });
+    assert_eq!(
+        retained.as_deref(),
+        Some("按键速查"),
+        "the drawn frame is retained beside the candidate frame"
+    );
+    assert!(committed > 0, "the overlay frame reached the surface");
+    assert_ne!(
+        before, during,
+        "the overlay is a view of its own over the panel, not a copy of it"
+    );
+    // The change is inside the panel the region describes, not only somewhere in the
+    // reserve: every pixel of the overlay's own background and text is panel-area.
+    let mut differing = 0;
+    for y in region.y as usize..(region.y + region.h as i32) as usize {
+        for x in region.x as usize..(region.x + region.w as i32) as usize {
+            let at = y * STRIDE + x * 4;
+            if before[at..at + 4] != during[at..at + 4] {
+                differing += 1;
+            }
+        }
+    }
+    assert!(
+        differing > 0,
+        "the overlay draws inside the panel at {region:?}"
+    );
+    assert_eq!(
+        before, after,
+        "clearing the overlay restores the candidate view byte for byte, with no \
+         re-decode of the frame beneath it"
+    );
+}
+
+#[test]
+fn test_surface_overlay_retained_frames_follow_the_newest_command() {
+    let retained = with_surface(|surface, _state| {
+        let mut retained = Vec::new();
+        surface
+            .apply(SurfaceUpdate::Overlay(Some(cheat_sheet())))
+            .expect("the panel opens");
+        retained.push(surface.overlay().map(|frame| frame.title.to_string()));
+        surface
+            .apply(SurfaceUpdate::Overlay(Some(command_palette())))
+            .expect("the panel is replaced");
+        retained.push(surface.overlay().map(|frame| frame.title.to_string()));
+        surface
+            .apply(SurfaceUpdate::Overlay(None))
+            .expect("the panel closes");
+        retained.push(surface.overlay().map(|frame| frame.title.to_string()));
+        retained
+    });
+    assert_eq!(
+        retained,
+        [
+            Some(String::from("按键速查")),
+            Some(String::from("命令面板")),
+            None,
+        ],
+        "the surface retains the newest overlay state, and a close is a value of its own"
+    );
 }
 
 #[test]

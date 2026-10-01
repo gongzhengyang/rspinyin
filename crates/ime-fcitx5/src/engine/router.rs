@@ -68,6 +68,7 @@ use ime_core::privacy::InputContextKind;
 use ime_core::state::{FrameContext, Session, SessionEnv, SessionEvent, SessionState};
 use ime_types::{Anchor, UiEvent};
 
+use crate::engine::badge::BadgeState;
 use crate::engine::host::Host;
 use crate::engine::{
     claims_key, is_shift_press, is_syllable_separator, leaves_temp_english, translate_key,
@@ -143,7 +144,11 @@ impl Context {
     /// Writes the cursor position and the mode bits into the session.
     ///
     /// Called before every step that may emit a frame, so the frame carries where the
-    /// window goes and what its status strip says.
+    /// window goes and what its status strip says. The strip written here is the standing
+    /// answer — the mode name — because at this point the step has not run and the frame
+    /// it will produce does not exist; the header's slot is resolved again when a frame
+    /// is posted, where the frame's own candidates and page state are known. See the
+    /// `engine::badge` module.
     ///
     /// # Arguments
     ///
@@ -164,7 +169,8 @@ impl Context {
 ///
 /// Grouped so that a step, its effects and the commit path that closes them take the
 /// session, this context and the host, which keeps every handler inside the parameter
-/// budget.
+/// budget. The badge state is the one mutable piece: the process-local hint bit the
+/// frame executor consumes, which the router owns beside its other process state.
 struct StepCtx<'a, 'b> {
     /// The decoder, the dictionary, the user's frequencies and the language model.
     env: &'b SessionEnv<'a>,
@@ -172,6 +178,9 @@ struct StepCtx<'a, 'b> {
     config: &'b RoutingConfig,
     /// The per-context decisions the learning path asks before it records anything.
     privacy: &'b ContextPrivacy,
+    /// The process-local state the header's slot is resolved through when a frame is
+    /// posted; the `engine::badge` module owns the resolution.
+    badge: &'b mut BadgeState,
 }
 
 /// The engine's routing state: one session per input context.
@@ -193,6 +202,10 @@ pub struct KeyRouter<'a> {
     contexts: HashMap<u64, Context>,
     /// The base of the next session id range; see [`SESSION_ID_STRIDE`].
     next_session_base: u64,
+    /// Whether the header's first-run key hint is still owed: the one badge bit that
+    /// outlives every context, which is why it lives on the router rather than on a
+    /// session. The `engine::badge` module owns the resolution it feeds.
+    badge: BadgeState,
 }
 
 impl<'a> KeyRouter<'a> {
@@ -226,6 +239,7 @@ impl<'a> KeyRouter<'a> {
             phrases: phrases::handle(),
             contexts: HashMap::new(),
             next_session_base: 1,
+            badge: BadgeState::new(),
         }
     }
 
@@ -327,13 +341,14 @@ impl<'a> KeyRouter<'a> {
     ///
     /// Never.
     pub fn deactivate(&mut self, ic: u64, host: &mut dyn Host) {
-        let step = StepCtx {
+        let mut step = StepCtx {
             env: &self.env,
             config: &self.config,
             privacy: &self.privacy,
+            badge: &mut self.badge,
         };
         if let Some(mut ctx) = self.contexts.remove(&ic) {
-            ctx.run(SessionEvent::Reset, &step, host);
+            ctx.run(SessionEvent::Reset, &mut step, host);
         }
         self.privacy.forget(ic);
     }
@@ -357,13 +372,14 @@ impl<'a> KeyRouter<'a> {
     ///
     /// Never.
     pub fn reset(&mut self, ic: u64, host: &mut dyn Host) {
-        let step = StepCtx {
+        let mut step = StepCtx {
             env: &self.env,
             config: &self.config,
             privacy: &self.privacy,
+            badge: &mut self.badge,
         };
         if let Some(ctx) = self.contexts.get_mut(&ic) {
-            ctx.run(SessionEvent::Reset, &step, host);
+            ctx.run(SessionEvent::Reset, &mut step, host);
         }
     }
 
@@ -403,12 +419,14 @@ impl<'a> KeyRouter<'a> {
             env,
             config,
             privacy,
+            badge,
             ..
         } = self;
-        let step = StepCtx {
+        let mut step = StepCtx {
             env,
             config,
             privacy,
+            badge,
         };
         let Some(ctx) = contexts.get_mut(&ic) else {
             emit_diagnostic(STALE_IC_CODE);
@@ -444,7 +462,7 @@ impl<'a> KeyRouter<'a> {
         // repaints carries the switch that key just made.
         let mode_acted = ctx.modes.apply(action, ctx.ic, host);
         ctx.write_frame_context(config);
-        let session_acted = ctx.run(SessionEvent::Key(action), &step, host);
+        let session_acted = ctx.run(SessionEvent::Key(action), &mut step, host);
         // `EnterTempEnglish` is the one action whose whole effect is a session flag: with
         // nothing composing it emits no effect, and the key would be handed back even
         // though the mode changed.
@@ -476,15 +494,16 @@ impl<'a> KeyRouter<'a> {
     ///
     /// Never.
     pub fn ui_event(&mut self, ic: u64, event: UiEvent, host: &mut dyn Host) -> bool {
-        let step = StepCtx {
+        let mut step = StepCtx {
             env: &self.env,
             config: &self.config,
             privacy: &self.privacy,
+            badge: &mut self.badge,
         };
         match self.contexts.get_mut(&ic) {
             Some(ctx) => {
                 ctx.write_frame_context(&self.config);
-                ctx.run(SessionEvent::Ui(event), &step, host)
+                ctx.run(SessionEvent::Ui(event), &mut step, host)
             }
             None => {
                 emit_diagnostic(STALE_IC_CODE);
@@ -535,14 +554,19 @@ impl<'a> KeyRouter<'a> {
     /// Never.
     pub fn reload(&mut self, config: RoutingConfig, host: &mut dyn Host) {
         self.config = config;
-        let step = StepCtx {
+        let mut step = StepCtx {
             env: &self.env,
             config: &self.config,
             privacy: &self.privacy,
+            badge: &mut self.badge,
         };
         for ctx in self.contexts.values_mut() {
             ctx.write_frame_context(&self.config);
-            ctx.run(SessionEvent::ConfigReloaded(config.session), &step, host);
+            ctx.run(
+                SessionEvent::ConfigReloaded(config.session),
+                &mut step,
+                host,
+            );
         }
     }
 
@@ -572,13 +596,14 @@ impl<'a> KeyRouter<'a> {
         event: SessionEvent,
         host: &mut dyn Host,
     ) -> bool {
-        let step = StepCtx {
+        let mut step = StepCtx {
             env: &self.env,
             config: &self.config,
             privacy: &self.privacy,
+            badge: &mut self.badge,
         };
         match self.contexts.get_mut(&ic) {
-            Some(ctx) => ctx.run(event, &step, host),
+            Some(ctx) => ctx.run(event, &mut step, host),
             None => false,
         }
     }

@@ -178,7 +178,7 @@ cargo test --workspace --doc                        # doctest 单独补跑
 | 编号 | 指标 | 阈值 | 测量方式 | 来源任务 |
 |---|---|---|---|---|
 | `BUDGET-LAT-01` | 按键事件到达 `InputMethodEngine` → 候选框新帧提交到合成器 | P50 ≤ 4ms，P99 ≤ 16ms，144Hz 环境 P99 ≤ 12ms | `ime-diag` 探针打点 + `Rendered{presented_at}` 回执 | TASK-1.08.03 |
-| `BUDGET-LAT-02` | 单次解码（raw ≤ 12 音节，limit = 9） | P99 ≤ 3ms，P999 ≤ 8ms | `criterion` 基准 + 运行时探针 | TASK-1.02.07 |
+| `BUDGET-LAT-02` | 单次解码（raw ≤ 12 音节，limit = 9） | 开发机回归基线：P99 ≤ 24ms、P999 ≤ 64ms（2026-10-01 按用户裁决以本机空闲实测重锚：12 音节 P50 实测 7.9ms、p99 估 20.9ms，取 20.9 进位为锚；P999 不可在 100 样本上测得，按原 8:3 比例随锚放大。裸机复核为后续任务，见 0.5.5） | `criterion` 基准 + 运行时探针 | TASK-1.02.07 |
 | `BUDGET-LAT-03` | 单帧软件光栅（600×140 逻辑像素 @ scale 2.0） | P99 ≤ 1.5ms | `criterion` 基准 + 帧耗时探针 | TASK-1.05.03 |
 | `BUDGET-LAT-04` | 首次按键到窗口可见（窗口已预创建、已预热） | P99 ≤ 8ms | 探针打点 | TASK-1.04.07 |
 | `BUDGET-LAT-05` | 插件加载耗时（fcitx5 启动时同步加载） | ≤ 120ms | `fcitx5 -v` 启动日志计时 | TASK-1.04.02 |
@@ -232,6 +232,9 @@ rspinyin 不存在"联网降级"这一状态——**它从不联网**。行为�
 | `TASK-1.05.04` | 合成器模糊协商的 `[视觉]` 项（真透明 / 亚克力） | 支持应用侧模糊的合成器（KWin / Hyprland / picom）；本机仅能验证"降级为不透明底"路径 |
 | `TASK-1.05.07` | 依赖 layer-shell 绝对定位的 `[视觉]` 项（光标四角可见性） | wlroots 档会话 |
 | `TASK-1.02.07` / `TASK-1.08.03` | `[性能]` 项可在本机跑，但**数值不代表目标硬件**（WSL2 有虚拟化开销，CPU 频率受宿主影响） | 裸机 Linux；本机数值仅作**相对回归**基线 |
+| `TASK-1.04.05` | 多屏 + 混合 DPI 的 `[实验室]` 项 | 真实多显示器环境 |
+
+> **2026-10-01 实测重锚登记（经用户裁决）**：本机空闲采集 `decode/12syl` P50 7.9ms、p99 估 20.9ms；`ui/wakeup_latency` p99 估 270–341µs。`decode_p99`/`decode_p999`/`ui_wakeup_latency_us` 三个阈值据实测重锚为 24ms/64ms/512µs，作为**开发机回归基线**而非目标硬件结论；裸机复核登记为后续任务。原设计目标（3ms/8ms/50µs）从未在本机跑绿，见 `opt-perf/phase-3.md` PERF-P2.04.02 验收记录。
 | `TASK-1.04.05` | 多屏 + 混合 DPI 的 `[实验室]` 项 | 真实多显示器环境 |
 
 **推论（影响排期）**：**R-01 可本机闭环（好消息，最致命的风险可早验证）**，但 **R-02 必须在 W2 之前准备好外部 Wayland 环境**（真机、VM + 嵌套合成器、或 CI 里的 `cage`/`sway --headless`），否则 `TASK-1.04.07` 的验收会被环境卡住。`TASK-1.07.02` 建立测试矩阵时必须把这条作为首要交付。
@@ -794,6 +797,8 @@ pub enum ConfigError {
 | `ui/layout/metric-malformed` | `ime-ui` 的布局度量 | 某个度量常量的值解析不出来（含写成表达式的情形） | 是（同上，reason 里给出 `name=value`） |
 | `crash/panic` | `ime-diag` 的崩溃记录 | 崩溃文件本身写失败时的兜底通道 | 是（常量 `CRASH_PANIC_CODE`） |
 | `ui/channel/config-invalid` | `ime-ui` 的通道构造 | `ChannelConfig` 破坏了 2.2.1 / 2.2.2 的通道契约（控制队列深度 < 2 会把有序的 `Show`/`Hide` 对坍缩成 latest-wins 槽；任一容量为 0 的通道会静默丢弃一切；控制通道的自旋预算超过 200µs 的宿主回调上限） | 是（常量 `channel::CONFIG_INVALID_CODE`，内嵌在 `config/invalid: ui.channel.<字段> (...)` 的 reason 里） |
+| `ui/candidate/overflow` | `ime-fcitx5` 的帧装配 | 候选列表超过五页显示上限（`MAX_PAGES`），窗口只见前 45 个候选；徽章页码随之拼作 `5/5+`（`BadgeState` 每会话只记一次，不逐帧刷屏） | 是（常量 `engine::badge::UI_CANDIDATE_OVERFLOW_CODE`） |
+| `dict/unigram/collision` | `xtask dictc` 的编译期哈希检查 | 两个不同的词共享同一个 FNV-1a 哈希——语言模型只按 32 位哈希解析 unigram 记录，碰撞的两个词会互取分数，必须拒绝编译 | 是（`xtask` 的编译失败消息点名两条词目与哈希值，不经 `ImeError`） |
 | `budget/memory-exceeded` | `xtask budget --memory` | 某个内存窗口（插件 / UI / 词库 mmap）相对基线的增长超过 `budgets.json` 的 `memory_mb.*` 上限 | 是（`xtask` 的退出码与违规清单，不经 `ImeError`） |
 | `budget/memory-unmeasured` | `xtask budget --memory` | 快照里缺少该窗口的读数或基线（内核读不到 `/proc`，或探针没在该窗口打点）。**缺读数按失败处理，不按 0 通过** | 是（同上；消息点名缺失的字段与需要的打点调用） |
 | `budget/alloc-exceeded` | `xtask budget --alloc` | 稳态解码的堆分配次数超过 `budgets.json` 的 `alloc_count.decode_steady` 上限（`BUDGET-ALLOC-01`） | 是（`xtask` 的退出码与违规清单，不经 `ImeError`；读 `target/alloc-report.txt`） |
@@ -1953,7 +1958,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   - **稳定性要求**：同输入 + 同词库 + 同配置 ⇒ 候选序列**逐字节一致**。这要求：所有打分为整数运算；`HashMap` 迭代顺序不得影响结果（用 `BTreeMap` 或先排序）；浮点只出现在最后的 `Candidate.score`（展示用）。
   - **错误分支**：`has_path() == false` → 返回 `DecodeResult` 且 `candidates` 只含一个 `CandidateSource::Passthrough` 候选（文本 = 原始串），并置 `DecodeResult.degraded = true`。**绝不返回空候选**（否则用户会看到"打字无反应"）。
 - **底层与非功能约束 (NFR)**：
-  - 解码 P99 ≤ 3ms、P999 ≤ 8ms（`BUDGET-LAT-02`），测量条件 `raw ≤ 12 音节、max_candidates = 9`。
+  - 解码 P99 ≤ 24ms、P999 ≤ 64ms（`BUDGET-LAT-02`，2026-10-01 按用户裁决以开发机空闲实测重锚，原设计目标 3ms/8ms 从未在本机跑绿；裸机复核为后续任务），测量条件 `raw ≤ 12 音节、max_candidates = 9`。
   - 单次解码堆分配：`DecodeResult` 之外的临时分配 ≤ 3 次（复用 `Decoder` 内的 `Vec` 缓冲）。
   - `beam_k` 与 `max_candidates` 的乘积上限：`beam_k ≤ 32`、`max_candidates ≤ 64`，超限时 `DecodeConfig::validate()` 返回 `ConfigInvalid`。
   - 候选去重：以 `text` 的 `&str` 为键；同文本保留 score 最高者，但若来源不同（`Dict` vs `UserDict`）则合并为 `UserDict` 并把两个 score 相加。
@@ -3552,7 +3557,7 @@ CP 总工期 = 29.0 人天（9 个任务）
   5. 写优雅关闭与 panic 隔离。
   6. 写唤醒延迟基准与空闲 CPU 验证脚本（`scripts/idle-cpu-check.sh`）。
 - **验收标准 (DoD)**：
-  1. 唤醒延迟 P99 ≤ 50µs（基准 `ui/wakeup_latency`，10000 次投递）。[性能]
+  1. 唤醒延迟 P99 ≤ 512µs（基准 `ui/wakeup_latency`，10000 次投递；2026-10-01 按用户裁决以开发机空闲实测重锚——原 50µs 设计目标从未在本机跑绿，实测 p99 估 270–341µs，取最差观测 1.5 倍为锚；裸机复核为后续任务）。[性能]
   2. 空闲 60 秒内 `pidstat` 的 CPU 占用 ≤ 0.3% 单核，且 `render_count` 不增长。[性能]
   3. 连续投递 10000 个 `Frame`，UI 线程只处理 ≤ 100 帧（合并生效），`ui.frame.coalesced` 计数 = 9950 ± 50。[自动]
   4. `Show`/`Hide` 保序：投递 `Show, Hide, Show` 后 UI 线程观察到的顺序一致（用 mock backend 记录调用序列）。[自动]
