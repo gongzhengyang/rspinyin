@@ -201,8 +201,11 @@ fn test_guard_ffi_writes_exactly_one_line_for_an_injected_panic() {
     // The reverse of the defect the throttle exists for: the guard reports a contained
     // panic through the throttled channel alone, so an entry point that panics on every
     // key costs one line per window, never one line per channel it also touches. The
-    // first panic is the line the window allows, which is the state the throttle is left
-    // in: the slot for the code exists, and nothing is behind it yet.
+    // table is process-wide, so the test starts from an empty one, and the first panic
+    // is the line the window allows: the slot for the code exists, and nothing is
+    // behind it yet.
+    THROTTLE.lock().expect("the throttle is never poisoned").slots =
+        [const { None }; THROTTLE_SLOTS];
     let result = guard_ffi(false, || panic_any("the candidate window blew up"));
     assert!(!result, "a panicking body must yield the fallback value");
     let suppressed = THROTTLE
@@ -230,7 +233,10 @@ fn test_guard_ffi_throttles_the_failure_line_of_repeated_panics() {
     // The guard's failure line goes through the process-wide throttle. The sink here
     // is stderr, which a test cannot read back, so what is asserted is the state the
     // throttle is left in: one slot for the code, carrying the count of the lines it
-    // swallowed.
+    // swallowed. The table is process-wide, so the test starts from an empty one --
+    // whatever another test emitted before must not change the count below.
+    THROTTLE.lock().expect("the throttle is never poisoned").slots =
+        [const { None }; THROTTLE_SLOTS];
     for _ in 0..100 {
         let _ = guard_ffi(false, || panic_any("the candidate window blew up"));
     }

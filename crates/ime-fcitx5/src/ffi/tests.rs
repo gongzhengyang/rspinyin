@@ -219,7 +219,10 @@ fn test_guard_ffi_throttles_the_failure_line_of_repeated_panics() {
     // The guard's failure line goes through the process-wide throttle. The sink here
     // is stderr, which a test cannot read back, so what is asserted is the state the
     // throttle is left in: one slot for the code, carrying the count of the lines it
-    // swallowed.
+    // swallowed. The table is process-wide, so the test starts from an empty one --
+    // whatever another test emitted before must not change the count below.
+    THROTTLE.lock().expect("the throttle is never poisoned").slots =
+        [const { None }; THROTTLE_SLOTS];
     for _ in 0..100 {
         guard_ffi(false, || panic_any("the engine blew up"));
     }

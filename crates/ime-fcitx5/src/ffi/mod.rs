@@ -12,7 +12,10 @@
 //! * `guard_ffi` / `catch_ffi` — the panic guard. Unwinding into C++ is undefined
 //!   behaviour, so a panic has to become a value at the boundary; the workspace
 //!   profile deliberately keeps unwinding enabled, without which the guard could not
-//!   catch anything.
+//!   catch anything. The guard also records the panic in the crash directory through
+//!   `crash::record_ffi_panic` and reports it on the throttled channel.
+//! * `register_crash_signal` — the registrar the crash channel's fault-signal arming
+//!   passes: the one call here that asks the kernel to deliver a signal.
 //! * `write_stderr_line` / `emit_diagnostic` — the crash channel. It bypasses the
 //!   diagnostics layer on purpose: the addon can be rejected or panic before that layer
 //!   is initialised. A code that repeats is written once per window, with the repeats it
@@ -489,18 +492,18 @@ pub(crate) fn register_crash_signal(
     ARMED_BODIES[slot].store(handler as usize, Ordering::Release);
 
     // Zeroed is a valid `sigaction`: an empty signal mask, no restorer, and every flag
-    // the two calls below do not set. The body is the trampoline, which reads the two
+    // the lines below set or leave. The body is the trampoline, which reads the two
     // facts the record needs out of the `siginfo_t` and hands them to `handler`.
-    let mut action = std::mem::zeroed::<libc::sigaction>();
+    // SAFETY: `sigaction` is plain old data, so zeroed bytes are a valid empty state for
+    // every field of it, and the assignments that follow finish the preparation.
+    let mut action = unsafe { std::mem::zeroed::<libc::sigaction>() };
     action.sa_sigaction = on_host_signal as usize;
     action.sa_flags = libc::SA_SIGINFO;
-    // SAFETY: `action` is owned for the duration of the two calls and neither retains a
-    // pointer into it; the old-action out-parameter is not requested. `sigemptyset(3)`
-    // and `sigaction(2)` are the documented interfaces for what this does.
-    let armed = unsafe {
-        libc::sigemptyset(&mut action.sa_mask) == 0
-            && libc::sigaction(signal_number, &action, std::ptr::null_mut()) == 0
-    };
+    // `sigemptyset(3)` and `sigaction(2)` are the documented interfaces for what this
+    // does. Neither retains a pointer into `action`, and the old-action out-parameter is
+    // not requested.
+    let armed = libc::sigemptyset(&mut action.sa_mask) == 0
+        && libc::sigaction(signal_number, &action, std::ptr::null_mut()) == 0;
     if !armed {
         return Err(ImeError::DataReadonly {
             reason: format!(

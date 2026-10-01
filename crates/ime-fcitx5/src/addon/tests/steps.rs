@@ -184,11 +184,14 @@ fn test_assemble_crash_forensics_in_arms_the_channel_over_the_given_directory() 
     assert_eq!(mode, CRASH_DIR_MODE, "the directory is owner-only");
     // The fault-signal channel owns its record file from the moment it is armed, because
     // a handler cannot build a path; its presence here is the observable half of the
-    // arming, and its mode is the privacy baseline.
+    // arming, and its mode is the privacy baseline. The armed file is the empty one: the
+    // panic hook this arming installed also writes records here when anything else in the
+    // process panics, and those are never empty.
     let armed: Vec<_> = std::fs::read_dir(&crash_dir)
         .expect("listing the crash directory")
         .flatten()
         .map(|entry| entry.path())
+        .filter(|path| std::fs::metadata(path).map(|meta| meta.len() == 0).unwrap_or(false))
         .collect();
     assert_eq!(armed.len(), 1, "the signal channel armed one record");
     let file_mode = std::fs::metadata(&armed[0])
