@@ -643,19 +643,25 @@ fn keep_original(path: &Path, from: u16) -> io::Result<PathBuf> {
 /// Builds `text` in a temporary file beside `path` and renames it over `path`.
 ///
 /// The temporary file is given the mode of the file it replaces, so a configuration the
-/// user had restricted does not become readable by others because it was migrated.
+/// user had restricted does not become readable by others because it was migrated. The
+/// written file is flushed to the device before the rename, so the name is never
+/// published over bytes that are still only in the page cache.
 ///
 /// # Errors
 ///
 /// The underlying [`io::Error`] when the mode cannot be read, when no temporary name is
-/// free, when the write fails, or when the rename fails. `path` is left untouched in every
-/// one of those cases.
+/// free, when the write or the flush fails, or when the rename fails. `path` is left
+/// untouched in every one of those cases.
 fn replace(path: &Path, text: &str) -> io::Result<()> {
     let permissions = fs::metadata(path)?.permissions();
     let (temp_path, mut temp) = claim_free_file(&suffixed(path, TEMP_SUFFIX), TEMP_MODE)?;
     let built = temp
         .write_all(text.as_bytes())
-        .and_then(|()| fs::set_permissions(&temp_path, permissions));
+        .and_then(|()| fs::set_permissions(&temp_path, permissions))
+        // The flush is what makes the rename meaningful: without it the name could be
+        // published while the bytes are still only in the page cache, and a power loss
+        // would leave a complete name over an incomplete file.
+        .and_then(|()| temp.sync_all());
     drop(temp);
     if let Err(error) = built {
         discard(&temp_path);

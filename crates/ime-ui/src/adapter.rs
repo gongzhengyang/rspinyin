@@ -669,10 +669,10 @@ impl Adapter {
         self.window.set_highlight_h(rect.h);
         self.window
             .set_highlight_visible(self.motion.highlight().is_visible());
-        // `window-opacity` is still written, and still declared by the component, but
-        // nothing is bound to it: see the note in `candidate.slint` for why a binding is
-        // worse than no binding on this renderer. A renderer that gains support for a
-        // bound opacity will need that decision revisited, not just this line.
+        // The fade half of the motion (features.md 3.3.2): the panel rectangle binds
+        // `window-opacity` to its own `opacity`, so this write is what fades the panel in
+        // while it grows and out while it shrinks. The renderer side of that path is
+        // pinned by the pixel probes in `renderer/tests.rs`.
         self.window.set_window_opacity(motion.opacity);
         self.window.set_window_scale(motion.scale);
         self.window.set_page_offset_dp(motion.page_offset_dp);

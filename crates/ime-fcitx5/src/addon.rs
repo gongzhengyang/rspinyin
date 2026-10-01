@@ -124,7 +124,25 @@ const INIT_STEPS: &[InitStep] = &[
     InitStep::new("store-recovery", false, user_store::recover_stores),
     InitStep::new("lexicon", false, session::load_lexicon),
     InitStep::new("session-host", false, session::install_session_host),
+    // Last, deliberately: whichever addon initialises second is the one that can find
+    // the other already loaded, so this probe is what makes the handshake survive both
+    // load orders (ADR-0011).
+    InitStep::new("transport-probe", false, transport_probe),
 ];
+
+/// Probes for the user-interface addon's transport and registers, if it is loaded.
+///
+/// The UI addon runs the mirrored probe at its own `ui-registration` step; the two
+/// together are what let the handshake connect whichever addon initialises second.
+/// A probe that finds nothing is recorded, not fatal and not retried: the frame
+/// channel comes up on the next addon load, and `post()` keeps its `ui/not-ready`
+/// degradation until then.
+fn transport_probe() -> Result<(), ImeError> {
+    if crate::ffi::engine_transport_probe() == 0 {
+        emit_diagnostic("ui/transport/handshake-unavailable");
+    }
+    Ok(())
+}
 
 /// Records that a step is an integration point for work that has not landed yet.
 ///
@@ -205,6 +223,14 @@ pub fn on_addon_init(_handle: *mut c_void) -> bool {
 
 /// Releases everything [`on_addon_init`] took.
 ///
+/// The sweep runs in a frozen order: the sessions first, so no composition outlives the
+/// subsystems it decoded against; the phrase writer's drain second, so the rows the last
+/// keystrokes queued are written rather than lost with the process; then the user store's
+/// flush and its backup, and the diagnostics last, so every step above still has a sink.
+/// Each bounded step waits within a budget of its own, a step that outlives its budget is
+/// recorded and left behind rather than holding up the host, and the whole of the sweep
+/// stays inside [`DESTROY_BUDGET`].
+///
 /// Safe to call when initialisation never ran or declined, which is why the addon
 /// destructor calls it unconditionally: stopping an empty lifecycle costs nothing.
 pub fn on_addon_destroy(_handle: *mut c_void) {
@@ -214,6 +240,14 @@ pub fn on_addon_destroy(_handle: *mut c_void) {
     // drops every composition without committing it, so no candidate is left that the
     // plugin could still take.
     let sessions = session_host::shutdown();
+
+    // The phrase writer drains while every file it writes to is still writable: its rows
+    // are the user's own words from the session that just ended, and a graceful stop
+    // loses nothing only if someone waits for the queue. The wait is bounded by
+    // `PHRASE_DRAIN_BUDGET`; a writer that outlives it is recorded and detached by the
+    // phrases module, which is what keeps the flush below in possession of its share of
+    // the destroy budget.
+    phrases::drain_writer(PHRASE_DRAIN_BUDGET);
 
     // The user's words, while the files are still writable. The store is taken out of the
     // slot rather than read from it, so a destructor that runs twice flushes once and
@@ -249,6 +283,15 @@ pub const INIT_BUDGET: Duration = Duration::from_millis(120);
 /// The backup the destructor starts is not counted: it runs on a worker this side never
 /// joins, which is what keeps a whole document's write out of an Fcitx5 callback.
 pub const DESTROY_BUDGET: Duration = Duration::from_millis(250);
+
+/// How long [`on_addon_destroy`] waits for the phrase writer to drain its queue.
+///
+/// A slice of [`DESTROY_BUDGET`], which covers every wait the destructor pays: the session
+/// sweep and the diagnostics close cost microseconds, and the user store's flush writes
+/// only the unflushed delta its own batching caps. A writer that has not stopped within
+/// the slice is recorded under `phrase/shutdown-timeout` and detached -- its thread keeps
+/// draining what it accepted on its own, and the host's exit never waits for it.
+pub const PHRASE_DRAIN_BUDGET: Duration = Duration::from_millis(100);
 
 /// Records how the synchronous initialisation ended and how long it took.
 ///

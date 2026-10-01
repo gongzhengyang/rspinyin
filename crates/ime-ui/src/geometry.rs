@@ -212,6 +212,11 @@ pub struct PlacementRequest<'a> {
     /// what the hit map has to agree with.
     pub metrics: &'a Metrics,
     /// The ratio the window is rasterised with, normally `anchor.scale`.
+    ///
+    /// The anchor's ratio is the one source of truth for the surface: the placement, the
+    /// hit map and the raster are all computed with it, and the surface adopts it when a
+    /// frame or a `Show` arrives, so a geometry computed with any other ratio describes a
+    /// window the user will never see.
     pub scale: f32,
 }
 

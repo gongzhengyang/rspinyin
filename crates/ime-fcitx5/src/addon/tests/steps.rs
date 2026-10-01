@@ -18,8 +18,11 @@ use std::path::{Path, PathBuf};
 use ime_config::Config;
 use ime_core::privacy::DefaultPolicy;
 use ime_core::viterbi::Decoder;
+use ime_diag::crash;
+use ime_diag::crash::context::CrashContextKey;
+use ime_diag::crash::record::{CRASH_DIR_MODE, CRASH_FILE_MODE};
 use ime_diag::probe::{MemorySnapshot, ProbeSnapshot, SNAPSHOT_FILE_NAME};
-use ime_dict::paths::{BaseDirs, READONLY_CODE};
+use ime_dict::paths::{BaseDirs, MAX_PATH_BYTES, READONLY_CODE};
 use ime_types::{CandidateSource, DecodeRequest, ImeError, UiCommand};
 
 use crate::engine::host::Host;
@@ -31,7 +34,10 @@ use crate::session_host;
 use super::{ROUTING_DOCUMENT, scratch_dir};
 
 use super::super::config::{CONFIG, ROUTING, init_key_bindings, load_config_at, with_config_store};
-use super::super::diagnostics::{close_diagnostics, init_diagnostics_in, is_installed};
+use super::super::diagnostics::{
+    assemble_crash_forensics_in, close_diagnostics, crash_context, init_diagnostics_in,
+    is_installed,
+};
 use super::super::layout::{layout, prepare_data_dirs_in};
 use super::super::probes;
 use super::super::session::{
@@ -153,6 +159,82 @@ fn test_init_diagnostics_in_without_a_directory_leaves_the_layer_off() {
     assert!(
         init_diagnostics_in(None).is_ok(),
         "a missing directory is a degradation, never a declined addon"
+    );
+}
+
+// ── the crash forensics ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_assemble_crash_forensics_in_arms_the_channel_over_the_given_directory() {
+    let dir = scratch_dir("crash-forensics");
+    let crash_dir = dir.join("crash");
+
+    assemble_crash_forensics_in(Some(&crash_dir));
+
+    assert_eq!(
+        crash::crash_directory(),
+        Some(crash_dir.as_path()),
+        "the records the channel writes land in the layout's crash directory"
+    );
+    let mode = std::fs::metadata(&crash_dir)
+        .expect("the arming prepared the directory")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, CRASH_DIR_MODE, "the directory is owner-only");
+    // The fault-signal channel owns its record file from the moment it is armed, because
+    // a handler cannot build a path; its presence here is the observable half of the
+    // arming, and its mode is the privacy baseline.
+    let armed: Vec<_> = std::fs::read_dir(&crash_dir)
+        .expect("listing the crash directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    assert_eq!(armed.len(), 1, "the signal channel armed one record");
+    let file_mode = std::fs::metadata(&armed[0])
+        .expect("the armed record's metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(file_mode, CRASH_FILE_MODE, "the record is owner-only");
+}
+
+#[test]
+fn test_assemble_crash_forensics_in_survives_a_missing_directory() {
+    // Forensics must never be the reason the addon declines: an environment that names no
+    // data directory leaves the channel unarmed, the condition is reported, and the step
+    // still succeeds.
+    assert!(
+        std::panic::catch_unwind(|| assemble_crash_forensics_in(None)).is_ok(),
+        "the arming fails soft when no directory is named"
+    );
+}
+
+#[test]
+fn test_crash_context_names_readonly_mode_when_the_layout_degraded() {
+    // The provider reads atomic slots alone, because a panic may be caught on a thread
+    // that already holds the lock a richer provider would want. The one fact it reads
+    // today is the paths layer's process-wide read-only flag, and driving that flag
+    // through a layout whose paths cannot exist is what makes the branch observable.
+    let overlong = "a".repeat(MAX_PATH_BYTES * 2);
+    let bases = BaseDirs::from_lookup(|name| {
+        Some(std::ffi::OsString::from(match name {
+            "XDG_DATA_HOME" | "XDG_CONFIG_HOME" => overlong.clone(),
+            _ => String::new(),
+        }))
+    })
+    .expect("the lookup answers every name");
+    assert!(
+        ime_dict::paths::Paths::from_bases(&bases).is_err(),
+        "a layout of over-long paths is refused"
+    );
+
+    let context = crash_context();
+
+    assert_eq!(
+        context.get(CrashContextKey::SessionState),
+        Some("readonly"),
+        "the record says the session ran with writes disabled"
     );
 }
 

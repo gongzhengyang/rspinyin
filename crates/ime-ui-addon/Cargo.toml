@@ -35,6 +35,9 @@ default = []
 # the pure-Rust gates exclude this crate instead of enabling the feature, and the
 # host-ABI path is exercised separately by `just check-host`.
 fcitx5-host = []
+# The test-only frame mirror (ADR-0011's publish hook): pulls the frame snapshot
+# codec into ime-diag's build. Off by default, so a shipped addon carries none of it.
+test-mirror = ["ime-diag/uiframe"]
 
 [dependencies]
 ime-types.workspace = true

@@ -248,9 +248,12 @@ fn create_file(path: &Path, rendered: &str) -> Result<(), WritebackError> {
 fn replace_file(path: &Path, text: &str) -> io::Result<()> {
     let permissions = fs::metadata(path)?.permissions();
     let (temp_path, mut temp) = claim_free_file(&suffixed(path, TEMP_SUFFIX), FILE_MODE)?;
+    // Same publish discipline as the migration's replace: the bytes reach the device
+    // before the rename, so the name never leads the contents.
     let written = temp
         .write_all(text.as_bytes())
-        .and_then(|()| fs::set_permissions(&temp_path, permissions));
+        .and_then(|()| fs::set_permissions(&temp_path, permissions))
+        .and_then(|()| temp.sync_all());
     drop(temp);
     if let Err(error) = written {
         discard(&temp_path);

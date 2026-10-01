@@ -17,6 +17,7 @@
 | `0008` | 命令面板的契约增量（`UiCommand::Panel` / `UiEvent::PanelAction`） | **已分配，未落盘** | `docs/dev/features-add/phase-2.md` 的 `ADD-FEAT-P1.02.02` | 见 `docs/dev/features-add/phase-2.md` |
 | `0009` | `Placement` 追加 `Fixed` / `Remember` 两个变体 | **已分配，未落盘** | `docs/dev/features-add/phase-2.md` 的 `ADD-FEAT-P1.03.04` | 见 `docs/dev/features-add/phase-2.md` |
 | `0010` | 测试专用分配计数器（第四条 `unsafe` 白名单路径） | 已接受 | `docs/dev/opt-perf.md` 的 `PERF-P2.01.01` | [0010-test-only-allocation-counter.md](0010-test-only-allocation-counter.md) |
+| `0011` | 跨 addon 帧通道（wire 镜像 + 进程内符号握手） | 已接受 | `docs/dev/opt-basic.md` 的 `REFACTOR-P0.01.01` | [0011-frame-transport.md](0011-frame-transport.md) |
 
 ## 编号冲突的由来
 

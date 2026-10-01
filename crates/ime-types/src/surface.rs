@@ -118,6 +118,18 @@ pub trait SurfaceBackend: Send {
     /// X11 without a compositor frame callback.
     fn request_frame(&mut self) -> Option<FrameToken>;
 
+    /// The file descriptor the connection multiplexes, if the backend has one.
+    ///
+    /// Appended by the 2026-10-01 increment recorded in `ADR-0005`: the event loop
+    /// needs the connection fd in its poll set so pointer events are not queued behind
+    /// the host's next post. The default answers `None`, which is what a test double
+    /// wants -- the caller then falls back to its eventfd-only wait, the shape every
+    /// hermetic test already exercises. X11 answers the X connection's descriptor,
+    /// Wayland the display's.
+    fn connection_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        None
+    }
+
     /// Polls pending events into `out`: compositor events, pointer events, size
     /// and scale changes.
     ///

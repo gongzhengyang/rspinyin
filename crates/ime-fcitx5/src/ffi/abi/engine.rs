@@ -26,6 +26,12 @@ use crate::engine::host::Host;
 use crate::ffi::{emit_diagnostic, guard_ffi};
 
 mod host;
+/// The cross-addon frame transport (ADR-0011). Public, behind `#[doc(hidden)]`, for
+/// the post-path benchmark: the wire family is ABI surface, and `dispatch` is the
+/// entry the engine's `post()` drives.
+#[doc(hidden)]
+#[allow(unsafe_code)]
+pub mod transport;
 
 use self::host::FcitxHost;
 

@@ -2130,7 +2130,10 @@ name = "ime-diag"
 version = "0.1.0"
 dependencies = [
  "ime-types",
+ "serde",
+ "serde_json",
  "signal-hook",
+ "thiserror 2.0.21",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -2154,6 +2157,7 @@ name = "ime-fcitx5"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "criterion",
  "ime-config",
  "ime-core",
  "ime-diag",

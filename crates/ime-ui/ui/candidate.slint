@@ -114,8 +114,9 @@ export global CandidateMetrics {
     // The peak of L3's falloff: the alpha of the band that hugs the panel. The bands outside
     // it carry the square of their position in the ramp, which is the tail a Gaussian blur of
     // a straight edge leaves behind, and the ramp itself is painted from
-    // `Theme.shadow-outer-bands` -- this file draws it but does not compute it, because the
-    // renderer this project ships draws no element opacity.
+    // `Theme.shadow-outer-bands` -- this file draws it but does not compute it: the falloff
+    // lives in the per-band colours, and one element opacity could not express their
+    // square-law ramp.
     out property <float> shadow-band-opacity: 0.18;
     // How many bands L2 is drawn as, and the share of `shadow-inner`'s own alpha the band
     // against the panel carries. Two 1dp rings rather than one 2dp ring: a single thick ring
@@ -165,11 +166,14 @@ export global CandidateMetrics {
 //    of the falloff.
 //
 // The ramp is carried by `Theme.shadow-outer-bands` and `Theme.shadow-inner-bands` rather
-// than by an `opacity` here. An element opacity is not merely ignored by the renderer this
-// project ships: a *bound* one takes the subtree down a compositing path that draws nothing
-// at all, so a ramp written as an opacity would not draw. The two tables are the per-band
-// colours themselves, in the order these loops walk them, and `src/theme/slint_palette.rs`
-// and `src/theme/tests.rs` hold them to the falloff and the peak that 3.1.2 describes.
+// than by an `opacity` here, and the reason is the shape of the ramp, not a renderer
+// limitation: the bands tile outward without overlapping, so the composite alpha at any
+// point is the alpha of the single band covering it, while an element opacity is one
+// multiplier for the whole layer and would scale the falloff away with it. That the
+// renderer does honour a bound opacity besides is pinned by the pixel probes in
+// `src/renderer/tests.rs`. The two tables are the per-band colours themselves, in the order
+// these loops walk them, and `src/theme/slint_palette.rs` and `src/theme/tests.rs` hold
+// them to the falloff and the peak that 3.1.2 describes.
 export component CandidateShadow inherits Rectangle {
     in property <length> container-width: CandidateMetrics.min-width;
     in property <length> container-height: 0px;
@@ -570,15 +574,17 @@ export component CandidateWindow inherits Window {
     in property <length> highlight-w: 0px;
     in property <length> highlight-h: 0px;
     // Whether the engine has a candidate highlighted. This gates the box with `visible`
-    // rather than with an opacity of zero, because the software renderer this project ships
-    // ignores element opacity: a box faded to 0.0 would still be drawn.
+    // rather than with an opacity: the box is either on a cell or gone, and `visible`
+    // takes it out of the draw and out of the damage entirely, which a zero-alpha subtree
+    // would still pay to composite every frame. Continuous fades belong to the panel's
+    // own binding below.
     in property <bool> highlight-visible: false;
 
-    // 3.3.2's appear and disappear motion, in `0.0..=1.0` and `0.96..=1.0`. The scale is the
-    // half of it the user sees, because element opacity does not reach this renderer's
-    // output -- a run of text at 0.1 and one at 1.0 measure as the same pixels. The property
-    // is wired anyway: it is what the design names, and it lands the day the renderer
-    // honours it.
+    // 3.3.2's appear and disappear motion, in `0.0..=1.0` and `0.96..=1.0`. The panel
+    // rectangle binds this to its own `opacity`, so the fade half of the motion reaches
+    // the pixels: the software renderer folds a bound element opacity into the state
+    // alpha -- the pixel probes in `src/renderer/tests.rs` pin that -- and `src/adapter.rs`
+    // writes this property every frame the motion moves.
     in property <float> window-opacity: 1.0;
     in property <float> window-scale: 1.0;
     // Which edge the appear motion is anchored on. 3.3.2 anchors it on the cursor side: a
@@ -711,11 +717,17 @@ export component CandidateWindow inherits Window {
         // with, so the content keeps its own size and is cut at the panel's edge. Clipping is
         // what keeps a shrunk panel from drawing its cells out into the transparent reserve.
         clip: true;
-        // No `opacity` binding here, deliberately. The software renderer this project ships
-        // does not merely ignore it: a *bound* opacity takes the subtree down a compositing
-        // path that draws nothing at all, so the window came out fully transparent. The
-        // appear and disappear motion is the geometry above -- the panel growing out of the
-        // caret -- which is what a fade would have accompanied anyway.
+        // 3.3.2's fade half. The adapter writes `window-opacity` from the appear motion
+        // every frame it moves, and this subtree composites at that alpha, so the panel
+        // fades in while it grows out of the caret and out while it shrinks. The renderer
+        // side is pinned by the pixel probes in `src/renderer/tests.rs`: a bound opacity is
+        // multiplied into the state alpha, and a subtree at alpha 0.01 or below draws
+        // nothing. The binding is deliberately on the panel alone: the shadow bands' alpha
+        // is baked into their per-band colours and follows the panel's geometry already, so
+        // the shade holds its strength while the panel fades; if the appear frames ever
+        // read better with the whole floating layer fading, this is the one binding to
+        // widen, not a second one to add beside it.
+        opacity: min(root.window-opacity, 1.0);
 
         VerticalLayout {
             spacing: 0;
@@ -782,10 +794,10 @@ export component CandidateWindow inherits Window {
         // clip the box the moment it left its own cell. Its coordinates are the grid's, so
         // the container padding and the header block are added here.
         //
-        // The box is gated with `visible` and not with an opacity of zero. On the software
-        // renderer this project ships a *bound* opacity takes the subtree down a compositing
-        // path that draws nothing at all, so a box "faded out" that way would be a box that
-        // never appeared; the same reason the window's own opacity is written but unbound.
+        // The box is gated with `visible` and not with an opacity: it is either on a cell or
+        // gone, and `visible` takes it out of the draw and the damage entirely, which a
+        // zero-alpha subtree would still pay to composite. The window's own fade is the
+        // panel's `opacity` binding above, not a property of the box.
         Rectangle {
             x: CandidateMetrics.container-padding + root.highlight-x;
             y: root.header-height + CandidateMetrics.separator-height

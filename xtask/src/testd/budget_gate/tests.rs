@@ -71,7 +71,8 @@ const DOCUMENT: &str = r#"{
     "passthrough_classify_ns": 555.5,
     "input_buffer_ops_us": 5.5,
     "decode_holdout_s": 5.5,
-    "ui_wakeup_latency_us": 5.5
+    "ui_wakeup_latency_us": 5.5,
+    "post_ui_ns": 5.5
   },
   "net_sockets": 0
 }"#;

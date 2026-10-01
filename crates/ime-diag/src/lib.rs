@@ -20,3 +20,5 @@ pub mod perms;
 pub mod probe;
 pub mod redact;
 pub mod report;
+#[cfg(feature = "uiframe")]
+pub mod uiframe;

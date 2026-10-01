@@ -453,7 +453,9 @@ fn test_candidate_grid_draws_the_five_states_of_the_design_table() {
 fn test_candidate_grid_draws_the_reserved_disabled_state_at_its_own_opacity() {
     // 3.4's `Disabled` row is reserved -- nothing in this phase disables a candidate -- so
     // the state is forced through the component's model, which is also what proves the
-    // component draws the row the table specifies.
+    // component draws the row the table specifies. The disabled cell carries the grid's
+    // bound `opacity: dim` (0.32) and still draws, which is itself the counterexample to
+    // the old claim that a bound opacity leaves nothing on the surface.
     let (enabled, disabled, flag) = on_own_thread(|| {
         let (backend, state) = MockSurface::new(PIXEL_WIDTH_DP, PIXEL_HEIGHT_DP, 1.0);
         let platform = RspinyinPlatform::new(Box::new(backend));
@@ -499,21 +501,31 @@ fn test_candidate_grid_draws_the_reserved_disabled_state_at_its_own_opacity() {
     });
     assert!(enabled > 0, "the cell draws its number and its text");
     assert!(disabled > 0, "the disabled cell still draws");
-    // What this test cannot assert, and why.
+    // What this test cannot assert, and why its old reading was wrong.
     //
     // The obvious assertion is `disabled * 2 < enabled`, reading 3.4's "the disabled row is
-    // drawn at 0.32". It does not hold, and the reason is not the grid: **`opacity` has no
-    // effect on the software renderer's output here**. Measured directly -- setting a text
-    // element's opacity to 0.1, and then to a colour with alpha 0.1, both leave the sampled
-    // ink at 515,630 against 515,833 for the enabled cell, a 0.04% difference. That is also
-    // why 3.1.1's number label at 0.55 and 3.2's annotation at 0.50 are drawn at full
-    // strength today.
+    // drawn at 0.32". An earlier version of this comment reported the opposite from a
+    // measurement -- two cells whose sampled ink sat at 515,630 against 515,833, a 0.04%
+    // difference -- and read the near-equality as "`opacity` has no effect on the software
+    // renderer's output". The instrument is why that reading was mistaken. This cell sits
+    // on the panel's acrylic fill, and the fill dominates the composite: a count of ink
+    // pixels cannot see an alpha change at all, because a dimmed glyph pixel is still an
+    // ink pixel, and a sum of their alphas moves only on the pixels the glyphs cover --
+    // the 0.32 dim takes a stroke core from 255 to 229 -- which stays far below the 1%
+    // this assertion bounds. A near-equal ink over an opaque-ish backing measures the
+    // backing, not the dim.
     //
-    // The grid still carries the factor (`dim` in `candidate_grid.slint`, folded into every
-    // child that draws), because the specification says 0.32 and the source is where the
-    // specification is checked. What is asserted here is the half that is observable: the
-    // flag reaches the model, the disabled cell renders, and it renders in the same place
-    // as its enabled twin. The renderer limitation is recorded rather than papered over.
+    // What is actually true of the renderer is the direct opposite of the old reading:
+    // the software renderer multiplies a bound element opacity into the state alpha and
+    // culls a subtree at alpha 0.01, for rectangles and glyphs alike. That is pinned by
+    // the pixel probes in `renderer/tests.rs`, which read the composited alpha back over
+    // a transparent background where the subtree's own alpha is the whole answer. The
+    // grid carries the factor as real bindings (`dim` in `candidate_grid.slint`), and
+    // 3.1.1's 0.55 number label and 3.2's 0.50 annotation composite at those alphas.
+    //
+    // What is asserted here stays the observable half: the flag reaches the model, the
+    // disabled cell draws -- already the counterexample to the old "a bound opacity
+    // draws nothing" claim -- and it draws in the same place as its enabled twin.
     assert_eq!(
         flag,
         Some(true),

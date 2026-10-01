@@ -23,7 +23,10 @@ use ime_core::phrase::{PhraseTable, append_phrase};
 use ime_dict::paths::{BaseDirs, FILE_MODE, Paths};
 use ime_types::ImeError;
 
-use super::{BUILT_IN_DOCUMENT, PhraseHandle, PhraseStore, document_path, merge_documents};
+use super::{
+    BUILT_IN_DOCUMENT, PHRASE_SHUTDOWN_TIMEOUT_CODE, PhraseHandle, PhraseStore, document_path,
+    merge_documents,
+};
 
 /// How long a test waits for the writer thread before it gives up.
 ///
@@ -428,4 +431,119 @@ fn test_handle_answers_the_table_of_the_store_it_wraps() {
     let hit = table.longest_match("zzz", 0);
     assert_eq!(hit.map(|hit| table.text(hit)), Some("2026-09-29"));
     assert!(handle.shutdown(PATIENCE), "the writer stops");
+}
+
+// ── the teardown drain ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_drain_phrase_writer_writes_the_rows_that_were_still_queued() {
+    // The unload guarantee the teardown exists for: rows the session saved in its last
+    // keystrokes are still in the queue when the addon goes away, and the drain is the
+    // call that lands them. The document is read back, because that is where the next
+    // load will read the rows from.
+    let dir = scratch_dir("drain-unload");
+    let document = dir.join("phrases.tsv");
+    let mut store = PhraseStore::load(Some(document.clone()), 100, true);
+    for (key, text) in [("aa", "one"), ("bb", "two"), ("cc", "three")] {
+        assert!(store.append(key, text).is_ok(), "the row is queued");
+    }
+
+    assert!(
+        store.drain_phrase_writer(PATIENCE),
+        "the writer drains its queue and stops"
+    );
+    assert_eq!(
+        fs::read_to_string(&document).unwrap_or_default(),
+        "aa\tone\nbb\ttwo\ncc\tthree\n",
+        "every queued row is on the document once the unload drained the writer"
+    );
+    let table = store.table();
+    let hit = table.longest_match("cc", 0);
+    assert_eq!(
+        hit.map(|hit| table.text(hit)),
+        Some("three"),
+        "the drained store still answers for the rows that landed"
+    );
+}
+
+#[test]
+fn test_drain_phrase_writer_refuses_saves_after_the_writer_is_taken() {
+    // The difference between the drain and an in-place stop: the drained store holds no
+    // writer at all, so a save that somehow arrives after the unload began is refused
+    // before it is queued rather than accepted into a queue nobody will drain again.
+    let dir = scratch_dir("drain-taken");
+    let mut store = PhraseStore::load(Some(dir.join("phrases.tsv")), 100, true);
+
+    assert!(store.drain_phrase_writer(PATIENCE), "the idle writer stops");
+    let refused = store.append("zzz", "2026-09-29");
+    assert!(refused.is_err(), "a drained store queues no row");
+    if let Err(error) = refused {
+        let rendered = error.to_string();
+        assert!(rendered.starts_with("data/readonly-mode: "), "{rendered}");
+        assert!(matches!(error, ImeError::DataReadonly { .. }));
+    }
+    assert!(
+        store.drain_phrase_writer(PATIENCE),
+        "a second drain finds no writer and answers at once"
+    );
+}
+
+#[test]
+fn test_drain_phrase_writer_with_an_empty_outbox_writes_nothing() {
+    // The zero-work path: a writer with nothing queued stops without touching the
+    // document, so an unload that follows a session with no save costs no write at all.
+    let dir = scratch_dir("drain-empty");
+    let document = dir.join("phrases.tsv");
+    let mut store = PhraseStore::load(Some(document.clone()), 100, true);
+
+    assert!(store.drain_phrase_writer(PATIENCE), "the idle writer stops");
+    assert!(
+        !document.exists(),
+        "nothing queued means the document was never created"
+    );
+}
+
+#[test]
+fn test_drain_phrase_writer_without_a_writer_answers_at_once() {
+    // No document, no writer, no wait: the teardown of a store that could never save
+    // costs nothing, whatever budget it is handed.
+    let mut store = PhraseStore::load(None, 100, true);
+    assert!(
+        store.drain_phrase_writer(Duration::ZERO),
+        "a store with no writer has nothing to wait for"
+    );
+}
+
+#[test]
+fn test_phrase_shutdown_timeout_code_keeps_the_registered_spelling() {
+    // The timeout code is registered in the design's runtime-diagnostic table and matched
+    // by grep, so its spelling is part of the contract rather than a detail.
+    assert_eq!(PHRASE_SHUTDOWN_TIMEOUT_CODE, "phrase/shutdown-timeout");
+}
+
+#[test]
+fn test_handle_drain_phrase_writer_writes_the_queued_row() {
+    // The handle is what the teardown reaches the store through, so the drain runs through
+    // it too: the row the session queued is on the document when the call answers.
+    let dir = scratch_dir("handle-drain");
+    let document = dir.join("phrases.tsv");
+    let handle = PhraseHandle::new(PhraseStore::load(Some(document.clone()), 100, true));
+    assert!(
+        handle.append("zzz", "2026-09-29").is_ok(),
+        "the row is queued"
+    );
+
+    assert!(
+        handle.drain_phrase_writer(PATIENCE),
+        "the writer drains and stops"
+    );
+    assert_eq!(
+        fs::read_to_string(&document).unwrap_or_default(),
+        "zzz\t2026-09-29\n",
+        "the queued row is on the document once the handle drained the writer"
+    );
+    assert!(
+        handle.drain_phrase_writer(PATIENCE),
+        "a second drain finds no writer and answers at once"
+    );
 }

@@ -114,13 +114,14 @@ export global Theme {
     // outer edge -- the cheapest-looking thing a floating panel can do.
     //
     // The falloff therefore has to reach the rasterizer as a per-band colour, which is
-    // why the two tables below live here. It cannot be an `opacity`: the software
-    // renderer this project ships does not apply `opacity` to the frame it produces -- a
-    // rectangle at `opacity: 0.1` and the same rectangle at `opacity: 1.0` rasterize
-    // identically -- so a ramp written in `opacity` would draw every band at full
-    // strength and the falloff would silently not exist. Baking the ramp into
-    // `with-alpha()` is the same picture on a renderer that does honour `opacity`, and it
-    // is the only one that is drawn here.
+    // why the two tables below live here. An element `opacity` is one multiplier for a
+    // whole subtree: it would scale every band by the same factor, and a falloff that
+    // lives in the per-band alphas would come out the same wash at a lower peak. The
+    // bands tile outward without overlapping, so the composite alpha at any point is the
+    // alpha of the single band covering it -- the per-band colour is the only place this
+    // ramp can live. That the renderer honours a bound `opacity` besides is pinned by
+    // the pixel probes in `src/renderer/tests.rs`; the ramp is baked into `with-alpha()`
+    // for the reason above, not because a binding would be dropped.
     //
     // Both tables are ordered outermost first, which is the order the drawing loop walks
     // them in: band 0 is the widest and faintest ring, the last band is the one hugging

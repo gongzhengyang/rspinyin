@@ -25,6 +25,10 @@
 // C++17 and the Rust side is the authority on the layout, so a header would be a third
 // copy to keep in step rather than a single source of truth.
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -253,4 +257,132 @@ public:
 extern "C" void *rspinyin_ui_addon_factory() {
     static RspinyinUiAddonFactory factory;
     return &factory;
+}
+
+// ── Cross-addon transport handshake (ADR-0011) ──────────────────────────────────
+//
+// The engine addon holds an atomic sink slot whose `post()` consults per command;
+// registering means handing it the pointer to the Rust side's `rspinyin_ui_frame_sink()`
+// static. The engine exports the registration symbol; this glue finds it and calls it
+// once, during the addon's `ui-registration` step.
+//
+// Two probe mechanisms, in order, and a third fallback:
+//   1. `dlsym(RTLD_DEFAULT, ...)`: answers when fcitx5 loaded the engine addon
+//      `RTLD_GLOBAL`.
+//   2. `dladdr` on this translation unit's own code gives the path this addon was
+//      loaded from; the engine sits beside it under `librspinyin.so`, and a `RTLD_NOLOAD`
+//      open of that exact path matches the loaded object by name.
+//   3. the bare soname `librspinyin.so` under `RTLD_NOLOAD`, for a host that loads by
+//      soname rather than by path.
+// A `RTLD_NOLOAD` open never loads anything: it either answers an already-loaded object
+// or fails, which is why the fallbacks cost nothing and risk nothing.
+//
+// The registration function's type is spelled as a plain `int (*)(const void *)`: the
+// sink this side passes is an opaque pointer the engine never dereferences, and
+// duplicating the struct layout here would be a third transcription of a shape this
+// file does not otherwise need.
+
+#include <dlfcn.h>
+
+typedef int (*rspinyin_register_sinks_fn)(const void *);
+
+// The sink pointer the Rust side of this addon exports (ADR-0011). Declared at file
+// scope: a linkage specification is not valid inside a function body, and the symbol
+// resolves within this image at link time.
+extern "C" const void *rspinyin_ui_frame_sink();
+
+namespace {
+
+/// Looks the engine's registration function up through probe `mechanism`.
+///
+/// Returns null when that mechanism finds nothing. `handle_out`, when non-null,
+/// receives the handle the symbol came from (a `RTLD_NOLOAD` result, or null for
+/// `RTLD_DEFAULT`); the caller has no reason to close a `RTLD_NOLOAD` handle.
+rspinyin_register_sinks_fn find_engine_register(int mechanism, void **handle_out) {
+    switch (mechanism) {
+    case 1:
+        return reinterpret_cast<rspinyin_register_sinks_fn>(
+            dlsym(RTLD_DEFAULT, "rspinyin_engine_register_ui_sinks"));
+    case 2: {
+        Dl_info info{};
+        void *self = reinterpret_cast<void *>(&find_engine_register);
+        if (dladdr(self, &info) == 0 || info.dli_fname == nullptr) {
+            return nullptr;
+        }
+        std::string path(info.dli_fname);
+        auto slash = path.find_last_of('/');
+        std::string sibling = (slash == std::string::npos)
+                                  ? std::string("librspinyin.so")
+                                  : path.substr(0, slash + 1) + "librspinyin.so";
+        void *handle = dlopen(sibling.c_str(), RTLD_NOLOAD | RTLD_LAZY);
+        if (handle == nullptr) {
+            return nullptr;
+        }
+        if (handle_out != nullptr) {
+            *handle_out = handle;
+        }
+        return reinterpret_cast<rspinyin_register_sinks_fn>(
+            dlsym(handle, "rspinyin_engine_register_ui_sinks"));
+    }
+    case 3: {
+        void *handle = dlopen("librspinyin.so", RTLD_NOLOAD | RTLD_LAZY);
+        if (handle == nullptr) {
+            return nullptr;
+        }
+        if (handle_out != nullptr) {
+            *handle_out = handle;
+        }
+        return reinterpret_cast<rspinyin_register_sinks_fn>(
+            dlsym(handle, "rspinyin_engine_register_ui_sinks"));
+    }
+    default:
+        return nullptr;
+    }
+}
+
+} // namespace
+
+/// Registers the frame sink with the engine addon (ADR-0011).
+///
+/// Returns the probe mechanism that fired: 1 `RTLD_DEFAULT`, 2 the sibling-path
+/// `RTLD_NOLOAD`, 3 the bare-soname `RTLD_NOLOAD`, 0 when no mechanism found a live
+/// engine. The Rust caller records the answer; a 0 is not retried until the next addon
+/// load.
+extern "C" std::uint32_t rspinyin_ui_transport_register() {
+    const void *sink = rspinyin_ui_frame_sink();
+    if (sink == nullptr) {
+        return 0;
+    }
+    for (int mechanism = 1; mechanism <= 3; ++mechanism) {
+        void *handle = nullptr;
+        rspinyin_register_sinks_fn register_sinks = find_engine_register(mechanism, &handle);
+        if (register_sinks == nullptr) {
+            continue;
+        }
+        if (register_sinks(sink) == 1) {
+            return static_cast<std::uint32_t>(mechanism);
+        }
+    }
+    return 0;
+}
+
+/// Clears the engine's sink slot on unload, by the same probes (ADR-0011).
+///
+/// Nothing is cached between the register and unregister calls on purpose: an engine
+/// that unloaded first must not leave this side holding a dangling function pointer,
+/// and a fresh probe costs one `dlsym` on a path that runs once per unload.
+extern "C" void rspinyin_ui_transport_unregister() {
+    for (int mechanism = 1; mechanism <= 3; ++mechanism) {
+        void *handle = nullptr;
+        rspinyin_register_sinks_fn register_sinks = find_engine_register(mechanism, &handle);
+        if (register_sinks == nullptr) {
+            continue;
+        }
+        void *clear = dlsym(handle != nullptr ? handle : RTLD_DEFAULT,
+                            "rspinyin_engine_clear_ui_sinks");
+        if (clear != nullptr) {
+            reinterpret_cast<void (*)()>(clear)();
+            return;
+        }
+    }
 }

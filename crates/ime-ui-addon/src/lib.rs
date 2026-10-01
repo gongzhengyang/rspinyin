@@ -37,6 +37,8 @@ pub mod platform;
 pub mod screen;
 pub mod ui_impl;
 
+#[cfg(feature = "test-mirror")]
+pub mod mirror;
 // The `unsafe_code` allowance is scoped to this one module declaration rather than
 // applied crate-wide, so raw pointers stay confined to the FFI boundary the architecture
 // rules and the unsafe audit both name.

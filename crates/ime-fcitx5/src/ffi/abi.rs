@@ -52,7 +52,11 @@
 //! default and carry a `Stub:` comment naming the work that replaces the body.
 //! Nothing else in this module is a placeholder.
 
-mod engine;
+// The module itself is public so the transport's post-path seam (`transport::dispatch`)
+// is reachable from the benchmark target; every callback that matters was already
+// re-exported at this level, so nothing newly public carries behaviour that was not
+// reachable before.
+pub mod engine;
 mod lifecycle;
 mod types;
 

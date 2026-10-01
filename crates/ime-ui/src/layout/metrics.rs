@@ -376,14 +376,13 @@ mod tests {
 
     /// Whether a line of Slint code binds the `opacity` property.
     ///
-    /// `window-opacity` is a different property -- the appear motion's, written by the adapter
-    /// but deliberately bound to nothing -- so the name is matched as a whole word and not as
-    /// a suffix.
+    /// The panel's fade and the grid's four dims are bindings this way; `window-opacity`
+    /// -- the appear motion's property, which the panel's binding *reads* -- must not
+    /// match, and neither may a token such as `shadow-band-opacity`, whose name only ends
+    /// in the same word. A *binding* is the property name at the start of the line and
+    /// nothing before it.
     fn binds_opacity(line: &str) -> bool {
-        // A *binding* is the property name at the start of the line and nothing before it:
-        // `opacity: dim;` binds, while `out property <float> shadow-band-opacity: 0.18;`
-        // declares a token whose name happens to end in the same word. Matching the name
-        // anywhere in the line would call every band token a binding.
+        // Matching the name anywhere in the line would call every band token a binding.
         line.trim_start().starts_with("opacity:")
     }
 
@@ -615,23 +614,59 @@ mod tests {
     }
 
     #[test]
-    fn test_candidate_slint_binds_no_opacity_and_takes_no_focus() {
-        // Two properties of the platform this project ships, and the source is the only place
-        // either can be asserted. Element opacity is not usable on the software renderer this
-        // project ships: a *bound* one does not fade its subtree, so a marker gated by an
-        // opacity of zero is not a hidden marker. And the candidate window must never take
-        // keyboard focus (features.md 0.4 rule 5): no `TextInput`, no `forward-focus` and no
-        // `focus()` call may appear in this file.
-        let code = code_without_comments(CANDIDATE_SLINT);
-        assert!(
-            !code.lines().any(binds_opacity),
-            "no element may bind opacity; the motion is drawn as geometry instead"
-        );
-        for forbidden in ["TextInput", "forward-focus", "focus("] {
-            assert!(
-                !code.contains(forbidden),
-                "{forbidden} would take keyboard focus"
+    fn test_view_binds_only_the_whitelisted_opacity_and_takes_no_focus() {
+        // Two facts of the view this project ships, and the source is the only place
+        // either can be asserted.
+        //
+        // The renderer honours a bound opacity: i-slint-core 1.13.1 multiplies it into the
+        // state alpha, culls the subtree at alpha 0.01, and folds the rest into every
+        // rectangle and glyph -- which the pixel probes in `renderer/tests.rs` assert
+        // against real output. An `opacity` binding is therefore a drawing decision, not a
+        // no-op, and every one of them is named below: a new binding, or a changed value,
+        // fails this test until it joins the whitelist with the spec row that fixes it.
+        // The grid's four are 3.4's dim, folded into each drawing child; the panel's one
+        // is 3.3.2's fade-in. And the candidate window must never take keyboard focus
+        // (features.md 0.4 rule 5): no `TextInput`, no `forward-focus` and no `focus()`
+        // call may appear in either file.
+        for (source, name, allowed) in [
+            (
+                CANDIDATE_SLINT,
+                "candidate.slint",
+                &["opacity: min(root.window-opacity, 1.0);"] as &[&str],
+            ),
+            (
+                GRID_SLINT,
+                "candidate_grid.slint",
+                &[
+                    "opacity: 0.50 * dim;",
+                    "opacity: 0.55 * dim;",
+                    "opacity: dim;",
+                    "opacity: dim;",
+                ] as &[&str],
+            ),
+        ] {
+            let code = code_without_comments(source);
+            let mut bound: Vec<&str> = code
+                .lines()
+                .filter(|line| binds_opacity(line))
+                .map(|line| line.trim())
+                .collect();
+            bound.sort_unstable();
+            let mut expected = allowed.to_vec();
+            expected.sort_unstable();
+            assert_eq!(
+                bound, expected,
+                "{name} must bind exactly the whitelisted opacity lines and no others"
             );
+        }
+        for source in [CANDIDATE_SLINT, GRID_SLINT] {
+            let code = code_without_comments(source);
+            for forbidden in ["TextInput", "forward-focus", "focus("] {
+                assert!(
+                    !code.contains(forbidden),
+                    "{forbidden} would take keyboard focus"
+                );
+            }
         }
     }
 }

@@ -22,7 +22,12 @@
 // both definition sites is what makes an accidental drift visible. Field order is the
 // ABI — append only, and bump the version constant on both sides when you do.
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <cstddef>
+#include <string>
 #include <cstdint>
 #include <mutex>
 
@@ -249,4 +254,79 @@ public:
 extern "C" FCITXCORE_EXPORT ::fcitx::AddonFactory *rspinyin_addon_factory() {
     static RspinyinAddonFactory factory;
     return &factory;
+}
+
+// ── Cross-addon transport probe (ADR-0011) ──────────────────────────────────────
+//
+// The engine runs the mirror image of the user-interface addon's handshake probe:
+// whichever addon initialises second is the one that can find the other already loaded,
+// and this entry point is how the engine plays its half. It looks for the UI addon's
+// `rspinyin_ui_transport_register` (which registers the engine's sink slot from the UI
+// side) through the same three mechanisms the UI glue uses -- `RTLD_DEFAULT`, the
+// sibling path derived from this library's own load path, and the bare soname, all
+// `RTLD_NOLOAD` so a miss never loads anything.
+//
+// The callee's type is spelled as `std::uint32_t (*)(void)`: this side only calls it,
+// and the registration contract lives in ADR-0011 and in the Rust side that implements
+// both ends.
+
+#include <dlfcn.h>
+
+typedef std::uint32_t (*rspinyin_ui_register_fn)(void);
+
+namespace {
+
+/// Looks the UI addon's transport-register function up through probe `mechanism`.
+rspinyin_ui_register_fn find_ui_register(int mechanism) {
+    switch (mechanism) {
+    case 1:
+        return reinterpret_cast<rspinyin_ui_register_fn>(
+            dlsym(RTLD_DEFAULT, "rspinyin_ui_transport_register"));
+    case 2: {
+        Dl_info info{};
+        void *self = reinterpret_cast<void *>(&find_ui_register);
+        if (dladdr(self, &info) == 0 || info.dli_fname == nullptr) {
+            return nullptr;
+        }
+        std::string path(info.dli_fname);
+        auto slash = path.find_last_of('/');
+        std::string sibling = (slash == std::string::npos)
+                                  ? std::string("librspinyin_ui.so")
+                                  : path.substr(0, slash + 1) + "librspinyin_ui.so";
+        void *handle = dlopen(sibling.c_str(), RTLD_NOLOAD | RTLD_LAZY);
+        if (handle == nullptr) {
+            return nullptr;
+        }
+        return reinterpret_cast<rspinyin_ui_register_fn>(
+            dlsym(handle, "rspinyin_ui_transport_register"));
+    }
+    case 3: {
+        void *handle = dlopen("librspinyin_ui.so", RTLD_NOLOAD | RTLD_LAZY);
+        if (handle == nullptr) {
+            return nullptr;
+        }
+        return reinterpret_cast<rspinyin_ui_register_fn>(
+            dlsym(handle, "rspinyin_ui_transport_register"));
+    }
+    default:
+        return nullptr;
+    }
+}
+
+} // namespace
+
+/// Probes for the UI addon and triggers its registration when found (ADR-0011).
+///
+/// Answers the mechanism that fired (1-3, mirroring the UI glue's codes) or 0 when the
+/// UI addon is not loaded yet. The engine's init sequence records a 0 and moves on:
+/// the frame channel comes up on the next addon load, and `post()` keeps its
+/// `ui/not-ready` degradation until then.
+extern "C" std::uint32_t rspinyin_engine_transport_probe() {
+    for (int mechanism = 1; mechanism <= 3; ++mechanism) {
+        rspinyin_ui_register_fn register_ui = find_ui_register(mechanism);
+        if (register_ui != nullptr && register_ui() != 0) {
+            return static_cast<std::uint32_t>(mechanism);
+        }
+    }
+    return 0;
 }

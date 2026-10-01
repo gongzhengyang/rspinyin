@@ -12,13 +12,13 @@
 //!
 //! # The candidate window
 //!
-//! [`HostCtx::post`] has no channel yet. The engine addon reaches the window through the
-//! host's own input panel — that is the interface ADR-0003 leaves the two addons to share,
-//! since neither links the other — and writing that panel is the user-interface handover's
-//! piece, not this boundary's. Until it lands the command is dropped and
-//! [`UI_NOT_READY_CODE`] is recorded, which is the degradation `features.md` §2.2.4
-//! registers for exactly this state: the frame is committed, the box is not drawn, and the
-//! user keeps their text.
+//! [`HostCtx::post`] forwards each command through the cross-addon transport
+//! (`transport`, ADR-0011): the UI addon registers a sink during the handshake, and the
+//! command crosses as a borrowed `#[repr(C)]` wire that the sink copies out of. While
+//! no sink is registered — before the UI addon initialises, or after it unloads — the
+//! command is dropped and [`UI_NOT_READY_CODE`] is recorded, which is the degradation
+//! `features.md` §2.2.4 registers for exactly this state: the frame is committed, the
+//! box is not drawn, and the user keeps their text.
 //!
 //! # The language switch
 //!
@@ -46,6 +46,8 @@ use ime_types::{ImeError, UiCommand};
 
 use crate::effects::HostCtx;
 use crate::ffi::emit_diagnostic;
+
+use super::transport;
 
 /// Recorded when a command for the candidate window has no channel to travel on.
 ///
@@ -126,11 +128,13 @@ impl HostCtx for FcitxHost {
         // that did not happen is never reported as one.
     }
 
-    fn post(&mut self, _command: UiCommand) {
-        // No channel yet; see the module documentation. The command is dropped rather than
-        // queued: nothing in this process could drain a queue, and the frame the user is
-        // waiting for is the next one anyway.
-        emit_diagnostic(UI_NOT_READY_CODE);
+    fn post(&mut self, command: UiCommand) {
+        // The sink is registered by the UI addon during the handshake (ADR-0011) and is
+        // a plain function pointer read behind one atomic; before it arrives the command
+        // is dropped exactly as before, and the registered degradation keeps its code.
+        if !transport::dispatch(&command) {
+            emit_diagnostic(UI_NOT_READY_CODE);
+        }
     }
 }
 

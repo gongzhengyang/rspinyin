@@ -574,5 +574,8 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .mode(FILE_MODE)
         .open(path)?;
     file.write_all(bytes)?;
-    file.flush()
+    // The bytes are published by a rename over the final path: flushing them to the
+    // device first is what keeps the name from ever leading the contents, the same
+    // discipline the config migration and the dictionary writer follow.
+    file.sync_all()
 }

@@ -8,6 +8,10 @@
 //! path rather than about the chain, live in submodules: [`animation`] drives a moving
 //! highlight, [`copy`] covers the copy out of the scratch, [`damage`] the damage list, and
 //! [`shrink`] the scratch a window gives back after it has stayed small.
+//!
+//! The opacity probes live here too: they drive a bound `opacity` and read the composited
+//! alpha back off the surface, which is the measured behaviour every claim about what the
+//! software renderer does with element opacity is held to.
 
 mod animation;
 mod copy;
@@ -26,6 +30,9 @@ use slint::{ComponentHandle as _, PhysicalSize};
 use super::mock::{MockState, MockSurface, on_own_thread};
 use super::raster::BYTES_PER_PIXEL;
 use super::{FrameState, RenderOutcome, SlintWindowAdapter};
+use crate::adapter::Adapter;
+use crate::adapter::tests::frame_with;
+use crate::layout;
 use crate::slint_platform::RspinyinPlatform;
 
 /// The scene the pixel assertions are made on.
@@ -96,7 +103,7 @@ mod scene {
     }
 }
 
-/// The text scene, used only by the ignored font-backend test.
+/// The text scene, used by the ignored font-backend test and by the text-opacity probe.
 #[allow(dead_code)]
 mod text_scene {
     slint::slint! {
@@ -105,12 +112,55 @@ mod text_scene {
             height: 32px;
             background: transparent;
 
+            // The text-opacity probe drives this; the ignored font test leaves it at the
+            // full-strength default.
+            in-out property <float> text-opacity: 1.0;
+
             Text {
                 x: 0px;
                 y: 0px;
                 text: "你好 abc 1";
                 font-size: 16px;
                 color: white;
+                opacity: text-opacity;
+            }
+        }
+    }
+}
+
+/// The opacity probe scene: one fill the window draws plain, and one the window draws
+/// through a bound `opacity` the test drives.
+///
+/// Like [`scene`], it is private and `Text`-free, for the same two reasons: the candidate
+/// window must never become a programmable Slint surface, and the assertions must hold in
+/// every build. The two fills are the same red rectangle far enough apart not to share a
+/// pixel, so the unbound one is each frame's built-in reference for what full strength
+/// looks like.
+#[allow(dead_code)]
+mod opacity_scene {
+    slint::slint! {
+        export component OpacityCard inherits Window {
+            width: 96px;
+            height: 64px;
+            background: transparent;
+
+            in-out property <float> subject-opacity: 1.0;
+
+            Rectangle {
+                x: 8px;
+                y: 8px;
+                width: 40px;
+                height: 24px;
+                background: #ff0000;
+            }
+
+            Rectangle {
+                x: 56px;
+                y: 8px;
+                width: 32px;
+                height: 24px;
+                background: #ff0000;
+                opacity: subject-opacity;
             }
         }
     }
@@ -406,5 +456,211 @@ fn test_text_scene_renders_with_a_font_backend() {
     assert!(
         ink > 0,
         "the text scene paints glyphs once a font backend exists"
+    );
+}
+
+/// Renders the opacity probe scene with the subject bound to `opacity` and returns what
+/// reached the surface: the pixel of the unbound reference fill, and the strongest alpha
+/// byte inside the subject's rectangle.
+///
+/// The property is set before the component is shown, so the reading comes from the first
+/// frame -- a full repaint -- and depends on no later frame's damage tracking. The window
+/// background is transparent, so the subject's own alpha is the composited alpha and the
+/// measurement is exact.
+fn probe_rect_opacity(opacity: f32) -> ([u8; 4], u8) {
+    on_own_thread(|| {
+        let (backend, state) = MockSurface::new(96, 64, 1.0);
+        let platform = RspinyinPlatform::new(Box::new(backend));
+        platform
+            .install()
+            .expect("a fresh thread has no Slint platform yet");
+        let card = opacity_scene::OpacityCard::new().expect("the component binds to the platform");
+        card.set_subject_opacity(opacity);
+        card.show().expect("the surface can be mapped");
+        platform
+            .render_if_dirty()
+            .expect("the probe frame is committed");
+        let state = state.lock().expect("the mock is not poisoned");
+        let stride = 96 * BYTES_PER_PIXEL;
+        let reference = state.pixel(stride, 28, 20);
+        let mut strongest = 0u16;
+        for y in 8..32 {
+            for x in 56..88 {
+                strongest = strongest.max(u16::from(state.pixel(stride, x, y)[3]));
+            }
+        }
+        (reference, strongest as u8)
+    })
+}
+
+#[test]
+fn test_rect_opacity_scales_the_composited_alpha() {
+    let (full_reference, full) = probe_rect_opacity(1.0);
+    let (half_reference, half) = probe_rect_opacity(0.5);
+    assert_eq!(
+        full_reference,
+        [0, 0, 255, 255],
+        "the unbound fill is opaque red in the surface byte order"
+    );
+    assert_eq!(
+        full, 255,
+        "the subject at opacity 1.0 composites at full strength"
+    );
+    assert_eq!(
+        half_reference,
+        [0, 0, 255, 255],
+        "the scene at 0.5 still draws its reference fill untouched"
+    );
+    assert!(
+        (u16::from(half) * 2).abs_diff(u16::from(full)) <= 2,
+        "opacity 0.5 composites the fill at half its alpha: {half} against {full}"
+    );
+}
+
+#[test]
+fn test_rect_opacity_zero_draws_no_pixels() {
+    let (reference, subject) = probe_rect_opacity(0.0);
+    assert_eq!(
+        reference,
+        [0, 0, 255, 255],
+        "the scene around the culled subtree still draws"
+    );
+    assert_eq!(
+        subject, 0,
+        "opacity 0.0 is below the renderer's 0.01 cull line, so the subtree leaves no pixel"
+    );
+}
+
+/// The mean alpha of the ink the text scene commits, with the run bound to `opacity`.
+///
+/// Returns the ink count and the alpha summed over it divided by it, so the caller can
+/// assert both that glyphs exist and how strongly they composite.
+fn probe_text_strength(opacity: f32) -> (u32, u32) {
+    on_own_thread(|| {
+        let (backend, state) = MockSurface::new(96, 32, 1.0);
+        let platform = RspinyinPlatform::new(Box::new(backend));
+        platform
+            .install()
+            .expect("a fresh thread has no Slint platform yet");
+        let card = text_scene::TextCard::new().expect("the component binds to the platform");
+        card.set_text_opacity(opacity);
+        card.show().expect("the surface can be mapped");
+        platform
+            .render_if_dirty()
+            .expect("the text frame is committed");
+        let state = state.lock().expect("the mock is not poisoned");
+        let stride = 96 * BYTES_PER_PIXEL;
+        let mut ink = 0u32;
+        let mut total = 0u64;
+        for y in 0..32 {
+            for x in 0..96 {
+                let alpha = u32::from(state.pixel(stride, x, y)[3]);
+                if alpha > 0 {
+                    ink += 1;
+                    total += u64::from(alpha);
+                }
+            }
+        }
+        // An empty frame has no ink to divide by; its mean is then defined as zero.
+        let mean = (total / u64::from(ink.max(1))) as u32;
+        (ink, mean)
+    })
+}
+
+#[test]
+#[ignore = "needs a font backend: Slint's software renderer aborts when shaping text without the `software-renderer-systemfonts` feature or an embedded bitmap font"]
+fn test_text_opacity_lowers_the_glyph_alpha() {
+    let (ink_full, mean_full) = probe_text_strength(1.0);
+    let (ink_half, mean_half) = probe_text_strength(0.5);
+    assert!(
+        ink_full > 0,
+        "the glyphs draw once a font backend exists: {ink_full}"
+    );
+    assert!(ink_half > 0, "and the faded run still draws: {ink_half}");
+    assert!(
+        u64::from(mean_half) * 4 < u64::from(mean_full) * 3,
+        "the faded glyphs composite noticeably below the full-strength ones: \
+         mean {mean_half} against {mean_full}"
+    );
+}
+
+/// The surface the real-panel scene draws into, in logical pixels at a scale of 1.0 -- the
+/// same budget `adapter/tests.rs` reserves, so the widest fixture panel fits with its
+/// shadow margin.
+const PANEL_WIDTH_DP: u32 = 424;
+const PANEL_HEIGHT_DP: u32 = 160;
+
+/// One frame at the 144Hz rate the motion is designed against.
+const PANEL_FRAME_S: f32 = 1.0 / 144.0;
+
+/// Renders the real candidate panel once, after the appear motion has been advanced by
+/// `step` and, when `run_to_rest` is on, out to its end, and returns the alpha of the
+/// panel's own fill sampled in the container padding left of the first cell.
+///
+/// Each scene commits exactly one frame and that frame is the first one -- a full repaint
+/// -- so the reading never depends on which regions a later frame's damage happens to
+/// cover. The sample point sits inside the panel at both ends of the appear scale: at 0.96
+/// the panel's left edge lands about 4.4dp right of the shadow margin while its content
+/// keeps its own size, so the padding two pixels left of the first cell is panel fill at
+/// full scale and still inside the shrunk panel, clear of its stroke, of the first cell and
+/// of the highlight box.
+fn panel_fill_alpha(step: f32, run_to_rest: bool) -> u8 {
+    on_own_thread(|| {
+        let (backend, state) = MockSurface::new(PANEL_WIDTH_DP, PANEL_HEIGHT_DP, 1.0);
+        let platform = RspinyinPlatform::new(Box::new(backend));
+        platform
+            .install()
+            .expect("a fresh thread has no Slint platform yet");
+        let mut adapter = Adapter::new().expect("the component binds to the platform");
+        adapter
+            .set_visible(true)
+            .expect("the surface can be mapped");
+        assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 2)));
+        adapter.advance(step);
+        if run_to_rest {
+            let mut frames = 0u32;
+            while adapter.advance(PANEL_FRAME_S) {
+                frames += 1;
+                assert!(frames < 1_000, "the appear motion must come to rest");
+            }
+        }
+        let outcome = platform
+            .render_if_dirty()
+            .expect("the appear frame is committed");
+        assert!(
+            matches!(outcome, RenderOutcome::Rendered { .. }),
+            "the scene commits a frame: {outcome:?}"
+        );
+        let metrics =
+            layout::metrics().expect("ui/candidate.slint declares a readable metrics block");
+        let stride = PANEL_WIDTH_DP as usize * BYTES_PER_PIXEL;
+        let x = metrics.shadow_margin as usize + metrics.container_padding as usize - 2;
+        let y = metrics.shadow_margin as usize
+            + metrics.header_height as usize
+            + metrics.separator_height as usize
+            + metrics.container_padding as usize
+            + metrics.cell_height as usize / 2;
+        let state = state.lock().expect("the mock is not poisoned");
+        state.pixel(stride, x, y)[3]
+    })
+}
+
+#[test]
+fn test_appear_motion_fades_the_panel_in() {
+    let first = panel_fill_alpha(0.0, false);
+    let mid = panel_fill_alpha(PANEL_FRAME_S, false);
+    let settled = panel_fill_alpha(0.0, true);
+    assert_eq!(first, 0, "the window's first frame is fully transparent");
+    assert!(
+        mid > 0,
+        "one frame into the appear motion the fade has started: {mid}"
+    );
+    assert!(
+        mid < settled,
+        "and it is still short of the settled fill: {mid} against {settled}"
+    );
+    assert!(
+        settled > 200,
+        "the settled panel is the acrylic fill itself: {settled}"
     );
 }

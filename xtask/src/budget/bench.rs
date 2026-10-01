@@ -95,6 +95,7 @@ const CASE_BINDINGS: &[CaseBinding] = &[
         "bench.passthrough_classify_ns",
         BenchUnit::Nanos,
     ),
+    CaseBinding("transport/post_frame", "bench.post_ui_ns", BenchUnit::Nanos),
 ];
 
 /// One benchmark case bound to the threshold it is asserted against.
@@ -130,6 +131,9 @@ pub(super) const DESIGN_CASES: &[&str] = &[
     // thresholds, and a case a threshold is bound to is a case a run has to produce.
     "decode/holdout",
     "ui/wakeup_latency",
+    // The transport case (ADR-0011) belongs to the post path's own card, which states
+    // its threshold in the 0.5.3 table as `BUDGET-LAT-06`.
+    "transport/post_frame",
 ];
 
 /// The unit a case's threshold is written in.
@@ -443,7 +447,11 @@ mod sources {
     /// `ime-dict`'s benchmarks are deliberately outside the set: they measure a mapped
     /// dictionary container and a store in a directory of its own, so a file is what
     /// they are about, and no threshold is bound to any of their cases.
-    const BOUND_BENCH_DIRS: &[&str] = &["crates/ime-core/benches", "crates/ime-ui/benches"];
+    const BOUND_BENCH_DIRS: &[&str] = &[
+        "crates/ime-core/benches",
+        "crates/ime-ui/benches",
+        "crates/ime-fcitx5/benches",
+    ];
 
     /// Constructs that would make a benchmark depend on the machine it runs on, and why.
     const MACHINE_DEPENDENT: &[(&str, &str)] = &[

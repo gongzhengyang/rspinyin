@@ -184,6 +184,7 @@ cargo test --workspace --doc                        # doctest 单独补跑
 | `BUDGET-LAT-03` | 单帧软件光栅（600×140 逻辑像素 @ scale 2.0） | P99 ≤ 1.5ms | `criterion` 基准 + 帧耗时探针 | TASK-1.05.03 |
 | `BUDGET-LAT-04` | 首次按键到窗口可见（窗口已预创建、已预热） | P99 ≤ 8ms | 探针打点 | TASK-1.04.07 |
 | `BUDGET-LAT-05` | 插件加载耗时（fcitx5 启动时同步加载） | ≤ 120ms | `fcitx5 -v` 启动日志计时 | TASK-1.04.02 |
+| `BUDGET-LAT-06` | 单次 `UiCommand` 跨 addon 传输（wire 组装 + sink 调用，ADR-0011） | P99 ≤ 100ns（criterion `transport/post_frame` 实测 36.2ns mean，2026-10-01 本机锚定，阈值取约 2.8× 余量） | `criterion` 基准（`ime-fcitx5` benches/transport.rs） | REFACTOR-P0.01.01 |
 | `BUDGET-MEM-01` | UI 渲染层常驻内存增量 | ≤ 18MB RSS | `/proc/self/status` VmRSS 差分 | TASK-1.05.03 |
 | `BUDGET-MEM-02` | 插件总内存增量（含词库 mmap 页缓存） | ≤ 45MB RSS | 同上 | TASK-1.03.02 |
 | `BUDGET-MEM-03` | 词库 mmap 常驻（匿名驻留部分） | ≤ 25MB | `smaps_rollup` 的 `Anonymous` 与 `Private_Dirty` | TASK-1.03.02 |
@@ -802,6 +803,9 @@ pub enum ConfigError {
 | `ui/candidate/overflow` | `ime-fcitx5` 的帧装配 | 候选列表超过五页显示上限（`MAX_PAGES`），窗口只见前 45 个候选；徽章页码随之拼作 `5/5+`（`BadgeState` 每会话只记一次，不逐帧刷屏） | 是（常量 `engine::badge::UI_CANDIDATE_OVERFLOW_CODE`） |
 | `dict/unigram/collision` | `xtask dictc` 的编译期哈希健康检查 | UNIGRAM 按 FNV-1a 哈希序存储，读路径 `unigram_lookup` 以词条文本消解碰撞（健康哈希的零星碰撞无害）；但碰撞对数远超生日界 `n(n−1)/2³³`×100（且不少于 4，见 `collision_limit`）说明哈希退化、读路径的等哈希扫描会退化为线性扫描，必须拒绝编译 | 是（`xtask` 的编译失败消息点名碰撞数、上界与一对碰撞词目，不经 `ImeError`） |
 | `budget/memory-exceeded` | `xtask budget --memory` | 某个内存窗口（插件 / UI / 词库 mmap）相对基线的增长超过 `budgets.json` 的 `memory_mb.*` 上限 | 是（`xtask` 的退出码与违规清单，不经 `ImeError`） |
+| `phrase/shutdown-timeout` | 插件卸载序列的短语写手 drain 步骤 | 写手在 100ms（`PHRASE_DRAIN_BUDGET`）内未停止：已接收行由 detach 的写手自行落盘（晚写而非丢行），宿主退出不被阻塞 | 是（诊断一行，经节流；常量 `PHRASE_SHUTDOWN_TIMEOUT_CODE`） |
+| `ui/transport/handshake-unavailable` | UI addon `ui-registration` 步骤的跨 addon 传输握手（ADR-0011） | 双机制探测（`RTLD_DEFAULT` / `RTLD_NOLOAD`）都未找到引擎库的注册符号：引擎侧保持 `ui/not-ready` 降级，下一次 addon 装载是新机会，不重试 | 是（诊断一行） |
+| `ffi/wire-malformed` | UI addon 跨 addon 传输的 sink 收包解析 | 收到的 wire 无法按 ADR-0011 的表读取（空指针/长度错配、未知 kind、判别码越表）——两库转写漂移是构建缺陷而非运行态 | 是（诊断一行，经节流） |
 | `budget/memory-unmeasured` | `xtask budget --memory` | 快照里缺少该窗口的读数或基线（内核读不到 `/proc`，或探针没在该窗口打点）。**缺读数按失败处理，不按 0 通过** | 是（同上；消息点名缺失的字段与需要的打点调用） |
 | `budget/alloc-exceeded` | `xtask budget --alloc` | 稳态解码的堆分配次数超过 `budgets.json` 的 `alloc_count.decode_steady` 上限（`BUDGET-ALLOC-01`） | 是（`xtask` 的退出码与违规清单，不经 `ImeError`；读 `target/alloc-report.txt`） |
 | `budget/alloc-unmeasured` | `xtask budget --alloc` | 报告里缺少该记录（解码测试没有跑，或少写了一条记录）。**缺读数按失败处理，不按 0 通过** | 是（同上；消息点名缺失的记录名与产出它的测试） |
@@ -1141,7 +1145,7 @@ pub enum ConfigError {
 - 最坏情况下 `surface.base` 叠加在纯白（暗色主题）或纯黑（亮色主题）背景之上，`text.primary` 对比度仍 ≥ **4.5:1**。计算依据：暗色 `#1C1C1E @0.85` 叠于 `#FFFFFF` 得 `#3E3E40`，`#F2F2F7` 对其对比度 ≈ 8.9:1；亮色 `#FFFFFF @0.85` 叠于 `#000000` 得 `#D9D9D9`，`#1C1C1E` 对其对比度 ≈ 14:1。
 - `state.selected.bg` 之上的 `text.primary` 对比度 ≥ **4.5:1**。
 
-**`text.annotation` 的 α 不叠加（v1.4 裁决）**：本表的 Token α（暗 `0.48` / 亮 `0.45`）与 3.1.1 给序号、注音规定的 `opacity`（`0.55` / `0.50`）**不得相乘**。3.1.1 的 `opacity` 是**最终有效 α**，实现方式是给文本元素写 `opacity` 而颜色取不透明的 `text.primary`，而不是用本 Token 再乘一次。
+**`text.annotation` 的 α 不叠加（v1.4 裁决）**：本表的 Token α（暗 `0.48` / 亮 `0.45`）与 3.1.1 给序号、注音规定的 `opacity`（`0.55` / `0.50`）**不得相乘**。3.1.1 的 `opacity` 是**最终有效 α**，实现方式是给文本元素写 `opacity` 而颜色取不透明的 `text.primary`，而不是用本 Token 再乘一次。（该 `opacity` 写法的像素效果已由 `REFACTOR-P0.02.01` 的像素探针实测证实，见 3.3.2 的渲染器事实校准注记。）
 
 > **为什么**：按字面叠加得到序号有效 α = `0.48 × 0.55 = 0.264`、注音 `0.48 × 0.50 = 0.24`，在 `#1C1C1E` 底上对比度约 **2.35:1 / 2.2:1**——候选序号是候选框最核心的键盘入口（用户靠它决定按几上屏），这个对比度不可读。而 3.1.1 特意给出 `0.55` 与 `0.50` 两个**不同**的数值，说明设计意图是"序号略亮于注音"这一关系；相乘后两者差异被压到 0.264 与 0.24，关系不可辨。按"取代"读法，两者分别为 0.55 与 0.50，对比度约 6.3:1 与 5.6:1，均达 `CONTRAST_MINIMUM`。
 
@@ -1189,6 +1193,8 @@ pub enum ConfigError {
 **动效可关闭**：配置 `[ui.animation] enabled = false` 时，全部动效时长置 0（瞬时切换），且 Spring 积分器直接跳到 target。此模式用于低端设备与截图测试。
 
 **动效期间的帧率**：`Appearing` / `Disappearing` / Spring 未收敛期间，UI 线程以目标刷新率驱动重绘；刷新率由 `wl_surface.frame` 回调决定（Wayland）或固定 `60Hz`（X11，无 frame 回调时按 `1000/60 ms` 定时）。静止时零重绘。
+
+**渲染器事实校准（`REFACTOR-P0.02.01` 像素探针实测）**：i-slint-core 1.13.1 软件光栅对元素 `opacity` **生效**——`apply_opacity` 将其乘入 state alpha、α ≤ 0.01 剔除整棵子树、矩形与字形均按合成 α 绘制（`crates/ime-ui/src/renderer/tests.rs` 的三组像素探针断言此行为）。本表 `候选框出现` 的 `opacity 0 → 1` 淡入分量已接线：面板矩形绑定 `opacity: min(window-opacity, 1.0)`（面板子树；阴影环 α 已烘焙进 band 色，不随动效缩放），出现动效为缩放 + 淡入复合。此前 `TASK-1.05.07` / `TASK-1.05.08` 验收记录中「opacity 不生效 / 绑定即整棵子树不绘制」的记载系度量误读（cell 区域 ink 度量被面板亚克力底支配，对子树 α 变化不敏感），以本注记为准。消失动效的淡出仍待 P1.02.02 接线（当前 hide 先于渲染，见 `DEF-22`）。
 
 ### 3.4 组件五态覆盖
 

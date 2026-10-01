@@ -7,7 +7,7 @@
 //! Boundaries: this module owns X11 detail and nothing else. It does not rasterize --
 //! the caller writes the pixels -- and it does not decide where the window goes. The pure
 //! translation from X11 events and geometry onto the contract vocabulary sits in the
-//! parent module, where it is covered without a display server.
+//! `translate` child module, where it is covered without a display server.
 //!
 //! # Never takes keyboard focus
 //!
@@ -31,26 +31,28 @@ use std::os::fd::{AsRawFd, RawFd};
 
 use ime_types::{FrameToken, PixelBufferMut, PlatformError, RectI, SurfaceBackend, SurfaceEvent};
 use x11rb::connection::{Connection, RequestConnection};
-use x11rb::protocol::Event;
 use x11rb::protocol::shape::{ConnectionExt as ShapeExt, SK, SO};
 use x11rb::protocol::xproto::{
     Atom, AtomEnum, ClipOrdering, ColormapAlloc, ConfigureWindowAux, ConnectionExt as XprotoExt,
-    CreateGCAux, CreateWindowAux, EventMask, Gcontext, ImageFormat, PropMode, Screen, VisualClass,
-    Visualid, Window, WindowClass,
+    CreateGCAux, CreateWindowAux, Gcontext, ImageFormat, PropMode, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as WrapperExt;
 
 use super::{
     BYTES_PER_PIXEL, buffer_len, clamp_dimension, clip_rects, logical_dimension, normalize_scale,
-    pack_rgb24, physical_size, repack_scratch, x11_rectangles,
+    pack_rgb24, physical_size, x11_rectangles,
+};
+
+mod translate;
+
+use self::translate::{event_mask, scratch_for};
+pub(crate) use self::translate::{
+    Decoded, OPAQUE_ALPHA, classify_event, effective_alpha, scroll_axis, select_argb_visual,
 };
 
 /// Depth of the ARGB visual, and of the buffers uploaded to it.
 pub(crate) const ARGB_DEPTH: u8 = 32;
-
-/// Alpha that makes the surface base fully opaque.
-pub(crate) const OPAQUE_ALPHA: u8 = 255;
 
 /// Events one `poll_events` call drains; the next poll picks up whatever is left.
 const MAX_EVENTS_PER_POLL: usize = 64;
@@ -137,6 +139,8 @@ pub struct X11Backend {
     height_px: u32,
     width_dp: u32,
     height_dp: u32,
+    /// The device pixel ratio the window runs at: the ratio [`Self::apply_scale`] adopts
+    /// and [`Self::apply_size`] back-computes the logical canvas with.
     scale: f32,
     /// Last position requested, so a repeated move costs nothing.
     position: (i32, i32),
@@ -344,6 +348,12 @@ impl X11Backend {
     }
 
     /// Adopts a new physical size: new buffers, new scratch, input region re-applied.
+    ///
+    /// The logical size is back-computed with the ratio currently adopted -- the one
+    /// [`Self::apply_scale`] maintains -- and with nothing else. A configure and a scale
+    /// change can interleave within one poll batch, and a back-computation against any
+    /// other ratio would drift the logical canvas away from the size the placement pass
+    /// addresses; the adopted ratio is what keeps the two the same.
     fn apply_size(&mut self, width_px: u32, height_px: u32) -> Result<(), PlatformError> {
         // The server can report any size at all, so the value is clamped before it is
         // used to allocate: a bogus configure must not ask for gigabytes of buffers.
@@ -359,6 +369,51 @@ impl X11Backend {
         self.back = 0;
         self.front = 0;
         self.apply_input_region()
+    }
+
+    /// Adopts a device pixel ratio: reconfigures the window, reallocates the buffers.
+    ///
+    /// The window's logical size is the invariant -- the pre-created size is the canvas
+    /// the panel draws into, and it is that canvas the placement pass addresses -- so
+    /// only the physical size follows the ratio: the window is reconfigured to the same
+    /// canvas at the new ratio, the buffers grow around it, and the interactive region is
+    /// re-clipped against the new size. The server answers with a configure echo, which
+    /// `classify_event` then finds equal to the size adopted here and drops.
+    ///
+    /// Returns the ratio adopted, or `None` when the backend already runs at it: a
+    /// repeated report re-scales nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlatformError::Disconnected`] when the reconfiguration cannot be
+    /// delivered.
+    fn apply_scale(&mut self, factor: f32) -> Result<Option<f32>, PlatformError> {
+        let scale = normalize_scale(factor);
+        if scale.to_bits() == self.scale.to_bits() {
+            return Ok(None);
+        }
+        let (width_px, height_px) = physical_size(self.width_dp, self.height_dp, scale);
+        self.conn
+            .configure_window(
+                self.window,
+                &ConfigureWindowAux {
+                    width: Some(width_px),
+                    height: Some(height_px),
+                    ..Default::default()
+                },
+            )
+            .map_err(disconnected)?;
+        self.scale = scale;
+        self.width_px = width_px;
+        self.height_px = height_px;
+        let len = buffer_len(width_px, height_px);
+        self.buffers = [vec![0; len], vec![0; len]];
+        self.packed = scratch_for(self.depth, width_px, height_px);
+        self.back = 0;
+        self.front = 0;
+        self.apply_input_region()?;
+        self.flush()?;
+        Ok(Some(scale))
     }
 
     /// Applies the stored interactive region with `SHAPE_INPUT`.
@@ -482,6 +537,24 @@ impl SurfaceBackend for X11Backend {
     }
 
     fn poll_events(&mut self, out: &mut Vec<SurfaceEvent>) -> Result<(), PlatformError> {
+        // A scale change can arrive from the surface itself, synthesized from the anchor
+        // the host sent: X11 has no scale event source of its own, so this is the only
+        // way the ratio the placement runs at reaches the window. Adopting before the
+        // queue is decoded is what makes the configure echo of the reconfiguration -- and
+        // any echo still queued from an earlier one -- read against the size actually
+        // adopted, and the event reported below carries that ratio, exactly as a resize
+        // reports the size actually adopted.
+        let mut adopted = None;
+        for event in out.iter() {
+            if let SurfaceEvent::Scale { factor } = *event {
+                if let Some(ratio) = self.apply_scale(factor)? {
+                    adopted = Some(ratio);
+                }
+            }
+        }
+        if let Some(ratio) = adopted {
+            out.push(SurfaceEvent::Scale { factor: ratio });
+        }
         for _ in 0..MAX_EVENTS_PER_POLL {
             let event = match self.conn.poll_for_event().map_err(disconnected)? {
                 Some(event) => event,
@@ -519,161 +592,6 @@ impl SurfaceBackend for X11Backend {
 
     fn backend_id(&self) -> &'static str {
         "x11"
-    }
-}
-
-// Pure translation.
-//
-// Everything below maps X11 wire values onto the contract vocabulary and touches neither
-// the connection nor the window. It is visible to the parent module so that its tests run
-// without a display server.
-
-/// What one X11 event means to the backend.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Decoded {
-    /// An event the UI thread consumes.
-    Surface(SurfaceEvent),
-    /// The server lost part of the window's contents; repaint it from the retained frame.
-    Repaint,
-    /// The window changed size, in physical pixels.
-    Resized { width_px: u32, height_px: u32 },
-    /// An X protocol error; counted, never fatal.
-    ProtocolError,
-    /// Nothing this backend acts on.
-    Ignored,
-}
-
-/// Translates one X11 event into what the backend should do about it.
-pub(crate) fn classify_event(event: &Event, width_px: u32, height_px: u32) -> Decoded {
-    match event {
-        Event::ButtonPress(press) => {
-            match scroll_axis(press.detail, press.event_x, press.event_y) {
-                Some(axis) => Decoded::Surface(axis),
-                None => Decoded::Surface(SurfaceEvent::PointerButton {
-                    x: i32::from(press.event_x),
-                    y: i32::from(press.event_y),
-                    button: press.detail,
-                    pressed: true,
-                }),
-            }
-        }
-        Event::ButtonRelease(release) => {
-            // A wheel button sends a release as well; turning that into a second axis
-            // event would scroll twice per notch.
-            if scroll_axis(release.detail, release.event_x, release.event_y).is_some() {
-                return Decoded::Ignored;
-            }
-            Decoded::Surface(SurfaceEvent::PointerButton {
-                x: i32::from(release.event_x),
-                y: i32::from(release.event_y),
-                button: release.detail,
-                pressed: false,
-            })
-        }
-        Event::MotionNotify(motion) => Decoded::Surface(SurfaceEvent::PointerMotion {
-            x: i32::from(motion.event_x),
-            y: i32::from(motion.event_y),
-        }),
-        Event::EnterNotify(enter) => Decoded::Surface(SurfaceEvent::PointerEnter {
-            x: i32::from(enter.event_x),
-            y: i32::from(enter.event_y),
-        }),
-        Event::LeaveNotify(_) => Decoded::Surface(SurfaceEvent::PointerLeave),
-        Event::Expose(_) => Decoded::Repaint,
-        Event::ConfigureNotify(configure) => {
-            let width = u32::from(configure.width);
-            let height = u32::from(configure.height);
-            if (width, height) == (width_px, height_px) {
-                // The echo of a configure request we sent; there is nothing to do.
-                Decoded::Ignored
-            } else {
-                Decoded::Resized {
-                    width_px: width,
-                    height_px: height,
-                }
-            }
-        }
-        Event::Error(_) => Decoded::ProtocolError,
-        _ => Decoded::Ignored,
-    }
-}
-
-/// Decodes an X11 wheel button into an axis event.
-///
-/// X11 reports the wheel as button presses: 4 and 5 are the vertical pair, 6 and 7 the
-/// legacy horizontal pair, and clients that speak XInput2 use 8 and 9 for horizontal
-/// movement. The sign is normalised here, once, so that the rest of the UI only ever sees
-/// "positive means forward": button 5, the wheel turned down, pages forward, and button 4
-/// pages back.
-pub(crate) fn scroll_axis(button: u8, x: i16, y: i16) -> Option<SurfaceEvent> {
-    let (delta, horizontal) = match button {
-        4 => (-1, false),
-        5 => (1, false),
-        6 | 8 => (-1, true),
-        7 | 9 => (1, true),
-        _ => return None,
-    };
-    Some(SurfaceEvent::Axis {
-        x: i32::from(x),
-        y: i32::from(y),
-        delta,
-        horizontal,
-    })
-}
-
-/// The alpha to paint the surface base with, given what the theme asked for.
-pub(crate) fn effective_alpha(requested: u8, argb_visual: bool, composited: bool) -> u8 {
-    if argb_visual && composited {
-        requested
-    } else {
-        OPAQUE_ALPHA
-    }
-}
-
-/// Picks the 32-bit TrueColor visual whose channel masks match the buffer format.
-///
-/// The ARGB path is taken only when the masks are exactly the ones an `Argb8888` buffer
-/// assumes -- red in `0x00ff0000`, green in `0x0000ff00`, blue in `0x000000ff`. A depth of
-/// 32 with a different order would render blue and red swapped, which is worse than the
-/// opaque fallback the caller then chooses.
-pub(crate) fn select_argb_visual(screen: &Screen) -> Option<(Visualid, u8)> {
-    let depth = screen
-        .allowed_depths
-        .iter()
-        .find(|depth| depth.depth == ARGB_DEPTH)?;
-    depth
-        .visuals
-        .iter()
-        .find(|visual| {
-            visual.class == VisualClass::TRUE_COLOR
-                && visual.red_mask == 0x00ff_0000
-                && visual.green_mask == 0x0000_ff00
-                && visual.blue_mask == 0x0000_00ff
-        })
-        .map(|visual| (visual.visual_id, depth.depth))
-}
-
-/// The events the window asks for.
-///
-/// `StructureNotify` is on the list because `ConfigureNotify` -- the only source of
-/// [`SurfaceEvent::Resize`] -- is delivered through it and through nothing else.
-fn event_mask() -> EventMask {
-    EventMask::EXPOSURE
-        | EventMask::BUTTON_PRESS
-        | EventMask::BUTTON_RELEASE
-        | EventMask::POINTER_MOTION
-        | EventMask::ENTER_WINDOW
-        | EventMask::LEAVE_WINDOW
-        | EventMask::VISIBILITY_CHANGE
-        | EventMask::STRUCTURE_NOTIFY
-}
-
-/// The repacking scratch this window needs: nothing on the ARGB path.
-fn scratch_for(depth: u8, width_px: u32, height_px: u32) -> Vec<u8> {
-    if depth == ARGB_DEPTH {
-        Vec::new()
-    } else {
-        repack_scratch(width_px, height_px)
     }
 }
 
@@ -787,5 +705,38 @@ mod tests {
         // socket is opened and no display server is needed to test it.
         let result = X11Backend::connect(320, 80, 1.0, Some("rspinyin-invalid"));
         assert!(matches!(result, Err(PlatformError::Unavailable)));
+    }
+
+    #[test]
+    #[ignore = "needs a live X server; the lab job runs it with DISPLAY set"]
+    fn test_x11_backend_adopts_the_scale_the_surface_synthesizes() {
+        let mut backend = X11Backend::connect(320, 80, 1.0, None)
+            .expect("a live X server reachable through DISPLAY");
+        // The surface hands the synthesized event in through the poll it already drives;
+        // the backend adopts it and reports the ratio it actually runs at.
+        let mut out = vec![SurfaceEvent::Scale { factor: 2.0 }];
+        backend.poll_events(&mut out).expect("polling does not fail");
+        assert_eq!(
+            backend.geometry(),
+            (320, 80, 2.0),
+            "the ratio is adopted and the logical canvas is the invariant it re-expresses"
+        );
+        assert!(
+            out.contains(&SurfaceEvent::Scale { factor: 2.0 }),
+            "the ratio actually adopted is reported back for the window to adopt"
+        );
+        assert_eq!(
+            backend.apply_scale(2.0).expect("the request is delivered"),
+            None,
+            "a repeated report re-scales nothing"
+        );
+        // A configure at the adopted ratio back-computes the same canvas: the two cannot
+        // drift.
+        backend.apply_size(640, 160).expect("the size is adopted");
+        assert_eq!(
+            backend.geometry(),
+            (320, 80, 2.0),
+            "the canvas the echo reports is the one the adopted ratio describes"
+        );
     }
 }

@@ -41,6 +41,11 @@
 //! across file IO, and is never contended, because the engine runs on the Fcitx5 host
 //! thread alone.
 //!
+//! At unload the addon's teardown is what stops the writer, through [`drain_writer`]:
+//! the queue is drained before the thread stops, so a graceful unload loses nothing, and
+//! a writer that misses the teardown's budget is recorded and detached rather than
+//! holding up the host's exit.
+//!
 //! Saving a phrase is the one thing this module used to do itself, and it is the one thing
 //! a key callback must not do: the row is rendered here, on the host thread, and the
 //! append and the read-back that follows it happen on the writer thread of the `deferred`
@@ -92,6 +97,15 @@ pub const PHRASE_ADDED_CODE: &str = "phrase/added";
 /// `[phrases] max_entries` makes it live again. The read-back that finds the limit is the
 /// writer thread's, so this is emitted from there.
 pub const PHRASE_LIMIT_EXCEEDED_CODE: &str = "phrase/limit-exceeded";
+
+/// Recorded when the phrase writer does not stop within the unload budget.
+///
+/// The addon's teardown waits for the writer on a bounded budget of its own -- a slice of
+/// the destroy budget, `PHRASE_DRAIN_BUDGET` in the lifecycle module. A writer that has
+/// not stopped when the budget runs out is detached rather than waited for, and this code
+/// is what makes that abandonment visible in the log instead of silent. The spelling is
+/// registered in the design's runtime-diagnostic table and must not be reworded.
+pub const PHRASE_SHUTDOWN_TIMEOUT_CODE: &str = "phrase/shutdown-timeout";
 
 /// Why a phrase could not be written: the configuration and the layout name no document.
 const NO_DOCUMENT_REASON: &str = "no phrase document is configured";
@@ -268,6 +282,39 @@ impl PhraseStore {
         }
     }
 
+    /// Takes the writer out of the store and stops it, waiting at most `budget`.
+    ///
+    /// The teardown form of [`PhraseStore::shutdown`]: the writer is removed rather than
+    /// left in place, so a store the destructor has drained holds no writer at all -- a
+    /// save that somehow arrives after the unload began is refused before it is queued,
+    /// instead of being accepted into a queue nobody will drain again.
+    ///
+    /// # Parameters
+    ///
+    /// - `budget`: how long the caller may wait for the queue to drain and the thread to
+    ///   stop. A writer that outlives it is detached and the answer is `false`, which the
+    ///   teardown records; the host thread is never held up for longer than it asked for.
+    ///
+    /// # Returns
+    ///
+    /// Whether the writer stopped within `budget`. A store that never had one -- no
+    /// document, or a thread that could not be started -- answers `true` at once, and so
+    /// does a second call after the writer has been taken.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn drain_phrase_writer(&mut self, budget: Duration) -> bool {
+        let Some(writer) = self.writer.take() else {
+            return true;
+        };
+        let stopped = writer.shutdown(budget);
+        // The table the writer last published outlives it: the drained store answers for
+        // the rows that landed, which is the answer a store with a live writer gave too.
+        self.startup = writer.snapshot();
+        stopped
+    }
+
     /// The snapshot in force: what the writer last published, or what the startup read
     /// produced while there is no writer to publish a newer one.
     ///
@@ -373,6 +420,31 @@ impl PhraseHandle {
         self.locked().shutdown(timeout)
     }
 
+    /// Takes the writer out of the store and stops it, waiting at most `budget`.
+    ///
+    /// The call the addon's teardown makes, so the rows a session saved before the process
+    /// ends are written rather than left in the queue: the queue is drained before the
+    /// writer stops, which is what makes a graceful unload lose nothing. Unlike
+    /// [`PhraseHandle::shutdown`] the writer is taken out of the store, so the drained
+    /// store accepts no further rows.
+    ///
+    /// # Parameters
+    ///
+    /// - `budget`: how long the caller may wait. A writer that outlives it is detached and
+    ///   the answer is `false`, which the teardown records.
+    ///
+    /// # Returns
+    ///
+    /// Whether the writer stopped within `budget`. A store without a writer answers `true`
+    /// at once, and so does a second call after the writer has been taken.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn drain_phrase_writer(&self, budget: Duration) -> bool {
+        self.locked().drain_phrase_writer(budget)
+    }
+
     /// Borrows the store, recovering the contents of a poisoned lock.
     ///
     /// Poisoning means a holder panicked. The store holds a table and a writer handle, so
@@ -405,6 +477,44 @@ pub fn handle() -> PhraseHandle {
     }
     let fallback = PhraseStore::load(None, entry_limit(DEFAULT_PHRASE_ENTRIES), true);
     PhraseHandle::new(fallback)
+}
+
+/// Stops the phrase writer the installed store holds, waiting at most `budget`.
+///
+/// The addon's teardown calls this once, after the sessions have gone and before the user
+/// store is flushed: a phrase queued in the last keystrokes of a session is the user's own
+/// writing, and this is the call that lands it. When nothing is installed -- the addon was
+/// declined, or the load never ran -- the answer is `true` and nothing is touched, which is
+/// what keeps a destructor that has no writer to release free.
+///
+/// A writer that does not stop within `budget` is recorded under
+/// [`PHRASE_SHUTDOWN_TIMEOUT_CODE`] and detached: the host's exit is never held up for it,
+/// and the timeout is what the log shows instead of a silent loss.
+///
+/// # Parameters
+///
+/// - `budget`: how long the caller may wait for the queue to drain and the thread to stop.
+///
+/// # Returns
+///
+/// Whether the writer stopped within `budget`, or there was no writer to stop.
+///
+/// # Panics
+///
+/// Never.
+pub fn drain_writer(budget: Duration) -> bool {
+    // The slot is read rather than reached through `handle`: the fallback store `handle`
+    // builds for a process that never installed one reads and merges the built-in
+    // document, and a destructor that has no writer to drain must not pay for a table it
+    // will never use.
+    let Some(handle) = PHRASES.get() else {
+        return true;
+    };
+    let stopped = handle.drain_phrase_writer(budget);
+    if !stopped {
+        emit_diagnostic(PHRASE_SHUTDOWN_TIMEOUT_CODE);
+    }
+    stopped
 }
 
 /// Loads the phrase document this process runs on and installs it.

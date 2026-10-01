@@ -109,6 +109,7 @@ impl Budgets {
                 buffer_ops_us: positive(bench, "bench", "input_buffer_ops_us")?,
                 decode_holdout_s: positive(bench, "bench", "decode_holdout_s")?,
                 ui_wakeup_latency_us: positive(bench, "bench", "ui_wakeup_latency_us")?,
+                post_ui_ns: positive(bench, "bench", "post_ui_ns")?,
             },
             alloc_count: AllocCount {
                 decode_steady: count(alloc, "alloc_count", "decode_steady")?,
@@ -167,6 +168,7 @@ impl Budgets {
             Threshold("bench.input_buffer_ops_us", b.buffer_ops_us),
             Threshold("bench.decode_holdout_s", b.decode_holdout_s),
             Threshold("bench.ui_wakeup_latency_us", b.ui_wakeup_latency_us),
+            Threshold("bench.post_ui_ns", b.post_ui_ns),
             Threshold("alloc_count.decode_steady", a.decode_steady as f64),
             Threshold("net_sockets", self.net_sockets as f64),
         ]

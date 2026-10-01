@@ -156,6 +156,9 @@ pub struct Bench {
     /// One wakeup of the UI thread, from the host's post to the surface seeing it, in
     /// microseconds.
     pub ui_wakeup_latency_us: f64,
+    /// One `UiCommand` across the addon transport (wire assembly plus the sink call),
+    /// in nanoseconds.
+    pub post_ui_ns: f64,
 }
 
 /// Allocation thresholds, in calls the allocator receives.
@@ -307,6 +310,10 @@ const BINDINGS: &[Binding] = &[
         MetricAfter("RSS"),
     ),
     Binding("robustness.pass_rate_pct", "BUDGET-ROB-01", ThresholdFirst),
+    Binding(
+        "bench.post_ui_ns",
+        "BUDGET-LAT-06",
+        ThresholdFirst),
     Binding(
         "bench.passthrough_classify_ns",
         "TASK-1.02.06#2",

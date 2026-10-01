@@ -49,7 +49,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use ime_types::{ImeError, SurfaceBackend};
+use ime_types::{ImeError, SurfaceBackend, UiCommand};
 use ime_ui::surface::CandidateSurface;
 use ime_ui::ui_thread::{UiSurface, UiThread, UiThreadConfig};
 
@@ -244,6 +244,12 @@ fn probe_platform() -> Result<(), ImeError> {
 /// library does not have. What a late window still changes is `available()` itself, which
 /// the host reads the next time it re-evaluates.
 fn register_ui() -> Result<(), ImeError> {
+    // The transport handshake runs here because this is the step where both ends are
+    // known to be up: this addon's thread started in the previous step, and the engine
+    // addon is loaded by the same host that loaded this one (ADR-0011). A failed
+    // handshake is recorded, not fatal -- the engine keeps its own `ui/not-ready`
+    // degradation, and the next addon load is a fresh chance.
+    crate::ffi::transport::register_transport();
     let outcome = ui_impl::register_takeover();
     emit_diagnostic(&outcome.diagnostic());
     Ok(())
@@ -291,6 +297,10 @@ pub fn on_addon_init() -> bool {
 /// input-panel updates into one that no longer exists.
 pub fn on_addon_destroy() {
     let started = std::time::Instant::now();
+    // The sink slot clears before the thread stops: from this point the engine's posts
+    // are back on their `ui/not-ready` degradation instead of arriving at a thread that
+    // is being torn down (ADR-0011).
+    crate::ffi::transport::unregister_transport();
     let stopped_cleanly = stop_ui();
     clear_ui_ready();
     ui_impl::set_window_backend_available(false);
@@ -458,6 +468,20 @@ fn clear_ui_ready() {
 ///
 /// A host that initialises the addon twice without destroying it in between would
 /// otherwise leave the first UI thread running with nothing holding it.
+/// Posts one command into the UI thread, for the cross-addon sink (ADR-0011).
+///
+/// The sink runs on the engine's main loop thread, so the only state it may touch is
+/// what that thread can reach safely: the startup slot's mutex, held for the length of
+/// one queue push. `false` means no thread is up -- the addon has not initialised or is
+/// already torn down -- and the caller records that rather than retrying.
+pub(crate) fn post_command(command: UiCommand) -> bool {
+    let guard = lock_ui_startup();
+    match guard.as_ref() {
+        Some(startup) => startup.thread.send(command).is_ok(),
+        None => false,
+    }
+}
+
 fn set_ui_startup(startup: UiStartup) {
     if let Some(previous) = take_ui_startup() {
         stop_ui_startup(previous);

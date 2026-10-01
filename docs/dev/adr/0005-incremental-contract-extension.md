@@ -88,3 +88,16 @@
 3. **`features-add.md` 与 `docs/dev/opt-*.md` 中的「ADR-0004」引用需按本 ADR 开头的更正说明回写**。
 4. **`docs/dev/features.md` 2.2.3 的 C ABI 版本不变**：本次全部是 Rust 侧类型，不进 vtable，`RSPINYIN_ABI_VERSION` 保持 2。
 5. **遗留**：`PinHighlighted` 未被 4.2.2 的跃迁表覆盖，本 ADR 只落了它的词汇与 `label()`；它的行为由实现 pin 集合的卡定义。
+
+---
+
+## 增量登记（2026-10-01，opt-basic 重构轮）
+
+`docs/dev/opt-basic.md` 的重构轮要求两项冻结契约追加，按本 ADR 建立的路径登记：
+
+| 类型 | 变更 | 类别 | 落地位置 | 承接卡 |
+|---|---|---|---|---|
+| `SurfaceBackend` | 追加 `fn connection_fd(&self) -> Option<BorrowedFd<'_>>`，**带默认实现**（`None`） | 追加（trait，带默认） | `surface.rs` | `REFACTOR-P0.03.01` |
+| `UiFrame` | 尾部追加 `pub highlight: Option<u16>`（页内高亮位置，`None` = 隐藏环） | 追加（结构体） | `ui.rs` | `REFACTOR-P0.01.04` |
+
+**决策依据**：`connection_fd` 是指针事件即时性（`DEF-19`）的解封锁点——事件循环的 poll 集需要连接 fd，而"冻结契约无此方法"是现状的双重锁之一。带默认实现使全部既有实现（mock/测试替身）零改动编译，X11/Wayland 生产实现按卡覆写；与 `request_frame` 返回 `Option` 的既有先例同构。`highlight` 的语义冻结注记（`None` 时视图隐藏环、不做回退猜测）登记在其承接卡内；字段为尾部追加，`Default`/构造点随卡同步。

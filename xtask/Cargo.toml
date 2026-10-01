@@ -25,7 +25,7 @@ png.workspace = true                                                    # testd 
 ime-types.workspace = true
 ime-core.workspace = true
 ime-dict.workspace = true
-ime-diag.workspace = true                                              # budget --report: reads the probe snapshot the plugin writes
+ime-diag = { workspace = true, features = ["uiframe"] }                                              # budget --report: reads the probe snapshot the plugin writes
 
 [lints]
 workspace = true

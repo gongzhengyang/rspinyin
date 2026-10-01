@@ -3,7 +3,9 @@
 //! The writer runs on a thread of its own, so a test that drove the production sink would
 //! be asserting on a schedule as well as on a decision. Every test below but the ones that
 //! cover [`DocumentSink`] therefore drives the writer through a sink of its own, and every
-//! wait is on a condition the sink signals rather than on elapsed time.
+//! wait is on a condition the sink signals rather than on elapsed time. The one exception
+//! is the wedged-writer test, whose subject is the bound itself: it asserts the teardown's
+//! wait ended inside the budget the unload pays, which is a fact about time on purpose.
 //!
 //! A document is a file, so the [`DocumentSink`] tests write one: each takes a directory of
 //! its own under the system's temporary directory, empties it first and leaves it behind,
@@ -19,6 +21,8 @@ use std::time::{Duration, Instant};
 use ime_core::phrase::{PhraseReport, PhraseTable};
 use ime_dict::paths::FILE_MODE;
 use ime_types::ImeError;
+
+use crate::addon::{DESTROY_BUDGET, PHRASE_DRAIN_BUDGET};
 
 use super::super::BUILT_IN_DOCUMENT;
 use super::{DocumentSink, PhraseSink, PhraseSnapshot, PhraseWriter, WRITER_THREAD_NAME};
@@ -493,6 +497,48 @@ fn test_shutdown_of_a_stopped_writer_answers_at_once() {
     assert!(
         writer.shutdown(Duration::ZERO),
         "a writer that already stopped is not waited for a second time"
+    );
+}
+
+#[test]
+fn test_shutdown_of_a_wedged_writer_times_out_inside_the_unload_budget() {
+    // A disk that never answers: the sink holds its first commit open, so the writer is
+    // parked inside it while the unload asks it to stop. The teardown answers within the
+    // budget the destroy sequence pays for this step -- never longer -- and the `false`
+    // answer is what the teardown records the timeout from. The one elapsed-time
+    // assertion in this file is the point of the test: the bound is its subject.
+    let (observed, sink, latch) = recording_gated();
+    let writer = PhraseWriter::start(Box::new(sink), initial()).expect("the writer starts");
+    assert!(
+        writer.submit("aa", "one").is_ok(),
+        "the writer takes the row the disk is stuck on"
+    );
+    latch.wait_entered();
+    assert!(
+        writer.submit("bb", "two").is_ok(),
+        "the row behind the stuck one is queued"
+    );
+
+    let started = Instant::now();
+    let stopped = writer.shutdown(PHRASE_DRAIN_BUDGET);
+    let elapsed = started.elapsed();
+    assert!(
+        !stopped,
+        "a writer parked on a stuck disk cannot answer within the budget"
+    );
+    assert!(
+        elapsed <= DESTROY_BUDGET,
+        "the wait ran {elapsed:?}, past the {DESTROY_BUDGET:?} the unload may spend in total"
+    );
+
+    // The detached writer is not abandoned: the drain dropped its handle without joining,
+    // and the thread drains every row it accepted once the disk lets go -- the property
+    // that keeps a timed-out unload a late write rather than a lost one.
+    latch.open();
+    assert_eq!(
+        observed.wait_for(2),
+        vec!["aa\tone\n", "bb\ttwo\n"],
+        "the detached writer still writes the rows it accepted"
     );
 }
 

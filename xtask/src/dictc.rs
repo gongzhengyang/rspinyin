@@ -518,7 +518,7 @@ mod tests {
   "size_mb": {"so_stripped": 1.0, "base_dict": 20.0},
   "alloc_count": {"decode_steady": 1},
   "robustness": {"soak_hours": 1.0, "rss_drift_mb": 1.0, "pass_rate_pct": 1.0},
-  "bench": {"passthrough_classify_ns": 1.0, "input_buffer_ops_us": 1.0, "decode_holdout_s": 1.0, "ui_wakeup_latency_us": 1.0},
+  "bench": {"passthrough_classify_ns": 1.0, "input_buffer_ops_us": 1.0, "decode_holdout_s": 1.0, "ui_wakeup_latency_us": 1.0, "post_ui_ns": 1.0},
   "net_sockets": 0
 }"#;
 

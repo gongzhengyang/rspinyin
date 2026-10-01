@@ -10,11 +10,13 @@
 //!
 //! A frame is written into the component the moment it arrives, and `render` is the only call
 //! that puts anything on screen: the panel is placed and its interactive region applied, and
-//! the rasterizer is asked for a frame if the scene is dirty. Nothing animates yet -- the
-//! component declares no property for a motion output -- so `render` reports no deadline and
-//! the loop blocks indefinitely whenever the scene is clean, which is the whole of the idle
-//! CPU budget. A motion that did exist would be advanced here, before the rasterize call, so
-//! that the frame it produces is the one that reaches the surface.
+//! the rasterizer is asked for a frame if the scene is dirty. The device pixel ratio the
+//! surface runs at is adopted from the anchor at the same point, before the placement, so the
+//! hit map and the raster are always computed with one and the same ratio. Nothing animates
+//! yet -- the component declares no property for a motion output -- so `render` reports no
+//! deadline and the loop blocks indefinitely whenever the scene is clean, which is the whole
+//! of the idle CPU budget. A motion that did exist would be advanced here, before the
+//! rasterize call, so that the frame it produces is the one that reaches the surface.
 //!
 //! # The `Send` bound, and why it is gone
 //!
@@ -46,7 +48,7 @@ use ime_types::{Anchor, ImeError, RectI, SurfaceBackend, SurfaceEvent, ThemeSpec
 
 use crate::adapter::Adapter;
 use crate::channel::UiEventQueue;
-use crate::geometry::Geometry;
+use crate::geometry::{Geometry, snap_scale};
 use crate::interaction::PointerRouter;
 use crate::layout::{self, Metrics};
 use crate::slint_platform::RspinyinPlatform;
@@ -101,6 +103,14 @@ pub struct CandidateSurface {
     /// clock read of its own, so the frame loop stays the only thing that knows the time
     /// and a surface that is not rendered does not animate.
     last_frame: Option<Instant>,
+    /// The device pixel ratio the surface currently runs at.
+    ///
+    /// The anchor's ratio is the one source of truth for the surface, and this is the
+    /// value it was last adopted into: the tracker is what keeps a session whose ratio
+    /// never changes from synthesizing a scale event per keystroke. It is refreshed from
+    /// the backend after every adoption attempt, so a backend that moved to a ratio of
+    /// its own remains the truth even when this surface did not send one.
+    adopted_scale: f32,
 }
 
 /// How long after a frame the next one is due while something is animating.
@@ -152,6 +162,9 @@ impl CandidateSurface {
             .family_index
             .unwrap_or(crate::renderer::CJK_FAMILIES.len() - 1)];
         adapter.apply_font_family(family);
+        // The surface runs at the ratio its backend was created with until an anchor says
+        // otherwise: the tracker starts from the same value the Slint window was told.
+        let (_, _, surface_scale) = platform.geometry();
         Ok(Self {
             platform,
             adapter,
@@ -167,6 +180,7 @@ impl CandidateSurface {
             region_failures: 0,
             theme_codes: [None; 2],
             last_frame: None,
+            adopted_scale: surface_scale,
         })
     }
 
@@ -174,7 +188,9 @@ impl CandidateSurface {
     ///
     /// A frame older than the one on screen is dropped; a `Show` also re-places the panel
     /// against the anchor the host sent, so a window that appears before its first frame still
-    /// ends up where the caret is.
+    /// ends up where the caret is. The anchor's device pixel ratio is adopted on both a `Show`
+    /// and a frame, before the placement runs, so the surface always draws at the ratio the
+    /// placement computes its geometry with.
     ///
     /// # Parameters
     ///
@@ -183,17 +199,15 @@ impl CandidateSurface {
     /// # Errors
     ///
     /// Returns [`ImeError::CompositorUnsupported`] when the surface cannot be mapped or
-    /// unmapped, which is the only part of a state change that can fail.
+    /// unmapped, and the backend's own error when the display connection is gone while a
+    /// scale change is being adopted -- both mean no further frame can be presented.
     ///
     /// # Panics
     ///
     /// This function does not panic.
     pub fn apply(&mut self, update: SurfaceUpdate) -> Result<(), ImeError> {
         match update {
-            SurfaceUpdate::Frame(frame) => {
-                self.draw(frame);
-                Ok(())
-            }
+            SurfaceUpdate::Frame(frame) => self.draw(frame),
             SurfaceUpdate::Theme(spec) => {
                 self.apply_theme(&spec);
                 Ok(())
@@ -208,7 +222,13 @@ impl CandidateSurface {
                 Ok(())
             }
             SurfaceUpdate::Show { anchor, .. } => {
+                let scale = anchor.scale;
                 self.anchor = Some(anchor);
+                // The anchor's ratio drives the surface before the window maps: a window
+                // that appeared at the pre-created ratio and was re-scaled a moment later
+                // would flash at the wrong size, and the placement below computes the
+                // interactive region against the ratio the surface runs at from here on.
+                self.adopt_anchor_scale(scale)?;
                 self.adapter.set_visible(true)?;
                 self.place();
                 Ok(())
@@ -350,12 +370,65 @@ impl CandidateSurface {
     }
 
     /// Draws one frame, dropping it when the window already draws something newer.
-    fn draw(&mut self, frame: Box<UiFrame>) {
+    fn draw(&mut self, frame: Box<UiFrame>) -> Result<(), ImeError> {
         if !self.adapter.apply_frame(&frame) {
-            return;
+            return Ok(());
         }
+        // The scale follows the anchor the placement is about to run with -- the `Show`
+        // anchor when one was sent and the frame's own otherwise, the same pair `place`
+        // resolves below. A frame the revision gate dropped above re-scales nothing: its
+        // anchor belongs to a state the window never drew.
+        let scale = match self.anchor.as_ref() {
+            Some(anchor) => anchor.scale,
+            None => frame.anchor.scale,
+        };
         self.frame = Some(frame);
+        self.adopt_anchor_scale(scale)?;
         self.place();
+        Ok(())
+    }
+
+    /// Re-scales the surface to the ratio an anchor carries.
+    ///
+    /// The anchor's ratio is what the placement pass and the hit map are computed with,
+    /// so the surface -- the window and the raster with it -- has to run at the same
+    /// ratio rather than at the one it was pre-created with. X11 has no scale event
+    /// source of its own, so the change is synthesized here as the
+    /// [`SurfaceEvent::Scale`] the adoption chain already consumes and fed through the
+    /// platform's poll path, which is the one call that reaches both halves of an
+    /// adoption: the backend re-scales its window and buffers while it processes the
+    /// event, and the platform applies the event the backend reports back to the Slint
+    /// window. What the backend ignored -- a ratio it already runs at -- re-scales
+    /// nothing.
+    ///
+    /// The comparison runs on the snapped ratio, so a factor that merely drifts around a
+    /// supported value does not re-scale the surface, and a factor no supported output
+    /// can report lands on the nearest supported one -- exactly the value the placement
+    /// pass computes its geometry with.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's error when the display connection is gone, which is the
+    /// same condition that fails the next `drain_events`.
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic.
+    fn adopt_anchor_scale(&mut self, scale: f32) -> Result<(), ImeError> {
+        let target = snap_scale(scale).value;
+        if target.to_bits() == self.adopted_scale.to_bits() {
+            return Ok(());
+        }
+        self.pending.push(SurfaceEvent::Scale { factor: target });
+        self.platform
+            .poll_events(&mut self.pending)
+            .map_err(ImeError::from)?;
+        // The backend's own answer is the truth the tracker keeps, even when it ignored
+        // this attempt: a surface whose backend moved under it re-synthesizes from what
+        // the backend actually runs at rather than from a value it only believes.
+        let (_, _, adopted) = self.platform.geometry();
+        self.adopted_scale = adopted;
+        Ok(())
     }
 
     /// Resolves a theme request and writes it into the component.

@@ -108,6 +108,34 @@ impl MockSurface {
         self.back = 0;
     }
 
+    /// Adopts a device pixel ratio, reallocating both buffers around the same canvas.
+    ///
+    /// The real backends do this when the ratio moves -- `X11Backend` reconfigures its
+    /// window in `apply_scale` -- so the mock has to as well: a test that re-scales the
+    /// surface and then renders would otherwise have the surface describing a size the
+    /// mock's buffers cannot hold, and the copy would be refused by a buffer that is too
+    /// small for the frame.
+    ///
+    /// The logical size is the invariant the ratio only re-expresses: the buffers grow to
+    /// the same canvas at the new ratio, exactly as the window itself does.
+    ///
+    /// Returns the ratio adopted, or `None` when the mock already runs at it.
+    fn adopt_scale(&mut self, factor: f32) -> Option<f32> {
+        let scale = crate::platform::normalize_scale(factor);
+        if scale.to_bits() == self.scale.to_bits() {
+            return None;
+        }
+        self.scale = scale;
+        let (width_px, height_px) =
+            crate::platform::physical_size(self.width_dp, self.height_dp, scale);
+        self.width_px = width_px;
+        self.height_px = height_px;
+        let length = crate::platform::buffer_len(width_px, height_px);
+        self.buffers = [vec![0; length], vec![0; length]];
+        self.back = 0;
+        Some(scale)
+    }
+
     /// Locks the observation state, reporting a poisoned lock as an unusable backend.
     fn lock(&self) -> Result<MutexGuard<'_, MockState>, PlatformError> {
         self.state.lock().map_err(|_| PlatformError::Unavailable)
@@ -179,16 +207,35 @@ impl SurfaceBackend for MockSurface {
     }
 
     fn poll_events(&mut self, out: &mut Vec<SurfaceEvent>) -> Result<(), PlatformError> {
+        // A scale change the surface synthesized from the anchor arrives in `out` itself:
+        // adopt it before anything else, then report the ratio actually adopted, which is
+        // the same order the X11 backend adopts one in.
+        let mut adopted = None;
+        for event in out.iter() {
+            if let SurfaceEvent::Scale { factor } = *event {
+                if let Some(ratio) = self.adopt_scale(factor) {
+                    adopted = Some(ratio);
+                }
+            }
+        }
+        if let Some(ratio) = adopted {
+            out.push(SurfaceEvent::Scale { factor: ratio });
+        }
         let pending = {
             let mut state = self.lock()?;
             std::mem::take(&mut state.pending)
         };
         // A size the compositor reported is adopted before the events are handed on, which is
         // the order the real backends do it in: `poll_events` resizes itself first, then
-        // reports the size it actually adopted.
+        // reports the size it actually adopted. A ratio the compositor reported is adopted
+        // the same way, and is handed on as it arrived: appended below the events the caller
+        // already had, so the platform applies it to the window exactly once.
         for event in &pending {
             if let SurfaceEvent::Resize { w, h } = *event {
                 self.adopt_size(w, h);
+            }
+            if let SurfaceEvent::Scale { factor } = *event {
+                self.adopt_scale(factor);
             }
         }
         out.extend_from_slice(&pending);

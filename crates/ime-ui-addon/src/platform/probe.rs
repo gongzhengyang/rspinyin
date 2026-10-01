@@ -29,10 +29,13 @@ const LARGEST_PAGE: usize = 9;
 /// The device pixel ratio the window is pre-created with.
 ///
 /// Enumerating outputs -- and with them the ratio they run at -- is a seam no backend
-/// implements yet (`crate::screen::ScreenEnumerator`), so the window is created at the
-/// fallback ratio. On a scaled output the panel then appears at the wrong physical size
-/// until a backend enumerates its outputs; the alternative, deriving a ratio from the
-/// screen's millimetre size, is a guess with nothing to correct it against.
+/// implements yet (`crate::screen::ScreenEnumerator`), and the anchor does not exist
+/// before the first `Show`, so the window has to be born at some ratio and this is the
+/// fallback one. It is a birth size rather than a commitment: the surface re-scales to
+/// the ratio the first anchor carries -- the value the placement chain treats as the one
+/// source of truth -- so a session on a scaled output is drawn at that output's ratio
+/// from its first frame on. What this ratio still decides is the size the window is born
+/// at, which the adoption replaces before the window is ever mapped.
 const PRE_CREATED_SCALE: f32 = crate::screen::FALLBACK_SCALE;
 
 /// What the platform probe found.

@@ -1,5 +1,5 @@
 {
-  "total": 188,
+  "total": 219,
   "completed": 188,
   "is_workspace": true,
   "ledger_revision": 27,
@@ -2016,6 +2016,347 @@
       "status": "COMPLETED",
       "depends_on": [],
       "note": "`crates/ime-ui-addon/src/addon.rs:169` 的 `pending_step(\"platform\", \"the X11 / Wayland backend probe\")` 与 `:357` 的 `pending_step(\"ui-startup\", \"the UI thread and the pre-created window\")` 都是占位。 | `WINDOW_BACKEND_AVAILABLE`（`ui_impl/availability.rs:60`）有一个 setter 但**没有任何调用点**，所以它恒为 false，`register_takeover()` 永远报 Unsupported，候选框永远不会出现。 | `platform/mod.rs` 之外没有任何代码构造 `X11Backend`；`ProtocolClient` 只有测试替身。合成器验证 agent 因此只能跑 environment 半，window 半全部 skipped。"
+    },
+    {
+      "id": "TASK-189",
+      "task_id": "REFACTOR-P0.01.01",
+      "file": "./docs/dev/opt-basic.md",
+      "title": "跨 addon 帧通道贯通（引擎 → 候选窗）",
+      "wave": "R1",
+      "track": "A",
+      "depends": "无",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-190",
+      "task_id": "REFACTOR-P0.01.02",
+      "file": "./docs/dev/opt-basic.md",
+      "title": "事件回程贯通（候选窗 → 引擎）",
+      "wave": "R3",
+      "track": "A",
+      "depends": "P0.01.01",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-191",
+      "task_id": "REFACTOR-P0.01.03",
+      "file": "./docs/dev/opt-basic.md",
+      "title": "光标锚定贯通（caret → anchor 上行）",
+      "wave": "R4",
+      "track": "A",
+      "depends": "P0.01.01+01.02",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-192",
+      "task_id": "REFACTOR-P0.01.04",
+      "file": "./docs/dev/opt-basic.md",
+      "title": "高亮随帧（UiFrame.highlight 契约追加 + 视图接线）",
+      "wave": "R4",
+      "track": "A",
+      "depends": "P0.01.01",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-193",
+      "task_id": "REFACTOR-P0.01.05",
+      "file": "./docs/dev/opt-basic.md",
+      "title": "主题与外观通道贯通（config → ThemeSpec → 窗口）",
+      "wave": "R4",
+      "track": "B",
+      "depends": "P0.01.01",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-194",
+      "task_id": "REFACTOR-P0.01.06",
+      "file": "./docs/dev/opt-basic.md",
+      "title": "状态矩阵诚实化（通知位 + 死代码落地 + 迟到重试）",
+      "wave": "R5",
+      "track": "A",
+      "depends": "P0.01.01",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-195",
+      "task_id": "REFACTOR-P0.01.07",
+      "file": "./docs/dev/opt-basic.md",
+      "title": "模式位语义闭环（诚实切换 + 输出接线 + 空闲反馈）",
+      "wave": "R5",
+      "track": "A",
+      "depends": "P0.01.01",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-196",
+      "task_id": "REFACTOR-P0.01.08",
+      "file": "./docs/dev/opt-basic.md",
+      "title": "E2E 验证接线（test-mirror / capture 子命令落地）",
+      "wave": "R6",
+      "track": "C",
+      "depends": "P0.01.01",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-197",
+      "task_id": "REFACTOR-P0.02.01",
+      "file": "./docs/dev/opt-basic.md",
+      "title": "渲染器事实校准（opacity 探针 + 文档/门禁修正 + appear 淡入接线）",
+      "wave": "R1",
+      "track": "B",
+      "depends": "无",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-198",
+      "task_id": "REFACTOR-P0.03.01",
+      "file": "./docs/dev/opt-basic.md",
+      "title": "指针事件即时性（连接 fd 进 poll 集）",
+      "wave": "R2",
+      "track": "C",
+      "depends": "无（契约追加走 ADR-0005）",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-199",
+      "task_id": "REFACTOR-P0.04.01",
+      "file": "./docs/dev/opt-basic.md",
+      "title": "崩溃取证接线（hook / handler / guard 记录 / 上限）",
+      "wave": "R1",
+      "track": "A",
+      "depends": "无",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-200",
+      "task_id": "REFACTOR-P0.04.02",
+      "file": "./docs/dev/opt-basic.md",
+      "title": "焦点生命周期落地（on_focus_in/out + 会话回收）",
+      "wave": "R2",
+      "track": "A",
+      "depends": "无",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-201",
+      "task_id": "REFACTOR-P0.04.03",
+      "file": "./docs/dev/opt-basic.md",
+      "title": "HiDPI 修复（X11 档 scale 贯通）",
+      "wave": "R1",
+      "track": "C",
+      "depends": "无",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-202",
+      "task_id": "REFACTOR-P0.04.04",
+      "file": "./docs/dev/opt-basic.md",
+      "title": "卸载完整性（短语写手 shutdown + 收口顺序）",
+      "wave": "R1",
+      "track": "A",
+      "depends": "无",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-203",
+      "task_id": "REFACTOR-P1.01.01",
+      "file": "./docs/dev/opt-basic/phase-2.md",
+      "title": "死 token 清理与契约对齐",
+      "wave": "R5",
+      "track": "B",
+      "depends": "P0.02.01",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-204",
+      "task_id": "REFACTOR-P1.02.01",
+      "file": "./docs/dev/opt-basic/phase-2.md",
+      "title": "Overlay 渲染面（速查表/命令面板的绘制路径）",
+      "wave": "R6",
+      "track": "B",
+      "depends": "P0.01.01+01.05",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-205",
+      "task_id": "REFACTOR-P1.02.02",
+      "file": "./docs/dev/opt-basic/phase-2.md",
+      "title": "消失动效真渲染（Hide 先淡出后 unmap + 弹簧空转消除）",
+      "wave": "R5",
+      "track": "B",
+      "depends": "P0.02.01",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-206",
+      "task_id": "REFACTOR-P1.02.03",
+      "file": "./docs/dev/opt-basic/phase-2.md",
+      "title": "对比度门禁补全（五对降 α 文本纳入 ContrastReport）",
+      "wave": "R5",
+      "track": "B",
+      "depends": "P0.02.01",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-207",
+      "task_id": "REFACTOR-P1.02.04",
+      "file": "./docs/dev/opt-basic/phase-2.md",
+      "title": "亚克力协商落地（BlurSurface → X11 blur 属性 + 请求时机）",
+      "wave": "R6",
+      "track": "B",
+      "depends": "P0.01.05+P0.02.01",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-208",
+      "task_id": "REFACTOR-P1.03.01",
+      "file": "./docs/dev/opt-basic/phase-2.md",
+      "title": "交叉淡变接线（状态图标 120ms + 主题切换 120ms）",
+      "wave": "R5",
+      "track": "B",
+      "depends": "P0.02.01",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-209",
+      "task_id": "REFACTOR-P1.03.02",
+      "file": "./docs/dev/opt-basic/phase-2.md",
+      "title": "指针光标形状与 Active 按压微动",
+      "wave": "R6",
+      "track": "B",
+      "depends": "P0.03.01",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-210",
+      "task_id": "REFACTOR-P1.03.03",
+      "file": "./docs/dev/opt-basic/phase-2.md",
+      "title": "预编辑估宽校准与保尾修正",
+      "wave": "R1",
+      "track": "B",
+      "depends": "无",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-211",
+      "task_id": "REFACTOR-P1.04.01",
+      "file": "./docs/dev/opt-basic/phase-2.md",
+      "title": "配置面第二波接线（[data] / [diagnostics] / [ui.animation]）",
+      "wave": "R6",
+      "track": "B",
+      "depends": "P0.01.05+P0.04.01",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-212",
+      "task_id": "REFACTOR-P1.05.01",
+      "file": "./docs/dev/opt-basic/phase-2.md",
+      "title": "文档与配置诚实化（README / 模板 / reload 声明 / 模块注释）",
+      "wave": "R7",
+      "track": "B",
+      "depends": "P0.01.06",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-213",
+      "task_id": "REFACTOR-P2.04.01",
+      "file": "./docs/dev/opt-basic/phase-3.md",
+      "title": "迁移原子替换补 sync_all",
+      "wave": "R1",
+      "track": "C",
+      "depends": "无",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-214",
+      "task_id": "REFACTOR-P2.04.02",
+      "file": "./docs/dev/opt-basic/phase-3.md",
+      "title": "字体探测 join 超时",
+      "wave": "R2",
+      "track": "C",
+      "depends": "无",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-215",
+      "task_id": "REFACTOR-P2.05.01",
+      "file": "./docs/dev/opt-basic/phase-3.md",
+      "title": "host-suspend 消费者（挂起即收窗）",
+      "wave": "R7",
+      "track": "C",
+      "depends": "P0.04.02",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-216",
+      "task_id": "REFACTOR-P2.05.02",
+      "file": "./docs/dev/opt-basic/phase-3.md",
+      "title": "check-host 稳健化（FRAME_TIMEOUT 负载自适应）",
+      "wave": "R2",
+      "track": "C",
+      "depends": "无",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-217",
+      "task_id": "REFACTOR-P2.05.03",
+      "file": "./docs/dev/opt-basic/phase-3.md",
+      "title": "UI vtable is_available 槽位补 panic guard",
+      "wave": "R2",
+      "track": "C",
+      "depends": "无",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-218",
+      "task_id": "REFACTOR-P2.05.04",
+      "file": "./docs/dev/opt-basic/phase-3.md",
+      "title": "未绑定动作的默认绑定与路由审计扩展",
+      "wave": "R7",
+      "track": "C",
+      "depends": "P0.01.06",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-219",
+      "task_id": "REFACTOR-P2.05.05",
+      "file": "./docs/dev/opt-basic/phase-3.md",
+      "title": "reloadConfig 宿主槽位接线（配置热重载触发）",
+      "wave": "R7",
+      "track": "C",
+      "depends": "P0.01.01",
+      "status": "PENDING",
+      "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     }
   ],
   "concurrency": 5,
@@ -2050,7 +2391,7 @@
       ]
     }
   },
-  "status": "ALL_COMPLETED",
+  "status": "IN_PROGRESS",
   "scope_decision_round_2": {
     "effective_manifest_set": [
       "docs/dev/features*.md and docs/dev/opt-*.md (the default globs; all 103 cards already closed in round 1)",
@@ -2068,5 +2409,7 @@
     "AGENTS.md section 2 now names just check-host (updated in the stage-2 commit)",
     "the skeleton-addon finding was closed by the stage-2/3 rewrites: every engine step is a real call, session-host installed, WINDOW_BACKEND_AVAILABLE set by the UI addon's start-up",
     "Wayland tiers remain unverifiable on this machine (WSLg is Weston) - permanent environment boundary, recorded in 0.5.5 and docs/dev/spikes/wayland-tiers.md"
-  ]
+  ],
+  "reopen_note": "2026-10-01: opt-basic.md/phase-2/phase-3 (31 cards, REFACTOR-*) landed at 13:45 mid-run (5ce560a) but postdate the stage-1 scan; discovered by the follow-up session's manifest re-scan (14 open [ ] markers). Run reopened; waves R1-R7 assigned by the plan's own DAG (opt-basic.md 4.1/4.2).",
+  "wave_plan_optbasic": "R1 = no-dep cards {P0.02.01, P0.04.01, P0.04.03, P0.04.04, P1.03.03, P2.04.01} + main-agent P0.01.01 (spike/ADR-0011/wire); R2 = P0.03.01, P0.04.02, P2.04.02, P2.05.02, P2.05.03; R4 = channel consumers P0.01.03/04/05 after R3's P0.01.02; R5-R7 = P1/P2 dependents."
 }

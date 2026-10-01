@@ -46,7 +46,8 @@
     "passthrough_classify_ns": 500.0,
     "input_buffer_ops_us": 1.0,
     "decode_holdout_s": 3.0,
-    "ui_wakeup_latency_us": 512.0
+    "ui_wakeup_latency_us": 512.0,
+    "post_ui_ns": 100.0
   },
   "net_sockets": 0
 }

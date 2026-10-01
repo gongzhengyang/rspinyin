@@ -51,10 +51,47 @@
 use std::any::Any;
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use ime_diag::crash;
+use ime_diag::crash::signal::{self, SignalCause, SignalHandler, SignalInfo};
+use ime_types::ImeError;
+
 pub mod abi;
+
+/// Probes for the user-interface addon and triggers the transport handshake (ADR-0011).
+///
+/// Answers the probe mechanism that fired, or 0 when the UI addon is not loaded. The
+/// engine's init sequence calls this once; the UI addon runs the mirrored probe at its
+/// own registration step, which is what makes the handshake work in either load order.
+pub fn engine_transport_probe() -> u32 {
+    #[cfg(fcitx5_host)]
+    {
+        guard_ffi(0, || {
+            // SAFETY: the glue reads no memory this side owns, blocks on nothing, and
+            // answers with a code naming the probe mechanism that fired.
+            unsafe { rspinyin_engine_transport_probe() }
+        })
+    }
+    #[cfg(not(fcitx5_host))]
+    {
+        // No glue is linked, so there is no other addon to find and no log an operator
+        // of this build would read.
+        0
+    }
+}
+
+#[cfg(fcitx5_host)]
+unsafe extern "C" {
+    /// The C++ half of the transport probe. Defined in `src/ffi/cpp/addon_glue.cpp`.
+    ///
+    /// # Safety
+    ///
+    /// The callee blocks on nothing and owns nothing the caller has to release.
+    fn rspinyin_engine_transport_probe() -> u32;
+}
 
 pub use abi::{
     FcitxKeyEvent, RSPINYIN_ABI_VERSION, RSPINYIN_VTABLE, RspinyinHandshake, RspinyinVtable,
@@ -68,6 +105,14 @@ pub(crate) struct PanicReport {
     /// not a string.
     message: String,
 }
+
+/// The entry-point name a guard's record and line carry.
+///
+/// The guard wraps every `extern "C"` body and cannot know which one it wrapped -- the
+/// entry points pass only their fallback value and their work -- so the record names the
+/// boundary itself rather than an entry point. The message is a static template by
+/// project rule, which is what keeps the pair from being a second spelling of user input.
+const GUARD_ENTRY_POINT: &str = "ffi::guard";
 
 impl PanicReport {
     /// Extracts the message a `catch_unwind` payload carries.
@@ -87,13 +132,35 @@ impl PanicReport {
         }
     }
 
+    /// The code this report is emitted under.
+    ///
+    /// The message rides in the code because it is what makes one contained panic
+    /// distinguishable from another on the crash channel, and the throttle keys on this
+    /// string: a panic whose message repeats -- as the static templates do -- shares one
+    /// window with its own repeats, which is the deduplication the diagnostic channel
+    /// promises.
+    fn code(&self) -> String {
+        format!("ffi/panic: {}", self.message)
+    }
+
     /// The line this report contributes to the crash channel.
     ///
     /// The `ffi/panic` code follows the `domain/action/reason` shape the project uses
     /// for every cross-boundary condition, so a crash is greppable next to the other
     /// FFI diagnostics.
     fn crash_line(&self) -> String {
-        format!("rspinyin: ffi/panic: {}", self.message)
+        format!("rspinyin: {}", self.code())
+    }
+
+    /// Records the panic in the crash directory.
+    ///
+    /// The forensics half of the guard: the record file, the `tracing` event and the
+    /// crash channel's own stderr line are `ime-diag`'s to produce, and the payload the
+    /// guard already holds is all they need. Recording happens whether or not the
+    /// throttled line below is written, because a record is evidence and a line is a
+    /// convenience.
+    fn record_crash(&self) {
+        crash::record_ffi_panic_message(GUARD_ENTRY_POINT, &self.message);
     }
 }
 
@@ -108,24 +175,39 @@ pub(crate) fn catch_ffi<R>(body: impl FnOnce() -> R) -> Result<R, PanicReport> {
 /// Runs `body` under the FFI panic guard, returning `fallback` if it panics.
 ///
 /// Every `extern "C"` body must run inside this: a panic that unwinds into C++ is
-/// undefined behaviour, so the boundary turns it into an ordinary return value and
-/// records it on the crash channel.
+/// undefined behaviour, so the boundary turns it into an ordinary return value, records
+/// it in the crash directory, and reports it on the crash channel at most once per
+/// throttle window.
 pub(crate) fn guard_ffi<R>(fallback: R, body: impl FnOnce() -> R) -> R {
-    guard_ffi_with(fallback, write_stderr_line, body)
+    match catch_ffi(body) {
+        Ok(value) => value,
+        Err(report) => {
+            report.record_crash();
+            emit_diagnostic(&report.code());
+            fallback
+        }
+    }
 }
 
 /// The body of [`guard_ffi`], over a caller-supplied crash channel.
 ///
 /// The sink is a parameter for the same reason [`emit_through`]'s is: a test can then
 /// read back the line a contained panic writes, which is the half of the guard's contract
-/// that "it answers with the fallback" does not cover. The production path passes
-/// [`write_stderr_line`] and pays nothing for the indirection — the argument is
-/// monomorphised in place.
-fn guard_ffi_with<R>(fallback: R, write_line: impl FnOnce(&str), body: impl FnOnce() -> R) -> R {
+/// that "it answers with the fallback" does not cover. The throttle decision runs against
+/// a table of the call's own rather than the process-wide one, so a test cannot be
+/// suppressed by a line another test wrote into the shared table inside the same window;
+/// the production path above is the one that shares the table.
+fn guard_ffi_with<R>(fallback: R, write_line: impl FnMut(&str), body: impl FnOnce() -> R) -> R {
     match catch_ffi(body) {
         Ok(value) => value,
         Err(report) => {
-            write_line(&report.crash_line());
+            report.record_crash();
+            emit_through(
+                &Mutex::new(Throttle::new()),
+                &report.code(),
+                Instant::now(),
+                write_line,
+            );
             fallback
         }
     }
@@ -354,186 +436,130 @@ fn write_stderr_line(line: &str) {
     let _ = writeln!(std::io::stderr(), "{line}");
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ── the crash signal registrar ─────────────────────────────────────────────────────
 
-    /// A code a caller can reach once per frame, used to pin the throttle's shape.
-    const REPEATED_CODE: &str = "ffi/null-key-event";
+/// The bodies the crash channel armed, indexed by the position of the signal in
+/// [`signal::HANDLED_SIGNALS`].
+///
+/// A body is stored before the handler that reads it is installed, and read from inside
+/// the handler. A plain atomic is the whole of what that lookup may afford: a fault
+/// interrupts whatever the process was doing, possibly a lock holder or an allocator
+/// mid-update, so the handler path must not take a lock and must not allocate.
+static ARMED_BODIES: [AtomicUsize; signal::HANDLED_SIGNALS.len()] =
+    [const { AtomicUsize::new(0) }; signal::HANDLED_SIGNALS.len()];
 
-    /// A second code, so a test can show that one code's window does not silence another.
-    const OTHER_CODE: &str = "ffi/invalid-commit";
+/// Installs `handler` for `signal`: the registrar the crash channel's arming sequence
+/// passes, and the one call in this crate that asks the kernel to deliver a signal.
+///
+/// The kernel call is `sigaction(2)` with `SA_SIGINFO`, so the handler receives the
+/// `siginfo_t` whose `si_code` the crash channel classifies and whose `si_addr` names
+/// the faulting address; see [`signal::RegisterSignal`] for the contract this
+/// implementation answers to.
+///
+/// # Parameters
+///
+/// - `signal_number`: the signal number to handle, one of [`signal::HANDLED_SIGNALS`].
+/// - `handler`: the body to run when it arrives. It never returns.
+///
+/// # Errors
+///
+/// Returns [`ImeError::DataReadonly`] when the signal is not one the crash channel
+/// handles or the kernel refuses the registration. The code is the channel's own
+/// "this process has stopped writing crash data" condition: faults still terminate the
+/// process, they just leave no record behind.
+///
+/// # Panics
+///
+/// Never.
+pub(crate) fn register_crash_signal(
+    signal_number: i32,
+    handler: SignalHandler,
+) -> Result<(), ImeError> {
+    let Some(slot) = signal::HANDLED_SIGNALS
+        .iter()
+        .position(|(number, _)| *number == signal_number)
+    else {
+        return Err(ImeError::DataReadonly {
+            reason: format!("signal {signal_number} is not one of the crash signals"),
+        });
+    };
+    // Stored before the registration lands, so that a fault arriving the instant the
+    // kernel starts delivering finds the body already in place. The release pairs with
+    // the acquire load in `on_host_signal`.
+    ARMED_BODIES[slot].store(handler as usize, Ordering::Release);
 
-    /// A table, a clock and a sink the test owns.
-    ///
-    /// The process-wide throttle would make two tests suppress each other, and the real
-    /// clock would put the window boundary out of reach without sleeping.
-    struct Harness {
-        /// The table under test.
-        throttle: Mutex<Throttle>,
-        /// Every line the sink was handed.
-        lines: Vec<String>,
+    // Zeroed is a valid `sigaction`: an empty signal mask, no restorer, and every flag
+    // the two calls below do not set. The body is the trampoline, which reads the two
+    // facts the record needs out of the `siginfo_t` and hands them to `handler`.
+    let mut action = std::mem::zeroed::<libc::sigaction>();
+    action.sa_sigaction = on_host_signal as usize;
+    action.sa_flags = libc::SA_SIGINFO;
+    // SAFETY: `action` is owned for the duration of the two calls and neither retains a
+    // pointer into it; the old-action out-parameter is not requested. `sigemptyset(3)`
+    // and `sigaction(2)` are the documented interfaces for what this does.
+    let armed = unsafe {
+        libc::sigemptyset(&mut action.sa_mask) == 0
+            && libc::sigaction(signal_number, &action, std::ptr::null_mut()) == 0
+    };
+    if !armed {
+        return Err(ImeError::DataReadonly {
+            reason: format!(
+                "the crash signal could not be armed: {}",
+                std::io::Error::last_os_error()
+            ),
+        });
     }
-
-    impl Harness {
-        /// An empty table and an empty log.
-        fn new() -> Self {
-            Self {
-                throttle: Mutex::new(Throttle::new()),
-                lines: Vec::new(),
-            }
-        }
-
-        /// Drives one call at `now`, recording what it wrote.
-        fn emit(&mut self, code: &str, now: Instant) {
-            let Self { throttle, lines } = self;
-            emit_through(throttle, code, now, |line: &str| {
-                lines.push(line.to_owned());
-            });
-        }
-
-        /// The lines written so far.
-        fn lines(&self) -> Vec<String> {
-            self.lines.clone()
-        }
-
-        /// How many codes the table is tracking.
-        fn tracked(&self) -> usize {
-            match self.throttle.lock() {
-                Ok(table) => table.tracked(),
-                Err(poisoned) => poisoned.into_inner().tracked(),
-            }
-        }
-    }
-
-    #[test]
-    fn test_catch_ffi_passes_a_successful_body_through() {
-        assert!(matches!(catch_ffi(|| 7), Ok(7)));
-    }
-
-    #[test]
-    fn test_emit_diagnostic_does_not_panic_on_an_empty_code() {
-        // The crash channel is reached from panic paths, so it must never be the
-        // thing that fails; an empty code is the degenerate input.
-        let outcome = catch_unwind(|| emit_diagnostic(""));
-        assert!(outcome.is_ok(), "the crash channel must not panic");
-    }
-
-    #[test]
-    fn test_emit_through_writes_once_for_a_hundred_calls_inside_the_window() {
-        let mut harness = Harness::new();
-        let start = Instant::now();
-        for call in 0..100 {
-            harness.emit(REPEATED_CODE, start + Duration::from_millis(call));
-        }
-        assert_eq!(
-            harness.lines(),
-            [format!("rspinyin: {REPEATED_CODE}")],
-            "a hundred calls inside one window must cost one write, not a hundred"
-        );
-        assert_eq!(
-            harness.tracked(),
-            1,
-            "the suppressed path must not add a slot: a table that grew per call would \
-             mean it allocated"
-        );
-    }
-
-    #[test]
-    fn test_emit_through_reports_the_repeats_its_window_swallowed() {
-        let mut harness = Harness::new();
-        let start = Instant::now();
-        harness.emit(REPEATED_CODE, start);
-        for call in 1..100 {
-            harness.emit(REPEATED_CODE, start + Duration::from_millis(call));
-        }
-        harness.emit(REPEATED_CODE, start + THROTTLE_WINDOW);
-        assert_eq!(
-            harness.lines(),
-            [
-                format!("rspinyin: {REPEATED_CODE}"),
-                format!(
-                    "rspinyin: {REPEATED_CODE} (suppressed 99 repeats in {}ms)",
-                    THROTTLE_WINDOW.as_millis()
-                ),
-            ],
-            "the line after the window must carry what the window swallowed"
-        );
-    }
-
-    #[test]
-    fn test_emit_through_does_not_suppress_a_different_code() {
-        let mut harness = Harness::new();
-        let start = Instant::now();
-        harness.emit(REPEATED_CODE, start);
-        harness.emit(OTHER_CODE, start + Duration::from_millis(1));
-        assert_eq!(
-            harness.lines(),
-            [
-                format!("rspinyin: {REPEATED_CODE}"),
-                format!("rspinyin: {OTHER_CODE}"),
-            ],
-            "one code's window must not silence another"
-        );
-        assert_eq!(harness.tracked(), 2, "each code needs a slot of its own");
-    }
-
-    #[test]
-    fn test_emit_through_writes_again_once_the_window_has_passed() {
-        let mut harness = Harness::new();
-        let start = Instant::now();
-        harness.emit(REPEATED_CODE, start);
-        harness.emit(REPEATED_CODE, start + THROTTLE_WINDOW);
-        assert_eq!(
-            harness.lines(),
-            [
-                format!("rspinyin: {REPEATED_CODE}"),
-                format!("rspinyin: {REPEATED_CODE}"),
-            ],
-            "a code with nothing suppressed writes its line unchanged"
-        );
-    }
-
-    #[test]
-    fn test_emit_through_writes_a_code_the_table_cannot_track() {
-        // Fixtures, not codes the plugin emits: the table is filled past its capacity so
-        // that the untracked branch is reached. What has to hold there is that it fails
-        // towards writing -- a diagnostic the table cannot count is still a diagnostic.
-        let codes: Vec<String> = (0..THROTTLE_SLOTS + 8)
-            .map(|index| format!("test/fixture/{index}"))
-            .collect();
-        let mut harness = Harness::new();
-        let start = Instant::now();
-        for (index, code) in codes.iter().enumerate() {
-            harness.emit(code, start + Duration::from_micros(index as u64));
-        }
-        let expected: Vec<String> = codes
-            .iter()
-            .map(|code| format!("rspinyin: {code}"))
-            .collect();
-        assert_eq!(
-            harness.lines(),
-            expected,
-            "every distinct code must reach the sink, tracked or not"
-        );
-        assert_eq!(
-            harness.tracked(),
-            THROTTLE_SLOTS,
-            "the table must stop growing at its capacity"
-        );
-    }
-
-    #[test]
-    fn test_code_hash_matches_the_published_fnv1a_vector() {
-        // The hash is only a throttle key, but changing the constants would move every
-        // window boundary at once, so the algorithm is pinned against its published
-        // vector rather than against itself.
-        assert_eq!(code_hash(""), FNV_OFFSET_BASIS);
-        assert_eq!(code_hash("a"), 0xaf63_dc4c_8601_ec8c);
-        assert_ne!(
-            code_hash(REPEATED_CODE),
-            code_hash(OTHER_CODE),
-            "two codes a session can hit together must not share a window"
-        );
-    }
+    Ok(())
 }
+
+/// The body the kernel calls for a fault the crash channel armed.
+///
+/// It reads the two facts a fault's record carries out of the `siginfo_t` the kernel
+/// passed and hands them to the body that was registered for the signal, which never
+/// returns. Every step between the entry and that call is a memory read or an atomic
+/// load: no allocation, no lock, and none of `core::fmt`, all of which are outside what
+/// a signal handler may run.
+extern "C" fn on_host_signal(
+    signal_number: i32,
+    info: *mut libc::siginfo_t,
+    _context: *mut libc::c_void,
+) {
+    let Some(slot) = signal::HANDLED_SIGNALS
+        .iter()
+        .position(|(number, _)| *number == signal_number)
+    else {
+        // Unreachable while the registrar is the only installer, and not actionable if
+        // it ever is not: there is no channel to report on inside a handler, so the
+        // process ends with the recorded-fault status rather than by returning into a
+        // faulting instruction.
+        libc::_exit(signal::CRASH_EXIT_CODE);
+    };
+    let body = ARMED_BODIES[slot].load(Ordering::Acquire);
+    if body == 0 {
+        // Unreachable: the body is stored before the registration that arms this
+        // handler. As above, exiting is the only honest answer if it ever is not.
+        libc::_exit(signal::CRASH_EXIT_CODE);
+    }
+    // SAFETY: the kernel passes a valid `siginfo_t` for the signal it delivered, and
+    // reading `si_code` and `si_addr` out of it is the documented way to learn what
+    // faulted. `si_addr` is only meaningful for a fault, so a signal another process
+    // sent reports no address at all.
+    let (cause, address) = unsafe {
+        let info = &*info;
+        let cause = SignalCause::from_si_code(info.si_code);
+        let address = if cause.is_fatal() {
+            Some(info.si_addr() as usize)
+        } else {
+            None
+        };
+        (cause, address)
+    };
+    // SAFETY: the value was stored by `register_crash_signal` as a `SignalHandler` and
+    // nothing else writes the slot, so it is a valid function pointer of exactly this
+    // type. The body never returns, so nothing runs after the call.
+    let handler: SignalHandler = unsafe { std::mem::transmute(body) };
+    handler(SignalInfo { cause, address });
+}
+
+#[cfg(test)]
+mod tests;

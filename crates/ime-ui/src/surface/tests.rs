@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ime_types::ui::{OverlayEntry, OverlayFrame, OverlayKind, OverlaySection};
-use ime_types::{HideReason, SelectTrigger, SurfaceEvent, UiEvent};
+use ime_types::{Anchor, HideReason, Placement, ScreenId, SelectTrigger, SurfaceEvent, UiEvent};
 
 use super::*;
 use crate::adapter::tests::{anchor, frame_with};
@@ -48,6 +48,42 @@ fn show_and_draw(surface: &mut CandidateSurface, count: usize) {
     surface
         .apply(SurfaceUpdate::Frame(Box::new(frame_with(
             1, "ni'hao", count,
+        ))))
+        .expect("the frame is applied");
+    surface.render(Instant::now()).expect("the frame is drawn");
+}
+
+/// The anchor fixture at a device pixel ratio of the test's choosing: the shared fixture
+/// pins the 1.0 case, and the scale-adoption scenes need the other supported ratios.
+fn anchor_at(scale: f32) -> Anchor {
+    Anchor {
+        cursor: RectI {
+            x: 100,
+            y: 200,
+            w: 2,
+            h: 20,
+        },
+        screen: ScreenId::new(0),
+        scale,
+        placement: Placement::Auto,
+    }
+}
+
+/// Shows the window at `scale`, draws one frame of `count` candidates and rasterizes it.
+///
+/// The frame's own anchor stays the 1.0 fixture on purpose: a `Show` overrides it, which
+/// is the same rule the placement pass applies, and what keeps a re-scaled session from
+/// being dragged back by the frames that follow it.
+fn show_at(surface: &mut CandidateSurface, revision: u32, scale: f32, count: usize) {
+    surface
+        .apply(SurfaceUpdate::Show {
+            revision,
+            anchor: anchor_at(scale),
+        })
+        .expect("the window can be shown");
+    surface
+        .apply(SurfaceUpdate::Frame(Box::new(frame_with(
+            revision, "ni'hao", count,
         ))))
         .expect("the frame is applied");
     surface.render(Instant::now()).expect("the frame is drawn");
@@ -489,4 +525,273 @@ fn test_surface_hover_repaints_the_window() {
         before, after,
         "a hover changes the pixels the window draws, rather than only the model behind them"
     );
+}
+
+/// The mock's buffer length at the birth size, and at the canvas re-expressed at 2.0 and
+/// 1.25: the physical sizes every scale assertion below is written against.
+const BIRTH_BYTES: usize = 320 * 160 * 4;
+const TWICE_BYTES: usize = 640 * 320 * 4;
+const QUARTER_AGAIN_BYTES: usize = 400 * 200 * 4;
+
+#[test]
+fn test_surface_show_at_anchor_scale_two_adopts_the_ratio_and_repaints_fully() {
+    let (last_damage, pixels_len, resynthesized) = with_surface(|surface, state| {
+        // A 1.0 session first: the first frame of a newborn window is always full, so it
+        // would prove nothing about the adoption's own repaint.
+        show_and_draw(surface, 3);
+        let settled = settle(surface);
+        let _ = surface.render(settled).expect("a settled frame is drawn");
+        show_at(surface, 2, 2.0, 3);
+        let locked = state.lock().expect("the mock is not poisoned");
+        let last_damage = locked.damage.last().copied();
+        let pixels_len = locked.pixels.len();
+        drop(locked);
+        // The synthesized events ride `pending` until they are drained; draining them
+        // clears the queue the next assertion reads.
+        let events = UiEventQueue::new(&ChannelConfig::default());
+        surface
+            .drain_events(&events, 8)
+            .expect("the synthesized events are drained");
+        surface
+            .apply(SurfaceUpdate::Show {
+                revision: 3,
+                anchor: anchor_at(2.0),
+            })
+            .expect("the window can be re-shown");
+        let resynthesized = !surface.pending.is_empty();
+        (last_damage, pixels_len, resynthesized)
+    });
+    assert_eq!(
+        pixels_len, TWICE_BYTES,
+        "the surface runs at the anchor's ratio: the logical canvas at twice the device \
+         pixel ratio"
+    );
+    assert_eq!(
+        last_damage,
+        Some(RectI {
+            x: 0,
+            y: 0,
+            w: 640,
+            h: 320
+        }),
+        "a scale change repaints the whole surface: the buffers the smaller ratio drew \
+         describe a different grid"
+    );
+    assert!(
+        !resynthesized,
+        "a ratio the surface already runs at is adopted once, not once per keystroke"
+    );
+}
+
+#[test]
+fn test_surface_at_twice_the_ratio_clicks_land_on_the_cells_the_window_drew() {
+    let (region, cell_alpha, reserve_alpha, selected) = with_surface(|surface, state| {
+        show_at(surface, 1, 2.0, 1);
+        settle(surface);
+        let region = surface.input_region().expect("the panel was placed");
+        let (cell, index) = surface.hit_map()[0];
+        let centre = (
+            (region.x + cell.x + cell.w as i32 / 2) as usize,
+            (region.y + cell.y + cell.h as i32 / 2) as usize,
+        );
+        let stride = 640_usize * 4;
+        let (cell_alpha, reserve_alpha) = {
+            let state = state.lock().expect("the mock is not poisoned");
+            (
+                state.pixel(stride, centre.0, centre.1)[3],
+                state.pixel(stride, 1, 1)[3],
+            )
+        };
+        let events = UiEventQueue::new(&ChannelConfig::default());
+        click(&state, centre.0 as i32, centre.1 as i32);
+        surface
+            .drain_events(&events, 8)
+            .expect("the click is delivered");
+        let selected = events.poll(Duration::ZERO);
+        (region, cell_alpha, reserve_alpha, (selected, index))
+    });
+    assert_eq!(
+        region,
+        RectI {
+            x: 64,
+            y: 64,
+            w: 440,
+            h: 176
+        },
+        "the interactive region is the panel the placement computed at twice the ratio -- \
+         the same fixture's 1.0 region, doubled"
+    );
+    assert!(
+        cell_alpha > 0,
+        "the cell the hit map names is painted where the map puts it, so hit rectangles \
+         and drawn pixels are the same grid"
+    );
+    assert_eq!(
+        reserve_alpha, 0,
+        "the shadow reserve stays transparent at any ratio"
+    );
+    assert_eq!(
+        selected.0,
+        Some(UiEvent::Select {
+            revision: 1,
+            index: selected.1,
+            trigger: SelectTrigger::Mouse
+        }),
+        "a click at twice the ratio selects the candidate the drawn cell names"
+    );
+}
+
+#[test]
+fn test_surface_anchor_scale_off_the_supported_set_adopts_the_nearest_ratio() {
+    let (at_1_2, at_zero) = with_surface(|surface, state| {
+        show_at(surface, 1, 1.2, 3);
+        let at_1_2 = state
+            .lock()
+            .expect("the mock is not poisoned")
+            .pixels
+            .len();
+        show_at(surface, 2, 0.0, 3);
+        let at_zero = state
+            .lock()
+            .expect("the mock is not poisoned")
+            .pixels
+            .len();
+        (at_1_2, at_zero)
+    });
+    assert_eq!(
+        at_1_2, QUARTER_AGAIN_BYTES,
+        "1.2 sits between two supported ratios and lands on the nearer one, 1.25"
+    );
+    assert_eq!(
+        at_zero, BIRTH_BYTES,
+        "a ratio no supported output can report falls back to 1.0, the birth size"
+    );
+}
+
+#[test]
+fn test_surface_scale_round_trip_returns_to_the_birth_size_and_settles_idle() {
+    let (sizes, idle, commits_before, commits_after) = with_surface(|surface, state| {
+        let mut sizes = Vec::new();
+        for (revision, scale) in [(1, 2.0_f32), (2, 1.25), (3, 1.0)] {
+            show_at(surface, revision, scale, 3);
+            let pixels = state
+                .lock()
+                .expect("the mock is not poisoned")
+                .pixels
+                .len();
+            sizes.push(pixels);
+        }
+        // The appear motion the first `Show` started is run out before the idle claim:
+        // a window still animating reports a deadline, and would fail the assertion for
+        // a reason the round trip has nothing to do with.
+        let _ = settle(surface);
+        let commits_before = state.lock().expect("the mock is not poisoned").commits;
+        let first = surface
+            .render(Instant::now())
+            .expect("an idle frame is drawn");
+        let second = surface
+            .render(Instant::now())
+            .expect("an idle frame is drawn");
+        let commits_after = state.lock().expect("the mock is not poisoned").commits;
+        (
+            sizes,
+            first.is_none() && second.is_none(),
+            commits_before,
+            commits_after,
+        )
+    });
+    assert_eq!(
+        sizes,
+        [TWICE_BYTES, QUARTER_AGAIN_BYTES, BIRTH_BYTES],
+        "every step of the round trip runs at the ratio it was sent, ending at the birth \
+         size with no allocation left behind"
+    );
+    assert!(
+        idle,
+        "a round trip leaves no repaint owing: the window reports no deadline"
+    );
+    assert_eq!(
+        commits_before, commits_after,
+        "and a window at rest commits nothing further"
+    );
+}
+
+#[test]
+fn test_surface_resize_then_scale_keeps_one_canvas() {
+    let pixels_len = with_surface(|surface, state| {
+        let events = UiEventQueue::new(&ChannelConfig::default());
+        // The compositor resized the window first: the mock adopts it into its own dp.
+        state
+            .lock()
+            .expect("the mock is not poisoned")
+            .pending
+            .push(SurfaceEvent::Resize { w: 640, h: 320 });
+        surface
+            .drain_events(&events, 8)
+            .expect("the configure is delivered");
+        // The anchor then moves the surface to twice the ratio: the same canvas,
+        // re-expressed.
+        show_at(surface, 1, 2.0, 3);
+        let pixels = state
+            .lock()
+            .expect("the mock is not poisoned")
+            .pixels
+            .len();
+        pixels
+    });
+    assert_eq!(
+        pixels_len,
+        1280 * 640 * 4,
+        "the adopted ratio re-expresses the canvas the resize created: 640x320 dp at \
+         twice the ratio, which a stale scale would not have computed"
+    );
+}
+
+#[test]
+fn test_surface_scale_then_resize_keeps_one_canvas() {
+    let pixels_len = with_surface(|surface, state| {
+        show_at(surface, 1, 2.0, 3);
+        // The compositor then reports the size the surface already runs at -- the echo
+        // the adoption itself produces. Nothing may drift.
+        let events = UiEventQueue::new(&ChannelConfig::default());
+        state
+            .lock()
+            .expect("the mock is not poisoned")
+            .pending
+            .push(SurfaceEvent::Resize { w: 640, h: 320 });
+        surface
+            .drain_events(&events, 8)
+            .expect("the configure is delivered");
+        surface.render(Instant::now()).expect("the frame is drawn");
+        let pixels = state
+            .lock()
+            .expect("the mock is not poisoned")
+            .pixels
+            .len();
+        pixels
+    });
+    assert_eq!(
+        pixels_len, TWICE_BYTES,
+        "a configure that names the adopted size changes nothing: the canvas and the \
+         ratio agree"
+    );
+}
+
+#[test]
+fn test_surface_scale_one_session_synthesizes_no_scale_event() {
+    let (pending_empty, pixels_len) = with_surface(|surface, state| {
+        show_and_draw(surface, 3);
+        let pending_empty = surface.pending.is_empty();
+        let pixels_len = state
+            .lock()
+            .expect("the mock is not poisoned")
+            .pixels
+            .len();
+        (pending_empty, pixels_len)
+    });
+    assert!(
+        pending_empty,
+        "a session already at the anchor's ratio synthesizes no scale event"
+    );
+    assert_eq!(pixels_len, BIRTH_BYTES, "the birth size is kept");
 }

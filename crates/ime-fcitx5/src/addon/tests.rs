@@ -226,10 +226,11 @@ fn test_on_addon_init_stays_inside_the_load_budget() {
 
 #[test]
 fn test_on_addon_destroy_stays_inside_the_shutdown_budget() {
-    // The destructor with a store to release, which is the shape that costs anything: the
-    // flush stays on this thread and the copy leaves it. The budget covers the flush, which
-    // is why the worker is never joined — a shutdown that waited for a whole document's
-    // write would be the regression this asserts against.
+    // The destructor with a store to release and a phrase writer to drain, which is the
+    // shape that costs anything: the flush stays on this thread, the copy leaves it, and
+    // the writer's drain waits within its own slice of the same budget. The budget covers
+    // the flush, which is why the worker is never joined — a shutdown that waited for a
+    // whole document's write would be the regression this asserts against.
     let _ = take_user_store();
     let dir = scratch_dir("destroy-budget");
     install_user_store(shutdown_store(&dir));

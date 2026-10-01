@@ -54,6 +54,14 @@ pub const MAX_NAME_CHARS: usize = 64;
 /// Extension every record file carries.
 pub const FILE_SUFFIX: &str = ".txt";
 
+/// How many record files the crash directory keeps.
+///
+/// A retention figure rather than a budget: the crash channel is the one path in the
+/// process that writes a file per failure, so a panic loop would fill the data directory
+/// without a bound on it. The cap keeps the newest [`MAX_CRASH_RECORDS`] files, ordered
+/// by the timestamp in the file name, and removes the rest.
+pub const MAX_CRASH_RECORDS: usize = 32;
+
 /// The first line of every record, shared with the signal path's own record.
 pub(crate) const RECORD_HEADER: &str = "rspinyin crash record\n";
 
@@ -258,6 +266,10 @@ pub fn write_record(dir: &Path, record: &CrashRecord) -> std::io::Result<PathBuf
         match create_private_file(&path) {
             Ok(mut file) => {
                 file.write_all(text.as_bytes())?;
+                // The cap is enforced here, on the one write path, counting the record
+                // that was just written: it is the newest file in the directory, so the
+                // prune can never remove it.
+                prune_keeping(dir, MAX_CRASH_RECORDS);
                 return Ok(path);
             }
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
@@ -305,6 +317,57 @@ pub fn prune_empty_records(dir: &Path) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
+}
+
+/// Prunes the record files of `dir` to the newest [`MAX_CRASH_RECORDS`].
+///
+/// The cap is enforced on the write path itself -- [`write_record`] prunes once the record
+/// it wrote is on disk -- so a panic loop is bounded by this function and not by a sweeper
+/// that may never run. A name with the record shape but no parseable timestamp counts as
+/// the oldest, and every failure is ignored: pruning is housekeeping, and a directory
+/// that is missing or cannot be listed still gets its next record.
+///
+/// # Panics
+///
+/// Never.
+pub fn prune_records(dir: &Path) {
+    prune_keeping(dir, MAX_CRASH_RECORDS);
+}
+
+/// Keeps the newest `keep` record-shaped files of `dir` and removes the rest.
+fn prune_keeping(dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut records: Vec<(u64, PathBuf)> = entries
+        .flatten()
+        .filter(|entry| entry.file_name().to_str().is_some_and(is_record_name))
+        .map(|entry| (record_stamp(&entry.file_name()), entry.path()))
+        .collect();
+    if records.len() <= keep {
+        return;
+    }
+    // Ascending by timestamp, path as the tie-break for one millisecond: the removal
+    // walks the oldest first, and `keep` of the newest survive.
+    records.sort_unstable();
+    for (_, path) in records.iter().take(records.len() - keep) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// The timestamp a record file name carries, or `0` when it cannot be read.
+///
+/// The name is `<timestamp>-<thread id>`, so everything before the first `-` is the
+/// stamp; a name that does not parse is ordered before every real stamp, which makes it
+/// the first candidate for removal.
+fn record_stamp(name: &std::ffi::OsStr) -> u64 {
+    let Some(name) = name.to_str() else {
+        return 0;
+    };
+    name.split('-')
+        .next()
+        .and_then(|stamp| stamp.parse::<u64>().ok())
+        .unwrap_or(0)
 }
 
 /// Creates the record file with its final mode in the `open` call itself.
