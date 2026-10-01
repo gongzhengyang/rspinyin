@@ -3,8 +3,10 @@
 //! # Responsibility
 //!
 //! Two of the design's shortcuts open a panel instead of acting on a composition:
-//! `Ctrl+Shift+/` asks for the command palette and `Ctrl+Shift+P` for the diagnostics panel.
-//! Neither is a row of the routing table, and neither produces a
+//! `Ctrl+Shift+P` asks for the diagnostics panel, and `Ctrl+Shift+/` is a shared entry
+//! whose answer the session state picks — mid-composition it asks for the keyboard cheat
+//! sheet, the reference a typist wants while typing; otherwise it asks for the command
+//! palette. Neither chord is a row of the routing table, and neither produces a
 //! [`KeyAction`](ime_types::KeyAction).
 //!
 //! A `KeyAction` is the session's vocabulary: it says what a session does with a key it was
@@ -34,8 +36,9 @@
 
 use super::{Dispatcher, KeyEvent, SessionView};
 use crate::engine::{CTRL, MODIFIER_MASK, SHIFT};
+use ime_core::state::SessionState;
 
-/// `FcitxKey_slash`, the key the command-palette chord names.
+/// `FcitxKey_slash`, the key the slash chord names.
 pub(super) const KEY_SLASH: u32 = 0x002f;
 
 /// `FcitxKey_question`, the other shape the slash key can arrive in.
@@ -68,7 +71,8 @@ pub const UI_NOT_IMPLEMENTED_CODE: &str = "ui/not-implemented";
 /// for the layer that draws the panel rather than branching on it.
 ///
 /// Two of the three are asked for by a chord; the cheat sheet is asked for by the
-/// held-modifier gesture, which is why the enum is not simply a pair.
+/// held-modifier gesture as well — mid-composition the slash chord names it too — which is
+/// why the enum is not simply a pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Overlay {
     /// The keyboard cheat sheet.
@@ -140,6 +144,11 @@ impl Overlay {
 /// equality, like every other chord: `Ctrl+Shift+Alt+/` is a different key and belongs to the
 /// desktop environment.
 ///
+/// The slash shapes are one chord with two answers, and the session state is what picks:
+/// mid-composition the user asked for the key reference, with live text under their fingers
+/// and no command to run; the rest of the time the same key is the command palette. Both
+/// answers are the chord's — the key is kept either way.
+///
 /// Two conditions beyond the chord itself, and both are about where the plugin is live. A
 /// context with no session is one the plugin was never activated in, and a panel is not
 /// something to open there; temporary English hands every key to the application, the chords
@@ -159,7 +168,13 @@ pub(super) fn chord(event: &KeyEvent, session: &SessionView<'_>) -> Option<Overl
         return None;
     }
     let panel = match event.sym {
-        KEY_SLASH | KEY_QUESTION => Overlay::CommandPalette,
+        KEY_SLASH | KEY_QUESTION => {
+            if session.state() == Some(SessionState::Composing) {
+                Overlay::CheatSheet
+            } else {
+                Overlay::CommandPalette
+            }
+        }
         KEY_P | KEY_P_UPPER => Overlay::Diagnostics,
         _ => return None,
     };

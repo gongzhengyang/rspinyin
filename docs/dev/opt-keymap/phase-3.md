@@ -377,8 +377,8 @@
   5. 写测试：`build` 在默认配置下产出 3 组、条目数固定；在 `flip_keys = ["page_up"]` 时"下一页"条目的键位文本变为 `Page Down`；在 `highlight_keys = []` 时"高亮"组为空。
   6. 写测试：长按 `Shift` 250ms 后松开 → `Overlay` 槽被写又被清；组字中打开再关闭，`UiFrame` 的 revision 不变。
 - **验收标准 (DoD)**：
-  - [ ] 按住 `Shift` 250ms 以上松开，速查面板出现后立即消散，且**中英模式不变**；
-  - [ ] `Ctrl+Shift+/` 在组字中打开速查面板，`Escape` 关闭后候选框**原样恢复**（`UiFrame` revision 未变，无重新解码）；
+  - [x] 按住 `Shift` 250ms 以上松开，速查面板出现后立即消散，且**中英模式不变**（按字面实现为写入即清除，见对偏离的说明①；`test_apply_overlay_outcome_writes_and_clears_the_panel_on_a_long_press_release`、`test_apply_overlay_outcome_ignores_a_short_release_that_was_a_mode_switch`）；
+  - [x] `Ctrl+Shift+/` 在组字中打开速查面板，`Escape` 关闭后候选框**原样恢复**（`UiFrame` revision 未变，无重新解码；2026-10-01 落地：`panel.rs` 的 chord 表按会话状态分流，组字中返回 `Overlay::CheatSheet`，非组字保持命令面板——`test_dispatch_opens_the_panel_each_chord_names` 双状态扫断言、组字未被动 `test_dispatch_leaves_the_composition_behind_a_panel_untouched`、Escape 恢复 `test_apply_overlay_outcome_records_exactly_one_dismissal_when_escape_closes` 与 surface 逐字节恢复 `test_surface_overlay_frame_draws_over_the_panel_and_clearing_restores_it`）；
   - [ ] 速查面板显示的键位随 `[keys]` 配置变化（改 `flip_keys` 后条目文本随之改变）；
   - [ ] `overlay.slint` 中零 `TextInput`/`forward-focus`/`focus()`；
   - [ ] 面板打开期间除 `Escape` 外的按键全部交还宿主（不吞键）；
@@ -387,7 +387,7 @@
 - **验收记录**（2026-10-01）：
   - **交付物**：`crates/ime-fcitx5/src/cheatsheet.rs`（`build(&KeyBindings, &scheme) -> OverlayFrame`：组字组由 `highlight_keys`/`flip_keys`/`digit_zero`/`enter_commit_raw` 生成、模式组由引擎 `CHORDS` 表生成、编辑组固定行；`OverlayStage` 与 `apply_overlay_outcome` 的调用方接线：`take_overlay_request` → CheatSheet 构建并投递 `UiCommand::Overlay(Some)`、Escape 关闭恰好一条 `ui/cheatsheet-dismissed`、长按松开写入即清除零诊断、palette/diagnostics 保持 `ui/not-implemented`）；`crates/ime-fcitx5/src/cheatsheet/tests.rs`（496 行）+ `crates/ime-ui/ui/overlay.slint`（165 行：Rectangle/Text only，无焦点原语、无 `animate`、无 Path/opacity 依赖）+ `crates/ime-ui/src/adapter/overlay.rs`（帧→模型映射）+ surface/event_loop 的绘制与排空接线。
   - **验证**：`test_build_follows_paging_moved_onto_the_page_keys`（改 `flip_keys` 后条目文本随变）、`test_build_drops_the_highlight_row_when_no_highlight_key_is_bound`、`test_apply_overlay_outcome_records_exactly_one_dismissal_when_escape_closes`、`test_surface_overlay_frame_draws_over_the_panel_and_clearing_restores_it`（像素级：清空后面板逐字节恢复）等随 `cargo nextest run --workspace --all-features` 全绿。
-  - **对偏离的说明**：①卡内长按"出现后立即消散"按字面实现为写入即清除——`UiCommand::Overlay` 是 latest-wins 槽，若 UI 线程未在间隙处理则面板可能不闪现；弦键路径无此问题（卡内已注明的取舍）。②`Ctrl+Shift+/` 组字中开速查面板的分支待 `panel.rs` 的 chord 表按会话状态分流（现映射 CommandPalette，与面板共享入口；该文件属契约层，改动留待下轮）。
+  - **对偏离的说明**：①卡内长按"出现后立即消散"按字面实现为写入即清除——`UiCommand::Overlay` 是 latest-wins 槽，若 UI 线程未在间隙处理则面板可能不闪现；弦键路径无此问题（卡内已注明的取舍）。②~~`Ctrl+Shift+/` 组字中开速查面板的分支待 `panel.rs` 的 chord 表按会话状态分流~~ **已落地（2026-10-01）**：`engine/context/panel.rs` 的 chord 表在 `SessionState::Composing` 时返回 `Overlay::CheatSheet`、其余返回 `Overlay::CommandPalette`（`SessionView::state()` 单比较，与 `arbitrate` 的组字判定同一惯用法），弦键请求由 `cheatsheet.rs::open_requested_panel` 的既有 CheatSheet 分支构建与投递；测试随 `cargo nextest run -p ime-fcitx5` 402/402 全绿。
 
 ---
 

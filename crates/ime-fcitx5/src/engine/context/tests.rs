@@ -79,22 +79,30 @@ fn pseudo_random_syms(count: usize) -> Vec<u32> {
 /// The modifier set every chord that asks for a panel carries.
 const CHORD_STATE: u32 = CTRL | SHIFT;
 
-/// The chords that ask for a panel, as the host spells them, and the panel each names.
+/// The chords that ask for a panel, as the host spells them.
 ///
 /// Written out rather than read from the code under test: a keysym added to or dropped from
 /// the matcher has to be changed here too before the sweeps below agree with it.
-fn panel_chords() -> [(u32, Overlay); 4] {
-    [
-        (KEY_SLASH, Overlay::CommandPalette),
-        (KEY_QUESTION, Overlay::CommandPalette),
-        (KEY_P, Overlay::Diagnostics),
-        (KEY_P_UPPER, Overlay::Diagnostics),
-    ]
+fn panel_chord_syms() -> [u32; 4] {
+    [KEY_SLASH, KEY_QUESTION, KEY_P, KEY_P_UPPER]
+}
+
+/// The panel a chord names for a session that is (not) composing.
+///
+/// Written out rather than read from the code under test, for the same reason the syms are:
+/// the slash entry's answer depends on the session state, and a fixture that mirrored the
+/// matcher would agree with whatever the matcher did.
+fn panel_for(sym: u32, composing: bool) -> Overlay {
+    match (sym, composing) {
+        (KEY_SLASH | KEY_QUESTION, true) => Overlay::CheatSheet,
+        (KEY_SLASH | KEY_QUESTION, false) => Overlay::CommandPalette,
+        _ => Overlay::Diagnostics,
+    }
 }
 
 /// Whether this key is one of the chords that asks for a panel.
 fn is_panel_chord(sym: u32, state: u32) -> bool {
-    state == CHORD_STATE && panel_chords().iter().any(|(chord, _)| *chord == sym)
+    state == CHORD_STATE && panel_chord_syms().contains(&sym)
 }
 
 /// The layers in priority order, the host layer included.
@@ -677,11 +685,13 @@ fn test_dispatch_closes_the_overlay_on_escape() {
 #[test]
 fn test_dispatch_opens_the_panel_each_chord_names() {
     // The two chords are the plugin's whether or not anything is composing: they open a
-    // host-layer mode, not something a composition owns.
+    // host-layer mode, not something a composition owns. Which panel the slash shapes name
+    // is the session state's call — the cheat sheet mid-composition, the palette otherwise.
     for setup in [Setup::Composing, Setup::Idle] {
+        let composing = matches!(setup, Setup::Composing);
         let session = setup.session();
         let view = view_of(session.as_ref());
-        for (sym, panel) in panel_chords() {
+        for sym in panel_chord_syms() {
             let mut dispatcher = dispatcher_in(setup);
             let event = press(sym, CHORD_STATE);
             assert_eq!(
@@ -689,13 +699,17 @@ fn test_dispatch_opens_the_panel_each_chord_names() {
                 Consumed::Consumed,
                 "setup {setup:?} sym {sym:#06x}"
             );
-            assert_eq!(dispatcher.overlay(), Some(panel), "sym {sym:#06x}");
+            assert_eq!(
+                dispatcher.overlay(),
+                Some(panel_for(sym, composing)),
+                "setup {setup:?} sym {sym:#06x}"
+            );
             // The key is kept and the request is recorded, so the caller can report that
             // nothing draws the panel yet.
             assert_eq!(
                 dispatcher.take_overlay_request(),
-                Some(panel),
-                "sym {sym:#06x}"
+                Some(panel_for(sym, composing)),
+                "setup {setup:?} sym {sym:#06x}"
             );
             assert_eq!(
                 dispatcher.take_overlay_request(),
@@ -732,7 +746,7 @@ fn test_dispatch_hands_the_panel_chords_back_with_an_extra_modifier() {
     let view = view_of(session.as_ref());
     // A chord is its whole modifier set: one extra modifier is another key, and one the
     // desktop environment owns.
-    for (sym, _) in panel_chords() {
+    for sym in panel_chord_syms() {
         for extra in [ALT, SUPER, HYPER, META, SUPER2] {
             let mut dispatcher = dispatcher_in(Setup::Composing);
             let event = press(sym, CHORD_STATE | extra);
@@ -768,7 +782,7 @@ fn test_dispatch_hands_the_panel_chords_back_in_temporary_english() {
     // promised to pass on.
     let session = Setup::TempEnglish.session();
     let view = view_of(session.as_ref());
-    for (sym, _) in panel_chords() {
+    for sym in panel_chord_syms() {
         let mut dispatcher = dispatcher_in(Setup::TempEnglish);
         assert_eq!(
             dispatcher.dispatch(&press(sym, CHORD_STATE), &view),
@@ -785,7 +799,7 @@ fn test_dispatch_hands_the_panel_chords_back_in_temporary_english() {
 fn test_dispatch_hands_the_panel_chords_back_without_a_session() {
     // A context the plugin was never activated in is not one to open a panel in.
     let view = SessionView::absent();
-    for (sym, _) in panel_chords() {
+    for sym in panel_chord_syms() {
         let mut dispatcher = Dispatcher::new(KeyBindings::default());
         assert_eq!(
             dispatcher.dispatch(&press(sym, CHORD_STATE), &view),
@@ -850,8 +864,9 @@ fn test_dispatch_leaves_the_composition_behind_a_panel_untouched() {
         dispatcher.dispatch(&press(KEY_SLASH, CHORD_STATE), &view),
         Consumed::Consumed
     );
-    // A panel that draws nothing must not stop the typing behind it: the composition is
-    // still live and still takes the next letter.
+    // The panel is a host-layer mode on top of the session, whatever it draws: the chord
+    // must not have disturbed the composition, which is still live and still takes the
+    // next letter once the panel is gone.
     assert_eq!(
         session.as_ref().map(|s| s.state),
         Some(SessionState::Composing)
