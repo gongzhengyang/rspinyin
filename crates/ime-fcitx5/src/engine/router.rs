@@ -383,6 +383,69 @@ impl<'a> KeyRouter<'a> {
         }
     }
 
+    /// Ensures the session of an input context that gained focus.
+    ///
+    /// A context that is already here is reused as it stands: the host reusing an id, or
+    /// a focus coming back to a context a focus loss left behind, must not rebuild the
+    /// session under it — the mode bits and the reset state the user last saw are what
+    /// refocusing is entitled to find. A context that is not here yet is created exactly
+    /// as [`KeyRouter::activate`] would create it, observed as
+    /// [`ContextReport::Unreported`] for the same fail-closed reason.
+    ///
+    /// # Arguments
+    ///
+    /// * `ic` — the host's identity for the input context.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn focus_in(&mut self, ic: u64) {
+        // The reuse is the point of the call: routing focus through `activate` would
+        // replace the session wholesale, and a second activation of a live id would
+        // silently end the composition it was in the middle of.
+        if self.contexts.contains_key(&ic) {
+            return;
+        }
+        self.activate_reported(ic, ContextReport::Unreported);
+    }
+
+    /// Takes the composition of an input context that lost focus, and keeps the session.
+    ///
+    /// The session is stepped with `SessionEvent::FocusLost`, whose answer per the
+    /// transition table is the application's preedit area emptied and the window hidden
+    /// under the focus-lost reason, committing nothing. Unlike [`KeyRouter::deactivate`]
+    /// the session, its mode bits and the privacy state stay behind, so a focus that
+    /// comes back finds the context it left; unlike [`KeyRouter::reset`] the event names
+    /// the focus, which the two share a handler with rather than a meaning.
+    ///
+    /// # Arguments
+    ///
+    /// * `ic` — the host's identity for the input context.
+    /// * `host` — the boundary the effects are executed against.
+    ///
+    /// # Errors
+    ///
+    /// None: a focus loss for a context that was never activated does nothing.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn focus_out(&mut self, ic: u64, host: &mut dyn Host) {
+        let mut step = StepCtx {
+            env: &self.env,
+            config: &self.config,
+            privacy: &self.privacy,
+            badge: &mut self.badge,
+        };
+        if let Some(ctx) = self.contexts.get_mut(&ic) {
+            ctx.run(SessionEvent::FocusLost, &mut step, host);
+        }
+    }
+
     /// Routes one key event and answers whether the key was consumed.
     ///
     /// A `true` answer is what makes the engine's `keyEvent` call `filterAndAccept`: the
@@ -577,6 +640,16 @@ impl<'a> KeyRouter<'a> {
     #[cfg(test)]
     pub(super) fn session(&self, ic: u64) -> Option<&Session> {
         self.contexts.get(&ic).map(|ctx| &ctx.session)
+    }
+
+    /// How many contexts the privacy state is holding, for the tests.
+    ///
+    /// The privacy table is the router's and must stay that way; the count is what a
+    /// lifecycle test reads to assert that ending a context took its privacy state with
+    /// it, and that a focus loss alone did not.
+    #[cfg(test)]
+    pub(crate) fn observed_privacy_contexts(&self) -> usize {
+        self.privacy.observed_count()
     }
 
     /// Steps the session of one input context with one event, for the tests.

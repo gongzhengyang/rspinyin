@@ -142,6 +142,20 @@ impl Paging {
         self.highlight.saturating_sub(self.page_start())
     }
 
+    /// Returns the page-local position of the keyboard highlight, or `None` when the
+    /// page on show holds no candidate for it.
+    ///
+    /// This is [`Paging::local_index`]'s saturating arithmetic, finished into an answer:
+    /// a highlight at or past the page's end names no candidate on the page, and the
+    /// frame carries `None` for that instead of a position the grid cannot draw. The
+    /// view treats `None` as "hide the ring", never as "keep the previous one" -- a ring
+    /// that outlives its candidate is the defect this conversion exists to prevent.
+    pub fn highlight_position_in_page(&self, total: u16) -> Option<u16> {
+        let local = self.local_index();
+        let page_len = self.page_end(total).saturating_sub(self.page_start());
+        (local < page_len).then_some(local)
+    }
+
     /// Returns the paging part of the frame the window draws.
     ///
     /// `current` is one-based, which is what the window shows; an empty candidate
@@ -575,5 +589,45 @@ mod tests {
         // A highlight before the page start cannot underflow.
         paging.page = 3;
         assert_eq!(paging.local_index(), 0);
+    }
+
+    #[test]
+    fn test_highlight_position_in_page_names_the_candidate_the_page_shows() {
+        let mut paging = Paging::with_page_size(5);
+        paging.highlight = 3;
+        assert_eq!(
+            paging.highlight_position_in_page(45),
+            Some(3),
+            "the third candidate of the first page sits at position three"
+        );
+        // A page flip re-bases the highlight: the same global index lands on the page's
+        // own numbering, so the frame and the grid always mean the same cell.
+        assert!(paging.flip(PageDir::Next, 45));
+        assert_eq!(paging.highlight, 5);
+        assert_eq!(paging.highlight_position_in_page(45), Some(0));
+        paging.highlight = 9;
+        assert_eq!(paging.highlight_position_in_page(45), Some(4));
+    }
+
+    #[test]
+    fn test_highlight_position_in_page_is_none_when_the_page_holds_no_candidate() {
+        // An empty list has no page and no highlight to place on it.
+        assert_eq!(Paging::new().highlight_position_in_page(0), None);
+        // A single candidate is reachable and highlighted.
+        assert_eq!(Paging::new().highlight_position_in_page(1), Some(0));
+
+        // A highlight past the page's end names no candidate on it: a partly filled
+        // last page ends where the list does, and the frame hides the ring instead of
+        // drawing one on a cell that is not there.
+        let mut paging = Paging::with_page_size(5);
+        paging.page = 2;
+        paging.highlight = 12;
+        assert_eq!(
+            paging.highlight_position_in_page(13),
+            Some(2),
+            "the last page of thirteen candidates holds three"
+        );
+        paging.highlight = 13;
+        assert_eq!(paging.highlight_position_in_page(13), None);
     }
 }

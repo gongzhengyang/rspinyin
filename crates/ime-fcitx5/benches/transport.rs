@@ -9,9 +9,11 @@ use std::ffi::c_void;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
-use rspinyin::ffi::abi::engine::transport;
 use ime_types::ui::Script;
-use ime_types::{Candidate, LayoutHint, PageState, Preedit, PreeditSpan, StatusStrip, UiCommand, UiFrame};
+use ime_types::{
+    Candidate, LayoutHint, PageState, Preedit, PreeditSpan, StatusStrip, UiCommand, UiFrame,
+};
+use rspinyin::ffi::abi::engine::transport;
 
 /// The no-op sink: the benchmark's stand-in for the UI side.
 extern "C" fn noop_frame(_ctx: *mut c_void, _wire: *const transport::RspinyinFrameWire) {}
@@ -30,9 +32,21 @@ fn sample_frame() -> UiFrame {
             text: "ni'hao'.shi'jie".into(),
             caret: 6,
             spans: vec![
-                PreeditSpan { start: 0, end: 2, kind: ime_types::SpanKind::Syllable },
-                PreeditSpan { start: 3, end: 5, kind: ime_types::SpanKind::Separator },
-                PreeditSpan { start: 6, end: 16, kind: ime_types::SpanKind::Passthrough },
+                PreeditSpan {
+                    start: 0,
+                    end: 2,
+                    kind: ime_types::SpanKind::Syllable,
+                },
+                PreeditSpan {
+                    start: 3,
+                    end: 5,
+                    kind: ime_types::SpanKind::Separator,
+                },
+                PreeditSpan {
+                    start: 6,
+                    end: 16,
+                    kind: ime_types::SpanKind::Passthrough,
+                },
             ],
         },
         candidates: (0..5)
@@ -45,7 +59,11 @@ fn sample_frame() -> UiFrame {
                 consumed_syllables: 2,
             })
             .collect(),
-        page: PageState { current: 1, total: 3, page_size: 5 },
+        page: PageState {
+            current: 1,
+            total: 3,
+            page_size: 5,
+        },
         status: StatusStrip {
             mode_label: "拼音".into(),
             full_width: false,
@@ -55,12 +73,22 @@ fn sample_frame() -> UiFrame {
             script: Script::Simplified,
         },
         anchor: ime_types::Anchor {
-            cursor: ime_types::RectI { x: 100, y: 200, w: 30, h: 40 },
+            cursor: ime_types::RectI {
+                x: 100,
+                y: 200,
+                w: 30,
+                h: 40,
+            },
             screen: ime_types::ScreenId::new(0),
             scale: 1.0,
             placement: ime_types::Placement::Below,
         },
-        layout: LayoutHint { max_per_row: 5, show_annotation: true, max_width_dp: 156 },
+        layout: LayoutHint {
+            max_per_row: 5,
+            show_annotation: true,
+            max_width_dp: 156,
+        },
+        highlight: Some(0),
     }
 }
 

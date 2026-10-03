@@ -82,6 +82,7 @@ fn frame(revision: u32, count: usize, page_size: u8) -> UiFrame {
             show_annotation: true,
             max_width_dp: 720,
         },
+        highlight: None,
     }
 }
 
@@ -144,6 +145,7 @@ fn populated() -> UiFrame {
     frame.candidates[0].annotation = Some(String::from("dictionary"));
     frame.candidates[1].source = CandidateSource::UserDict;
     frame.candidates[1].consumed_syllables = 2;
+    frame.highlight = Some(1);
     frame.page = PageState {
         current: 2,
         total: 3,
@@ -322,11 +324,12 @@ fn test_snapshot_json_names_every_field_it_holds() {
     // dropped and another that was added cannot cancel each other out.
     let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
     keys.sort_unstable();
-    assert_eq!(keys.len(), 8);
+    assert_eq!(keys.len(), 9);
     for field in [
         "anchor",
         "candidates",
         "format",
+        "highlight",
         "layout",
         "revision",
         "status",
@@ -579,6 +582,31 @@ fn test_read_latest_refuses_a_snapshot_from_another_format() {
     fs::write(&path, text).expect("writing the original");
     let again = UiFrameMirror::read_latest(&path).expect("reading");
     assert!(again.is_some());
+}
+
+#[test]
+fn test_read_latest_refuses_a_snapshot_from_the_previous_format() {
+    // The first format wrote no `highlight`. The field's serde default is what makes
+    // such a document *parse*, so the refusal comes from the version check -- the one
+    // gate the format's evolution rule names -- instead of from the shape of the file.
+    let scratch = Scratch::new("old-format");
+    let path = scratch.mirror();
+    prepare(&path);
+    let text = FrameSnapshot::of(&frame(1, 1, 9))
+        .to_json()
+        .expect("rendering");
+    let mut value: serde_json::Value = serde_json::from_str(&text).expect("it is JSON");
+    let object = value.as_object_mut().expect("a snapshot is a JSON object");
+    object.remove("highlight");
+    object.insert(String::from("format"), serde_json::Value::from(1_u32));
+    fs::write(&path, value.to_string()).expect("writing the older snapshot");
+
+    let outcome = UiFrameMirror::read_latest(&path);
+    let error = outcome.expect_err("a snapshot from an older format is refused");
+    assert!(
+        matches!(error, FrameError::Format { found: 1, .. }),
+        "{error}"
+    );
 }
 
 #[test]

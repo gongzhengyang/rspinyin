@@ -110,6 +110,8 @@ pub(crate) fn frame_with(revision: u32, preedit: &str, count: usize) -> UiFrame 
             show_annotation: true,
             max_width_dp: 720,
         },
+        // A fresh decode highlights the first candidate; an empty page has none.
+        highlight: (count > 0).then_some(0),
     }
 }
 
@@ -990,16 +992,12 @@ fn test_adapter_motion_disabled_mid_flight_writes_the_end_values_at_once() {
         adapter.set_visible(true).expect("the window shows");
         assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 9)));
         settle(adapter);
-        assert!(
-            adapter.apply_pointer(PointerState {
-                highlighted: Some(6),
-                hovered: None,
-                pressed: None,
-            }),
-            "moving the highlight redraws the grid"
-        );
+        // The retarget is the frame's word now: the second frame turns the page and
+        // names another cell, so both the page slide and the highlight box have
+        // somewhere to go when the switch goes off.
         let mut second = frame_with(2, "ni'hao", 9);
         second.page.current = 2;
+        second.highlight = Some(6);
         assert!(adapter.apply_frame(&second));
         let in_flight = adapter.advance(0.0);
         let before = (
@@ -1126,6 +1124,56 @@ fn overlay_frame() -> OverlayFrame {
         selected: None,
         query: String::new(),
     }
+}
+
+#[test]
+fn test_adapter_frame_highlight_drives_the_ring() {
+    // The highlight is the frame's word: a frame that names another cell moves the ring
+    // to it, `None` hides it although candidates remain, and a position with no cell --
+    // a drifted wire, never a well-formed frame -- draws nothing either.
+    let (moved, hidden, unmarked, past_end) = with_adapter(|adapter| {
+        // A parameter, not a capture: the closure runs on both sides of the mutable calls.
+        let marked = |adapter: &Adapter, position: usize| {
+            adapter
+                .window()
+                .get_items()
+                .row_data(position)
+                .map(|cell| cell.is_highlighted)
+        };
+        let mut moved = frame_with(2, "ni'hao", 3);
+        moved.highlight = Some(2);
+        assert!(adapter.apply_frame(&moved));
+        let moved = (marked(adapter, 0), marked(adapter, 2));
+        let mut emptied = frame_with(3, "ni'hao", 3);
+        emptied.highlight = None;
+        assert!(adapter.apply_frame(&emptied));
+        adapter.advance(FRAME_S);
+        let hidden = adapter.window().get_highlight_visible();
+        let mut drifted = frame_with(3, "ni'hao", 3);
+        drifted.highlight = Some(9);
+        assert!(adapter.apply_frame(&drifted));
+        // Every cell the page holds answers with an explicit "not highlighted": the
+        // model carries a state per row, so the drift shows up as no row carrying the
+        // focus state rather than as a missing row.
+        let unmarked = (0..3).all(|position| marked(adapter, position) == Some(false));
+        (
+            moved,
+            hidden,
+            unmarked,
+            adapter.window().get_highlight_visible(),
+        )
+    });
+    assert_eq!(
+        moved,
+        (Some(false), Some(true)),
+        "naming another cell moves the ring to it"
+    );
+    assert!(!hidden, "`None` hides the ring although candidates remain");
+    assert!(
+        unmarked,
+        "a drifted frame leaves no cell carrying the focus state"
+    );
+    assert!(!past_end, "an out-of-page highlight draws nothing");
 }
 
 #[test]

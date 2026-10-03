@@ -47,6 +47,8 @@ fn wire_of(kind: u32) -> RspinyinFrameWire {
         theme_corner_radius_dp: 0,
         theme_scale: 0.0,
         hide_reason: 0,
+        highlight: 3,
+        has_highlight: 1,
     }
 }
 
@@ -105,6 +107,9 @@ fn test_command_from_wire_rebuilds_a_frame_field_for_field() {
     assert_eq!(frame.anchor.scale, 1.25);
     assert_eq!(frame.anchor.placement, Placement::Auto);
     assert_eq!(frame.layout.max_per_row, 5);
+    // The appended highlight pair reads back as the page-local position, or as `None`
+    // when the flag says the frame carries none.
+    assert_eq!(frame.highlight, Some(3));
     assert_eq!(frame.candidates.len(), 2);
     assert_eq!(frame.candidates[0].text, "你好");
     assert_eq!(frame.candidates[0].annotation.as_deref(), Some("注"));
@@ -112,6 +117,20 @@ fn test_command_from_wire_rebuilds_a_frame_field_for_field() {
     // A null-and-zero annotation is "no annotation", not an empty one.
     assert_eq!(frame.candidates[1].annotation, None);
     assert_eq!(frame.candidates[1].text, "");
+}
+
+#[test]
+fn test_command_from_wire_reads_a_hidden_highlight_as_none() {
+    // The flag, not the position slot, decides: a wire with the flag down is a frame
+    // with no highlight even when the slot still holds a number, which is what keeps
+    // `None` and "position zero" two different frames.
+    let mut wire = wire_of(KIND_FRAME);
+    wire.has_highlight = 0;
+    wire.highlight = 3;
+    let Some(UiCommand::Frame(frame)) = command_from_wire(&wire) else {
+        panic!("a well-formed frame wire parses");
+    };
+    assert_eq!(frame.highlight, None);
 }
 
 #[test]

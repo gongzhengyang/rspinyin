@@ -231,6 +231,7 @@ mod tests {
                 show_annotation: true,
                 max_width_dp: 720,
             },
+            highlight: None,
         }));
         assert_eq!(SurfaceUpdate::from_control(frame), None);
         let theme = UiCommand::Theme(ThemeSpec {

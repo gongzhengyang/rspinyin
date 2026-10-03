@@ -34,6 +34,7 @@ ime-core.workspace = true
 ime-dict.workspace = true
 ime-config.workspace = true
 ime-diag.workspace = true
+libc.workspace = true
 # `ime-ui` is deliberately absent: the candidate window belongs to the
 # user-interface addon (`crates/ime-ui-addon`), which is a separate cdylib loaded by
 # Fcitx5 as its own addon. Declaring it here linked nothing and let the linker drop

@@ -12,12 +12,17 @@
 
 use std::path::{Path, PathBuf};
 
+use ime_diag::crash::context::CrashContext;
 use ime_diag::crash::record::{
     CrashRecord, FILE_SUFFIX, MAX_CRASH_RECORDS, crash_file_name, prune_records, write_record,
 };
-use ime_diag::crash::context::CrashContext;
 
 /// A scratch root this file owns, one directory per test.
+///
+/// The lint is silenced here and not by inlining: the scratch setup is shared by every
+/// test in the file, and an `expect` in a helper between `#[test]` functions is outside
+/// the exemption clippy grants the annotated bodies themselves.
+#[allow(clippy::expect_used)]
 fn scratch_root(label: &str) -> PathBuf {
     let name = format!("rspinyin-crash-cap-{}-{label}", std::process::id());
     let root = PathBuf::from("/tmp").join(name);
@@ -42,7 +47,9 @@ fn record_at(timestamp_unix_ms: u64) -> CrashRecord {
 /// The record-shaped files of `dir`, as sorted names.
 ///
 /// The shape, not the suffix, is what is counted: a foreign file that happens to end in
-/// `.txt` must not inflate the count a test asserts on.
+/// `.txt` must not inflate the count a test asserts on. See `scratch_root` for why the
+/// lint is silenced on the helper rather than dodged.
+#[allow(clippy::expect_used)]
 fn record_names(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .expect("listing the crash directory")

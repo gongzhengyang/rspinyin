@@ -245,6 +245,7 @@ fn frame(revision: u32) -> Box<UiFrame> {
             show_annotation: true,
             max_width_dp: 720,
         },
+        highlight: None,
     })
 }
 

@@ -337,8 +337,11 @@ impl ContextPrivacy {
     }
 
     /// How many contexts the state is holding. Test-only.
+    ///
+    /// Crate-visible so the lifecycle tests can read the count through the router that
+    /// owns the state; nothing outside a test build may reach it.
     #[cfg(test)]
-    fn observed_count(&self) -> usize {
+    pub(crate) fn observed_count(&self) -> usize {
         self.contexts.len()
     }
 }

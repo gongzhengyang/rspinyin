@@ -2,10 +2,11 @@
 //!
 //! # Responsibility
 //!
-//! Fcitx5 delivers a key, an activation, a reset or a window event, each naming an input
-//! context; this module is what turns that into work on the session of that context and
-//! into calls back on the host. It owns the one thing the routing layer cannot: the
-//! process-wide slot the sessions live in, and the sweep that empties it at unload.
+//! Fcitx5 delivers a key, an activation, a focus change, a reset or a window event, each
+//! naming an input context; this module is what turns that into work on the session of
+//! that context and into calls back on the host. It owns the one thing the routing layer
+//! cannot: the process-wide slot the sessions live in, and the sweep that empties it at
+//! unload.
 //!
 //! The routing itself is [`KeyRouter`]'s: it holds one session per input context, steps
 //! it, executes the effects a step returns, and answers whether a key may be kept. This
@@ -43,6 +44,7 @@
 //! Everything here runs on the Fcitx5 host thread. Sessions are stepped serially
 //! (`ASM-11`) and the UI thread never touches one: it reads the frames the router posts.
 
+use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use ime_core::privacy::InputContextKind;
@@ -62,12 +64,29 @@ use crate::privacy_impl::ContextPrivacy;
 /// window rather than one per frame.
 pub const NO_SESSION_HOST_CODE: &str = "ffi/no-session-host";
 
+/// How many focus losses in a row an input context can weather before its session is
+/// reclaimed.
+///
+/// The C ABI never tells this side that a context was destroyed: the callback table is
+/// frozen and has no slot for it, and adding one is the ADR-0011 symbol batch's change to
+/// make. The absence of focus is the only signal a context is gone for good, so a run of
+/// this many focus losses with no focus arriving in between is read as "the context the
+/// host never told us it dropped", and the session — with the privacy state that
+/// travelled with it — is reclaimed at the last loss of the run. The number is what
+/// bounds the context table under a focus storm: it never holds more than the focused
+/// contexts plus this many stranded ones. Four is generous against the back-to-back
+/// focus pairs a jittery window manager can produce, which is the only legitimate pattern
+/// that would otherwise come near the limit.
+const FOCUS_OUTS_BEFORE_RECLAIM: usize = 4;
+
 /// The sessions this plugin holds, keyed by the host's input-context id.
 ///
 /// One entry per input context: v1 is single-user single-session (`ASM-12`), but Fcitx5
 /// hands out a fresh id per application window, and a session that outlived its context
 /// would keep a window on screen with no application behind it. The map is bounded by the
-/// host's context count and an entry is dropped when the host deactivates it.
+/// host's context count, by the host's own deactivations, and — because the C ABI has no
+/// context-destroyed notification — by the lazy reclamation a run of focus losses
+/// triggers in [`SessionHost::focus_out`].
 pub struct SessionHost {
     /// The sessions, and everything that routes a key into them.
     router: KeyRouter<'static>,
@@ -78,8 +97,18 @@ pub struct SessionHost {
     /// two are written together in [`SessionHost::activate`] and
     /// [`SessionHost::deactivate`], so the list can only drift if a context left the
     /// router without this type hearing about it — which would be a defect here, not
-    /// there.
+    /// there. An entry leaves the list when the host deactivates the context and when
+    /// the focus-loss reclaimer drops it.
     live: Vec<u64>,
+    /// The consecutive focus losses each live context has weathered, keyed by the host's
+    /// context id.
+    ///
+    /// The count is what `FOCUS_OUTS_BEFORE_RECLAIM` is measured against. It is
+    /// cleared by focus arriving — [`SessionHost::focus_in`] and
+    /// [`SessionHost::activate`] — and by the context leaving
+    /// ([`SessionHost::deactivate`]), so an entry survives exactly as long as the run of
+    /// losses it measures.
+    focus_misses: HashMap<u64, usize>,
 }
 
 impl SessionHost {
@@ -100,6 +129,18 @@ impl SessionHost {
         Self {
             router,
             live: Vec::new(),
+            focus_misses: HashMap::new(),
+        }
+    }
+
+    /// Records `ic` among the live contexts, if it is not there already.
+    ///
+    /// The shared half of [`SessionHost::activate`] and [`SessionHost::focus_in`]: both
+    /// leave the list holding one entry per context the host may still reach this plugin
+    /// through.
+    fn ensure_tracked(&mut self, ic: u64) {
+        if !self.live.contains(&ic) {
+            self.live.push(ic);
         }
     }
 
@@ -120,9 +161,10 @@ impl SessionHost {
     ///
     /// Never.
     pub fn activate(&mut self, ic: u64) -> InputContextKind {
-        if !self.live.contains(&ic) {
-            self.live.push(ic);
-        }
+        // A context being switched to this input method is alive, whatever a previous
+        // incarnation of its id left on the reclamation counter.
+        self.focus_misses.remove(&ic);
+        self.ensure_tracked(ic);
         self.router.activate(ic)
     }
 
@@ -141,8 +183,73 @@ impl SessionHost {
     ///
     /// Never.
     pub fn deactivate(&mut self, ic: u64, host: &mut dyn Host) {
+        // A context the host took away has no reclamation count left to serve.
+        self.focus_misses.remove(&ic);
         self.router.deactivate(ic, host);
         self.live.retain(|live| *live != ic);
+    }
+
+    /// Ensures the session of an input context that gained focus.
+    ///
+    /// A context that is already here is reused as it stands — the host reusing an id, or
+    /// a focus coming back to a context a focus loss left behind, must not rebuild the
+    /// session under it. A context that is not here yet is created, exactly as
+    /// [`SessionHost::activate`] would create it.
+    ///
+    /// # Arguments
+    ///
+    /// * `ic` — the host's identity for the input context.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn focus_in(&mut self, ic: u64) {
+        // Whatever the counter held, the context is focused again: the run of losses it
+        // measured is over.
+        self.focus_misses.remove(&ic);
+        self.ensure_tracked(ic);
+        self.router.focus_in(ic);
+    }
+
+    /// Takes the composition of an input context that lost focus, and keeps the session.
+    ///
+    /// The window is hidden, the application's preedit area is emptied, and nothing is
+    /// committed; the session and the privacy state stay behind, so a focus that comes
+    /// back finds the context it left. The loss is also the reclamation tick: the
+    /// `FOCUS_OUTS_BEFORE_RECLAIM`-th loss in a row without a focus in between reads as
+    /// a context the host destroyed without being able to say so, and that context is
+    /// reclaimed exactly as a deactivated one would be.
+    ///
+    /// # Arguments
+    ///
+    /// * `ic` — the host's identity for the input context.
+    /// * `host` — the boundary the effects are executed against.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn focus_out(&mut self, ic: u64, host: &mut dyn Host) {
+        if !self.live.contains(&ic) {
+            // Never activated, or already reclaimed: there is no session to step and
+            // nothing to reclaim, and counting an absent context would only schedule a
+            // teardown of nothing.
+            return;
+        }
+        let misses = match self.focus_misses.get_mut(&ic) {
+            Some(count) => {
+                *count = count.saturating_add(1);
+                *count
+            }
+            None => {
+                self.focus_misses.insert(ic, 1);
+                1
+            }
+        };
+        if misses >= FOCUS_OUTS_BEFORE_RECLAIM {
+            self.deactivate(ic, host);
+            return;
+        }
+        self.router.focus_out(ic, host);
     }
 
     /// Takes back the composition of an input context that stays active.
@@ -270,6 +377,8 @@ impl SessionHost {
     /// Never.
     pub fn shutdown(&mut self, host: &mut dyn Host) {
         let live = std::mem::take(&mut self.live);
+        // The counting ends with the sessions: a sweep leaves nothing to reclaim.
+        self.focus_misses.clear();
         for ic in live {
             self.router.deactivate(ic, host);
         }
@@ -278,6 +387,28 @@ impl SessionHost {
 
 /// The process's session host: installed at load, taken by the shutdown sweep.
 static SESSIONS: Mutex<Option<SessionHost>> = Mutex::new(None);
+
+/// Serialises the tests that drive the process-wide slot.
+///
+/// The slot is one per process, so two tests installing at once would each find the
+/// other's host. The mandated runner starts one process per test, which hides that; this
+/// guard is what keeps the same tests correct under a plain `cargo test` too. The tests
+/// that reach the slot through the C ABI's entry points take it as well, because a focus
+/// callback driven with a null context still lands in the free functions below — and
+/// focus arriving is state creation, not a no-op. It is a leaf lock — nothing else is
+/// taken while it is held — and it is never held by a test that drives a `SessionHost`
+/// directly.
+#[cfg(test)]
+pub(crate) fn lock_slot_for_tests() -> MutexGuard<'static, ()> {
+    match SLOT.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// The lock [`lock_slot_for_tests`] hands out. Test-only.
+#[cfg(test)]
+static SLOT: Mutex<()> = Mutex::new(());
 
 /// Borrows the session slot, recovering the contents of a poisoned lock.
 ///
@@ -412,6 +543,43 @@ pub fn deactivate(ic: u64, host: &mut dyn Host) {
 /// Never.
 pub fn reset(ic: u64, host: &mut dyn Host) {
     with_sessions((), |sessions| sessions.reset(ic, host));
+}
+
+/// Ensures a session exists for an input context that gained focus.
+///
+/// A session that is already there is reused as it stands — the host reusing an id, or a
+/// focus coming back to a context a focus loss left behind, must not rebuild the session
+/// under it. One that is not there is created, exactly as [`activate`] would create it.
+///
+/// # Arguments
+///
+/// * `ic` — the host's identity for the input context.
+///
+/// # Panics
+///
+/// Never.
+pub fn focus_in(ic: u64) {
+    with_sessions((), |sessions| sessions.focus_in(ic));
+}
+
+/// Takes the composition of an input context that lost focus, and keeps the session.
+///
+/// Nothing is committed, the window is hidden and the application's preedit area is
+/// emptied; the session and the privacy state stay, so a focus that comes back finds the
+/// context it left. The loss also counts towards reclamation: the
+/// `FOCUS_OUTS_BEFORE_RECLAIM`-th loss in a row for a context no focus came back to
+/// reclaims it, its session and its privacy state with it.
+///
+/// # Arguments
+///
+/// * `ic` — the host's identity for the input context.
+/// * `host` — the boundary the effects are executed against.
+///
+/// # Panics
+///
+/// Never.
+pub fn focus_out(ic: u64, host: &mut dyn Host) {
+    with_sessions((), |sessions| sessions.focus_out(ic, host));
 }
 
 /// Routes one key event and answers whether the key was consumed.

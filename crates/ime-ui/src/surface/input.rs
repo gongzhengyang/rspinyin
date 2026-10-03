@@ -19,11 +19,13 @@
 //!
 //! # Why the drawn state is refreshed here
 //!
-//! The five states of the design table -- the focus ring, the hover, the press -- are not
-//! part of `UiFrame`: the engine's paging state holds the highlight and the frame carries
-//! none of it. The pointer state is therefore pushed into the adapter whenever the router
-//! says something drawn changed, which is the same call that asks for the repaint. A hover
-//! that reached the model but not the window would be a highlight the user cannot see.
+//! Of the five states of the design table, the hover and the press are not part of
+//! `UiFrame`: the router holds those, and they are pushed into the adapter whenever the
+//! router says something drawn changed, which is the same call that asks for the repaint.
+//! The focus ring is the frame's own ([`UiFrame::highlight`]), and the same refresh takes
+//! it from the frame rather than from the state it is about to replace, so a gesture can
+//! never move the ring off the cell the engine named. A hover that reached the model but
+//! not the window would be a highlight the user cannot see.
 
 use std::time::Instant;
 
@@ -107,17 +109,21 @@ impl CandidateSurface {
     /// conversion is the adapter's own, so the cell the pointer state names is the cell the
     /// hit map named.
     ///
-    /// The highlight is deliberately not converted: it is the one field that is already a
-    /// position within the page, because it belongs to the engine's paging state and arrives
-    /// through the adapter rather than through this path. Mapping it again would move the
-    /// focus ring to a cell the engine never named.
+    /// The highlight is not rebuilt from the router any more: the frame carries it
+    /// ([`UiFrame::highlight`], already a position within the page), and this rebuild takes
+    /// the frame's answer rather than copying the value it is about to overwrite. A press or
+    /// a release can therefore never move the ring off the cell the engine named, and a
+    /// position with no cell on this page reads as `None`, which is the adapter's "hide the
+    /// ring" rather than a guess.
     fn sync_pointer(&mut self) {
         let Some(frame) = self.frame.as_deref() else {
             return;
         };
         let page = frame.page;
         let pointer = PointerState {
-            highlighted: self.adapter.state().pointer.highlighted,
+            highlighted: frame
+                .highlight
+                .filter(|&position| usize::from(position) < frame.candidates.len()),
             hovered: self
                 .router
                 .hovered()

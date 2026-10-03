@@ -720,6 +720,7 @@ fn placed_geometry() -> Geometry {
             show_annotation: true,
             max_width_dp: 720,
         },
+        highlight: Some(0),
     };
     let metrics =
         crate::layout::metrics().expect("the component declares a readable metrics block");

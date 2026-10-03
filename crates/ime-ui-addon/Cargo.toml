@@ -44,6 +44,11 @@ ime-types.workspace = true
 ime-config.workspace = true
 ime-ui.workspace = true
 ime-diag.workspace = true
+# `paths` only: the crash directory comes from the same environment layout the engine
+# addon resolves, so both addons' records land in one directory the operator looks in
+# once. No dictionary format or reader code is referenced.
+ime-dict.workspace = true
+libc.workspace = true
 
 [build-dependencies]
 pkg-config.workspace = true

@@ -142,6 +142,11 @@ pub struct RspinyinFrameWire {
     pub theme_corner_radius_dp: u16,
     pub theme_scale: f32,
     pub hide_reason: u32,
+    /// Page-local position of the keyboard highlight, meaningful for `kind == KIND_FRAME`
+    /// only. The pair encodes `UiFrame::highlight`: the position is meaningless when
+    /// `has_highlight` is `0`, which is how `None` travels.
+    pub highlight: u16,
+    pub has_highlight: u8,
 }
 
 // Layout assertions for the leaf shapes. The totals were derived once from the ADR
@@ -151,6 +156,9 @@ const _: () = assert!(size_of::<RspinyinStr>() == 16);
 const _: () = assert!(size_of::<RspinyinSpanWire>() == 8);
 const _: () = assert!(size_of::<RspinyinRectWire>() == 16);
 const _: () = assert!(size_of::<RspinyinCandidateWire>() == 56);
+// The highlight append (u16 + u8) fills the tail padding behind `hide_reason`,
+// so the total stays at 144: the two new bytes end inside the existing alignment
+// slack and the struct does not grow.
 const _: () = assert!(size_of::<RspinyinFrameWire>() == 144);
 const _: () = assert!(size_of::<RspinyinOverlayEntryWire>() == 32);
 const _: () = assert!(size_of::<RspinyinOverlaySectionWire>() == 32);
@@ -321,6 +329,7 @@ fn command_from_wire(wire: *const RspinyinFrameWire) -> Option<UiCommand> {
                     show_annotation: wire.show_annotation != 0,
                     max_width_dp: wire.max_width_dp,
                 },
+                highlight: (wire.has_highlight != 0).then_some(wire.highlight),
             })))
         }
         KIND_SHOW => Some(UiCommand::Show {

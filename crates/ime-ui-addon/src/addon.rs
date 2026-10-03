@@ -56,6 +56,8 @@ use ime_ui::ui_thread::{UiSurface, UiThread, UiThreadConfig};
 use crate::ffi::emit_diagnostic;
 use crate::ui_impl;
 
+mod diagnostics;
+
 /// Name of the thread that owns the candidate window.
 ///
 /// Fcitx5's threads are visible in `ps -T`, so the name is how an operator checks that
@@ -164,13 +166,12 @@ fn pending_step(step: &str, awaiting: &str) {
 /// The one fatal step: every other step reports its outcome through this layer, so
 /// without it there is nothing left to report to.
 ///
-/// Integration point: `ime-diag` has no logging initialiser yet, so the crash channel —
-/// stderr, which Fcitx5 captures into its own log — stays the only sink. When the
-/// initialiser lands, this body calls it and returns its error; that error is the only
-/// thing that makes [`on_addon_init`] return `false`.
+/// The body lives in [`diagnostics`]: it arms the crash forensics over the layout's
+/// crash directory and reports that the logging half still runs on the crash channel.
+/// Its `Ok` is unconditional — a refused signal registration is reported, not raised —
+/// so the step's fatal marking is about keeping the channel alive, not about failing.
 fn init_diagnostics() -> Result<(), ImeError> {
-    pending_step("diagnostics", "the diagnostics logging initialiser");
-    Ok(())
+    diagnostics::init_diagnostics()
 }
 
 /// Loads the theme and window configuration.

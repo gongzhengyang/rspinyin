@@ -133,6 +133,11 @@ fn test_frame_carries_the_page_of_the_list_it_was_built_from() {
     assert_eq!(carried.source, held.source);
     assert_eq!(carried.score, held.score);
     assert_eq!(carried.consumed_syllables, held.consumed_syllables);
+    assert_eq!(
+        frame.highlight,
+        session.paging.highlight_position_in_page(total),
+        "the highlight travels with the page, in the page's own numbering"
+    );
 }
 
 #[test]
@@ -198,4 +203,119 @@ fn test_refresh_with_a_highlight_past_the_list_starts_the_list_over() {
         !session.decoded().candidates.is_empty(),
         "words are still offered"
     );
+}
+
+/// Asserts the frame's highlight against the session's paging state.
+///
+/// The one invariant every state of the matrix reduces to: the frame carries the
+/// highlight the paging state holds, converted to the page on show's own numbering,
+/// and the cell it names is the one `Space` would commit.
+fn assert_frame_highlight_matches_paging(frame: &ime_types::UiFrame, session: &Session) {
+    let total = u16::try_from(session.decoded().candidates.len()).unwrap_or(u16::MAX);
+    assert_eq!(
+        frame.highlight,
+        session.paging.highlight_position_in_page(total),
+        "the frame carries the paging state's highlight, in page coordinates"
+    );
+    let position = usize::from(frame.highlight.expect("a shown page holds its highlight"));
+    let committed = session
+        .highlighted_candidate()
+        .expect("a composing session keeps a highlighted candidate");
+    assert_eq!(
+        frame.candidates[position].text, committed.text,
+        "the ring sits on the candidate the commit keys would take"
+    );
+}
+
+#[test]
+fn test_frame_highlight_follows_the_paging_state_through_moves_and_pages() {
+    let cfg = SessionConfig {
+        max_per_row: 5,
+        ..SessionConfig::default()
+    };
+    let fixture = Fixture::new();
+    let env = fixture.env();
+    let mut session = composing(&cfg, &env, "ni");
+    // The lattice keeps WORDS_PER_KEY words per key, so the fixture's readings of one
+    // syllable stop at eight candidates -- exactly two pages at five per row: a full
+    // first page, a boundary to cross, and a partly filled last page. That is the
+    // whole shape this walk needs, and a longer list would only push the end of it
+    // past the five-page window.
+    assert!(
+        session.decoded().candidates.len() > usize::from(session.paging.page_size),
+        "the fixture offers more than one page of readings (got {})",
+        session.decoded().candidates.len()
+    );
+
+    // Every direction-key and paging state of the matrix, one row each. The empty page
+    // and the single-candidate page have no composing session to drive them with the
+    // shared fixture; their arithmetic is pinned by the `Paging` tests next door.
+    let steps = [
+        KeyAction::MoveHighlight(1),
+        KeyAction::MoveHighlight(1),
+        KeyAction::MoveHighlight(-1),
+        KeyAction::MoveHighlight(1),
+        KeyAction::MoveHighlight(1),
+        KeyAction::MoveHighlight(1),
+        // The seventh step crosses onto the second page; paging back lands on the first
+        // page's last candidate, and paging forward again on the second page's first.
+        KeyAction::MoveHighlight(1),
+        KeyAction::PagePrev,
+        KeyAction::PageNext,
+    ];
+    for action in steps {
+        let effects = session.handle_key(action, &cfg, &env);
+        let frame = frame_of(&effects).expect("a move that lands re-sends the frame");
+        assert_frame_highlight_matches_paging(frame, &session);
+    }
+
+    // Holding the key to the end of the list walks onto the partly filled last page,
+    // and the highlight stops at its last candidate rather than past it.
+    let mut last = None;
+    for _ in 0..64 {
+        let effects = session.handle_key(KeyAction::MoveHighlight(1), &cfg, &env);
+        let Some(frame) = frame_of(&effects) else {
+            break;
+        };
+        assert_frame_highlight_matches_paging(frame, &session);
+        last = Some(frame.highlight);
+    }
+    let total = session.decoded().candidates.len();
+    let last_page_start = usize::from(session.paging.page_start());
+    let frame_highlight = last.expect("walking the list re-sends a frame");
+    assert_eq!(
+        usize::from(session.paging.highlight),
+        total - 1,
+        "the walk ends on the last candidate the window can reach"
+    );
+    assert_eq!(
+        frame_highlight,
+        Some(u16::try_from(total - last_page_start - 1).unwrap_or(u16::MAX)),
+        "the last frame highlights the last cell of the partly filled page"
+    );
+}
+
+#[test]
+fn test_frame_highlight_hides_when_the_page_holds_no_candidate_for_it() {
+    let cfg = SessionConfig::default();
+    let fixture = Fixture::new();
+    let env = fixture.env();
+    let mut session = composing(&cfg, &env, "ni");
+
+    // A highlight on the next page's territory while the window still shows the first
+    // one: the page on show holds no candidate for it, so the frame carries `None`.
+    // The ring must not outlive the candidate it named, which is what `None` exists to
+    // say; the mode keys are the one re-send that rebuilds the frame without touching
+    // the paging state.
+    let total = u16::try_from(session.decoded().candidates.len()).unwrap_or(u16::MAX);
+    session.paging.highlight = session.paging.page_end(total);
+
+    let effects = session.handle_key(KeyAction::ToggleLang, &cfg, &env);
+    let frame = frame_of(&effects).expect("a mode flip re-sends the frame alone");
+    assert_eq!(
+        frame.candidates.len(),
+        usize::from(session.paging.page_size),
+        "the first page is still the one on show"
+    );
+    assert_eq!(frame.highlight, None, "and it holds nothing to highlight");
 }

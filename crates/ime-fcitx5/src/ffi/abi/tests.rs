@@ -250,7 +250,11 @@ fn test_every_vtable_slot_tolerates_a_null_context() {
     // The host hands the context back unchanged, so a null one is the degenerate case of
     // a wiring defect rather than a value any callback may trust. Every slot is driven
     // with one: the rule is that no entry point may unwind, and the ones that answer a
-    // value must answer their documented fallback.
+    // value must answer their documented fallback. The session slot is taken for the
+    // length of the drive because the focus callbacks are state creation, not a no-op:
+    // a focus arriving for an id the session host has not seen installs a session for
+    // it, and the process-wide slot must belong to this test alone while that happens.
+    let _slot = crate::session_host::lock_slot_for_tests();
     let outcome = std::panic::catch_unwind(|| {
         assert!(!on_addon_init(ptr::null_mut()));
         on_addon_destroy(ptr::null_mut());

@@ -468,7 +468,7 @@ fn test_text_scene_renders_with_a_font_backend() {
 /// background is transparent, so the subject's own alpha is the composited alpha and the
 /// measurement is exact.
 fn probe_rect_opacity(opacity: f32) -> ([u8; 4], u8) {
-    on_own_thread(|| {
+    on_own_thread(move || {
         let (backend, state) = MockSurface::new(96, 64, 1.0);
         let platform = RspinyinPlatform::new(Box::new(backend));
         platform
@@ -536,7 +536,7 @@ fn test_rect_opacity_zero_draws_no_pixels() {
 /// Returns the ink count and the alpha summed over it divided by it, so the caller can
 /// assert both that glyphs exist and how strongly they composite.
 fn probe_text_strength(opacity: f32) -> (u32, u32) {
-    on_own_thread(|| {
+    on_own_thread(move || {
         let (backend, state) = MockSurface::new(96, 32, 1.0);
         let platform = RspinyinPlatform::new(Box::new(backend));
         platform
@@ -605,7 +605,7 @@ const PANEL_FRAME_S: f32 = 1.0 / 144.0;
 /// full scale and still inside the shrunk panel, clear of its stroke, of the first cell and
 /// of the highlight box.
 fn panel_fill_alpha(step: f32, run_to_rest: bool) -> u8 {
-    on_own_thread(|| {
+    on_own_thread(move || {
         let (backend, state) = MockSurface::new(PANEL_WIDTH_DP, PANEL_HEIGHT_DP, 1.0);
         let platform = RspinyinPlatform::new(Box::new(backend));
         platform

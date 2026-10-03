@@ -178,7 +178,10 @@ pub(super) fn assemble_crash_forensics_in(crash_dir: Option<&Path>) {
         // Nowhere to write a record, and `ime-diag` deliberately has no default of its
         // own. Faults still terminate the process; they just leave no file behind, and
         // the crash channel's stderr half keeps reporting.
-        report_step_failure("crash-forensics", &"no data directory names a crash directory");
+        report_step_failure(
+            "crash-forensics",
+            &"no data directory names a crash directory",
+        );
         return;
     };
     crash::set_crash_directory(dir.to_path_buf());

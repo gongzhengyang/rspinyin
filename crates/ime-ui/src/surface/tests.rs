@@ -645,17 +645,9 @@ fn test_surface_at_twice_the_ratio_clicks_land_on_the_cells_the_window_drew() {
 fn test_surface_anchor_scale_off_the_supported_set_adopts_the_nearest_ratio() {
     let (at_1_2, at_zero) = with_surface(|surface, state| {
         show_at(surface, 1, 1.2, 3);
-        let at_1_2 = state
-            .lock()
-            .expect("the mock is not poisoned")
-            .pixels
-            .len();
+        let at_1_2 = state.lock().expect("the mock is not poisoned").pixels.len();
         show_at(surface, 2, 0.0, 3);
-        let at_zero = state
-            .lock()
-            .expect("the mock is not poisoned")
-            .pixels
-            .len();
+        let at_zero = state.lock().expect("the mock is not poisoned").pixels.len();
         (at_1_2, at_zero)
     });
     assert_eq!(
@@ -674,11 +666,7 @@ fn test_surface_scale_round_trip_returns_to_the_birth_size_and_settles_idle() {
         let mut sizes = Vec::new();
         for (revision, scale) in [(1, 2.0_f32), (2, 1.25), (3, 1.0)] {
             show_at(surface, revision, scale, 3);
-            let pixels = state
-                .lock()
-                .expect("the mock is not poisoned")
-                .pixels
-                .len();
+            let pixels = state.lock().expect("the mock is not poisoned").pixels.len();
             sizes.push(pixels);
         }
         // The appear motion the first `Show` started is run out before the idle claim:
@@ -732,12 +720,7 @@ fn test_surface_resize_then_scale_keeps_one_canvas() {
         // The anchor then moves the surface to twice the ratio: the same canvas,
         // re-expressed.
         show_at(surface, 1, 2.0, 3);
-        let pixels = state
-            .lock()
-            .expect("the mock is not poisoned")
-            .pixels
-            .len();
-        pixels
+        state.lock().expect("the mock is not poisoned").pixels.len()
     });
     assert_eq!(
         pixels_len,
@@ -763,12 +746,7 @@ fn test_surface_scale_then_resize_keeps_one_canvas() {
             .drain_events(&events, 8)
             .expect("the configure is delivered");
         surface.render(Instant::now()).expect("the frame is drawn");
-        let pixels = state
-            .lock()
-            .expect("the mock is not poisoned")
-            .pixels
-            .len();
-        pixels
+        state.lock().expect("the mock is not poisoned").pixels.len()
     });
     assert_eq!(
         pixels_len, TWICE_BYTES,
@@ -782,11 +760,7 @@ fn test_surface_scale_one_session_synthesizes_no_scale_event() {
     let (pending_empty, pixels_len) = with_surface(|surface, state| {
         show_and_draw(surface, 3);
         let pending_empty = surface.pending.is_empty();
-        let pixels_len = state
-            .lock()
-            .expect("the mock is not poisoned")
-            .pixels
-            .len();
+        let pixels_len = state.lock().expect("the mock is not poisoned").pixels.len();
         (pending_empty, pixels_len)
     });
     assert!(
@@ -794,4 +768,124 @@ fn test_surface_scale_one_session_synthesizes_no_scale_event() {
         "a session already at the anchor's ratio synthesizes no scale event"
     );
     assert_eq!(pixels_len, BIRTH_BYTES, "the birth size is kept");
+}
+
+/// The component's constants, for the pixel arithmetic the ring assertions do.
+fn ring_metrics() -> &'static crate::layout::Metrics {
+    crate::layout::metrics().expect("ui/candidate.slint declares a readable metrics block")
+}
+
+/// The width of one cell of the shared fixture: two CJK glyphs and the chrome around them.
+fn ring_cell_width() -> f32 {
+    let metrics = ring_metrics();
+    2.0 * metrics.font_size_cell + metrics.cell_chrome_width
+}
+
+/// The surface-relative top-left corner of the cell at `position`, at a ratio of 1.0.
+///
+/// The placement arithmetic restated for sampling: the panel is drawn at the shadow
+/// margin, the header and its rule sit above the grid, and the grid pads by the
+/// container padding. At a ratio of 1.0 a logical pixel is a physical one.
+fn ring_cell_origin(position: usize) -> (usize, usize) {
+    let metrics = ring_metrics();
+    let gap = metrics.grid_gap as usize;
+    let x = (metrics.shadow_margin + metrics.container_padding) as usize
+        + position * (ring_cell_width() as usize + gap);
+    let y = (metrics.shadow_margin
+        + metrics.header_height
+        + metrics.separator_height
+        + metrics.container_padding) as usize;
+    (x, y)
+}
+
+/// The strongest stroke blue along the top edge of the cell at `position`.
+///
+/// Only the focus ring strokes a cell -- a hovered cell's top edge is its own fill --
+/// so the strongest edge sample is how the ringed cell is found without depending on
+/// the exact row the stroke lands on.
+fn strongest_edge_blue(state: &MockState, stride: usize, position: usize) -> u8 {
+    let (x, y) = ring_cell_origin(position);
+    let centre = x + ring_cell_width() as usize / 2;
+    (y - 1..y + 3)
+        .map(|row| state.pixel(stride, centre, row)[0])
+        .max()
+        .unwrap_or(0)
+}
+
+#[test]
+fn test_surface_pointer_gesture_keeps_the_ring_on_the_frames_cell() {
+    // The refresh a gesture triggers rebuilds the pointer state from the frame, so the
+    // ring is the frame's word: a press and its release on another cell must not walk
+    // it onto the cell they landed on. The frame puts the ring on the third cell; the
+    // gesture lands on the first; the stroked cell afterwards is still the third.
+    let (before, after) = with_surface(|surface, state| {
+        let mut frame = frame_with(1, "ni'hao", 3);
+        frame.highlight = Some(2);
+        surface
+            .apply(SurfaceUpdate::Show {
+                revision: 1,
+                anchor: anchor(),
+            })
+            .expect("the window can be shown");
+        surface
+            .apply(SurfaceUpdate::Frame(Box::new(frame)))
+            .expect("the frame is applied");
+        let settled = settle(surface);
+        let _ = surface.render(settled).expect("the settled frame is drawn");
+
+        let stride = SURFACE_WIDTH_DP as usize * 4;
+        let read_strokes = |state: &Arc<Mutex<MockState>>| {
+            let state = state.lock().expect("the mock is not poisoned");
+            [
+                strongest_edge_blue(&state, stride, 0),
+                strongest_edge_blue(&state, stride, 1),
+                strongest_edge_blue(&state, stride, 2),
+            ]
+        };
+        let before = read_strokes(&state);
+
+        let events = UiEventQueue::new(&ChannelConfig::default());
+        let region = surface.input_region().expect("the panel was placed");
+        let (cell, _) = surface.hit_map()[0];
+        click(
+            &state,
+            region.x + cell.x + cell.w as i32 / 2,
+            region.y + cell.y + cell.h as i32 / 2,
+        );
+        surface
+            .drain_events(&events, 8)
+            .expect("the gesture is delivered");
+        surface
+            .render(settled + Duration::from_millis(16))
+            .expect("the repainted frame is drawn");
+        (before, read_strokes(&state))
+    });
+    let stroked = |strokes: [u8; 3]| -> usize {
+        let (position, _) = strokes
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, blue)| **blue)
+            .expect("three cells were sampled");
+        position
+    };
+    assert_eq!(
+        stroked(before),
+        2,
+        "before the gesture the ring is where the frame put it"
+    );
+    assert!(
+        before[2] > before[0] + 20,
+        "the ring's stroke is distinguishable from an untouched edge: {:?}",
+        before
+    );
+    assert_eq!(
+        stroked(after),
+        2,
+        "a press and its release moved nothing: the stroked cell is still the frame's"
+    );
+    assert!(
+        after[2] > after[0] + 20,
+        "and the clicked cell draws no ring of its own: {:?}",
+        after
+    );
 }

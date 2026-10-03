@@ -221,8 +221,10 @@ fn test_guard_ffi_throttles_the_failure_line_of_repeated_panics() {
     // throttle is left in: one slot for the code, carrying the count of the lines it
     // swallowed. The table is process-wide, so the test starts from an empty one --
     // whatever another test emitted before must not change the count below.
-    THROTTLE.lock().expect("the throttle is never poisoned").slots =
-        [const { None }; THROTTLE_SLOTS];
+    THROTTLE
+        .lock()
+        .expect("the throttle is never poisoned")
+        .slots = [const { None }; THROTTLE_SLOTS];
     for _ in 0..100 {
         guard_ffi(false, || panic_any("the engine blew up"));
     }
@@ -321,12 +323,18 @@ fn test_injected_sigsegv_leaves_a_private_record() {
     let dir = PathBuf::from("/tmp").join(format!("rspinyin-sigsegv-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let child = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+        // The harness names a test without the crate prefix, while `module_path!()` at
+        // the root of the test module carries it (`rspinyin::ffi::tests`); a filter that
+        // kept the prefix would match nothing and the child would exit 0 without ever
+        // running. `CARGO_CRATE_NAME` is exactly the prefix to strip.
         .args([
             "--exact",
             concat!(
                 module_path!(),
                 "::test_injected_sigsegv_leaves_a_private_record"
-            ),
+            )
+            .strip_prefix(concat!(env!("CARGO_CRATE_NAME"), "::"))
+            .expect("the module path carries the crate name"),
             "--test-threads=1",
         ])
         .env(CHILD_ENV, &dir)
@@ -335,8 +343,10 @@ fn test_injected_sigsegv_leaves_a_private_record() {
     assert_eq!(
         child.status.code(),
         Some(signal::CRASH_EXIT_CODE),
-        "the child ends with the recorded-fault status: {:?}",
-        child.stderr
+        "the child ends with the recorded-fault status: {:?}\nstdout: {}\nstderr: {}",
+        child.stderr,
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr),
     );
 
     let records: Vec<PathBuf> = std::fs::read_dir(&dir)

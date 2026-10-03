@@ -27,9 +27,11 @@
 //!
 //! [`DrawState::cells`] is the grid's whole input: the label, the text that fits, the
 //! annotation and the state of 3.4, one entry per candidate of the page. The state is
-//! resolved from [`DrawState::pointer`], which `UiFrame` does not carry -- the engine's
-//! paging state holds the highlight, not the frame -- so it is an adapter input rather than
-//! a field of the snapshot.
+//! resolved from [`DrawState::pointer`]. The highlight half of that state is the frame's
+//! own ([`UiFrame::highlight`], page-local, adopted into the pointer state by the
+//! adapter before the cells resolve); the hover and the press are not in the frame --
+//! they are the router's, which is what makes them adapter inputs rather than fields of
+//! the snapshot.
 
 use ime_types::{Candidate, StatusStrip, UiFrame};
 
@@ -85,8 +87,10 @@ pub struct DrawState {
     pub cells: Vec<CellState>,
     /// The pointer and highlight state the cells' five-state is resolved from.
     ///
-    /// Part of the drawn state rather than of the frame: the engine's paging state holds the
-    /// highlight, and `UiFrame` carries no hover or press at all.
+    /// The highlight half travels in the frame ([`UiFrame::highlight`], page-local) and
+    /// the adapter adopts it here when a frame is applied; the hover and the press are
+    /// the router's, so they stay an input of the adapter rather than a field of the
+    /// snapshot.
     pub pointer: PointerState,
 }
 

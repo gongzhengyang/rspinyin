@@ -191,7 +191,11 @@ fn test_assemble_crash_forensics_in_arms_the_channel_over_the_given_directory() 
         .expect("listing the crash directory")
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| std::fs::metadata(path).map(|meta| meta.len() == 0).unwrap_or(false))
+        .filter(|path| {
+            std::fs::metadata(path)
+                .map(|meta| meta.len() == 0)
+                .unwrap_or(false)
+        })
         .collect();
     assert_eq!(armed.len(), 1, "the signal channel armed one record");
     let file_mode = std::fs::metadata(&armed[0])
@@ -219,10 +223,21 @@ fn test_crash_context_names_readonly_mode_when_the_layout_degraded() {
     // that already holds the lock a richer provider would want. The one fact it reads
     // today is the paths layer's process-wide read-only flag, and driving that flag
     // through a layout whose paths cannot exist is what makes the branch observable.
-    let overlong = "a".repeat(MAX_PATH_BYTES * 2);
+    // Absolute as well as over-long: a relative `XDG_*` value would be ignored per the
+    // XDG spec, which would leave the layout the fallback's and never exercise the
+    // over-long refusal the assertion below is about.
+    let overlong = format!("/{}", "a".repeat(MAX_PATH_BYTES * 2));
     let bases = BaseDirs::from_lookup(|name| {
         Some(std::ffi::OsString::from(match name {
             "XDG_DATA_HOME" | "XDG_CONFIG_HOME" => overlong.clone(),
+            // `$HOME` stays answerable: the base layer only falls back to it when an
+            // `XDG_*` variable is unusable, and an empty answer here would refuse the
+            // bases before the over-long paths ever reach the layout that must reject
+            // them.
+            "HOME" => std::env::var("HOME")
+                .ok()
+                .filter(|value| std::path::Path::new(value).is_absolute())
+                .unwrap_or_else(|| "/tmp".to_string()),
             _ => String::new(),
         }))
     })

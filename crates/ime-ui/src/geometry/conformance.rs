@@ -144,6 +144,7 @@ fn frame_with(candidates: usize, max_per_row: u8) -> UiFrame {
             show_annotation: true,
             max_width_dp: 720,
         },
+        highlight: Some(0),
     }
 }
 

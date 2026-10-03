@@ -138,6 +138,7 @@ fn test_init_steps_pin_the_documented_lifecycle() {
             "store-recovery",
             "lexicon",
             "session-host",
+            "transport-probe",
         ]
     );
     let fatal: Vec<&str> = INIT_STEPS

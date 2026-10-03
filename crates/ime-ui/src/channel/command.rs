@@ -362,6 +362,7 @@ mod tests {
                 show_annotation: true,
                 max_width_dp: 720,
             },
+            highlight: None,
         })
     }
 

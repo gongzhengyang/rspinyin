@@ -206,6 +206,12 @@ impl Adapter {
         if !self.gate.accept(frame.revision) {
             return false;
         }
+        // The highlight is the frame's (ADR-0005's `UiFrame::highlight`): adopted before
+        // the cells resolve, in the page-local coordinates the frame carries. A position
+        // with no cell -- a drifted wire, never a well-formed frame -- hides the ring.
+        self.state.pointer.highlighted = frame
+            .highlight
+            .filter(|&position| usize::from(position) < frame.candidates.len());
         let delta = self.state.update_cached(
             frame,
             container_cap(frame, self.metrics),
@@ -224,11 +230,10 @@ impl Adapter {
 
     /// Re-draws the grid for a new pointer and highlight state.
     ///
-    /// `UiFrame` carries the candidates and the page, not the highlighted or the hovered
-    /// one: the engine's paging state holds those, and the frame is the UI thread's only view
-    /// of the session. The pointer state is therefore an input of the adapter rather than a
-    /// field of the snapshot, and the caller re-anchors it to the page of the frame it is
-    /// drawing with [`PointerState::for_page`].
+    /// The highlight is the frame's ([`UiFrame::highlight`], page-local, adopted by
+    /// [`Adapter::apply_frame`]); the hover and the press are the router's. The caller
+    /// re-anchors them to the page of the frame being drawn with
+    /// [`PointerState::for_page`], passing the frame's highlight through untouched.
     ///
     /// # Parameters
     ///
@@ -699,13 +704,18 @@ impl Adapter {
 
     /// The candidate the highlight box belongs on, or `None` when the page has none.
     ///
-    /// A page with no candidate has nothing to highlight, and the box is hidden rather than
-    /// left on the cell the page the user came from had.
+    /// The value is the frame's ([`UiFrame::highlight`], adopted into the pointer state
+    /// when the frame was applied), so `None` reaches the hidden branch below unchanged.
+    /// A page with no candidate, and a position past the page's cells -- which a
+    /// well-formed frame never carries -- hide the ring rather than draw off the grid.
     fn highlight_position(&self) -> Option<u16> {
         if self.state.cells.is_empty() {
             return None;
         }
-        self.state.pointer.highlighted
+        self.state
+            .pointer
+            .highlighted
+            .filter(|&position| usize::from(position) < self.state.cells.len())
     }
 
     /// Starts the page-content slide when the frame shows a different page.

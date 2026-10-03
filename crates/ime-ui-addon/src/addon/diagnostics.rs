@@ -43,7 +43,8 @@ use crate::ffi::emit_diagnostic;
 /// copies of every static, and a UI addon that called the initialiser after the engine
 /// claimed the subscriber would be declined for a log file that was never going to be
 /// its own.
-const PENDING_LOGGING: &str = "lifecycle/pending: diagnostics awaits the diagnostics logging initialiser";
+const PENDING_LOGGING: &str =
+    "lifecycle/pending: diagnostics awaits the diagnostics logging initialiser";
 
 /// The `diagnostics` step: arms the crash forensics and reports what is still pending.
 ///
@@ -185,7 +186,11 @@ mod tests {
             .expect("listing the crash directory")
             .flatten()
             .map(|entry| entry.path())
-            .filter(|path| std::fs::metadata(path).map(|meta| meta.len() == 0).unwrap_or(false))
+            .filter(|path| {
+                std::fs::metadata(path)
+                    .map(|meta| meta.len() == 0)
+                    .unwrap_or(false)
+            })
             .collect();
         assert_eq!(armed.len(), 1, "the signal channel armed one record");
         let file_mode = std::fs::metadata(&armed[0])

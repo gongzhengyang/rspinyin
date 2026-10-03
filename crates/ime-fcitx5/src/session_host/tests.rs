@@ -11,8 +11,6 @@
 //! leaked on purpose: the session host borrows its sources for the life of the process,
 //! which is exactly the constraint the real startup step has to meet.
 
-use std::sync::{Mutex, MutexGuard};
-
 use ime_core::lm::InMemoryLm;
 use ime_core::privacy::DefaultPolicy;
 use ime_core::state::SessionEnv;
@@ -28,8 +26,8 @@ use crate::ffi::FcitxKeyEvent;
 use crate::privacy_impl::{AppBlacklist, ContextPrivacy};
 
 use super::{
-    SessionHost, activate, deactivate, install, is_installed, key_event, reload, reset, set_anchor,
-    shutdown, ui_event,
+    SessionHost, activate, deactivate, focus_in, focus_out, install, is_installed, key_event,
+    lock_slot_for_tests, reload, reset, set_anchor, shutdown, ui_event,
 };
 
 /// The input context most tests use.
@@ -431,6 +429,67 @@ fn test_session_host_two_contexts_do_not_disturb_each_other() {
 }
 
 #[test]
+fn test_session_host_focus_storms_stay_bounded_and_reclaim_lazily() {
+    let mut sessions = host_with(RoutingConfig::default());
+    let mut host = RecordingHost::default();
+    sessions.activate(IC);
+    type_ni(&mut sessions, IC, &mut host);
+
+    // Below the limit a focus loss is a composition reset that keeps the context.
+    for _ in 1..super::FOCUS_OUTS_BEFORE_RECLAIM {
+        sessions.focus_out(IC, &mut host);
+    }
+    assert_eq!(
+        host.commands.last().copied(),
+        Some("hide"),
+        "the window is hidden"
+    );
+    assert!(host.commits.is_empty(), "a focus loss never commits");
+    assert_eq!(sessions.live_contexts(), 1, "the session is kept");
+
+    // The next loss reclaims the context, privacy state included.
+    sessions.focus_out(IC, &mut host);
+    assert_eq!(
+        sessions.live_contexts(),
+        0,
+        "the limit reclaims the context"
+    );
+    assert_eq!(
+        sessions.router.observed_privacy_contexts(),
+        0,
+        "and the privacy state goes with it"
+    );
+
+    // A storm of losses for a context that never comes back finds nothing further to
+    // reclaim, and the table stays empty rather than growing back.
+    for _ in 0..1000 {
+        sessions.focus_out(IC, &mut host);
+    }
+    assert_eq!(
+        sessions.live_contexts(),
+        0,
+        "the storm reclaims nothing twice"
+    );
+    // Focus that keeps coming back keeps exactly the active one: every arrival
+    // restarts the count the limit is measured in.
+    sessions.focus_in(IC);
+    for _ in 0..1000 {
+        sessions.focus_out(IC, &mut host);
+        sessions.focus_in(IC);
+    }
+    // The bound: the table never holds more than the active contexts plus the limit.
+    assert!(
+        sessions.live_contexts() <= 1 + super::FOCUS_OUTS_BEFORE_RECLAIM,
+        "the context table stays bounded under the storm"
+    );
+    assert_eq!(
+        sessions.live_contexts(),
+        1,
+        "a focus that comes back finds its session"
+    );
+}
+
+#[test]
 fn test_session_host_ui_event_anchor_and_reload_reach_the_session() {
     let mut sessions = host_with(RoutingConfig::default());
     let mut host = RecordingHost::default();
@@ -584,30 +643,14 @@ fn test_session_host_never_claims_a_key_it_did_nothing_about() {
 }
 
 // ── the process-wide slot the C ABI reaches ─────────────────────────────────────────
-
-/// Serialises the tests that drive the process-wide slot.
-///
-/// The slot is one per process, so two tests installing at once would each find the
-/// other's host. The mandated runner starts one process per test, which hides that; this
-/// guard is what keeps the same tests correct under a plain `cargo test` too. It is a leaf
-/// lock — nothing else is taken while it is held — and it is never held by a test in the
-/// group above.
-static SLOT: Mutex<()> = Mutex::new(());
-
-/// Takes the slot guard, recovering the contents of a poisoned lock.
-///
-/// Poisoning means a holder panicked. What the guard protects is a test's exclusive use of
-/// a static, and a test that panicked has already released its install.
-fn lock_slot() -> MutexGuard<'static, ()> {
-    match SLOT.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
+//
+// The slot's guard lives on the module itself (`lock_slot_for_tests`), because the FFI
+// entry-point tests in `ffi::abi` take the same one: a focus callback driven with a null
+// context still lands in the free functions below, and those touch the shared slot.
 
 #[test]
 fn test_install_refuses_a_second_session_host() {
-    let _slot = lock_slot();
+    let _slot = lock_slot_for_tests();
     let _ = shutdown();
     assert!(
         !is_installed(),
@@ -628,7 +671,7 @@ fn test_install_refuses_a_second_session_host() {
 
 #[test]
 fn test_installed_host_routes_a_key_and_reports_what_was_live() {
-    let _slot = lock_slot();
+    let _slot = lock_slot_for_tests();
     let _ = shutdown();
     assert!(install(sources(), privacy(), RoutingConfig::default()));
     let mut host = RecordingHost::default();
@@ -659,7 +702,7 @@ fn test_installed_host_routes_a_key_and_reports_what_was_live() {
 fn test_callbacks_without_an_installed_host_claim_nothing() {
     // The degradation: a callback that arrives before the sources exist must leave every
     // key to the application rather than swallowing it.
-    let _slot = lock_slot();
+    let _slot = lock_slot_for_tests();
     let _ = shutdown();
     let mut host = RecordingHost::default();
     assert!(
@@ -669,6 +712,8 @@ fn test_callbacks_without_an_installed_host_claim_nothing() {
     assert!(!activate(IC), "and no session is reported as set up");
     deactivate(IC, &mut host);
     reset(IC, &mut host);
+    focus_in(IC);
+    focus_out(IC, &mut host);
     set_anchor(IC, anchor(0));
     reload(RoutingConfig::default(), &mut host);
     assert!(
@@ -691,7 +736,7 @@ fn test_callbacks_without_an_installed_host_claim_nothing() {
 
 #[test]
 fn test_deactivate_through_the_slot_ends_the_composition() {
-    let _slot = lock_slot();
+    let _slot = lock_slot_for_tests();
     let _ = shutdown();
     assert!(install(sources(), privacy(), RoutingConfig::default()));
     let mut host = RecordingHost::default();
@@ -714,7 +759,7 @@ fn test_deactivate_through_the_slot_ends_the_composition() {
 
 #[test]
 fn test_reset_through_the_slot_keeps_the_session() {
-    let _slot = lock_slot();
+    let _slot = lock_slot_for_tests();
     let _ = shutdown();
     assert!(install(sources(), privacy(), RoutingConfig::default()));
     let mut host = RecordingHost::default();
@@ -726,4 +771,27 @@ fn test_reset_through_the_slot_keeps_the_session() {
         1,
         "a reset ends the composition and leaves the session where it was"
     );
+}
+
+#[test]
+fn test_focus_through_the_slot_ends_the_composition_and_keeps_the_context() {
+    let _slot = lock_slot_for_tests();
+    let _ = shutdown();
+    assert!(install(sources(), privacy(), RoutingConfig::default()));
+    let mut host = RecordingHost::default();
+    activate(IC);
+    key_event(IC, &press(KEY_N), &mut host);
+    key_event(IC, &press(KEY_I), &mut host);
+    focus_out(IC, &mut host);
+    assert!(
+        host.commits.is_empty(),
+        "a focus loss through the slot commits nothing"
+    );
+    focus_in(IC);
+    key_event(IC, &press(KEY_N), &mut host);
+    assert_eq!(
+        host.frame.preedit, "n",
+        "focus arriving again finds the context it left and starts a clean composition"
+    );
+    assert_eq!(shutdown(), 1, "the context focus brought back reports live");
 }

@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use ime_core::lm::InMemoryLm;
 use ime_core::privacy::DefaultPolicy;
-use ime_core::state::{SessionEnv, SessionEvent};
+use ime_core::state::{SessionEnv, SessionEvent, SessionState};
 use ime_core::viterbi::Decoder;
 use ime_types::{
     ImeError, KeyAction, Lexicon, StatusStrip, SyllableId, UiCommand, UserFreqSource, WordFlags,
@@ -46,6 +46,9 @@ use crate::privacy_impl::{AppBlacklist, ContextPrivacy, ContextReport};
 
 /// The input context every test uses.
 const IC: u64 = 1;
+
+/// A second input context, for the test that focus creates a session where none was.
+const OTHER_IC: u64 = 2;
 
 /// `FcitxKey_n`.
 const KEY_N: u32 = 0x006e;
@@ -188,12 +191,15 @@ impl UserFreqSource for SilentUser {
     }
 }
 
-/// A host that remembers the diagnostics and the newest frame's first candidate.
+/// A host that remembers the diagnostics, the newest frame's first candidate, and the
+/// window commands that are not frames.
 ///
 /// The phrase path produces nothing else. Saving a phrase writes a file and reports a
 /// diagnostic, and the text it saves is the candidate the highlight was on -- which is
 /// the first candidate of the newest frame, because nothing here moves the highlight. The
 /// status strip of that frame is kept too, because it is what the window's header shows.
+/// The hide count and the emptied-preedit count are what the focus lifecycle is asserted
+/// against.
 struct RecordingHost {
     /// The rendered code of every diagnostic, in order.
     diagnostics: Vec<String>,
@@ -204,6 +210,10 @@ struct RecordingHost {
     /// Whether the input context is enabled. A context is activated enabled, so the first
     /// toggle is the one that switches to English.
     is_enabled: bool,
+    /// How many times the window was told to hide.
+    hides: usize,
+    /// How many times the application's preedit area was emptied.
+    cleared: usize,
 }
 
 impl Default for RecordingHost {
@@ -214,6 +224,8 @@ impl Default for RecordingHost {
             highlighted: None,
             status: None,
             is_enabled: true,
+            hides: 0,
+            cleared: 0,
         }
     }
 }
@@ -223,12 +235,18 @@ impl Host for RecordingHost {
 
     fn set_preedit(&mut self, _ic: u64, _text: &str, _caret: u32) {}
 
-    fn clear_preedit(&mut self, _ic: u64) {}
+    fn clear_preedit(&mut self, _ic: u64) {
+        self.cleared += 1;
+    }
 
     fn post_ui(&mut self, _ic: u64, command: UiCommand) {
-        if let UiCommand::Frame(frame) = command {
-            self.highlighted = frame.candidates.first().map(|held| held.text.clone());
-            self.status = Some(frame.status.clone());
+        match command {
+            UiCommand::Frame(frame) => {
+                self.highlighted = frame.candidates.first().map(|held| held.text.clone());
+                self.status = Some(frame.status.clone());
+            }
+            UiCommand::Hide { .. } => self.hides += 1,
+            _ => {}
         }
     }
 
@@ -583,4 +601,79 @@ fn test_multi_page_frame_carries_the_page_indicator() {
     assert!(router.key_event(IC, &press(KEY_MINUS, 0), &mut host));
     let status = host.status.clone().expect("a frame reached the window");
     assert_eq!(status.mode_label, "1/2");
+}
+
+// ── the focus lifecycle the session host drives ─────────────────────────────────
+//
+// The host's focus callbacks land on these two methods, so the routing-side half of the
+// contract is tested here: a focus loss is a step of `SessionEvent::FocusLost` — the
+// preedit area emptied and the window hidden, committing nothing, the session and the
+// privacy state kept — and a focus arrival ensures a session instead of replacing one.
+
+#[test]
+fn test_focus_out_takes_the_composition_back_and_keeps_the_context() {
+    let fixture = Fixture::new("focus-out");
+    let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
+    let mut router = fixture.router(handle);
+    router.activate_reported(IC, ordinary_report());
+    let mut host = RecordingHost::default();
+    type_ni(&mut router, &mut host);
+
+    let cleared_before = host.cleared;
+    router.focus_out(IC, &mut host);
+    assert_eq!(host.hides, 1, "the window is hidden with the composition");
+    assert!(
+        host.cleared > cleared_before,
+        "the application's preedit area is emptied with it"
+    );
+    assert_eq!(
+        router.session(IC).map(|session| session.state),
+        Some(SessionState::Idle),
+        "the session is stepped, not dropped"
+    );
+    assert_eq!(
+        router.session(IC).map(|session| session.buf.raw()),
+        Some(""),
+        "and the composition it held is gone"
+    );
+    assert_eq!(
+        router.observed_privacy_contexts(),
+        1,
+        "the privacy state of a kept context is kept with it"
+    );
+    // The next keystroke starts over rather than continuing what was taken back.
+    assert!(router.key_event(IC, &press(KEY_N, 0), &mut host));
+    assert_eq!(
+        router.session(IC).map(|session| session.buf.raw()),
+        Some("n"),
+        "typing starts from the new key"
+    );
+}
+
+#[test]
+fn test_focus_in_ensures_a_context_instead_of_rebuilding_it() {
+    let fixture = Fixture::new("focus-in");
+    let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
+    let mut router = fixture.router(handle);
+    router.activate_reported(IC, ordinary_report());
+    let mut host = RecordingHost::default();
+    router.key_event(IC, &press(KEY_N, 0), &mut host);
+
+    // A focus arriving at a context that is already here changes nothing: the session
+    // is the one the context had, mid-composition included.
+    router.focus_in(IC);
+    assert_eq!(
+        router.session(IC).map(|session| session.buf.raw()),
+        Some("n"),
+        "an existing session is reused, not rebuilt"
+    );
+    assert_eq!(host.hides, 0, "and ensuring a context posts nothing");
+
+    // A focus arriving where there was no session creates one, exactly as an
+    // activation would.
+    router.focus_in(OTHER_IC);
+    assert!(
+        router.session(OTHER_IC).is_some(),
+        "focus is what makes a session exist for a context"
+    );
 }

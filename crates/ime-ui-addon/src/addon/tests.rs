@@ -164,6 +164,7 @@ fn frame(revision: u32, preedit: &str, candidates: &[&str]) -> UiFrame {
             show_annotation: true,
             max_width_dp: 720,
         },
+        highlight: Some(0),
     }
 }
 

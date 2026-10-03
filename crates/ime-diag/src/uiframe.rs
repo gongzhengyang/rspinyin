@@ -25,7 +25,7 @@
 //!
 //! ```json
 //! {
-//!   "format": 1,
+//!   "format": 2,
 //!   "revision": 7,
 //!   "preedit": { "text": "ni", "caret": 2, "spans": [] },
 //!   "candidates": [
@@ -37,7 +37,8 @@
 //!               "has_user_dict_hit": false, "readonly": false, "script": "simplified" },
 //!   "anchor": { "cursor": { "x": 100, "y": 200, "w": 2, "h": 20 }, "screen": 0,
 //!               "scale": 1.0, "placement": "below" },
-//!   "layout": { "max_per_row": 5, "show_annotation": true, "max_width_dp": 720 }
+//!   "layout": { "max_per_row": 5, "show_annotation": true, "max_width_dp": 720 },
+//!   "highlight": 0
 //! }
 //! ```
 //!
@@ -100,7 +101,12 @@ use ime_types::UiFrame;
 /// A frame has no version of its own; the file does. A reader that finds a version it does
 /// not know refuses the file rather than reading fields that may have changed meaning, which
 /// is the one failure a format without a version cannot report.
-pub const FRAME_FORMAT_VERSION: u32 = 1;
+///
+/// Version 2 appended `highlight` (ADR-0005's incremental `UiFrame` extension). The field is
+/// declared with a serde default, so a version-1 document still *parses* and is then refused
+/// by the version check below as a format refusal -- the one gate the rule names -- rather
+/// than as a shape error.
+pub const FRAME_FORMAT_VERSION: u32 = 2;
 
 /// The structured view of one frame: what the candidate window would have drawn.
 ///
@@ -128,6 +134,14 @@ pub struct FrameSnapshot {
     pub anchor: AnchorView,
     /// Layout constraints the window was built with.
     pub layout: LayoutView,
+    /// The keyboard highlight, as a zero-based position within the page's candidates,
+    /// or `None` when the page holds no candidate for it.
+    ///
+    /// Appended by the format's second version, mirroring the contract's own tail
+    /// append (ADR-0005). The default keeps a document written by the first version
+    /// parseable, so the version check is what refuses it.
+    #[serde(default)]
+    pub highlight: Option<u16>,
 }
 
 impl FrameSnapshot {
@@ -150,6 +164,7 @@ impl FrameSnapshot {
             status: StatusView::of(&frame.status),
             anchor: AnchorView::of(&frame.anchor),
             layout: LayoutView::of(&frame.layout),
+            highlight: frame.highlight,
         }
     }
 
@@ -175,6 +190,7 @@ impl FrameSnapshot {
             status: self.status.to_status(),
             anchor: self.anchor.to_anchor(),
             layout: self.layout.to_layout(),
+            highlight: self.highlight,
         }
     }
 

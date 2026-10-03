@@ -133,6 +133,15 @@ pub struct UiFrame {
     pub anchor: Anchor,
     /// Layout constraints derived from configuration.
     pub layout: LayoutHint,
+    /// The candidate the keyboard highlight sits on, as a zero-based position within
+    /// this frame's `candidates`, or `None` when the page holds no candidate for it.
+    ///
+    /// Appended to the frozen struct by ADR-0005. The engine's `Paging` numbers
+    /// candidates globally across pages; the engine converts that global highlight to
+    /// this page-local position when it builds the frame, so the view never re-derives
+    /// it. `None` means "hide the ring", never "keep the previous one": a ring that
+    /// outlives its candidate is the defect this field exists to prevent.
+    pub highlight: Option<u16>,
 }
 
 /// Where the candidate window goes.
@@ -414,12 +423,28 @@ mod tests {
                 show_annotation: true,
                 max_width_dp: 720,
             },
+            highlight: Some(0),
         }
     }
 
     #[test]
     fn test_ui_frame_size_stays_within_budget() {
         assert!(core::mem::size_of::<UiFrame>() <= 256);
+    }
+
+    #[test]
+    fn test_ui_frame_highlight_is_page_local_or_hidden() {
+        let frame = sample_frame();
+        assert_eq!(
+            frame.highlight,
+            Some(0),
+            "a fresh page highlights its first candidate, in the page's own numbering"
+        );
+        // `None` is a state of its own: the view hides the ring rather than keeping the
+        // previous one, so the two values must never compare equal.
+        let mut hidden = frame.clone();
+        hidden.highlight = None;
+        assert_ne!(hidden, frame);
     }
 
     #[test]

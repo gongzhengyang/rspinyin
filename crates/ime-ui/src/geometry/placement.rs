@@ -24,7 +24,7 @@ use ime_types::{Anchor, Placement, RectI};
 use crate::layout::Metrics;
 use crate::platform::physical_dimension;
 
-use super::{Screen, even_up, to_i32, to_u32};
+use super::{Screen, even_up_scaled, to_i32, to_u32};
 
 /// The metrics in physical pixels, for one ratio.
 #[derive(Clone, Copy, Debug)]
@@ -97,7 +97,10 @@ impl Px {
     /// built from it is even too. The formula is the layout pass's own: header, separator,
     /// padding on both sides, and the rows with their gaps.
     pub(super) fn container_height(&self, rows: i64) -> i64 {
-        even_up(self.top_block() + self.grid_height(rows) + self.padding)
+        even_up_scaled(
+            self.top_block() + self.grid_height(rows) + self.padding,
+            self.scale,
+        )
     }
 
     /// Height of a grid of `rows` rows.

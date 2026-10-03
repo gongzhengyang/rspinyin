@@ -9,6 +9,10 @@
 //   fcitx::InputMethodEngine::activate/deactivate/reset(..., InputContextEvent &)
 //   fcitx::InputMethodEngine::listInputMethods()
 //
+// Focus is not on that list: the engine base class has no focus virtual, so focus
+// reaches the addon through `Instance::watchEvent` and is forwarded into the table's
+// `on_focus_in` / `on_focus_out` slots from there (`watchFocusEvents` below).
+//
 // # Why the addon instance lives in this translation unit
 //
 // Fcitx5 never asks an addon for its input-method engine. `InputMethodManager` collects
@@ -47,6 +51,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -59,6 +64,7 @@
 #include <fcitx/inputmethodengine.h>
 #include <fcitx/inputmethodentry.h>
 #include <fcitx/inputpanel.h>
+#include <fcitx/instance.h>
 #include <fcitx/text.h>
 
 // ── Mirrored C ABI contract ──────────────────────────────────────────────────────
@@ -189,7 +195,9 @@ public:
     /// for anything beyond the events it is handed has to be captured while it is
     /// created. This engine is not the only role that needs it: the user-interface role
     /// reaches `UserInterfaceManager` the same way.
-    explicit RspinyinEngine(fcitx::AddonManager *manager) : manager_(manager) {}
+    explicit RspinyinEngine(fcitx::AddonManager *manager) : manager_(manager) {
+        watchFocusEvents();
+    }
 
     /// The input methods this engine provides.
     ///
@@ -295,10 +303,61 @@ public:
     fcitx::AddonManager *manager() const { return manager_; }
 
 private:
+    /// Forwards the focus events into the callback table.
+    ///
+    /// The engine base class has no focus virtual: focus reaches an addon through the
+    /// instance's event bus, so `Instance::watchEvent` is the forwarding point the
+    /// `on_focus_in` / `on_focus_out` table slots hang from. The handlers read the table
+    /// lazily, so installing them in the constructor — before `startPlugin` registers
+    /// the table — is safe: an event that arrives before registration is dropped,
+    /// exactly like one that arrives during shutdown. Each body installs the context it
+    /// was given for its length, because the host calls Rust makes in answer (emptying
+    /// the client's preedit area) resolve against it.
+    ///
+    /// Fcitx5 may observe the same transition twice — a focus out can also reach the
+    /// `deactivate` virtual. The two slots stay independent: the table names what each
+    /// means, and the session layer decides what the combination produces. The
+    /// symmetric notification that does not exist anywhere — the host telling the plugin
+    /// a context was destroyed — is a table slot the ADR-0011 symbol batch owns; the
+    /// Rust side reclaims a context the host stopped focusing instead.
+    void watchFocusEvents() {
+        auto &instance = manager_->instance();
+        focus_in_handler_ = instance.watchEvent(
+            fcitx::EventType::FocusIn, fcitx::EventWatcherPhase::Default,
+            [](fcitx::Event &event) {
+                const RspinyinVtable *vt = rspinyin::vtable();
+                if (vt == nullptr || vt->on_focus_in == nullptr) {
+                    return;
+                }
+                auto &focus = static_cast<fcitx::FocusInEvent &>(event);
+                rspinyin::CurrentContext current{focus.inputContext()};
+                vt->on_focus_in(rspinyin::context(),
+                                rspinyin::ic_id(focus.inputContext()));
+            });
+        focus_out_handler_ = instance.watchEvent(
+            fcitx::EventType::FocusOut, fcitx::EventWatcherPhase::Default,
+            [](fcitx::Event &event) {
+                const RspinyinVtable *vt = rspinyin::vtable();
+                if (vt == nullptr || vt->on_focus_out == nullptr) {
+                    return;
+                }
+                auto &focus = static_cast<fcitx::FocusOutEvent &>(event);
+                rspinyin::CurrentContext current{focus.inputContext()};
+                vt->on_focus_out(rspinyin::context(),
+                                 rspinyin::ic_id(focus.inputContext()));
+            });
+    }
+
     /// The plugin's only handle back to the host. Kept because the decoder's effects
     /// are applied through the host's own objects (`Instance`, the input-context
     /// manager), which are reachable from here and from nowhere else.
     fcitx::AddonManager *manager_;
+
+    /// The registered focus handlers, kept so that destroying the engine disconnects
+    /// them with it: a handler outliving the instance it reads would run on a dangling
+    /// bus.
+    std::unique_ptr<fcitx::HandlerEntry> focus_in_handler_;
+    std::unique_ptr<fcitx::HandlerEntry> focus_out_handler_;
 };
 
 // Compile-time proof that every pure virtual of the engine chain is implemented: an

@@ -101,3 +101,19 @@
 | `UiFrame` | 尾部追加 `pub highlight: Option<u16>`（页内高亮位置，`None` = 隐藏环） | 追加（结构体） | `ui.rs` | `REFACTOR-P0.01.04` |
 
 **决策依据**：`connection_fd` 是指针事件即时性（`DEF-19`）的解封锁点——事件循环的 poll 集需要连接 fd，而"冻结契约无此方法"是现状的双重锁之一。带默认实现使全部既有实现（mock/测试替身）零改动编译，X11/Wayland 生产实现按卡覆写；与 `request_frame` 返回 `Option` 的既有先例同构。`highlight` 的语义冻结注记（`None` 时视图隐藏环、不做回退猜测）登记在其承接卡内；字段为尾部追加，`Default`/构造点随卡同步。
+
+---
+
+## 增量登记（2026-10-02，`UiFrame.highlight` 随帧高亮）
+
+上表 `UiFrame` 行的本卡细化登记（承接卡：`docs/dev/opt-basic.md` `REFACTOR-P0.01.04`，绑定缺陷 `DEF-04`）：
+
+- **字段名**：`UiFrame.highlight`（尾部追加，`crates/ime-types/src/ui.rs`）。
+- **类型**：`Option<u16>`。
+- **语义**：键盘高亮所在候选在**当前页内**的零基位置，与该帧 `candidates` 切片同基；引擎 `Paging` 持有的跨页全局索引在 `build_frame` 换算为页内位置（saturating 减法，页内越界折为 `None`）。`None` 表示本页无高亮对象（空列表，或高亮落在页尾之后）。语义冻结注记：视图读到 `None` 时**隐藏焦点环且弹簧不设新目标**，不做任何回退猜测——「环比它的候选活得久」正是本字段要消灭的缺陷。
+- **消费方**：
+  - `ime-core`：`Paging::highlight_position_in_page` 换算，`Session::build_frame` 产出；
+  - `ime-fcitx5` ↔ `ime-ui-addon` 跨 addon wire（ADR-0011 表）：`RspinyinFrameWire` 尾部对称追加 `highlight: u16` + `has_highlight: u8` 两个字段（两侧转写与尺寸断言同步）；
+  - `ime-ui`：`apply_frame` 采纳帧值进绘制态，`sync_pointer` 以帧值为准（删除旧值回抄）；
+  - `ime-diag`：镜像快照 `FrameSnapshot.highlight`，文件格式版本随行升级（版本演进规则照旧：版本不符即拒读）。
+- **类别**：追加（结构体，尾部）；纯 Rust 契约面，不进 vtable，`RSPINYIN_ABI_VERSION` 保持不变。

@@ -39,7 +39,9 @@
 //! [`UiEvent::Select`] and [`UiEvent::Hover`] carry a zero-based *global* candidate
 //! index -- the same numbering [`Paging::highlight`] uses -- so that a click and a
 //! number key name a candidate the same way. [`KeyAction::SelectIndex`] is the digit
-//! the user pressed instead: one-based, and counted within the page on show.
+//! the user pressed instead: one-based, and counted within the page on show. The frame
+//! the window draws carries the highlight already converted to that page's own
+//! numbering ([`UiFrame::highlight`]), so the view never repeats the conversion.
 //!
 //! # Concurrency
 //!
@@ -604,6 +606,13 @@ impl Session {
         let total = u16::try_from(candidates.len()).unwrap_or(u16::MAX);
         let start = usize::from(self.paging.page_start()).min(candidates.len());
         let end = usize::from(self.paging.page_end(total)).min(candidates.len());
+        // Page-local position of the keyboard highlight, or `None` when the page holds
+        // no candidate for it. The view treats `None` as "hide the ring", never as
+        // "keep the previous one": a ring that outlives its candidate is the defect
+        // this field exists to prevent. The conversion runs here, on the engine side of
+        // the boundary, so the frame and the candidate slice it carries share one basis
+        // and the view never re-derives the position.
+        let highlight = self.paging.highlight_position_in_page(total);
         UiFrame {
             revision: revision.value(),
             preedit: self.preedit.clone(),
@@ -616,6 +625,7 @@ impl Session {
                 show_annotation: cfg.show_annotation,
                 max_width_dp: cfg.max_width_dp,
             },
+            highlight,
         }
     }
 

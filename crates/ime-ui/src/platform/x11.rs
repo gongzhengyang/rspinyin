@@ -46,10 +46,12 @@ use super::{
 
 mod translate;
 
+pub(crate) use self::translate::{Decoded, classify_event, effective_alpha, select_argb_visual};
+// The event translator's scale-step and alpha constants have no production reader in
+// this module; only the platform tests assert on them.
+#[cfg(test)]
+pub(crate) use self::translate::{OPAQUE_ALPHA, scroll_axis};
 use self::translate::{event_mask, scratch_for};
-pub(crate) use self::translate::{
-    Decoded, OPAQUE_ALPHA, classify_event, effective_alpha, scroll_axis, select_argb_visual,
-};
 
 /// Depth of the ARGB visual, and of the buffers uploaded to it.
 pub(crate) const ARGB_DEPTH: u8 = 32;
@@ -715,7 +717,9 @@ mod tests {
         // The surface hands the synthesized event in through the poll it already drives;
         // the backend adopts it and reports the ratio it actually runs at.
         let mut out = vec![SurfaceEvent::Scale { factor: 2.0 }];
-        backend.poll_events(&mut out).expect("polling does not fail");
+        backend
+            .poll_events(&mut out)
+            .expect("polling does not fail");
         assert_eq!(
             backend.geometry(),
             (320, 80, 2.0),

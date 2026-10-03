@@ -23,6 +23,8 @@ struct Captured {
     layout: [u32; 3],
     theme: [u64; 6],
     hide_reason: u32,
+    highlight: u16,
+    has_highlight: u8,
     overlay_kind: u32,
     overlay_sections: Vec<(String, Vec<(String, String)>)>,
     calls: u32,
@@ -44,6 +46,8 @@ extern "C" fn capture_frame(ctx: *mut c_void, wire: *const RspinyinFrameWire) {
     captured.scale = wire.scale;
     captured.placement = wire.placement;
     captured.hide_reason = wire.hide_reason;
+    captured.highlight = wire.highlight;
+    captured.has_highlight = wire.has_highlight;
     captured.page = [wire.page_current, wire.page_total, wire.page_size];
     captured.cursor = [
         wire.cursor.x,
@@ -234,6 +238,7 @@ fn sample_frame() -> UiFrame {
             show_annotation: true,
             max_width_dp: 156,
         },
+        highlight: Some(1),
     }
 }
 
@@ -260,6 +265,27 @@ fn test_frame_wire_round_trips_every_field() {
         assert_eq!(captured.scale, 2.0);
         assert_eq!(captured.placement, 1);
         assert_eq!(captured.layout, [9, 1, 156]);
+        assert_eq!(captured.highlight, 1);
+        assert_eq!(captured.has_highlight, 1);
+    });
+}
+
+#[test]
+fn test_frame_wire_carries_the_highlight_or_its_absence() {
+    with_captured(|captured| {
+        // `None` travels as the flag alone: the position slot is zeroed rather than
+        // left holding a value the reader must know to ignore.
+        let mut hidden = sample_frame();
+        hidden.highlight = None;
+        assert!(dispatch(&UiCommand::Frame(Box::new(hidden))));
+        assert_eq!(captured.has_highlight, 0);
+        assert_eq!(captured.highlight, 0);
+
+        let mut shown = sample_frame();
+        shown.highlight = Some(4);
+        assert!(dispatch(&UiCommand::Frame(Box::new(shown))));
+        assert_eq!(captured.has_highlight, 1);
+        assert_eq!(captured.highlight, 4);
     });
 }
 
@@ -285,6 +311,9 @@ fn test_each_frame_family_kind_fills_its_own_fields() {
         assert_eq!(captured.cursor, [1, 2, 3, 4]);
         assert_eq!(captured.scale, 1.5);
         assert_eq!(captured.placement, 0);
+        // The highlight pair is a `Frame` field: the kind-gated reader must find it
+        // zeroed on every other kind of the family.
+        assert_eq!((captured.highlight, captured.has_highlight), (0, 0));
 
         assert!(dispatch(&UiCommand::Hide {
             revision: 12,

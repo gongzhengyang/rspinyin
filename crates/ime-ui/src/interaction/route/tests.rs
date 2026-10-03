@@ -104,6 +104,7 @@ fn frame(count: usize, page: PageState) -> UiFrame {
             show_annotation: false,
             max_width_dp: 720,
         },
+        highlight: Some(0),
     }
 }
 

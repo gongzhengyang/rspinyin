@@ -2163,6 +2163,7 @@ dependencies = [
  "ime-diag",
  "ime-dict",
  "ime-types",
+ "libc",
  "pkg-config",
 ]
 
@@ -2195,8 +2196,10 @@ dependencies = [
  "cc",
  "ime-config",
  "ime-diag",
+ "ime-dict",
  "ime-types",
  "ime-ui",
+ "libc",
  "pkg-config",
 ]
 

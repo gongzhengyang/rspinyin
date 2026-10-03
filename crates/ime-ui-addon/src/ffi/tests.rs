@@ -204,8 +204,10 @@ fn test_guard_ffi_writes_exactly_one_line_for_an_injected_panic() {
     // table is process-wide, so the test starts from an empty one, and the first panic
     // is the line the window allows: the slot for the code exists, and nothing is
     // behind it yet.
-    THROTTLE.lock().expect("the throttle is never poisoned").slots =
-        [const { None }; THROTTLE_SLOTS];
+    THROTTLE
+        .lock()
+        .expect("the throttle is never poisoned")
+        .slots = [const { None }; THROTTLE_SLOTS];
     let result = guard_ffi(false, || panic_any("the candidate window blew up"));
     assert!(!result, "a panicking body must yield the fallback value");
     let suppressed = THROTTLE
@@ -215,9 +217,7 @@ fn test_guard_ffi_writes_exactly_one_line_for_an_injected_panic() {
                 .slots
                 .iter_mut()
                 .flatten()
-                .find(|slot| {
-                    slot.code_hash == code_hash("ffi/panic: the candidate window blew up")
-                })
+                .find(|slot| slot.code_hash == code_hash("ffi/panic: the candidate window blew up"))
                 .map(|slot| slot.suppressed)
         })
         .expect("the throttle is never poisoned");
@@ -235,8 +235,10 @@ fn test_guard_ffi_throttles_the_failure_line_of_repeated_panics() {
     // throttle is left in: one slot for the code, carrying the count of the lines it
     // swallowed. The table is process-wide, so the test starts from an empty one --
     // whatever another test emitted before must not change the count below.
-    THROTTLE.lock().expect("the throttle is never poisoned").slots =
-        [const { None }; THROTTLE_SLOTS];
+    THROTTLE
+        .lock()
+        .expect("the throttle is never poisoned")
+        .slots = [const { None }; THROTTLE_SLOTS];
     for _ in 0..100 {
         let _ = guard_ffi(false, || panic_any("the candidate window blew up"));
     }
@@ -247,9 +249,7 @@ fn test_guard_ffi_throttles_the_failure_line_of_repeated_panics() {
                 .slots
                 .iter_mut()
                 .flatten()
-                .find(|slot| {
-                    slot.code_hash == code_hash("ffi/panic: the candidate window blew up")
-                })
+                .find(|slot| slot.code_hash == code_hash("ffi/panic: the candidate window blew up"))
                 .map(|slot| slot.suppressed)
         })
         .expect("the throttle is never poisoned");

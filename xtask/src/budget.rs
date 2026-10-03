@@ -310,10 +310,7 @@ const BINDINGS: &[Binding] = &[
         MetricAfter("RSS"),
     ),
     Binding("robustness.pass_rate_pct", "BUDGET-ROB-01", ThresholdFirst),
-    Binding(
-        "bench.post_ui_ns",
-        "BUDGET-LAT-06",
-        ThresholdFirst),
+    Binding("bench.post_ui_ns", "BUDGET-LAT-06", ThresholdFirst),
     Binding(
         "bench.passthrough_classify_ns",
         "TASK-1.02.06#2",

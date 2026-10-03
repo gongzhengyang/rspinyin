@@ -151,6 +151,7 @@ impl PanicReport {
     /// The `ffi/panic` code follows the `domain/action/reason` shape the project uses
     /// for every cross-boundary condition, so a crash is greppable next to the other
     /// FFI diagnostics.
+    #[cfg(test)]
     fn crash_line(&self) -> String {
         format!("rspinyin: {}", self.code())
     }
@@ -200,6 +201,7 @@ pub(crate) fn guard_ffi<R>(fallback: R, body: impl FnOnce() -> R) -> R {
 /// a table of the call's own rather than the process-wide one, so a test cannot be
 /// suppressed by a line another test wrote into the shared table inside the same window;
 /// the production path above is the one that shares the table.
+#[cfg(test)]
 fn guard_ffi_with<R>(fallback: R, write_line: impl FnMut(&str), body: impl FnOnce() -> R) -> R {
     match catch_ffi(body) {
         Ok(value) => value,
@@ -497,13 +499,20 @@ pub(crate) fn register_crash_signal(
     // SAFETY: `sigaction` is plain old data, so zeroed bytes are a valid empty state for
     // every field of it, and the assignments that follow finish the preparation.
     let mut action = unsafe { std::mem::zeroed::<libc::sigaction>() };
-    action.sa_sigaction = on_host_signal as usize;
+    // The two-step cast is deliberate: the kernel takes a function pointer, and going
+    // through the pointer type keeps the trampoline's signature checked at the boundary.
+    let trampoline: extern "C" fn(i32, *mut libc::siginfo_t, *mut libc::c_void) = on_host_signal;
+    action.sa_sigaction = trampoline as usize;
     action.sa_flags = libc::SA_SIGINFO;
     // `sigemptyset(3)` and `sigaction(2)` are the documented interfaces for what this
     // does. Neither retains a pointer into `action`, and the old-action out-parameter is
     // not requested.
-    let armed = libc::sigemptyset(&mut action.sa_mask) == 0
-        && libc::sigaction(signal_number, &action, std::ptr::null_mut()) == 0;
+    // SAFETY: `action` is a fully initialised `sigaction` of the shape those calls
+    // expect, and neither call retains a pointer into it beyond its own execution.
+    let armed = unsafe {
+        libc::sigemptyset(&mut action.sa_mask) == 0
+            && libc::sigaction(signal_number, &action, std::ptr::null_mut()) == 0
+    };
     if !armed {
         return Err(ImeError::DataReadonly {
             reason: format!(
@@ -535,13 +544,16 @@ extern "C" fn on_host_signal(
         // it ever is not: there is no channel to report on inside a handler, so the
         // process ends with the recorded-fault status rather than by returning into a
         // faulting instruction.
-        libc::_exit(signal::CRASH_EXIT_CODE);
+        // SAFETY: `_exit` is async-signal-safe and the documented way to end a process
+        // from inside a handler; it never returns.
+        unsafe { libc::_exit(signal::CRASH_EXIT_CODE) };
     };
     let body = ARMED_BODIES[slot].load(Ordering::Acquire);
     if body == 0 {
         // Unreachable: the body is stored before the registration that arms this
         // handler. As above, exiting is the only honest answer if it ever is not.
-        libc::_exit(signal::CRASH_EXIT_CODE);
+        // SAFETY: see the twin call above — async-signal-safe and never returns.
+        unsafe { libc::_exit(signal::CRASH_EXIT_CODE) };
     }
     // SAFETY: the kernel passes a valid `siginfo_t` for the signal it delivered, and
     // reading `si_code` and `si_addr` out of it is the documented way to learn what

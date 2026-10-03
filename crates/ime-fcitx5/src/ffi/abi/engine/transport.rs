@@ -141,6 +141,11 @@ pub struct RspinyinFrameWire {
     pub theme_corner_radius_dp: u16,
     pub theme_scale: f32,
     pub hide_reason: u32,
+    /// Page-local position of the keyboard highlight, meaningful for `kind == KIND_FRAME`
+    /// only. The pair encodes `UiFrame::highlight`, appended to the ADR-0011 table: the
+    /// position is meaningless when `has_highlight` is `0`, which is how `None` travels.
+    pub highlight: u16,
+    pub has_highlight: u8,
 }
 
 /// One `keys -> label` row of an overlay.
@@ -311,6 +316,8 @@ fn empty_frame_wire(kind: u32) -> RspinyinFrameWire {
         theme_corner_radius_dp: 0,
         theme_scale: 0.0,
         hide_reason: 0,
+        highlight: 0,
+        has_highlight: 0,
     }
 }
 
@@ -358,6 +365,8 @@ fn fill_frame(wire: &mut RspinyinFrameWire, frame: &UiFrame, scratch: &mut Scrat
     wire.max_per_row = frame.layout.max_per_row;
     wire.show_annotation = u8::from(frame.layout.show_annotation);
     wire.max_width_dp = frame.layout.max_width_dp;
+    wire.highlight = frame.highlight.unwrap_or(0);
+    wire.has_highlight = u8::from(frame.highlight.is_some());
 }
 
 /// Fills the anchor fields, shared by `Show` and `Frame`.
@@ -658,10 +667,7 @@ fn event_from_wire(wire: &RspinyinEventWire) -> Option<UiEvent> {
 ///
 /// Never.
 #[unsafe(no_mangle)]
-pub extern "C" fn rspinyin_event_ingest(
-    ic_id: u64,
-    wire: *const RspinyinEventWire,
-) -> bool {
+pub extern "C" fn rspinyin_event_ingest(ic_id: u64, wire: *const RspinyinEventWire) -> bool {
     guard_ffi(false, || {
         if wire.is_null() {
             emit_diagnostic("ffi/null-event-wire");
@@ -674,7 +680,9 @@ pub extern "C" fn rspinyin_event_ingest(
             emit_diagnostic(WIRE_MALFORMED_CODE);
             return false;
         };
-        super::with_host(ic_id, |host| crate::session_host::ui_event(ic_id, event, host))
+        super::with_host(ic_id, |host| {
+            crate::session_host::ui_event(ic_id, event, host)
+        })
     })
 }
 

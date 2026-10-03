@@ -96,6 +96,7 @@ fn frame_with(candidates: usize, max_per_row: u8) -> UiFrame {
             show_annotation: true,
             max_width_dp: 720,
         },
+        highlight: Some(0),
     }
 }
 
@@ -552,7 +553,9 @@ fn test_compute_scales_every_physical_number() {
     anchor.scale = 2.0;
     let geometry = place(&anchor, &screen, row_panel(), &frame);
 
-    assert_eq!(geometry.window_size, (848, 302));
+    // The height is the birth panel's even dp doubled: the laid-out 87 dp rounds to 88,
+    // twice that is the 176 the container carries, and the window adds the shadow reserve.
+    assert_eq!(geometry.window_size, (848, 304));
     assert_eq!(geometry.container_offset, (64, 64));
     // x: the caret's centre is still 961, in physical pixels, and the window is 848 wide:
     // 961 - 424 = 537.

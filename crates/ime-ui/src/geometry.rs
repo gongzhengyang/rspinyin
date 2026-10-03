@@ -254,6 +254,7 @@ impl<'a> PlacementRequest<'a> {
     ///     status: StatusStrip::default(),
     ///     anchor,
     ///     layout: LayoutHint { max_per_row: 5, show_annotation: false, max_width_dp: 720 },
+    ///     highlight: Some(0),
     /// };
     /// let metrics = metrics().expect("the component declares its constants");
     /// let request = PlacementRequest::new(&anchor, desktop, panel, &frame, metrics);
@@ -350,7 +351,7 @@ pub fn compute(request: &PlacementRequest<'_>) -> Geometry {
         request.metrics,
     );
     let container_w = narrow(&px, bounds, in_container(even_up(i64::from(window_w)), &px));
-    let container_h = in_container(even_up(i64::from(window_h)), &px);
+    let container_h = in_container(even_up_scaled(i64::from(window_h), scale.value), &px);
 
     let columns = px
         .columns_in(container_w)
@@ -471,6 +472,36 @@ fn even_up(value: i64) -> i64 {
 fn even_down(value: i64) -> i64 {
     let value = value.max(MIN_CONTAINER);
     value - (value & 1)
+}
+
+/// Rounds a physical height to an even count of the *logical* dp it came from, back in
+/// physical pixels; fractional ratios keep the physical round-up.
+///
+/// The component lays its panel out in logical dp, and that height may be an odd count of
+/// them -- a header, a separator and the rows do not have to sum to an even dp. At the
+/// birth ratio of 1.0 the physical [`even_up`] rounds the odd dp up, so the panel the
+/// pointer hits is the even dp the grid is framed by. At an integral ratio such as 2.0 the
+/// same odd dp has already become an even pixel count (87 dp is 174 px), the physical test
+/// passes untouched, and the scaled panel comes out one dp shorter than the 1.0 panel it
+/// is the scaled form of -- the discrepancy the hit-region contract ("the region is the
+/// birth panel, doubled") turns into a failed assertion. Rounding in the space the
+/// component lays out in gives integral ratios the same dp panel as the birth one.
+///
+/// A fractional ratio stays on the physical round-up deliberately: an even dp multiplied
+/// by 1.5 can be an odd pixel count (66 dp is 99 px), and the even *window* the
+/// compositors need (see [`even_up`]) is the invariant the fractional ratios have no
+/// contract against. There the dp panel may differ from the birth one by one dp, which is
+/// under a pixel of region and covers no cell the hit map does not.
+fn even_up_scaled(px: i64, scale: f32) -> i64 {
+    if scale > 1.0 && scale.fract() == 0.0 {
+        let dp = (px as f32 / scale).floor().max(1.0) as i64;
+        i64::from(crate::platform::physical_dimension(
+            even_up(dp) as u32,
+            scale,
+        ))
+    } else {
+        even_up(px)
+    }
 }
 
 /// Clamps a widened coordinate back into `i32`.

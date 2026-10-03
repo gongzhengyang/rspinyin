@@ -1,9 +1,9 @@
 //! The input-method-engine callbacks: the host-to-engine direction of the ABI.
 //!
 //! Responsibility: validate at the boundary what the host hands over — a key event, a
-//! commit or preedit buffer — and forward it to the crate module that owns the answer.
-//! Every entry point runs under the panic guard and answers with its documented
-//! fallback instead of unwinding into C++.
+//! focus change, a commit or preedit buffer — and forward it to the crate module that
+//! owns the answer. Every entry point runs under the panic guard and answers with its
+//! documented fallback instead of unwinding into C++.
 //!
 //! Boundaries: nothing here decides what input means. A key is handed to
 //! [`crate::session_host`], which routes it through the session of the context it arrived
@@ -103,17 +103,28 @@ pub extern "C" fn on_key_event(
 }
 
 /// An input context gained focus.
-pub extern "C" fn on_focus_in(_context: *mut c_void, _ic_id: u64) {
-    guard_ffi((), || {
-        // Stub: focus tracking belongs to the session lifecycle work.
-    });
+///
+/// The session of the context is ensured rather than created: one that is already there —
+/// an id the host reused, or a focus that came back to a context a focus loss left
+/// behind — is reused as it stands, so refocusing a window never rebuilds the session
+/// under it. Focus arriving is what makes a session exist for a context, whatever its
+/// history: a focus loss need not have gone through [`on_focus_out`] first.
+pub extern "C" fn on_focus_in(_context: *mut c_void, ic_id: u64) {
+    guard_ffi((), || crate::session_host::focus_in(ic_id));
 }
 
 /// An input context lost focus.
-pub extern "C" fn on_focus_out(_context: *mut c_void, _ic_id: u64) {
+///
+/// The composition is taken back and nothing is committed — the window is hidden under
+/// the focus-lost reason and the application's preedit area is emptied — and the session
+/// itself stays, so a focus that comes back finds the context it left. The loss is also
+/// the reclamation tick: the `FOCUS_OUTS_BEFORE_RECLAIM`-th loss in a row for a context
+/// no focus came back to reclaims it, its session and its privacy state with it, because
+/// the C ABI has no slot that reports a context destroyed (appending one is the
+/// ADR-0011 symbol batch's change, deliberately not made here).
+pub extern "C" fn on_focus_out(_context: *mut c_void, ic_id: u64) {
     guard_ffi((), || {
-        // Stub: focus tracking belongs to the session lifecycle work. Losing focus is
-        // the project's highest-severity defect, so the handling must be deliberate.
+        with_host(ic_id, |host| crate::session_host::focus_out(ic_id, host));
     });
 }
 

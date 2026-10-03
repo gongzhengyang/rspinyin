@@ -245,6 +245,21 @@ impl UiThread {
         self.events.poll(timeout)
     }
 
+    /// A shared handle on the event queue, for a dedicated drain thread.
+    ///
+    /// [`Self::poll_event`] borrows `&self`, which ties it to a live handle; a
+    /// consumer that parks on the queue from a thread of its own -- the addon's
+    /// event drain -- cannot hold that borrow. The queue is `Send` and `Sync`, and
+    /// `poll` is its documented consumer side, so a cloned `Arc` is the same
+    /// consumer the borrow would be.
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic.
+    pub fn event_queue(&self) -> Arc<UiEventQueue> {
+        Arc::clone(&self.events)
+    }
+
     /// Asks the UI thread to stop and waits up to `timeout` for it to do so.
     ///
     /// Idempotent: a second call after the thread has been joined returns
