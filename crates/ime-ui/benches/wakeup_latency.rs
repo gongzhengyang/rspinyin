@@ -35,6 +35,18 @@
 //! -- the iteration count is criterion's to choose -- so the two are kept side by side and
 //! neither is presented as the other.
 //!
+//! # The pointer case
+//!
+//! `ui/pointer_to_pixel` measures the same one-delivery-at-a-time wait with the surface's
+//! *connection* descriptor as the waker -- the descriptor a display backend reports and
+//! the loop adds to its poll set. The poster stamps, wakes that descriptor, and the sample
+//! is taken in the first call the loop makes afterwards ([`UiSurface::drain_events`]),
+//! which is where a real surface would consume the queued input. It is the latency the
+//! surface's own descriptor exists to bound: a pointer event has to wake the loop
+//! directly instead of riding along with the next host post. What it deliberately does
+//! not time is the raster that follows the drain -- that is the render path the frame
+//! budgets cover, and folding it in would time the renderer under the name of a wakeup.
+//!
 //! # No display, no environment, nothing time-dependent in the assertions
 //!
 //! The surface here is a recording surface with no connection of its own, so the loop waits
@@ -72,7 +84,7 @@ use ime_types::{
 };
 
 use histogram::LatencyHistogram;
-use ime_ui::channel::UiEventQueue;
+use ime_ui::channel::{UiEventQueue, Wakeup};
 use ime_ui::ui_thread::{SurfaceUpdate, UiContext, UiSurface, UiThread, UiThreadConfig};
 
 /// Deliveries the acceptance criterion states for the wakeup case.
@@ -80,6 +92,13 @@ use ime_ui::ui_thread::{SurfaceUpdate, UiContext, UiSurface, UiThread, UiThreadC
 /// Run once, before criterion's sampler starts, so the number the criterion names is
 /// measured on every run rather than left to the sampler's own iteration count.
 const WAKEUP_DELIVERIES: u64 = 10_000;
+
+/// Deliveries the pointer case runs, the same population as the wakeup case.
+///
+/// One histogram sample per delivery, for the same reason: the percentile the criterion
+/// is read against is the deliveries', and a shorter run would describe the sampler's
+/// blocks instead of the population.
+const POINTER_DELIVERIES: u64 = 10_000;
 
 /// How long one delivery may take before the benchmark reports a failure rather than hanging.
 ///
@@ -158,6 +177,24 @@ impl Probe {
     fn run(&self, thread: &UiThread, deliveries: u64) {
         for _ in 0..deliveries {
             self.deliver_one(thread);
+        }
+    }
+
+    /// Posts one pointer delivery: the stamp, then the connection descriptor going ready,
+    /// which is the only signal a real backend raises for queued input.
+    fn deliver_pointer(&self, connection: &Wakeup) {
+        let expected = self.deliveries.fetch_add(1, Ordering::Relaxed) + 1;
+        self.stamp_post();
+        connection
+            .wake()
+            .expect("the connection descriptor accepts a wake");
+        self.await_observation(expected);
+    }
+
+    /// Runs `deliveries` pointer deliveries, one descriptor wake each.
+    fn run_pointer(&self, connection: &Wakeup, deliveries: u64) {
+        for _ in 0..deliveries {
+            self.deliver_pointer(connection);
         }
     }
 
@@ -268,6 +305,43 @@ impl UiSurface for RecordingSurface {
     }
 }
 
+/// The surface the loop drives for the pointer case: it reports the connection descriptor
+/// the poster wakes, and records when the drained input reaches it.
+///
+/// This is the half of the pointer path the surface's own descriptor unlocks -- without
+/// it the loop can only notice input when it wakes for some other reason. Nothing is ever
+/// posted on this path, so `apply` is a no-op: the delivery is complete when the loop has
+/// left its wait and handed the surface its drain call.
+struct PointerSurface {
+    probe: Arc<Probe>,
+    connection: Wakeup,
+}
+
+impl UiSurface for PointerSurface {
+    fn event_fd(&self) -> Option<BorrowedFd<'_>> {
+        Some(self.connection.fd())
+    }
+
+    fn apply(&mut self, _update: SurfaceUpdate) -> Result<(), ImeError> {
+        Ok(())
+    }
+
+    fn drain_events(&mut self, _events: &UiEventQueue, _limit: usize) -> Result<(), ImeError> {
+        self.probe.observe();
+        Ok(())
+    }
+
+    fn render(&mut self, _now: Instant) -> Result<Option<Instant>, ImeError> {
+        // Never animating, for the same reason the wakeup case is: a deadline would pace
+        // the measurement by frames instead of by deliveries.
+        Ok(None)
+    }
+
+    fn close(&mut self) -> Result<(), ImeError> {
+        Ok(())
+    }
+}
+
 /// Times one delivery per iteration, against the real UI thread.
 fn bench_wakeup_latency(criterion: &mut Criterion, thread: &UiThread, probe: &Probe) {
     let mut group = criterion.benchmark_group("ui");
@@ -275,6 +349,21 @@ fn bench_wakeup_latency(criterion: &mut Criterion, thread: &UiThread, probe: &Pr
         bencher.iter_custom(|iterations| {
             let start = Instant::now();
             probe.run(thread, iterations);
+            start.elapsed()
+        });
+    });
+    group.finish();
+}
+
+/// Times one pointer delivery per iteration, against the real UI thread: the connection
+/// descriptor going ready, the loop leaving `poll(2)`, and the surface draining what it
+/// has queued.
+fn bench_pointer_to_pixel(criterion: &mut Criterion, connection: &Wakeup, probe: &Probe) {
+    let mut group = criterion.benchmark_group("ui");
+    group.bench_function("pointer_to_pixel", |bencher| {
+        bencher.iter_custom(|iterations| {
+            let start = Instant::now();
+            probe.run_pointer(connection, iterations);
             start.elapsed()
         });
     });
@@ -400,9 +489,32 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut criterion = Criterion::default().configure_from_args();
     bench_wakeup_latency(&mut criterion, &thread, &probe);
+
+    // The pointer case: the same loop, woken through the connection descriptor a display
+    // backend reports instead of through the shared counter. The pre-run is the
+    // acceptance measurement; criterion's sampler adds its own block afterwards.
+    let pointer_probe = Arc::new(Probe::new());
+    let connection = Wakeup::new().expect("an eventfd can be created");
+    let poster_fd = connection.clone();
+    let surface = PointerSurface {
+        probe: Arc::clone(&pointer_probe),
+        connection,
+    };
+    let pointer_thread = UiThread::spawn(UiThreadConfig::default(), move |_context: UiContext| {
+        Ok(Box::new(surface) as Box<dyn UiSurface>)
+    })?;
+    pointer_probe.run_pointer(&poster_fd, POINTER_DELIVERIES);
+    let pointer_samples = pointer_probe.histogram().samples();
+    assert_eq!(
+        pointer_samples, POINTER_DELIVERIES,
+        "each pointer delivery must leave exactly one sample, got {pointer_samples}: a \
+         different count means the loop missed a descriptor wake or drained twice"
+    );
+    bench_pointer_to_pixel(&mut criterion, &poster_fd, &pointer_probe);
     criterion.final_summary();
 
     assert_samples_hold(&probe);
+    assert_samples_hold(&pointer_probe);
 
     let stopped = thread.shutdown(SHUTDOWN_TIMEOUT);
     assert!(stopped.is_ok(), "the UI thread must stop: {stopped:?}");
@@ -410,6 +522,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         thread.stats().shutdown_timeouts,
         0,
         "the UI thread stopped inside its shutdown budget"
+    );
+
+    let pointer_stopped = pointer_thread.shutdown(SHUTDOWN_TIMEOUT);
+    assert!(
+        pointer_stopped.is_ok(),
+        "the pointer thread must stop: {pointer_stopped:?}"
+    );
+    assert_eq!(
+        pointer_thread.stats().shutdown_timeouts,
+        0,
+        "the pointer thread stopped inside its shutdown budget"
     );
     Ok(())
 }

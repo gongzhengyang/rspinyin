@@ -117,3 +117,19 @@
   - `ime-ui`：`apply_frame` 采纳帧值进绘制态，`sync_pointer` 以帧值为准（删除旧值回抄）；
   - `ime-diag`：镜像快照 `FrameSnapshot.highlight`，文件格式版本随行升级（版本演进规则照旧：版本不符即拒读）。
 - **类别**：追加（结构体，尾部）；纯 Rust 契约面，不进 vtable，`RSPINYIN_ABI_VERSION` 保持不变。
+
+---
+
+## 增量登记（2026-10-03，`StatusStrip.chinese` 模式位直供）
+
+承接卡：`docs/dev/opt-basic.md` `REFACTOR-P0.01.06`（状态矩阵诚实化），绑定缺陷 `DEF-11`、`DEF-16`。
+
+| 类型 | 变更 | 类别 | 落地位置 | 承接卡 |
+|---|---|---|---|---|
+| `StatusStrip` | 尾部追加 `pub chinese: bool`（模式点的是/非中文位） | 追加（结构体，尾部） | `ui.rs` | `REFACTOR-P0.01.06` |
+
+**决策依据**：`StatusCluster` 此前以 `chinese: mode-label != ""` 从文案反推模式点状态——通知位（3.2 节）落地后 `mode_label` 会承载降级通知文案（如「词典不可用，仅直通输入」），空否推断会把英文模式点亮成「中」，这是用文案空否推断语义状态的脆弱耦合。引擎 `Modes` 本就持有 `is_chinese`，追加该位是零推导直供：引擎写入、视图直读，废除空否推断。字段为尾部追加，`Default`（`false` = 非中文，诚实中性值）使全部既有构造点零改动；纯 Rust 契约面，不进 vtable，`RSPINYIN_ABI_VERSION` 保持不变。
+
+**连带登记**：`mode_label` 的字段文档同步冻结其双职责——该槽承载「模式自有文案 **或** 降级通知文案」，视图不得从文案内容反推任何语义状态；`script` 与 `has_user_dict_hit` 两个字段按 `DEF-12` 处置在字段文档登记「v1 无生产者，延后」，以字段文档为准而非删除（跨 addon wire 与镜像 schema 已携带它们，删除会二次搅动线格式）。
+
+**已知的非本 ADR 范围**：该位经跨 addon wire（ADR-0011 的 `RspinyinFrameWire` flags 位）转写属承接卡的落地范围；wire 不携带该位期间，通知位文案经 `mode_label` 已可达窗口，模式位直供则以 wire 侧同步追加为完成点。

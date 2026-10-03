@@ -300,11 +300,11 @@ export component StatusCluster inherits Rectangle {
         // because a read-only store is information rather than an alert.
         //
         // Gated by its colour rather than by an `opacity`, which is the rule this file follows
-        // throughout: on the renderer this project ships a *bound* opacity does not merely go
-        // ignored, it takes the subtree down a compositing path that draws nothing at all, so a
-        // marker "faded out" that way is a marker that would never appear when it is on either.
-        // The disc keeps its slot in the cluster whichever way the flag reads, which is what
-        // holds the four markers at one width.
+        // for a binary state: the renderer does honour a bound opacity -- the pixel probes in
+        // `src/renderer/tests.rs` pin that -- but compositing a subtree on every frame to
+        // express an on/off that a transparent colour already expresses for free is cost
+        // without a visual. The disc keeps its slot in the cluster whichever way the flag
+        // reads, which is what holds the four markers at one width.
         Rectangle {
             width: CandidateMetrics.header-icon-size;
             height: CandidateMetrics.header-icon-size;
@@ -417,10 +417,12 @@ export component Header inherits Rectangle {
 
                 // The caret sits exactly where the zero-width `SpanKind::Cursor` span was,
                 // which is the whole reason the span list is ordered. It is gated by its own
-                // colour rather than by an `opacity` or a `visible`: a bound opacity draws
-                // nothing at all on the renderer this project ships, and hiding it would take
+                // colour rather than by an `opacity` or a `visible`: hiding it would take
                 // it out of the layout and shift every glyph behind it by a pixel each time
-                // the caret blinked.
+                // the caret blinked, and an opacity would buy a per-frame compositing pass
+                // for a blink the colour already switches for nothing -- the renderer does
+                // honour a bound opacity (pinned by the pixel probes in
+                // `src/renderer/tests.rs`), so the choice is cost, not capability.
                 //
                 // The slot is as tall as the row and the bar is centred in it explicitly, for
                 // the reason `StatusCluster` is: a fixed-size child of a taller row is placed
@@ -817,8 +819,11 @@ export component CandidateWindow inherits Window {
     // uncovers the frame beneath untouched. It rides the panel's own geometry -- the
     // shadow-margin inset, the appear-motion rectangle -- so the overlay and the panel
     // it replaces are one surface, and the shadow the panel casts keeps holding it up.
-    // Gated with `visible`, the way every conditional element in this window is: the
-    // software renderer this project ships does not honour an opacity.
+    // Gated with `visible` rather than an opacity: a closed overlay must leave no draw and
+    // no damage at all, which is what keeps an idle window's frame count still -- a
+    // zero-alpha subtree would still cost a compositing pass every frame. That the renderer
+    // does honour a bound opacity (pinned by the pixel probes in `src/renderer/tests.rs`)
+    // is what makes the cost argument the whole argument here.
     OverlayPanel {
         x: CandidateMetrics.shadow-margin + root.panel-x;
         y: CandidateMetrics.shadow-margin + root.panel-y;

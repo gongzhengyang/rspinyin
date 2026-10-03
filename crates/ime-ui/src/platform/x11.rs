@@ -27,7 +27,7 @@
 //! alpha channel while repacking, and reports `platform/x11/no-argb-visual` through
 //! [`X11Diagnostics`].
 
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 
 use ime_types::{FrameToken, PixelBufferMut, PlatformError, RectI, SurfaceBackend, SurfaceEvent};
 use x11rb::connection::{Connection, RequestConnection};
@@ -536,6 +536,13 @@ impl SurfaceBackend for X11Backend {
         // `_NET_WM_SYNC_REQUEST` there is no "next frame" to be notified about, so the UI
         // thread paces animation with its own timer instead.
         None
+    }
+
+    fn connection_fd(&self) -> Option<BorrowedFd<'_>> {
+        // The X connection's socket is what a pointer event arrives on, so this is the
+        // descriptor the UI thread's poll set has to watch. Borrowed, not owned: the
+        // connection keeps the descriptor, and the borrow lives only for this call.
+        Some(BorrowedFd::borrow_raw(self.conn.stream().as_raw_fd()))
     }
 
     fn poll_events(&mut self, out: &mut Vec<SurfaceEvent>) -> Result<(), PlatformError> {

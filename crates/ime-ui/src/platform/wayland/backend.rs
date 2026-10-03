@@ -23,7 +23,7 @@
 //! rather than waited for, because the caller is the UI thread and waiting there would hold up
 //! the next keystroke.
 
-use std::os::fd::RawFd;
+use std::os::fd::{BorrowedFd, RawFd};
 use std::time::{Duration, Instant};
 
 use ime_types::{FrameToken, PixelBufferMut, PlatformError, RectI, SurfaceBackend, SurfaceEvent};
@@ -523,6 +523,13 @@ impl SurfaceBackend for WaylandBackend {
         }
         self.pending_frame = Some(token);
         Some(token)
+    }
+
+    fn connection_fd(&self) -> Option<BorrowedFd<'_>> {
+        // The display's descriptor is what pointer and output events arrive on, so this is
+        // the one the UI thread's poll set watches. Borrowed, not owned: the client keeps
+        // the descriptor, and the borrow lives only for this call.
+        Some(BorrowedFd::borrow_raw(WaylandBackend::connection_fd(self)))
     }
 
     fn poll_events(&mut self, out: &mut Vec<SurfaceEvent>) -> Result<(), PlatformError> {

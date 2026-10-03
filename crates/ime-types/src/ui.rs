@@ -264,9 +264,21 @@ pub enum Script {
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct StatusStrip {
     /// Chinese or English; in Chinese mode it shows the active scheme.
+    ///
+    /// The slot doubles as the degradation notice slot: the engine may place a
+    /// degradation notice here instead of the mode's own text (for example
+    /// `dict/unavailable`), so the text's *content* says nothing about the mode.
+    /// `chinese` is the authoritative mode bit; the view must not re-derive the
+    /// mode from this string.
     pub mode_label: String,
     pub full_width: bool,
     pub punctuation_full: bool,
+    /// Whether the winning candidate came from the user's own dictionary.
+    ///
+    /// Carried since the first contract revision, but v1 has no producer: no
+    /// layer writes `true` yet. Registration of the deferral is deliberate
+    /// (the fixed-width cluster of the specification has no slot for it
+    /// either), so the field stays until a producer and a slot exist together.
     pub has_user_dict_hit: bool,
     /// Read-only mode: the data directory is not writable, so learning and log
     /// writing are off and the strip shows a lock.
@@ -279,7 +291,23 @@ pub struct StatusStrip {
     /// Appended by ADR-0005, following the `readonly` precedent above: the field is
     /// additive, and the struct already derives `Default`, so the new field's
     /// default is the value every existing construction site gets.
+    ///
+    /// v1 has no producer: the script conversion action exists in the contract
+    /// vocabulary, but no decode path emits `CandidateSource::Script` yet, so the
+    /// engine never writes `Traditional`. The deferral is registered rather than
+    /// removed so the wire and mirror schemas do not churn twice; a producer is
+    /// expected to arrive with the script-conversion work.
     pub script: Script,
+    /// Whether the strip's mode dot shows Chinese input.
+    ///
+    /// Appended to the frozen struct by ADR-0005. The engine's mode bits already
+    /// hold the answer (`Modes::is_chinese`), so this is a straight copy and not
+    /// an inference: the `mode_label` slot carries the mode's own text *or* a
+    /// degradation notice, so a view that derived the mode from the label's
+    /// emptiness or content would light the dot from notice prose. `false` means
+    /// English (temporary English included), exactly what the label would have
+    /// said.
+    pub chinese: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -455,6 +483,16 @@ mod tests {
         assert!(!status.punctuation_full);
         assert!(!status.has_user_dict_hit);
         assert!(!status.readonly);
+    }
+
+    #[test]
+    fn test_status_strip_default_chinese_is_false() {
+        // `chinese` is a tail append (ADR-0005), so every construction site that
+        // predates it gets `false` — the "not Chinese" answer. The engine's mode
+        // bits overwrite it on every frame; the default only has to be the honest
+        // neutral value rather than one that lights the mode dot.
+        let status = StatusStrip::default();
+        assert!(!status.chinese);
     }
 
     #[test]

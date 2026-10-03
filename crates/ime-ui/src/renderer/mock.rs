@@ -268,3 +268,21 @@ pub(crate) fn on_own_thread<R: Send + 'static>(scene: impl FnOnce() -> R + Send 
         .expect("the test thread can be spawned");
     thread.join().expect("the scene completes")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mock_surface_reports_no_connection_descriptor() {
+        // The event loop's fallback contract: a backend with no connection descriptor of
+        // its own makes the loop wait on the wakeup counter alone, which is what keeps
+        // every hermetic scene deterministic. The mock must keep answering `None` rather
+        // than grow a descriptor of its own.
+        let (surface, _state) = MockSurface::new(64, 32, 1.0);
+        assert!(
+            surface.connection_fd().is_none(),
+            "the mock has no connection for the poll set to watch"
+        );
+    }
+}
