@@ -277,10 +277,7 @@ pub struct ThemeTokens {
 /// The element opacity of a candidate cell's number label: 3.1.1's 0.55, fixed by the
 /// specification's annotation note as the label's *effective* alpha. `ui/candidate_grid.slint`
 /// spells the same fraction; the tests beside this file hold the two copies together.
-///
-/// Test-only because the renderer folds the fraction into a byte — [`NUMBER_LABEL_ALPHA`]
-/// — and the palette and the `.slint` source carry the values the pixels are actually
-/// drawn with; this spelling exists so the frozen fractions are pinned in one place.
+/// Test-only because the pixels are drawn from [`NUMBER_LABEL_ALPHA`], the folded byte.
 #[cfg(test)]
 const NUMBER_LABEL_OPACITY: f32 = 0.55;
 

@@ -176,3 +176,84 @@ fn test_bytes_from_raw_allow_empty_distinguishes_empty_from_invalid() {
     let read = unsafe { bytes_from_raw_allow_empty(data.as_ptr(), data.len()) };
     assert_eq!(read, Some(&b"ab"[..]));
 }
+
+/// The ABI source, embedded at test-compile time.
+///
+/// The panic-guard invariant is a fact about which bodies call `guard_ffi`, not about
+/// any value the slots return: the availability body reads two atomics and offers no
+/// runtime panic to inject, so the structural assertions below read the source instead.
+const ABI_SOURCE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ffi/abi.rs"));
+
+/// Drops whole-line comments from `source`.
+///
+/// The structural search below matches on `extern "C" fn` signatures, and this file's
+/// comments mention those spellings; stripping the lines first keeps a comment from
+/// posing as a function.
+fn without_comment_lines(source: &str) -> String {
+    let mut stripped = String::with_capacity(source.len());
+    for line in source.lines() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        stripped.push_str(line);
+        stripped.push('\n');
+    }
+    stripped
+}
+
+/// The text of the `extern "C" fn` called `name`, through to the next such function.
+///
+/// The boundary is exact enough for this file, whose `extern "C"` items are adjacent and
+/// short. The chunk of the last one reaches the end of the source; that tail carries no
+/// `guard_ffi` of its own, so it only makes the assertions below stricter.
+fn extern_fn_source<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    const MARKER: &str = "extern \"C\" fn ";
+    let signature = format!("{MARKER}{name}(");
+    let start = source.find(&signature)?;
+    let after = start + MARKER.len();
+    let end = source[after..]
+        .find(MARKER)
+        .map_or(source.len(), |offset| after + offset);
+    Some(&source[start..end])
+}
+
+#[test]
+fn test_every_ui_vtable_slot_body_runs_under_the_panic_guard() {
+    // The C++ glue calls each slot directly, so a panic escaping a slot body would
+    // unwind into C++ — undefined behaviour. Whether a body is wrapped is a property of
+    // the source text, so the module's own invariant is pinned structurally: every slot
+    // the registered table hands to the glue must spell `guard_ffi` in its body.
+    let source = without_comment_lines(ABI_SOURCE);
+    for name in [
+        "on_addon_init",
+        "on_addon_destroy",
+        "on_input_panel_update",
+        "on_cursor_rect",
+        "on_host_suspend",
+        "on_host_resume",
+        "is_available",
+    ] {
+        let body = extern_fn_source(&source, name).expect("every slot is defined in abi.rs");
+        assert!(
+            body.contains("guard_ffi"),
+            "vtable slot {name} must run its body inside `guard_ffi`"
+        );
+    }
+}
+
+#[test]
+fn test_availability_answers_from_one_guarded_implementation() {
+    // The host reaches the availability query through two entry points: the export it
+    // resolves by name and the vtable slot the glue calls directly. Both must run the
+    // same `crate::ui_impl::is_available` under the guard with the same `false`
+    // fallback — a second body, or an unguarded one, would let the two answers drift
+    // apart or take the process down.
+    let source = without_comment_lines(ABI_SOURCE);
+    for name in ["rspinyin_ui_available", "is_available"] {
+        let body = extern_fn_source(&source, name).expect("both entries are defined in abi.rs");
+        assert!(
+            body.contains("guard_ffi(false") && body.contains("crate::ui_impl::is_available"),
+            "{name} must answer from `crate::ui_impl::is_available` under the guard"
+        );
+    }
+}

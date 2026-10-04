@@ -92,6 +92,13 @@ check-host:
             "check-host: absence a failure instead of a report." >&2
         exit 0
     fi
+    # The addon's lifecycle tests wait out the font warm-up once per test process, and
+    # under a parallel build that warm-up can stretch past the default wait the tests
+    # fall back to. Raising it here keeps this gate green on a loaded machine while
+    # every path that does not come through this recipe keeps the default; a window
+    # that genuinely fails to draw still fails, because the gate is the painted
+    # pixels, never the clock.
+    export RSPINYIN_TEST_FRAME_TIMEOUT_SECS=240
     cargo clippy -p ime-fcitx5 --all-targets --features fcitx5-host -- -D warnings
     cargo clippy -p ime-ui-addon --all-targets --features fcitx5-host -- -D warnings
     if ! cargo nextest --version >/dev/null 2>&1; then

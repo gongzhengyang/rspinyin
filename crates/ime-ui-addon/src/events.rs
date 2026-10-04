@@ -427,9 +427,12 @@ mod tests {
         );
         // The thread is gone, so nothing posted after the stop is handed on.
         queue.post_select(select(9)).expect("the queue has room");
+        // The stopped thread took its sender with it, so the channel answers
+        // disconnected rather than empty -- and disconnected with nothing left in the
+        // buffer is exactly "nothing was handed on", stated by the API itself.
         assert_eq!(
             received.try_recv(),
-            Err(TryRecvError::Empty),
+            Err(TryRecvError::Disconnected),
             "a stopped drain forwards nothing"
         );
     }
@@ -480,9 +483,11 @@ mod tests {
             drain.stop(SETTLE),
             "the drain consumes the receipt and answers the stop"
         );
+        // As with every stopped drain: the sender died with the thread, so the closed
+        // channel -- not an empty one -- is the shape "nothing was handed on" takes.
         assert_eq!(
             received.try_recv(),
-            Err(TryRecvError::Empty),
+            Err(TryRecvError::Disconnected),
             "a receipt names no engine state, so nothing was handed on"
         );
     }

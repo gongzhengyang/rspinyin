@@ -37,6 +37,12 @@ use crate::platform::{ProbeOutcome, SessionTier};
 const TEST_WINDOW_WIDTH_DP: u32 = 420;
 const TEST_WINDOW_HEIGHT_DP: u32 = 200;
 
+/// The frame timeout used when the environment names none, in seconds.
+const DEFAULT_FRAME_TIMEOUT_SECS: u64 = 90;
+
+/// The environment variable that raises the frame timeout on a loaded machine.
+const FRAME_TIMEOUT_ENV: &str = "RSPINYIN_TEST_FRAME_TIMEOUT_SECS";
+
 /// How long a test waits for the UI thread to draw something.
 ///
 /// Generous by design, and the reason is the font warm-up the surface build runs: the
@@ -44,7 +50,67 @@ const TEST_WINDOW_HEIGHT_DP: u32 = 200;
 /// cost tens of seconds, and `nextest` gives every test a process of its own, so every
 /// test that builds a surface pays it again. The bound exists to catch a hung loop, not
 /// to race the warm-up.
-const FRAME_TIMEOUT: Duration = Duration::from_secs(90);
+///
+/// A machine under heavy parallel build load stretches every step of that warm-up, so a
+/// gate that runs one can raise the wait by exporting [`FRAME_TIMEOUT_ENV`] (`just
+/// check-host` does) instead of editing this default. Without the variable the default
+/// applies, which is what the rest of the suite has always run with.
+fn frame_timeout() -> Duration {
+    parse_frame_timeout(std::env::var(FRAME_TIMEOUT_ENV).ok().as_deref())
+}
+
+/// The pure core of [`frame_timeout`], so the fallback rules carry their own tests.
+///
+/// A missing, malformed, or non-positive value falls back to the default rather than
+/// panicking or half-working: a test harness must not turn a configuration typo into a
+/// crash, and a zero-second deadline could only be a mistake, since it would expire
+/// every wait before the UI thread is scheduled once.
+fn parse_frame_timeout(raw: Option<&str>) -> Duration {
+    let parsed = raw.and_then(|value| value.trim().parse::<u64>().ok());
+    match parsed {
+        Some(secs) if secs > 0 => Duration::from_secs(secs),
+        _ => Duration::from_secs(DEFAULT_FRAME_TIMEOUT_SECS),
+    }
+}
+
+#[test]
+fn test_parse_frame_timeout_missing_value_returns_default() {
+    // No variable at all, and a variable holding nothing usable: both take the default
+    // the rest of the suite has always run with.
+    assert_eq!(
+        parse_frame_timeout(None),
+        Duration::from_secs(DEFAULT_FRAME_TIMEOUT_SECS)
+    );
+    assert_eq!(
+        parse_frame_timeout(Some("")),
+        Duration::from_secs(DEFAULT_FRAME_TIMEOUT_SECS)
+    );
+    assert_eq!(
+        parse_frame_timeout(Some("   ")),
+        Duration::from_secs(DEFAULT_FRAME_TIMEOUT_SECS)
+    );
+}
+
+#[test]
+fn test_parse_frame_timeout_invalid_value_returns_default() {
+    // A typo in the environment must degrade to the default — never panic, and never
+    // yield the zero-second deadline a bare "0" would produce.
+    for broken in ["soon", "-5", "1.5", "90s", "0"] {
+        assert_eq!(
+            parse_frame_timeout(Some(broken)),
+            Duration::from_secs(DEFAULT_FRAME_TIMEOUT_SECS),
+            "a broken value must fall back to the default: {broken}"
+        );
+    }
+}
+
+#[test]
+fn test_parse_frame_timeout_valid_value_is_honoured() {
+    // The override exists for loaded machines, so a value that parses must be used
+    // verbatim, surrounding whitespace included.
+    assert_eq!(parse_frame_timeout(Some("240")), Duration::from_secs(240));
+    assert_eq!(parse_frame_timeout(Some(" 120 ")), Duration::from_secs(120));
+}
 
 /// How often a test samples the surface while waiting for it to settle.
 const SETTLE_POLL: Duration = Duration::from_millis(20);
@@ -169,8 +235,12 @@ fn frame(revision: u32, preedit: &str, candidates: &[&str]) -> UiFrame {
 }
 
 /// Waits until the surface has committed at least `count` frames.
+///
+/// Returning without the count is not a failure of its own: the deadline only bounds a
+/// hung loop, and the caller judges the frame by the pixels it painted rather than by
+/// when the commit landed.
 fn wait_for_commits(state: &Arc<Mutex<MockState>>, count: usize) {
-    let deadline = Instant::now() + FRAME_TIMEOUT;
+    let deadline = Instant::now() + frame_timeout();
     while Instant::now() < deadline {
         if lock_state(state).commits >= count {
             return;
@@ -186,7 +256,7 @@ fn wait_for_commits(state: &Arc<Mutex<MockState>>, count: usize) {
 /// first call in a process reads the machine's fonts, and a slow machine may well miss the
 /// load deadline the production path waits for.
 fn wait_for_ready() -> bool {
-    let deadline = Instant::now() + FRAME_TIMEOUT;
+    let deadline = Instant::now() + frame_timeout();
     while Instant::now() < deadline {
         if candidate_window_ready() {
             return true;
@@ -203,8 +273,13 @@ fn wait_for_ready() -> bool {
 /// to do with the content. Waiting for three consecutive identical checksums is what makes
 /// the comparison in [`test_the_pre_created_window_redraws_for_a_new_frame`] an assertion
 /// about the frame rather than about the motion.
+///
+/// A budget that runs out before three identical samples is not a failure of its own: the
+/// last observed checksum is answered, and the caller decides from the painted pixels
+/// whether the frame arrived at all — these tests ask whether the window drew, not how
+/// quickly.
 fn settled_checksum(state: &Arc<Mutex<MockState>>) -> u64 {
-    let deadline = Instant::now() + FRAME_TIMEOUT;
+    let deadline = Instant::now() + frame_timeout();
     let mut previous = lock_state(state).checksum();
     let mut stable = 0;
     while Instant::now() < deadline {
@@ -220,6 +295,9 @@ fn settled_checksum(state: &Arc<Mutex<MockState>>) -> u64 {
             previous = current;
         }
     }
+    // The settle criterion never converged inside the budget. Answer the last observed
+    // value rather than failing: a slow machine is not the defect this helper looks for,
+    // and the caller's painted assertion is what decides.
     previous
 }
 
@@ -470,6 +548,16 @@ fn test_the_pre_created_window_redraws_for_a_new_frame() {
         .expect("the second frame is posted");
     wait_for_commits(&state, baseline + 2);
     let after = settled_checksum(&state);
+    // The painted gate the first frame answered, applied to the state the second frame
+    // settled on. When the budget runs out the settle above hands back the last observed
+    // frame instead of a converged one, and that must not read as a failure: whether the
+    // window drew is what decides here, and a frame that arrives and blanks the surface
+    // is as much a defect as one that never arrives.
+    assert!(
+        lock_state(&state).painted_pixels() > 0,
+        "the second frame must be painted too: a commit count alone cannot tell a drawn \
+         frame from a blanked surface"
+    );
     // The defect this catches cannot be seen any other way: a window that rasterizes its
     // first frame and is never asked to draw again passes every test that only asserts
     // "something was drawn".

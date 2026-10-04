@@ -2,11 +2,11 @@
   "total": 219,
   "completed": 188,
   "is_workspace": true,
-  "ledger_revision": 27,
+  "ledger_revision": 29,
   "reconciled_at": "2026-09-30",
   "reconcile_basis": "Round 1 closed the 103 cards of the seven Hub documents and set ALL_COMPLETED. That was a false completion: opt-deploy/keymap/perf/ui are Hub & Spoke documents whose P1/P2 cards live in opt-<name>/phase-{2,3}.md, and the run only ever read the Hubs. This round scans the shards too (53 open cards) plus docs/dev/tests.md (30 cases still 未通过). The 103 round-1 cards stay COMPLETED and are not re-opened.",
   "wave_plan": "W0=1.01.01-03 | W1=1.02.01,1.03.01-03,1.04.01 | W2=1.02.02-07,1.03.04-07,1.04.02-05 | W3=1.04.06-07,1.05.01-08 | W4=1.06.01-03,1.07.01,1.08.01-03",
-  "wave_plan_actual": "W0 done. W1 done except 1.03.02/1.03.03. W2 partially landed ahead of schedule (1.04.02, 1.04.05). Session wave A = 1.02.02, 1.02.03, 1.02.06, 1.03.02, 1.04.03. | M0 契约冻结已落地（ADR-0005）。Session wave B = 12 agents: ADD-FEAT-P0.05.01+02, TASK-1.02.04, TASK-1.02.05, TASK-1.03.03, TASK-1.02.07, TASK-1.04.04, TASK-1.05.04, TASK-1.05.06, PERF-P0.02.01, BUILD-P0.01.01, UI-OPT-P0.02.02, FEAT-TEST-P0.01.01. | Session wave C (7 agents): FEAT-TEST-P0.01.02+03, FEAT-TEST-P0.02.03+04, ADD-FEAT-P0.02.03, ADD-FEAT-P0.01.04, UI-OPT-P0.01.02+02.01, plus two follow-up agents closing gaps earlier cards flagged (the phrase document writer and its host wiring; the getrandom feature rule in check-no-network.sh). | Session wave D (20 agents): the contract, decoding, dictionary, configuration, engine, UI and diagnostics cards whose implementations were merged but whose cards were still open, plus the test platform's remaining channels. Session wave E (18 agents): the cards that needed new code -- script conversion, abbreviation in the lattice, the engine's configuration projection, the animation wiring, the placement and material work -- and the five files that were over the 800-line limit. Session wave F (9 agents): the audit passes that turned each remaining card's DoD into file:line and test-case evidence. | Round 2 (this session): stage 1 found 83 open cards the Hub-only scan had missed -- 9 BUILD-P1 + 4 BUILD-P2 in opt-deploy shards, 13 KEY-P1 + 8 KEY-P2 in opt-keymap shards, 7 PERF-P1 + 4 PERF-P2 in opt-perf shards, 4 UI-OPT-P1 + 4 UI-OPT-P2 in opt-ui shards, and TC-CORE-01..30 in tests.md.",
+  "wave_plan_actual": "W0 done. W1 done except 1.03.02/1.03.03. W2 partially landed ahead of schedule (1.04.02, 1.04.05). Session wave A = 1.02.02, 1.02.03, 1.02.06, 1.03.02, 1.04.03. | M0 契约冻结已落地（ADR-0005）。Session wave B = 12 agents: ADD-FEAT-P0.05.01+02, TASK-1.02.04, TASK-1.02.05, TASK-1.03.03, TASK-1.02.07, TASK-1.04.04, TASK-1.05.04, TASK-1.05.06, PERF-P0.02.01, BUILD-P0.01.01, UI-OPT-P0.02.02, FEAT-TEST-P0.01.01. | Session wave C (7 agents): FEAT-TEST-P0.01.02+03, FEAT-TEST-P0.02.03+04, ADD-FEAT-P0.02.03, ADD-FEAT-P0.01.04, UI-OPT-P0.01.02+02.01, plus two follow-up agents closing gaps earlier cards flagged (the phrase document writer and its host wiring; the getrandom feature rule in check-no-network.sh). | Session wave D (20 agents): the contract, decoding, dictionary, configuration, engine, UI and diagnostics cards whose implementations were merged but whose cards were still open, plus the test platform's remaining channels. Session wave E (18 agents): the cards that needed new code -- script conversion, abbreviation in the lattice, the engine's configuration projection, the animation wiring, the placement and material work -- and the five files that were over the 800-line limit. Session wave F (9 agents): the audit passes that turned each remaining card's DoD into file:line and test-case evidence. | Round 2 (this session): stage 1 found 83 open cards the Hub-only scan had missed -- 9 BUILD-P1 + 4 BUILD-P2 in opt-deploy shards, 13 KEY-P1 + 8 KEY-P2 in opt-keymap shards, 7 PERF-P1 + 4 PERF-P2 in opt-perf shards, 4 UI-OPT-P1 + 4 UI-OPT-P2 in opt-ui shards, and TC-CORE-01..30 in tests.md. | opt-basic round 3 (this session): wave A landed P0.01.07 (mode bits + classify gate + punctuation table row), P1.02.02 (staged hide) and P1.02.03 (contrast gate); the 13 cards earlier sessions merged (P0.01.01-06, 03.01, 04.01/02/04, P1.02.01, P2.04.01/02) move to READY_FOR_FINAL_GATE. Card flips happen at the final gate.",
   "stub_convention": "The codebase contains zero todo!()/unimplemented!(). Unfinished bodies are marked with an explicit `// Stub:` comment naming the replacing work (crates/ime-fcitx5/src/ffi/abi.rs, ffi/cpp/ui_glue.cpp) or a `pending_step(...)` call naming the awaited subsystem (crates/ime-fcitx5/src/addon.rs). Each such marker is owned by a later task card and must be closed by it.",
   "cross_task_notes": {
     "InputBuffer::push_char": "TASK-1.02.02 chose 'append at end + caret follows to end'. Phase 1 defers character-level caret editing, so insertion never happens at the caret. If TASK-1.03.07 wants insertion-at-caret, that is an interface decision (~5 lines).",
@@ -2025,7 +2025,7 @@
       "wave": "R1",
       "track": "A",
       "depends": "无",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2036,7 +2036,7 @@
       "wave": "R3",
       "track": "A",
       "depends": "P0.01.01",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2047,7 +2047,7 @@
       "wave": "R4",
       "track": "A",
       "depends": "P0.01.01+01.02",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2058,7 +2058,7 @@
       "wave": "R4",
       "track": "A",
       "depends": "P0.01.01",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2069,7 +2069,7 @@
       "wave": "R4",
       "track": "B",
       "depends": "P0.01.01",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2080,7 +2080,7 @@
       "wave": "R5",
       "track": "A",
       "depends": "P0.01.01",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2091,7 +2091,7 @@
       "wave": "R5",
       "track": "A",
       "depends": "P0.01.01",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2124,7 +2124,7 @@
       "wave": "R2",
       "track": "C",
       "depends": "无（契约追加走 ADR-0005）",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2135,7 +2135,7 @@
       "wave": "R1",
       "track": "A",
       "depends": "无",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2146,7 +2146,7 @@
       "wave": "R2",
       "track": "A",
       "depends": "无",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2168,7 +2168,7 @@
       "wave": "R1",
       "track": "A",
       "depends": "无",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2190,7 +2190,7 @@
       "wave": "R6",
       "track": "B",
       "depends": "P0.01.01+01.05",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2201,7 +2201,7 @@
       "wave": "R5",
       "track": "B",
       "depends": "P0.02.01",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2212,7 +2212,7 @@
       "wave": "R5",
       "track": "B",
       "depends": "P0.02.01",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2289,7 +2289,7 @@
       "wave": "R1",
       "track": "C",
       "depends": "无",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2300,7 +2300,7 @@
       "wave": "R2",
       "track": "C",
       "depends": "无",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2322,7 +2322,7 @@
       "wave": "R2",
       "track": "C",
       "depends": "无",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2333,7 +2333,7 @@
       "wave": "R2",
       "track": "C",
       "depends": "无",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {

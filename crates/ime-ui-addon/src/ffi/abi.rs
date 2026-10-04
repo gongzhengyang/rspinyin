@@ -284,11 +284,14 @@ pub extern "C" fn fcitx_addon_factory_instance() -> *mut c_void {
 /// body reads a few atomics and records nothing: it must not allocate, block, or write
 /// a log line per query. A `false` answer is what makes the host keep drawing the
 /// candidates itself.
+///
+/// This export and the `is_available` vtable slot are two entries into one
+/// implementation: both run `crate::ui_impl::is_available` under the guard below.
 #[unsafe(no_mangle)]
 pub extern "C" fn rspinyin_ui_available() -> bool {
-    // Wrapped in a closure: an `extern "C" fn` item does not implement `FnOnce()`, so
-    // the guard cannot take it directly the way it takes `crate::addon`'s functions.
-    guard_ffi(false, || is_available())
+    // A plain function item implements `FnOnce()`, so the guard takes the internal
+    // implementation directly, the way it takes `crate::addon`'s functions.
+    guard_ffi(false, crate::ui_impl::is_available)
 }
 /// Reports that the host suspended this user interface.
 ///
@@ -401,8 +404,13 @@ extern "C" fn on_host_resume(_context: *mut c_void) {
 }
 
 /// `UserInterface::available()`.
+///
+/// The C++ glue calls this slot directly rather than through the named export, so the
+/// body runs under the panic guard like every other `extern "C"` body: a panic that
+/// unwound into the host would be undefined behaviour. `false` is the fallback, and the
+/// safe direction — an unavailable answer leaves ClassicUI on screen.
 extern "C" fn is_available() -> bool {
-    crate::ui_impl::is_available()
+    guard_ffi(false, crate::ui_impl::is_available)
 }
 
 /// Reads a host-owned byte buffer that may legitimately be empty.
