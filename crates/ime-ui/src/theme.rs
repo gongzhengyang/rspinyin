@@ -98,15 +98,14 @@ pub use scheme::{
     resolve_accent, resolve_scheme,
 };
 
-/// The alpha that makes the base fully opaque.
+/// The alpha that makes the base fully opaque; `ui.base_alpha`'s default is 0.85 of it.
 pub const OPAQUE_ALPHA: u8 = 255;
 
-/// The alpha the base is painted with while the compositor blurs behind the window:
-/// `ui.base_alpha`'s default, 0.85 x 255.
+/// The base the window paints while the compositor blurs behind it: 0.85 x 255.
 pub const DEFAULT_BASE_ALPHA: u8 = 217;
 
-/// Recorded when the compositor refuses the blur request. This is an expected
-/// degradation, not a failure, and it is never shown to the user as an error.
+/// Recorded when the compositor refuses the blur request: an expected degradation,
+/// never shown to the user as an error.
 pub const BLUR_UNAVAILABLE: &str = "ui/theme/blur-unavailable";
 
 /// Recorded when the contrast self-check forces an opaque base.
@@ -281,17 +280,17 @@ pub struct ThemeTokens {
 #[cfg(test)]
 const NUMBER_LABEL_OPACITY: f32 = 0.55;
 
-/// The candidate annotation's element opacity: 3.1.1's 0.50, on the same ruling as above.
+/// The candidate annotation's element opacity: 3.1.1's 0.50, same ruling as above.
 #[cfg(test)]
 const ANNOTATION_OPACITY: f32 = 0.50;
 
-/// The fraction 3.2 fixes for the dark palette's `text.separator`; the light column
-/// ships 0.35. Slint's `rgba()` truncates both into the bytes the palettes store.
+/// The fraction 3.2 fixes for the dark palette's `text.separator` (the light column
+/// ships 0.35); `rgba()` truncates both into the bytes the palettes store.
 #[cfg(test)]
 const SEPARATOR_FRACTION_DARK: f32 = 0.40;
 
-/// The fraction 3.2 fixes for the dark palette's `text.secondary`, the token the mode
-/// label and the passthrough runs draw with. The light column ships 0.60.
+/// The fraction 3.2 fixes for the dark palette's `text.secondary` (light ships 0.60),
+/// the token the mode label and the passthrough runs draw with.
 #[cfg(test)]
 const SECONDARY_FRACTION_DARK: f32 = 0.62;
 
