@@ -662,6 +662,11 @@ fn replace(path: &Path, text: &str) -> io::Result<()> {
         // published while the bytes are still only in the page cache, and a power loss
         // would leave a complete name over an incomplete file.
         .and_then(|()| temp.sync_all());
+    // Closed before the rename, on the same terms as the dictionary's and the user
+    // store's write-and-rename paths: a descriptor is not a name, and leaving one open
+    // across the rename would keep a handle to the temporary alive after the name is
+    // gone. The division of labour is the one those paths document: `rename(2)` makes
+    // the swap atomic, the flush above is what makes the swapped-in contents complete.
     drop(temp);
     if let Err(error) = built {
         discard(&temp_path);

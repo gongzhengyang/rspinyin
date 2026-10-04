@@ -46,10 +46,11 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use ime_types::{ImeError, SurfaceBackend, UiCommand};
+use ime_types::{ColorScheme, ImeError, SurfaceBackend, ThemeSpec, UiCommand, Rgba8};
+use ime_ui::channel::UiEventQueue;
 use ime_ui::surface::CandidateSurface;
 use ime_ui::ui_thread::{UiSurface, UiThread, UiThreadConfig};
 
@@ -87,12 +88,11 @@ const UI_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 /// configuration and the diagnostics have to fit in what this wait leaves. The wait earns
 /// its place because of *when* the host reads the readiness state: it evaluates
 /// `UserInterface::available()` after the addon is constructed, so a window that exists by
-/// then is a window the host can choose. A window that appears later is only reachable if
-/// something asks the host to look again, and nothing in this library can: asking is
-/// `UserInterfaceManager::updateAvailability()`, which belongs on the host thread, and the
-/// one host-thread callback this addon receives while it is inactive — `available()` — is a
-/// query it has to answer without side effects. A start-up that misses this deadline still
-/// raises the flag when it finishes; what it loses is the host's first look.
+/// then is a window the host can choose. A start-up that misses this deadline still raises
+/// the flag when it finishes, and the `ui-registration` step arms
+/// [`retry_late_takeover`] so the takeover gets one more chance on the host thread once a
+/// cross-addon command arrives and the window has turned up — the host's next unsolicited
+/// re-evaluation is no longer the only path a late window has.
 const SURFACE_READY_DEADLINE: Duration = Duration::from_millis(80);
 
 /// Diagnostic code recorded when a frame arrives before the candidate window can be
@@ -174,14 +174,79 @@ fn init_diagnostics() -> Result<(), ImeError> {
     diagnostics::init_diagnostics()
 }
 
-/// Loads the theme and window configuration.
+/// Loads the theme and window configuration and puts the theme in force.
 ///
-/// Integration point: `ime-config` has no loader yet. A configuration that cannot be
-/// read keeps the built-in defaults and the window still appears, which is the case a
-/// corrupt file has to end in.
+/// The loading shape is the engine addon's config step: a document that cannot be read
+/// keeps the built-in defaults in force and never fails the addon, with every loader
+/// warning reported on the diagnostic channel. What this step adds is the projection
+/// the window reads — `[theme]` and the two `[ui]` appearance keys become the
+/// [`ThemeSpec`] the renderer's palette is driven from — and it reaches the window
+/// through the latest-wins command slot, so a theme posted before the UI thread exists
+/// would be dropped; the spec therefore waits in a slot the start-up flushes once the
+/// thread is up, which is still before the first `Show` can arrive.
+///
+/// The `auto` scheme has no follower in v1 (portal theming is outside this card), so it
+/// resolves to the dark palette, which is also the built-in default.
+///
+/// # Errors
+///
+/// Never returns `Err`: the window must come up with the defaults when the document is
+/// unreadable, which is the degraded state the module documentation describes.
 fn load_config() -> Result<(), ImeError> {
-    pending_step("config", "the configuration loader");
+    let Some(path) = ime_config::default_path() else {
+        pending_step("config", "no XDG configuration directory");
+        return Ok(());
+    };
+    let (store, warnings) = ime_config::ConfigStore::load(&path);
+    for warning in &warnings {
+        emit_diagnostic(&warning.to_string());
+    }
+    let config = store.current();
+    let spec = ThemeSpec {
+        scheme: match config.theme.scheme {
+            ime_config::ThemeScheme::Light => ColorScheme::Light,
+            ime_config::ThemeScheme::Dark | ime_config::ThemeScheme::Auto => ColorScheme::Dark,
+        },
+        accent: {
+            let [r, g, b] = config.theme.accent.rgb();
+            Rgba8 { r, g, b, a: 255 }
+        },
+        // Blur follows the theme: v1 keeps the compositor negotiation off until the
+        // acrylic card lands, so the key is read and stored but the window stays opaque
+        // unless a later step turns the request on.
+        acrylic: false,
+        base_alpha: config.ui.base_alpha,
+        corner_radius_dp: u16::from(config.ui.corner_radius_dp),
+        // The surface scale is the anchor's fact, not the configuration's; the spec
+        // carries the neutral value and the adoption chain overwrites it per frame.
+        scale: 1.0,
+    };
+    *lock_pending_theme() = Some(spec);
     Ok(())
+}
+
+/// The theme read by [`load_config`], waiting for the UI thread to exist.
+///
+/// The command slot on the channel is latest-wins, but it lives with the thread: a
+/// theme posted before `ui-startup` has nowhere to land. This slot bridges the gap, and
+/// [`flush_pending_theme`] empties it the moment the thread is up, which is still ahead
+/// of any `Show` — so the first frame is drawn with the user's palette, never a flash
+/// of the built-in one.
+static PENDING_THEME: Mutex<Option<ThemeSpec>> = Mutex::new(None);
+
+/// Borrows the pending-theme slot, recovering the contents of a poisoned lock.
+fn lock_pending_theme() -> MutexGuard<'static, Option<ThemeSpec>> {
+    match PENDING_THEME.lock() {
+        Ok(slot) => slot,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Posts the pending theme into the channel now that the thread can hold it.
+fn flush_pending_theme() {
+    if let Some(spec) = lock_pending_theme().take() {
+        let _ = post_command(UiCommand::Theme(spec));
+    }
 }
 
 /// Starts the UI thread, the pre-created window and the font warm-up.
@@ -204,6 +269,12 @@ fn start_ui_startup() -> Result<(), ImeError> {
         return Ok(());
     };
     set_ui_startup(spawn_ui_startup(backend)?);
+    // The theme was read two steps ago and has been waiting for this thread; flush it
+    // before the first `Show` can arrive so the window never draws the built-in palette
+    // first. The drain starts here too, because the queue it consumes appears with the
+    // thread.
+    flush_pending_theme();
+    crate::events::start();
     Ok(())
 }
 
@@ -238,12 +309,13 @@ fn probe_platform() -> Result<(), ImeError> {
 ///
 /// The attempt is therefore made once per load, after both facts it reads are known: the
 /// probe has answered, and the start-up has had [`SURFACE_READY_DEADLINE`] to produce the
-/// window. A window that appears after that is not retried from here, and cannot be — the
-/// only host-thread callback this addon receives while it is inactive is `available()`,
-/// which is a query it has to answer without side effects, so a later attempt needs an
-/// entry point that posts `updateAvailability()` onto the host's own loop, which this
-/// library does not have. What a late window still changes is `available()` itself, which
-/// the host reads the next time it re-evaluates.
+/// window. A start-up that misses that deadline loses only the host's first look, not the
+/// takeover: the step arms [`retry_late_takeover`], which re-runs the decision once on
+/// this same host thread when a cross-addon command next arrives and the window has
+/// turned up in the meantime. The refusal branch keeps its never-fight-the-user
+/// guarantee — [`ui_impl::TakeoverOutcome::Declined`] latches, and the retry neither
+/// clears nor bypasses the latch. What a late window also changes is `available()`
+/// itself, which the host reads the next time it re-evaluates on its own.
 fn register_ui() -> Result<(), ImeError> {
     // The transport handshake runs here because this is the step where both ends are
     // known to be up: this addon's thread started in the previous step, and the engine
@@ -252,6 +324,13 @@ fn register_ui() -> Result<(), ImeError> {
     // degradation, and the next addon load is a fresh chance.
     crate::ffi::transport::register_transport();
     let outcome = ui_impl::register_takeover();
+    // The first evaluation answered "the window is not up yet": the start-up missed its
+    // deadline and is still building. That fact arms the one late retry, so a window
+    // that arrives a moment later is still offered to the host instead of waiting for
+    // the host's next unsolicited re-evaluation that may never come.
+    if matches!(outcome, ui_impl::TakeoverOutcome::NotReady) {
+        arm_late_takeover_retry();
+    }
     emit_diagnostic(&outcome.diagnostic());
     Ok(())
 }
@@ -298,6 +377,10 @@ pub fn on_addon_init() -> bool {
 /// input-panel updates into one that no longer exists.
 pub fn on_addon_destroy() {
     let started = std::time::Instant::now();
+    // The drain stops first: it hands events to the engine through the outlet this
+    // function is about to disarm, so a drain outliving the outlet would only
+    // manufacture refusal diagnostics.
+    crate::events::stop();
     // The sink slot clears before the thread stops: from this point the engine's posts
     // are back on their `ui/not-ready` degradation instead of arriving at a thread that
     // is being torn down (ADR-0011).
@@ -305,6 +388,8 @@ pub fn on_addon_destroy() {
     let stopped_cleanly = stop_ui();
     clear_ui_ready();
     ui_impl::set_window_backend_available(false);
+    // The late retry is a debt of the load being torn down; the next load arms its own.
+    LATE_TAKEOVER_RETRY.store(false, Ordering::Release);
     report_destroy_outcome(started.elapsed(), stopped_cleanly);
 }
 
@@ -381,6 +466,68 @@ fn gate_candidate_window(is_ui_ready: bool) -> Result<(), &'static str> {
 /// host thread when the addon is released ([`clear_ui_ready`]).
 static UI_READY: AtomicBool = AtomicBool::new(false);
 
+/// Whether the first takeover evaluation found the window not yet ready, so one late
+/// retry of the takeover is owed.
+///
+/// Set on the host thread by [`register_ui`] when the evaluation answers "not ready",
+/// and consumed by [`retry_late_takeover`] on the same thread: the cross-addon command
+/// sink runs there, which makes the first arriving command the natural "the user is
+/// typing" moment to offer a window that turned up late. Consumed at most once per load
+/// — a retry that fired is a retry that happened, whatever its outcome — and cleared at
+/// destroy so a reload starts from a clean slate.
+static LATE_TAKEOVER_RETRY: AtomicBool = AtomicBool::new(false);
+
+/// Arms the one late takeover retry.
+///
+/// # Panics
+///
+/// Never.
+fn arm_late_takeover_retry() {
+    LATE_TAKEOVER_RETRY.store(true, Ordering::Release);
+}
+
+/// Consumes the armed late takeover retry when it is due.
+///
+/// Due means the window is ready now: while it is still building the fact stays armed
+/// and the next command asks again, because the retry exists for the window that arrives
+/// late and not for the one that never arrives. `true` answers "fire it", and the caller
+/// re-runs the takeover on the host thread; the answer is consumed either way, so the
+/// retry is one attempt and not a stream of them.
+///
+/// Split out from [`retry_late_takeover`] so the decision is reachable from a test
+/// without a host to ask.
+///
+/// # Panics
+///
+/// Never.
+fn take_late_takeover_retry_if_due(is_window_ready: bool) -> bool {
+    if !LATE_TAKEOVER_RETRY.load(Ordering::Acquire) {
+        return false;
+    }
+    if !is_window_ready {
+        return false;
+    }
+    LATE_TAKEOVER_RETRY.store(false, Ordering::Release);
+    true
+}
+
+/// Re-runs the takeover once when a late-ready window can still be offered.
+///
+/// Runs on the host thread — the command sink's thread, the same thread
+/// [`register_ui`] evaluated on — so the host-touching call stays where the takeover's
+/// own documentation requires it. The outcome is recorded under the same codes the first
+/// attempt used; a refusal latches there and is never fought.
+///
+/// # Panics
+///
+/// Never.
+fn retry_late_takeover() {
+    if take_late_takeover_retry_if_due(candidate_window_ready()) {
+        let outcome = ui_impl::register_takeover();
+        emit_diagnostic(&outcome.diagnostic());
+    }
+}
+
 /// The background start-up, or `None` before it starts and after it is stopped.
 ///
 /// A `Mutex` because a thread handle cannot be an atomic. The host thread is the only
@@ -440,6 +587,9 @@ fn spawn_ui_startup(backend: Box<dyn SurfaceBackend>) -> Result<UiStartup, ImeEr
     };
     let thread = UiThread::spawn(config, move |_context| {
         let surface = CandidateSurface::new(backend)?;
+        // The probe has run by now and cached its answer; this is where its degraded
+        // cases become a recorded diagnostic instead of a silently odd-looking window.
+        diagnostics::report_font_probe_status();
         mark_ui_ready();
         // A failed send means nobody is waiting any more, which is what a start-up that
         // outlived its deadline looks like; the flag above is the answer either way.
@@ -465,6 +615,17 @@ fn clear_ui_ready() {
     UI_READY.store(false, Ordering::Release);
 }
 
+/// The queue the event drain consumes, while the UI thread is up.
+///
+/// `None` before the start-up and after the teardown — the queue appears with the
+/// thread and goes away with it, so the drain only ever starts when there is something
+/// to consume from.
+pub(crate) fn event_queue() -> Option<Arc<UiEventQueue>> {
+    lock_ui_startup()
+        .as_ref()
+        .map(|startup| startup.thread.event_queue())
+}
+
 /// Stores the background start-up, stopping a previous one first.
 ///
 /// A host that initialises the addon twice without destroying it in between would
@@ -476,6 +637,10 @@ fn clear_ui_ready() {
 /// one queue push. `false` means no thread is up -- the addon has not initialised or is
 /// already torn down -- and the caller records that rather than retrying.
 pub(crate) fn post_command(command: UiCommand) -> bool {
+    // Before the slot lock: the late takeover's host call must not run while a lock is
+    // held, and it is a no-op unless a late-ready window is being waited on. The check
+    // is two atomic loads, so a command that finds nothing armed pays nothing.
+    retry_late_takeover();
     let guard = lock_ui_startup();
     match guard.as_ref() {
         Some(startup) => startup.thread.send(command).is_ok(),

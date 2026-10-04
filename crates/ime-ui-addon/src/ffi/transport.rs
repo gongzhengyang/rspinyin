@@ -35,9 +35,9 @@ use std::str;
 use ime_types::ids::ScreenId;
 use ime_types::ui::Script;
 use ime_types::{
-    Anchor, Candidate, CandidateSource, ColorScheme, HideReason, LayoutHint, OverlayFrame,
-    OverlayKind, OverlaySection, PageState, Placement, Preedit, PreeditSpan, RectI, Rgba8,
-    SpanKind, StatusStrip, ThemeSpec, UiCommand, UiFrame,
+    Anchor, Candidate, CandidateSource, ColorScheme, HideReason, LayoutHint,
+    OverlayFrame, OverlayKind, OverlaySection, PageState, Placement, Preedit, PreeditSpan, RectI,
+    Rgba8, SpanKind, StatusStrip, ThemeSpec, UiCommand, UiFrame,
 };
 
 use super::emit_diagnostic;
@@ -57,6 +57,7 @@ const FLAG_FULL_WIDTH: u32 = 1 << 0;
 const FLAG_PUNCTUATION_FULL: u32 = 1 << 1;
 const FLAG_READONLY: u32 = 1 << 2;
 const FLAG_HAS_USER_DICT_HIT: u32 = 1 << 3;
+const FLAG_CHINESE: u32 = 1 << 4;
 
 /// Recorded when a wire arrived that this transcription cannot read.
 ///
@@ -194,6 +195,17 @@ pub struct RspinyinOverlayWire {
     pub section_count: u32,
 }
 
+/// The event return channel: the wire the candidate window's events travel on, the
+/// encoders that build it, and the glue's outlet that marshals it to the engine's
+/// main loop (ADR-0011). The names are re-exported here, beside the frame family, so
+/// `crate::ffi::transport` stays the one path to the cross-addon seam.
+pub mod event_outlet;
+
+pub use self::event_outlet::{
+    ENGINE_GONE_CODE, EVENT_OUTLET_UNAVAILABLE_CODE, RspinyinEventWire, arm_event_outlet,
+    event_wire, flush_event_outlet, post_anchor, post_event,
+};
+
 /// The sink the engine holds. The `ctx` is this addon's identity token; both entry
 /// points copy out of every borrowed pointer before they return.
 #[repr(C)]
@@ -307,6 +319,7 @@ fn command_from_wire(wire: *const RspinyinFrameWire) -> Option<UiCommand> {
                 punctuation_full: wire.flags & FLAG_PUNCTUATION_FULL != 0,
                 readonly: wire.flags & FLAG_READONLY != 0,
                 has_user_dict_hit: wire.flags & FLAG_HAS_USER_DICT_HIT != 0,
+                chinese: wire.flags & FLAG_CHINESE != 0,
                 script: script(wire.script)?,
             };
             Some(UiCommand::Frame(Box::new(UiFrame {
@@ -580,6 +593,10 @@ pub(crate) fn register_transport() -> bool {
 
 /// Clears the engine's sink slot on addon unload (ADR-0011).
 ///
+/// The event outlet is disarmed with the sink: an ingest pointer into an engine that
+/// unloaded first must never be called, and events queued behind a gone engine are
+/// dropped rather than delivered into a teardown.
+///
 /// # Panics
 ///
 /// Never.
@@ -588,6 +605,7 @@ pub(crate) fn unregister_transport() {
     unsafe {
         rspinyin_ui_transport_unregister();
     }
+    event_outlet::disarm();
 }
 
 #[cfg(fcitx5_host)]

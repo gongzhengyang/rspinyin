@@ -62,6 +62,7 @@ const FLAG_FULL_WIDTH: u32 = 1 << 0;
 const FLAG_PUNCTUATION_FULL: u32 = 1 << 1;
 const FLAG_READONLY: u32 = 1 << 2;
 const FLAG_HAS_USER_DICT_HIT: u32 = 1 << 3;
+const FLAG_CHINESE: u32 = 1 << 4;
 
 /// A borrowed UTF-8 string on the wire.
 ///
@@ -359,6 +360,9 @@ fn fill_frame(wire: &mut RspinyinFrameWire, frame: &UiFrame, scratch: &mut Scrat
     if frame.status.has_user_dict_hit {
         flags |= FLAG_HAS_USER_DICT_HIT;
     }
+    if frame.status.chinese {
+        flags |= FLAG_CHINESE;
+    }
     wire.flags = flags;
     wire.script = script_code(frame.status.script);
     fill_anchor(wire, &frame.anchor);
@@ -574,19 +578,22 @@ pub fn register_for_bench(sink: &'static RspinyinUiSink) -> bool {
     true
 }
 
-// The event wire's `kind` values (ADR-0011, P0.01.02). One wire family, growing
-// append-only: P0.01.03 appends the anchor kind and its fields.
+// The event wire's `kind` values (ADR-0011). One wire family, growing append-only:
+// the caret anchor uplink rides the same channel as kind 4, with its own fields
+// appended at the tail.
 const EVENT_KIND_SELECT: u32 = 0;
 const EVENT_KIND_HOVER: u32 = 1;
 const EVENT_KIND_PAGE: u32 = 2;
 const EVENT_KIND_DISMISS: u32 = 3;
+const EVENT_KIND_ANCHOR: u32 = 4;
 
 /// An event the user interface sends back, on the wire.
 ///
 /// The `reason` field is the kind's auxiliary slot: the select trigger for a select,
 /// the hover-presence flag for a hover, the page direction for a page, the dismiss
 /// reason for a dismissal. One shape, four readings -- the reader is kind-gated, and
-/// `P0.01.03`'s anchor variant appends fields rather than reusing these.
+/// the anchor variant (kind 4) appends its own fields at the tail rather than reusing
+/// these.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RspinyinEventWire {
@@ -594,7 +601,31 @@ pub struct RspinyinEventWire {
     pub revision: u32,
     pub index: u16,
     pub reason: u32,
+    /// The caret anchor's rectangle, the screen it is on, its scale and its placement:
+    /// meaningful for `kind == EVENT_KIND_ANCHOR` only, zero for every other kind.
+    pub anchor_x: i32,
+    pub anchor_y: i32,
+    pub anchor_w: u32,
+    pub anchor_h: u32,
+    pub anchor_screen: i32,
+    pub anchor_scale: f32,
+    pub anchor_placement: u32,
 }
+
+// Layout assertions for the wire family. The totals were derived once from the ADR
+// table; an append that changes them has to change both transcriptions and these
+// numbers, which is the drift detection the ADR promises. The anchor append grew the
+// event wire from 16 to 44 bytes; the user-interface addon's transcription carries the
+// matching assertion.
+const _: () = assert!(size_of::<RspinyinStr>() == 16);
+const _: () = assert!(size_of::<RspinyinSpanWire>() == 8);
+const _: () = assert!(size_of::<RspinyinRectWire>() == 16);
+const _: () = assert!(size_of::<RspinyinCandidateWire>() == 56);
+const _: () = assert!(size_of::<RspinyinFrameWire>() == 144);
+const _: () = assert!(size_of::<RspinyinOverlayEntryWire>() == 32);
+const _: () = assert!(size_of::<RspinyinOverlaySectionWire>() == 32);
+const _: () = assert!(size_of::<RspinyinOverlayWire>() == 64);
+const _: () = assert!(size_of::<RspinyinEventWire>() == 44);
 
 // The auxiliary-slot readings, per kind.
 const TRIGGER_MOUSE: u32 = 0;
@@ -651,17 +682,51 @@ fn event_from_wire(wire: &RspinyinEventWire) -> Option<UiEvent> {
                 _ => return None,
             },
         }),
+        // The anchor is engine state rather than a window event, so the event reader
+        // must not answer it: an anchor wire is read by [`anchor_from_wire`] alone,
+        // which is what keeps a caret report from being mistaken for a click.
         _ => None,
     }
 }
 
-/// The event the user interface sends back, one call per event (ADR-0011, P0.01.02).
+/// Reads the anchor fields of an `Anchor`-kind event wire into an [`Anchor`].
+///
+/// `None` for a negative screen id or a placement code this version does not know --
+/// the same malformed-wire rule the frame family's reader applies to its own fields.
+fn anchor_from_wire(wire: &RspinyinEventWire) -> Option<Anchor> {
+    let screen = u32::try_from(wire.anchor_screen).ok()?;
+    Some(Anchor {
+        cursor: ime_types::RectI {
+            x: wire.anchor_x,
+            y: wire.anchor_y,
+            w: wire.anchor_w,
+            h: wire.anchor_h,
+        },
+        screen: ime_types::ScreenId::new(screen),
+        scale: wire.anchor_scale,
+        placement: placement_from_code(wire.anchor_placement)?,
+    })
+}
+
+/// The reverse of [`placement_code`]; the numbers are the ABI.
+fn placement_from_code(code: u32) -> Option<Placement> {
+    match code {
+        0 => Some(Placement::Below),
+        1 => Some(Placement::Above),
+        2 => Some(Placement::Auto),
+        _ => None,
+    }
+}
+
+/// The event the user interface sends back, one call per event (ADR-0011).
 ///
 /// The caller is the engine's own main-loop thread -- the UI addon's drain thread
-/// reaches this only through the host's post-event marshalling, which is the constraint
+/// reaches this only through that loop's marshalling, which is the constraint
 /// that keeps [`crate::session_host`]'s single-threaded contract intact. Returns whether
-/// the engine accepted the event for a live session; `false` covers both a context the
-/// plugin does not know and a session that rejected it.
+/// the engine accepted the wire; `false` covers a malformed wire, a context the
+/// plugin does not know, and a session that rejected the event. An `Anchor`-kind wire
+/// is accepted when it parses: it updates the context's caret anchor, which the next
+/// frame carries.
 ///
 /// # Panics
 ///
@@ -676,6 +741,14 @@ pub extern "C" fn rspinyin_event_ingest(ic_id: u64, wire: *const RspinyinEventWi
         // SAFETY: the caller passes a pointer valid for this call; the wire is
         // `repr(C)` with no invalid bit patterns.
         let wire = unsafe { *wire };
+        if wire.kind == EVENT_KIND_ANCHOR {
+            let Some(anchor) = anchor_from_wire(&wire) else {
+                emit_diagnostic(WIRE_MALFORMED_CODE);
+                return false;
+            };
+            crate::session_host::set_anchor(ic_id, anchor);
+            return true;
+        }
         let Some(event) = event_from_wire(&wire) else {
             emit_diagnostic(WIRE_MALFORMED_CODE);
             return false;
@@ -686,7 +759,7 @@ pub extern "C" fn rspinyin_event_ingest(ic_id: u64, wire: *const RspinyinEventWi
     })
 }
 
-/// Registers the UI side's sink. Exported for the UI addon's glue (ADR-0011)./// Registers the UI side's sink. Exported for the UI addon's glue (ADR-0011).
+/// Registers the UI side's sink. Exported for the UI addon's glue (ADR-0011).
 ///
 /// A `null` `sink` is refused rather than stored: clearing goes through
 /// [`rspinyin_engine_clear_ui_sinks`], so the two states "never registered" and

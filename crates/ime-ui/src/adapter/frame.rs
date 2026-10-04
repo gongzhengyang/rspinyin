@@ -77,6 +77,13 @@ pub struct DrawState {
     pub punctuation_full: bool,
     /// Whether the status strip reports read-only mode (3.6's lock).
     pub readonly: bool,
+    /// Whether the strip's mode dot shows Chinese input.
+    ///
+    /// The strip's own mode bit ([`StatusStrip::chinese`], ADR-0005), copied here so the
+    /// component binds the dot to a fact the engine wrote rather than to an inference from
+    /// the label: the label slot carries the mode's own text *or* a degradation notice, so
+    /// its content answers nothing about the mode.
+    pub chinese: bool,
     /// Whether the preedit sits at the input cap, which the header answers with the
     /// "已达上限" hint.
     pub input_full: bool,
@@ -121,7 +128,8 @@ pub struct DrawDelta {
     pub header_height: bool,
     /// Whether an annotation is drawn changed.
     pub show_annotation: bool,
-    /// One of the status strip's three flags changed.
+    /// Whether one of the status strip's marker flags changed (the mode bit, the
+    /// full-width and punctuation markers, and the read-only lock).
     pub status: bool,
     /// What a cell draws changed: a candidate, its text or its state.
     pub cells: bool,
@@ -329,19 +337,24 @@ impl DrawState {
         changed
     }
 
-    /// Writes the status strip's three flags into this state.
+    /// Writes the status strip's flags into this state.
     ///
-    /// The strip carries a mode label, four booleans and a script. The header draws the label
-    /// as text and three of the four booleans as markers -- the mode dot reads the label, so
-    /// it needs no boolean of its own. `has_user_dict_hit` is the fourth and is deliberately
-    /// not drawn: 3.1.1 gives the cluster four fixed slots and names them mode, full-width,
-    /// punctuation and read-only, so the fifth has no slot to take. It travels in the frame
-    /// and is drawn nowhere rather than inventing a marker the fixed-width contract has no
-    /// room for.
+    /// The strip carries a mode label, five booleans and a script. The header draws the
+    /// label as text and four of the booleans as markers; `chinese` drives the mode dot,
+    /// `readonly` the lock, and the two secondary markers the full-width and punctuation
+    /// bits.
+    ///
+    /// `has_user_dict_hit` is the fourth boolean and is deliberately not drawn: 3.1.1
+    /// gives the cluster four fixed slots and names them mode, full-width, punctuation and
+    /// read-only, so the fifth has no slot to take — and v1 has no producer for it anyway,
+    /// a deferral registered on the field in `ime-types`. It travels in the frame and is
+    /// drawn nowhere rather than inventing a marker the fixed-width contract has no room
+    /// for. `script` is in the same state: carried, registered as producer-less, and
+    /// drawn nowhere.
     ///
     /// # Returns
     ///
-    /// Whether any of the three changed.
+    /// Whether any of the flags changed.
     ///
     /// # Errors
     ///
@@ -354,6 +367,7 @@ impl DrawState {
         let mut changed = replace(&mut self.full_width, status.full_width);
         changed |= replace(&mut self.punctuation_full, status.punctuation_full);
         changed |= replace(&mut self.readonly, status.readonly);
+        changed |= replace(&mut self.chinese, status.chinese);
         changed
     }
 

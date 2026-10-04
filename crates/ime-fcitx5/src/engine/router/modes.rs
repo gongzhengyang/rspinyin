@@ -46,10 +46,11 @@ const MODE_LABEL_ENGLISH: &str = "英";
 struct Notice {
     /// The stable `domain/action/reason` code the fact is known by.
     ///
-    /// The runtime answers with the text alone and never logs the notice, so no production
-    /// read of this field exists; it is kept because the code is the row's frozen identity
-    /// and the mapping the card freezes is code-to-copy, so a grep in either direction has
-    /// to land on this table rather than on two files that can drift apart.
+    /// The runtime answers with the text alone and never logs the notice, so no
+    /// production read of this field exists; it is kept because the code is the row's
+    /// frozen identity and the frozen mapping is code-to-copy, so a grep in either
+    /// direction has to land on this table rather than on two files that can drift
+    /// apart.
     #[allow(dead_code)]
     code: &'static str,
     /// The user-visible sentence that takes the label slot. Chinese by the language rules.
@@ -61,10 +62,12 @@ struct Notice {
 /// The frozen notice table, highest priority first.
 ///
 /// A notice is shown only while its fact is set, so a row whose fact source has not been
-/// wired yet is a dark row rather than a wrong one. Two of the four facts are owned by the
-/// user-interface addon — a separate `dlopen`'d library whose statics this one cannot read
-/// — and reach the engine only once the cross-addon wire carries a fact channel back; they
-/// land as diagnostics on that side in the meantime, under the same codes.
+/// wired yet is a dark row rather than a wrong one. The two engine-side facts are read
+/// live from the process ([`NoticeFacts::current`]); the two user-interface facts are
+/// owned by the other addon — a separate `dlopen`'d library whose statics this one
+/// cannot read — and reach the engine only once the cross-addon wire carries a fact
+/// channel back; they land as diagnostics on that side in the meantime, under the same
+/// codes.
 const NOTICE_TABLE: [Notice; 4] = [
     Notice {
         code: "dict/unavailable",
@@ -107,16 +110,18 @@ struct NoticeFacts {
 impl NoticeFacts {
     /// The process's degradation facts as this frame sees them.
     ///
-    /// The read-only flag is read live: it is process-wide and sticky, and it is the one
-    /// fact of the four the engine addon owns — the other two engine-side row would be
-    /// wired the same way once their fact channels reach this module (see
-    /// [`NOTICE_TABLE`]).
+    /// The read-only flag is read live: it is process-wide and sticky. The
+    /// dictionary-unavailable fact reaches this module through the addon's re-export of
+    /// the session layer's reader — the one visibility bridge the private module layout
+    /// allows — and is sticky the same way, because a failed load is never retried. The
+    /// two interface-side facts wait for the cross-addon channel — see [`NOTICE_TABLE`].
     ///
     /// # Panics
     ///
     /// Never.
     fn current() -> Self {
         Self {
+            dict_unavailable: crate::addon::dictionary_unavailable(),
             readonly: paths::is_readonly_mode(),
             ..Self::default()
         }

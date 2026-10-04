@@ -34,114 +34,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use ime_types::{DismissReason, ImeError, PageDir, SelectTrigger, UiEvent};
-use ime_ui::channel::{ChannelConfig, UiEventQueue};
+use ime_types::{ImeError, UiEvent};
+use ime_ui::channel::UiEventQueue;
 
-// The event wire's `kind` values. The numbers are the ABI and the engine's reader is
-// the authority; this transcription must match it field for field, which is what the
-// round-trip tests below assert.
-const EVENT_KIND_SELECT: u32 = 0;
-const EVENT_KIND_HOVER: u32 = 1;
-const EVENT_KIND_PAGE: u32 = 2;
-const EVENT_KIND_DISMISS: u32 = 3;
-
-// The auxiliary-slot readings, per kind: the select trigger for a select, the hover
-// presence flag for a hover, the page direction for a page, the dismiss reason for a
-// dismissal.
-const TRIGGER_MOUSE: u32 = 0;
-const TRIGGER_NUMBER_KEY: u32 = 1;
-const TRIGGER_SPACE: u32 = 2;
-const TRIGGER_ENTER: u32 = 3;
-const TRIGGER_TAB: u32 = 4;
-const HOVER_ABSENT: u32 = 0;
-const HOVER_PRESENT: u32 = 1;
-const PAGE_NEXT: u32 = 0;
-const PAGE_PREV: u32 = 1;
-const DISMISS_OUTSIDE_CLICK: u32 = 0;
-const DISMISS_ESCAPE: u32 = 1;
-const DISMISS_SCROLL_UP_EMPTY: u32 = 2;
-
-/// An event the candidate window sends back, on the wire.
-///
-/// Four integer fields, no pointers, so the wire crosses threads as a plain copy.
-/// The `reason` field is the kind's auxiliary slot, which is why a hover's presence
-/// flag and a page's direction share one field name: the reader is kind-gated.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RspinyinEventWire {
-    /// Which event this is, one of the `EVENT_KIND_*` values.
-    pub kind: u32,
-    /// The frame revision the event was made against.
-    pub revision: u32,
-    /// The candidate position, for the kinds that carry one.
-    pub index: u16,
-    /// The kind's auxiliary slot; see the constants above.
-    pub reason: u32,
-}
-
-// The layout is shared with the engine's transcription and the C++ glue's mirror; a
-// field added must move all three and this number.
-const _: () = assert!(size_of::<RspinyinEventWire>() == 16);
-
-/// Builds the event wire one UI event travels on.
-///
-/// `None` for a [`UiEvent::Rendered`] receipt: it is the latency probe's sample and
-/// names no engine state, so there is no wire kind for it to become.
-pub(crate) fn event_wire(event: &UiEvent) -> Option<RspinyinEventWire> {
-    // Zeroed before the fields are set: the wire crosses FFI as a raw copy, and
-    // defined padding keeps that copy free of uninitialised bytes. Every field of
-    // the wire is an integer, so zero is a valid state for all of them.
-    let mut wire: RspinyinEventWire = unsafe { std::mem::zeroed() };
-    match *event {
-        UiEvent::Select {
-            revision,
-            index,
-            trigger,
-        } => {
-            wire.kind = EVENT_KIND_SELECT;
-            wire.revision = revision;
-            wire.index = index;
-            wire.reason = match trigger {
-                SelectTrigger::Mouse => TRIGGER_MOUSE,
-                SelectTrigger::NumberKey => TRIGGER_NUMBER_KEY,
-                SelectTrigger::Space => TRIGGER_SPACE,
-                SelectTrigger::Enter => TRIGGER_ENTER,
-                SelectTrigger::Tab => TRIGGER_TAB,
-            };
-        }
-        UiEvent::Hover { revision, index } => {
-            wire.kind = EVENT_KIND_HOVER;
-            wire.revision = revision;
-            // The presence flag is the auxiliary slot; the position rides in
-            // `index` and the reader ignores it when the flag says absent.
-            wire.index = index.unwrap_or(0);
-            wire.reason = if index.is_some() {
-                HOVER_PRESENT
-            } else {
-                HOVER_ABSENT
-            };
-        }
-        UiEvent::Page { revision, dir } => {
-            wire.kind = EVENT_KIND_PAGE;
-            wire.revision = revision;
-            wire.reason = match dir {
-                PageDir::Next => PAGE_NEXT,
-                PageDir::Prev => PAGE_PREV,
-            };
-        }
-        UiEvent::Dismiss { revision, reason } => {
-            wire.kind = EVENT_KIND_DISMISS;
-            wire.revision = revision;
-            wire.reason = match reason {
-                DismissReason::OutsideClick => DISMISS_OUTSIDE_CLICK,
-                DismissReason::Escape => DISMISS_ESCAPE,
-                DismissReason::ScrollUpEmpty => DISMISS_SCROLL_UP_EMPTY,
-            };
-        }
-        UiEvent::Rendered { .. } => return None,
-    }
-    Some(wire)
-}
+use crate::ffi::transport::{
+    ENGINE_GONE_CODE, EVENT_OUTLET_UNAVAILABLE_CODE, arm_event_outlet, post_event,
+};
 
 /// How long the drain waits on the queue before it re-reads the stop flag.
 ///
@@ -311,12 +209,12 @@ fn post_to_engine(event: &UiEvent) -> bool {
     // rates here are human-scale — a click, a page turn, a throttled hover — so the
     // copy is not a hot path.
     let ic = crate::ui_impl::panel_mirror().map_or(0, |mirror| mirror.ic);
-    crate::ffi::transport::post_event(ic, event)
+    post_event(ic, event)
 }
 
 /// The production drop report: the stable, throttled code.
 fn report_engine_gone() {
-    crate::ffi::emit_diagnostic(crate::ffi::transport::ENGINE_GONE_CODE);
+    crate::ffi::emit_diagnostic(ENGINE_GONE_CODE);
 }
 
 /// The running drain, or `None` before the start-up and after the stop.
@@ -331,8 +229,8 @@ static EVENT_DRAIN: Mutex<Option<EventDrain>> = Mutex::new(None);
 /// way the UI start-up itself does.
 pub(crate) fn start() {
     stop();
-    if !crate::ffi::transport::arm_event_outlet() {
-        crate::ffi::emit_diagnostic(crate::ffi::transport::EVENT_OUTLET_UNAVAILABLE_CODE);
+    if !arm_event_outlet() {
+        crate::ffi::emit_diagnostic(EVENT_OUTLET_UNAVAILABLE_CODE);
         return;
     }
     let Some(queue) = crate::addon::event_queue() else {
@@ -371,7 +269,16 @@ mod tests {
     use std::sync::mpsc::{self, TryRecvError};
     use std::time::Instant;
 
-    use ime_types::DismissReason;
+    use ime_types::{DismissReason, PageDir, SelectTrigger};
+    use ime_ui::channel::ChannelConfig;
+
+    use crate::ffi::transport::{RspinyinEventWire, event_wire};
+
+    // The anchor kind, transcribed from the engine's reader like the mirror below;
+    // the numbers are the ABI. The select kind belongs to the mirror, which is what
+    // the round trip is read back through.
+    const EVENT_KIND_SELECT: u32 = 0;
+    const EVENT_KIND_ANCHOR: u32 = 4;
 
     use super::*;
 
@@ -477,6 +384,17 @@ mod tests {
         assert!(
             event_wire(&receipt).is_none(),
             "a probe receipt names no engine state, so it has no wire kind"
+        );
+    }
+
+    #[test]
+    fn test_engine_gone_code_keeps_the_registered_spelling() {
+        // The drop count is matched on this code by diagnostics and tests on both
+        // sides of the channel, so its spelling is part of the contract.
+        assert_eq!(ENGINE_GONE_CODE, "ui/event/engine-gone");
+        assert_eq!(
+            EVENT_OUTLET_UNAVAILABLE_CODE,
+            "ui/event/outlet-unavailable"
         );
     }
 
@@ -602,12 +520,71 @@ mod tests {
         assert_eq!(DRAIN_STOP_TIMEOUT_CODE, "ui/event/drain-stop-timeout");
     }
 
+    #[test]
+    fn test_the_anchor_kind_is_not_a_window_event() {
+        // The caret anchor rides the same channel under its own kind, but it is
+        // engine state rather than a window event: the event reader must refuse it,
+        // which is what keeps a caret report from being mistaken for a click.
+        let mut wire = zeroed_wire();
+        wire.kind = EVENT_KIND_ANCHOR;
+        assert!(
+            event_from_wire(&wire).is_none(),
+            "an anchor wire is not a UiEvent"
+        );
+        let select_wire = event_wire(&UiEvent::Select {
+            revision: 1,
+            index: 0,
+            trigger: SelectTrigger::Mouse,
+        })
+        .expect("a select has a wire");
+        assert_ne!(
+            select_wire.kind, EVENT_KIND_ANCHOR,
+            "no window event encodes as the anchor kind"
+        );
+    }
+
+    /// An all-zero wire, field by field.
+    ///
+    /// `mem::zeroed` would need an `unsafe` block, and this crate carries none outside
+    /// its `ffi` tree; the fields are plain numbers, so the explicit form says the same
+    /// thing the zeroed form would.
+    fn zeroed_wire() -> RspinyinEventWire {
+        RspinyinEventWire {
+            kind: 0,
+            revision: 0,
+            index: 0,
+            reason: 0,
+            anchor_x: 0,
+            anchor_y: 0,
+            anchor_w: 0,
+            anchor_h: 0,
+            anchor_screen: 0,
+            anchor_scale: 0.0,
+            anchor_placement: 0,
+        }
+    }
+
     /// The engine's wire reader, transcribed for the round-trip tests.
     ///
     /// `ime-ui-addon` must not depend on `ime-fcitx5`, so the reader's table is
     /// mirrored here instead of imported; the tests above fail when either side
     /// drifts, which is the same guarantee a shared test suite would give.
     fn event_from_wire(wire: &RspinyinEventWire) -> Option<UiEvent> {
+        const EVENT_KIND_HOVER: u32 = 1;
+        const EVENT_KIND_PAGE: u32 = 2;
+        const EVENT_KIND_DISMISS: u32 = 3;
+        const TRIGGER_MOUSE: u32 = 0;
+        const TRIGGER_NUMBER_KEY: u32 = 1;
+        const TRIGGER_SPACE: u32 = 2;
+        const TRIGGER_ENTER: u32 = 3;
+        const TRIGGER_TAB: u32 = 4;
+        const HOVER_ABSENT: u32 = 0;
+        const HOVER_PRESENT: u32 = 1;
+        const PAGE_NEXT: u32 = 0;
+        const PAGE_PREV: u32 = 1;
+        const DISMISS_OUTSIDE_CLICK: u32 = 0;
+        const DISMISS_ESCAPE: u32 = 1;
+        const DISMISS_SCROLL_UP_EMPTY: u32 = 2;
         match wire.kind {
             EVENT_KIND_SELECT => Some(UiEvent::Select {
                 revision: wire.revision,

@@ -40,7 +40,7 @@ mod placement;
 #[cfg(test)]
 mod tests;
 
-use std::os::fd::BorrowedFd;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::time::{Duration, Instant};
 
 use ime_types::ui::OverlayFrame;
@@ -51,6 +51,7 @@ use crate::channel::UiEventQueue;
 use crate::geometry::{Geometry, snap_scale};
 use crate::interaction::PointerRouter;
 use crate::layout::{self, Metrics};
+use crate::renderer::FontStatus;
 use crate::slint_platform::RspinyinPlatform;
 use crate::theme::{BlurNegotiation, ThemeResolution};
 use crate::ui_thread::{SurfaceUpdate, UiSurface};
@@ -59,6 +60,13 @@ use crate::ui_thread::{SurfaceUpdate, UiSurface};
 pub struct CandidateSurface {
     /// The platform the window draws through, and the one place the display connection lives.
     platform: RspinyinPlatform,
+    /// The process's own handle on the connection's descriptor.
+    ///
+    /// Taken as a duplicate at construction (`RspinyinPlatform::dup_connection_fd`),
+    /// because the backend itself sits behind a `RefCell` whose borrow cannot outlive a
+    /// call. `poll(2)` watches this duplicate and sees exactly the connection's
+    /// readiness; `None` puts the loop back on its eventfd-only wait.
+    connection_fd: Option<OwnedFd>,
     /// The component binding: every property write goes through it.
     adapter: Adapter,
     /// The component's constants, parsed once.
@@ -97,6 +105,13 @@ pub struct CandidateSurface {
     region_failures: u64,
     /// The diagnostic codes of the last theme resolution.
     theme_codes: [Option<&'static str>; 2],
+    /// What the font probe found when this surface was built.
+    ///
+    /// Retained rather than dropped: the probe runs once per process, and this is the
+    /// only place its answer would be lost. The addon that owns the diagnostics sink
+    /// reads the same cached answer at start-up; the surface keeps its copy so the
+    /// fact stays observable for as long as the window exists.
+    font_status: FontStatus,
     /// The instant the previous frame was drawn at.
     ///
     /// The animation is driven by the difference between two of these rather than by a
@@ -153,20 +168,25 @@ impl CandidateSurface {
         // The family is probed once, here, and written before the first frame: the probe
         // rasterises a small frame per candidate family and caches its answer process-wide,
         // so a second surface pays nothing. An empty name -- no CJK family on this machine
-        // -- leaves the view's own default in place, and the probe's status is what the
-        // caller reports as `ui/font/missing-cjk`.
-        // No family matched: the last entry is the generic fallback `fontdb` lands on, and
-        // asking for it explicitly is what the probe's own doc says to do.
+        // -- leaves the view's own default in place, and the probe's degraded status is
+        // kept on the surface (and reported by the addon that owns the diagnostics sink)
+        // instead of being dropped here.
         let choice = crate::renderer::probe_font_choice();
         let family = crate::renderer::CJK_FAMILIES[choice
             .family_index
             .unwrap_or(crate::renderer::CJK_FAMILIES.len() - 1)];
         adapter.apply_font_family(family);
+        let font_status = choice.status;
         // The surface runs at the ratio its backend was created with until an anchor says
         // otherwise: the tracker starts from the same value the Slint window was told.
         let (_, _, surface_scale) = platform.geometry();
+        // The loop's poll set needs the connection's descriptor, and the backend's borrow
+        // cannot cross this call — so the descriptor is duplicated into an owned handle
+        // once, here, for the surface's whole life.
+        let connection_fd = platform.dup_connection_fd();
         Ok(Self {
             platform,
+            connection_fd,
             adapter,
             metrics: layout::metrics()?,
             frame: None,
@@ -179,6 +199,7 @@ impl CandidateSurface {
             region: None,
             region_failures: 0,
             theme_codes: [None; 2],
+            font_status,
             last_frame: None,
             adopted_scale: surface_scale,
         })
@@ -239,10 +260,11 @@ impl CandidateSurface {
 
     /// The descriptor the loop adds to its `poll` set, if the surface has one.
     ///
-    /// Always `None`: the platform owns the display connection and hands out no descriptor of
-    /// its own, so the loop waits on the wakeup counter and on nothing else. The consequence is
-    /// that a pointer event is delivered on the next wake-up rather than waking the loop
-    /// itself, which a platform accessor for the backend's connection would fix.
+    /// The connection's descriptor, duplicated at construction: a backend that reports
+    /// one (X11's socket, Wayland's display) puts the loop's `poll` set on it, so a
+    /// pointer event wakes the loop instead of waiting behind the host's next post. A
+    /// backend without one — the mock — answers `None`, and the loop falls back to its
+    /// eventfd-only wait, which is what the hermetic tests already exercise.
     ///
     /// # Errors
     ///
@@ -252,7 +274,7 @@ impl CandidateSurface {
     ///
     /// Never panics.
     pub fn event_fd(&self) -> Option<BorrowedFd<'_>> {
-        None
+        self.connection_fd.as_ref().map(AsFd::as_fd)
     }
 
     /// Rasterizes the scene into the surface, if anything is dirty.
@@ -349,6 +371,25 @@ impl CandidateSurface {
     /// Never panics.
     pub fn theme_diagnostics(&self) -> [Option<&'static str>; 2] {
         self.theme_codes
+    }
+
+    /// What the font probe found when this surface was built.
+    ///
+    /// The probe's answer is a fact about the machine, resolved once per process and
+    /// cached; this is the surface's own copy of it, kept so the `ASM-16` degradation is
+    /// observable for as long as the window exists. The addon that owns the diagnostics
+    /// sink reports the degraded cases (`ui/font/missing-cjk`) from the same cached
+    /// answer at start-up.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn font_status(&self) -> FontStatus {
+        self.font_status
     }
 
     /// The overlay the engine last asked for, or `None` when none is open.

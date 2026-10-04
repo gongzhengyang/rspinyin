@@ -642,8 +642,12 @@ impl Adapter {
             .set_show_secondary_status(self.state.preedit.show_secondary_status);
     }
 
-    /// Writes the three status flags the header's marker cluster draws.
+    /// Writes the four status facts the header's marker cluster draws.
+    ///
+    /// `chinese` is the strip's own bit (ADR-0005), not an inference from the label's
+    /// text: a notice occupying the label slot must not light the mode dot.
     fn write_status(&self) {
+        self.window.set_chinese(self.state.chinese);
         self.window.set_full_width(self.state.full_width);
         self.window
             .set_punctuation_full(self.state.punctuation_full);

@@ -368,6 +368,11 @@ export component Header inherits Rectangle {
     in property <bool> full-width: false;
     in property <bool> punctuation-full: false;
     in property <bool> readonly: false;
+    // The mode bit behind the cluster's first marker (`StatusStrip::chinese`,
+    // ADR-0005). It travels beside the flags rather than being read off `mode-label`:
+    // that slot carries the mode's own text or a degradation notice, so nothing about
+    // the mode can be inferred from it.
+    in property <bool> chinese: false;
     // Whether the cluster's two secondary markers are drawn; see `StatusCluster`. The
     // adapter decides it from the room the preedit has left, and the cluster's width and the
     // preedit's budget are the two halves of that one decision.
@@ -489,12 +494,13 @@ export component Header inherits Rectangle {
 
         // The status cluster is a fixed-width block (3.1.1: 16dp icons, 8dp apart). Its
         // width never depends on which modes are on, so toggling one cannot reflow the
-        // preedit and the header never jitters. The mode dot reads the mode from the label
-        // the strip already carries: `StatusStrip::mode_label` is the mode's own text, and a
-        // strip with no label is a strip that is not in Chinese mode.
+        // preedit and the header never jitters. The mode dot reads the mode bit the engine
+        // writes into every frame (`StatusStrip::chinese`, ADR-0005): the label slot beside
+        // the cluster carries the mode's own text *or* a degradation notice, so its content
+        // or emptiness answers nothing about the mode and must not be inferred from.
         StatusCluster {
             strip-height: root.strip-height;
-            chinese: root.mode-label != "";
+            chinese: root.chinese;
             full-width: root.full-width;
             punctuation-full: root.punctuation-full;
             readonly: root.readonly;
@@ -525,6 +531,9 @@ export component CandidateWindow inherits Window {
     in property <bool> full-width: false;
     in property <bool> punctuation-full: false;
     in property <bool> readonly: false;
+    // The mode bit the cluster's dot draws (`StatusStrip::chinese`, ADR-0005), passed
+    // through to the header untouched: the window derives nothing from it.
+    in property <bool> chinese: false;
     // The page's candidates, in the model the grid draws from.
     in property <[CandidateData]> items: [];
     // Whether a candidate's annotation is drawn beside it. The adapter writes it from every
@@ -746,6 +755,7 @@ export component CandidateWindow inherits Window {
                 full-width: root.full-width;
                 punctuation-full: root.punctuation-full;
                 readonly: root.readonly;
+                chinese: root.chinese;
             }
 
             Rectangle {

@@ -333,6 +333,10 @@ extern "C" fn on_input_panel_update(
     snapshot: *const UiPanelSnapshot,
 ) -> bool {
     guard_ffi(false, || {
+        // This callback runs on the main loop, which makes it one of the dispatch
+        // points the event return channel's queue drains at (ADR-0011): a queued
+        // event reaches the engine's ingest from here before this panel is recorded.
+        crate::ffi::transport::flush_event_outlet();
         if snapshot.is_null() {
             emit_diagnostic("ffi/null-panel-snapshot");
             return false;
@@ -379,6 +383,9 @@ extern "C" fn on_input_panel_update(
 /// host callback.
 extern "C" fn on_cursor_rect(_context: *mut c_void, ic_id: u64, rect: FcitxCursorRect) {
     guard_ffi((), || {
+        // The other main-loop dispatch point the event return channel drains at
+        // (ADR-0011), for the same reason as the panel update above.
+        crate::ffi::transport::flush_event_outlet();
         crate::ui_impl::on_cursor_rect(ic_id, rect);
     });
 }

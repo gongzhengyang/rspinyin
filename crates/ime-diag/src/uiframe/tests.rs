@@ -157,6 +157,7 @@ fn populated() -> UiFrame {
         punctuation_full: true,
         has_user_dict_hit: true,
         readonly: true,
+        chinese: true,
         script: Script::Traditional,
     };
     frame.anchor = Anchor {

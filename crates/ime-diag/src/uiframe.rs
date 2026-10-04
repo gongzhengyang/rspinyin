@@ -106,7 +106,10 @@ use ime_types::UiFrame;
 /// declared with a serde default, so a version-1 document still *parses* and is then refused
 /// by the version check below as a format refusal -- the one gate the rule names -- rather
 /// than as a shape error.
-pub const FRAME_FORMAT_VERSION: u32 = 2;
+///
+/// Version 3 appended `chinese` to the status view (ADR-0005's `StatusStrip` extension):
+/// the mode dot's bit, which a reader must not re-derive from the label's text.
+pub const FRAME_FORMAT_VERSION: u32 = 3;
 
 /// The structured view of one frame: what the candidate window would have drawn.
 ///

@@ -579,3 +579,63 @@ fn test_ui_addon_conf_pins_what_fcitx5_resolves() {
 
 /// The engine addon description, relative to this crate's manifest directory.
 const ENGINE_ADDON_CONF: &str = "../../packaging/fcitx5/rspinyin.conf";
+
+#[test]
+fn test_late_takeover_retry_fires_once_when_the_window_is_ready() {
+    use std::sync::atomic::Ordering;
+
+    // The retry is one attempt, not a stream: the first "due" call consumes the armed
+    // fact, and every later call answers "nothing to do" however ready the window is.
+    // The flag is reset on both ends so the tests stay order-independent even where the
+    // runner shares one process.
+    LATE_TAKEOVER_RETRY.store(false, Ordering::Release);
+    arm_late_takeover_retry();
+
+    let first = take_late_takeover_retry_if_due(true);
+    let second = take_late_takeover_retry_if_due(true);
+    LATE_TAKEOVER_RETRY.store(false, Ordering::Release);
+
+    assert!(first, "an armed retry fires when the window turned up");
+    assert!(!second, "the retry is consumed by its single firing");
+}
+
+#[test]
+fn test_late_takeover_retry_waits_for_the_window_to_arrive() {
+    use std::sync::atomic::Ordering;
+
+    // The retry exists for the window that arrives late, not the one that never
+    // arrives: while readiness is still false the armed fact stays armed, and the next
+    // command asks again.
+    LATE_TAKEOVER_RETRY.store(false, Ordering::Release);
+    arm_late_takeover_retry();
+
+    let too_early = take_late_takeover_retry_if_due(false);
+    let still_armed = LATE_TAKEOVER_RETRY.load(Ordering::Acquire);
+    let after_ready = take_late_takeover_retry_if_due(true);
+    LATE_TAKEOVER_RETRY.store(false, Ordering::Release);
+
+    assert!(!too_early, "no window, no takeover attempt");
+    assert!(still_armed, "an early command leaves the retry armed");
+    assert!(
+        after_ready,
+        "the retry fires on the first command after readiness"
+    );
+}
+
+#[test]
+fn test_late_takeover_retry_without_the_late_fact_never_fires() {
+    use std::sync::atomic::Ordering;
+
+    // Boundary: a load whose first evaluation went through — or was refused — arms
+    // nothing, and a ready window on its own does not make the retry fire. The
+    // takeover stays exactly the one attempt per load it was before this branch.
+    LATE_TAKEOVER_RETRY.store(false, Ordering::Release);
+
+    let fired = take_late_takeover_retry_if_due(true);
+    LATE_TAKEOVER_RETRY.store(false, Ordering::Release);
+
+    assert!(
+        !fired,
+        "a ready window without a missed evaluation retries nothing"
+    );
+}

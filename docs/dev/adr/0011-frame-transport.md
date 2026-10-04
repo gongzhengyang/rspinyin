@@ -80,3 +80,25 @@ void rspinyin_engine_clear_ui_sinks(void);
 - 两库各自新增约二百行转写代码 + 单测（字段保真往返）；`check-unsafe` 白名单不变（wire 组装是安全代码；引擎侧原子槽位是安全代码）。
 - `post_ui` 预算键按 P0.01.01 DoD 4 经 opt-perf 的 `PENDING_KEYS` 机制登记进 `budgets.json`，criterion 基线落档。
 - E2E（真机 X11 注入 → 候选可见 → `test-mirror` 帧一致）是 `REFACTOR-P0.01.08` 的领地；本 ADR 的真机证据项在其验收记录中落档。
+
+---
+
+## 修订记录（append-only）
+
+### 修订 1（2026-10-03）：帧 wire 的高亮追加 + 事件 wire 家族 + 回程出口
+
+三条对上文表格与决策的追加登记，均沿"只增不改"路径，已随实现落库：
+
+**① `RspinyinFrameWire` 的高亮追加。** 上文决策 2 的帧 wire 表在此追加两个尾字段：`highlight: u16` ＋ `has_highlight: u8`（页内高亮位置；`None` 以 `has_highlight = 0` 传递，位置槽同时清零）。两字节落在 `hide_reason` 之后的既有对齐空隙内，结构总长保持 144 字节；两侧转写各带 `size_of == 144` 断言。
+
+**② 事件 wire 家族（`RspinyinEventWire`）。** 事件回程沿用同一通道纪律，wire 形状如下（两侧 Rust 转写各一份，`static_assert`/`const` 断言 44 字节；无第三方 C++ 转写——glue 只按不透明字节搬运）：
+
+| 字段（按 ABI 序） | 承载 |
+|---|---|
+| `kind: u32`（0 Select / 1 Hover / 2 Page / 3 Dismiss / **4 Anchor**） | 事件判别 |
+| `revision: u32`、`index: u16`、`reason: u32` | 修订号；页内位置；kind 的辅助槽（select 触发源 / hover 在场标志 / 翻页方向 / dismiss 原因） |
+| `anchor_x: i32, anchor_y: i32, anchor_w: u32, anchor_h: u32, anchor_screen: i32, anchor_scale: f32, anchor_placement: u32`（kind 4 专属，其余 kind 恒零） | 光标锚点五元组——锚点上行复用本通道，不另立 wire |
+
+**③ 回程的符号与出口（对决策 3 预告的落地裁决）。** 决策 3 曾预告引擎追加注册符号 `rspinyin_engine_register_event_ingest`。实际落库**不需要**该注册符号：引擎直接导出 `rspinyin_event_ingest(ic_id, *const RspinyinEventWire) -> bool`（guard 包裹，仅可由主循环线程调用；kind 4 转写进 `session_host::set_anchor`，其余经 `session_host::ui_event`），UI 侧 glue 用与帧握手相同的三机制探测按名解析它——一次握手流程、一个导出符号，无需引擎侧再开槽位。`Anchor` kind 的锚点上行随之落库于引擎半侧；候选窗回调里的解析-上行生产者（`ime-ui-addon` 的 caret 回调）与 `events` 模块的挂载属下一批主 Agent 变更，不在本 ADR 的形状裁决范围内。
+
+**④ 回程出口与遗留项。** 排空线程与主循环线程之间的编组点为 UI glue 的事件出口：`rspinyin_ui_event_outlet_arm/disarm/post/flush`（C++，`ui_addon_glue.cpp`，上限 64 条、leaf 锁、ingest 指针随传输注销一并清除）。排空线程 `post` 入队；主循环线程在宿主派发的 UI 回调处 `flush`。**遗留（明示）：** 尚无让空闲主循环立即出队所需的唤醒源（一次 `Instance::eventLoop()` 的 defer/post 事件），其 5.1.7 签名必须按装机头文件落笔、`check-host` 实证——在此之前，排队事件于下一次宿主派发时到达引擎。此项为事件回程 E2E（点选即上屏）验收前必须补齐的最后一块。

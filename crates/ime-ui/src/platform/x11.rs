@@ -30,6 +30,10 @@
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 
 use ime_types::{FrameToken, PixelBufferMut, PlatformError, RectI, SurfaceBackend, SurfaceEvent};
+// x11rb's stream implements the fd trait under this name, and `as_fd` is how the
+// connection's descriptor is borrowed safely -- `BorrowedFd::borrow_raw` would be an
+// `unsafe` this crate may not carry.
+use rustix::fd::AsFd;
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::protocol::shape::{ConnectionExt as ShapeExt, SK, SO};
 use x11rb::protocol::xproto::{
@@ -542,7 +546,9 @@ impl SurfaceBackend for X11Backend {
         // The X connection's socket is what a pointer event arrives on, so this is the
         // descriptor the UI thread's poll set has to watch. Borrowed, not owned: the
         // connection keeps the descriptor, and the borrow lives only for this call.
-        Some(BorrowedFd::borrow_raw(self.conn.stream().as_raw_fd()))
+        // `DefaultStream: AsFd` hands the borrow over safely, so no raw-descriptor
+        // constructor is needed in this crate.
+        Some(self.conn.stream().as_fd())
     }
 
     fn poll_events(&mut self, out: &mut Vec<SurfaceEvent>) -> Result<(), PlatformError> {

@@ -70,6 +70,7 @@ fn sample_frame() -> UiFrame {
             punctuation_full: false,
             has_user_dict_hit: false,
             readonly: false,
+            chinese: true,
             script: Script::Simplified,
         },
         anchor: ime_types::Anchor {

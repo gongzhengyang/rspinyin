@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 
 use ime_diag::crash::{self, CrashContext, CrashContextKey};
 use ime_types::ImeError;
+use ime_ui::renderer::FontStatus;
 
 use crate::ffi::emit_diagnostic;
 
@@ -139,6 +140,38 @@ fn crash_context() -> CrashContext {
         context.insert_identifier(CrashContextKey::BackendId, backend);
     }
     context
+}
+
+/// Reports what the font probe found, so a missing CJK fallback is a recorded diagnostic
+/// rather than a silently odd-looking window (`ASM-16`).
+///
+/// The probe runs once per process while the surface is built and caches its answer; this
+/// reads the same cached answer, so reporting costs no second measurement. Only the
+/// degraded cases write a line, under the probe's own stable code; a ready answer and an
+/// unavailable one (nothing is known about the fonts, e.g. the probe thread could not
+/// start) are silent, because neither is a fact about the fonts the machine carries.
+///
+/// Called from the UI start-up's factory, on the UI thread, once per process. The line
+/// goes through the crash channel's throttle, which is what keeps a reload from writing
+/// the same line twice within one window.
+///
+/// # Panics
+///
+/// Never.
+pub(super) fn report_font_probe_status() {
+    let status = ime_ui::renderer::probe_fonts();
+    emit_font_probe_status(status, &mut |line| emit_diagnostic(line));
+}
+
+/// The reporting decision over one probe answer, split out so a test can capture the
+/// line instead of the process's stderr.
+///
+/// The error carries the stable code as its `Display`, which is the spelling every
+/// diagnostic and test matches on.
+fn emit_font_probe_status(status: FontStatus, emit: &mut dyn FnMut(&str)) {
+    if let Some(error) = status.error() {
+        emit(&error.to_string());
+    }
 }
 
 #[cfg(test)]
@@ -253,5 +286,51 @@ mod tests {
                 "{name} is not a key of the closed context set"
             );
         }
+    }
+
+    #[test]
+    fn test_emit_font_probe_status_reports_the_missing_cjk_code() {
+        // The degraded answer writes exactly one line, and the line's leading field is
+        // the probe's own stable code — the spelling an operator greps for.
+        let mut lines: Vec<String> = Vec::new();
+        emit_font_probe_status(FontStatus::MissingCjk, &mut |line| {
+            lines.push(String::from(line))
+        });
+
+        assert_eq!(lines.len(), 1, "one degraded answer, one line");
+        assert!(
+            lines[0].starts_with("ui/font/missing-cjk"),
+            "the line leads with the stable code, got {:?}",
+            lines[0]
+        );
+    }
+
+    #[test]
+    fn test_emit_font_probe_status_is_silent_without_a_degraded_answer() {
+        // A ready answer is not a fact worth a line, and neither is an unavailable one:
+        // "nothing is known" would turn a probe-thread failure into a claim about the
+        // fonts the machine carries. The boundary is the empty capture.
+        let capture = |status: FontStatus| {
+            let mut lines: Vec<String> = Vec::new();
+            emit_font_probe_status(status, &mut |line| lines.push(String::from(line)));
+            lines
+        };
+
+        assert!(capture(FontStatus::Ready).is_empty());
+        assert!(capture(FontStatus::Unavailable).is_empty());
+    }
+
+    #[test]
+    fn test_emit_font_probe_status_reports_the_no_fonts_answer_too() {
+        // No font backend at all is the same degraded answer to the user as a missing
+        // CJK fallback — the window cannot draw the script it exists for — so it rides
+        // the same code by the probe's own mapping.
+        let mut lines: Vec<String> = Vec::new();
+        emit_font_probe_status(FontStatus::NoFonts, &mut |line| {
+            lines.push(String::from(line))
+        });
+
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("ui/font/missing-cjk"));
     }
 }

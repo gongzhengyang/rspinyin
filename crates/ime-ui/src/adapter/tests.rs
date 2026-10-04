@@ -1207,3 +1207,74 @@ fn test_adapter_apply_overlay_writes_the_overlay_properties() {
         "closing the overlay uncovers the candidate panel the adapter still holds"
     );
 }
+
+#[test]
+fn test_draw_state_chinese_is_the_strip_bit_not_a_label_inference() {
+    use super::{DrawState, container_cap};
+
+    // `StatusStrip::chinese` (ADR-0005) is the mode dot's source, copied into the draw
+    // state untouched. The label slot beside the dot may carry a degradation notice, so
+    // the mapping must not derive the bit from the label's text or its emptiness: a
+    // notice in an English frame keeps the dot dark, and a Chinese frame keeps it lit
+    // whatever the label says.
+    let metrics = layout::metrics().expect("the component declares the metrics block");
+    let mut state = DrawState::default();
+
+    let mut notice = frame_with(1, "ni'hao", 1);
+    notice.status = StatusStrip {
+        mode_label: String::from("词典不可用，仅直通输入"),
+        chinese: false,
+        ..StatusStrip::default()
+    };
+    state.update(&notice, container_cap(&notice, &metrics), &metrics);
+    assert!(
+        !state.chinese,
+        "a notice label in an English frame must not light the mode dot"
+    );
+
+    let mut chinese = frame_with(2, "ni'hao", 1);
+    chinese.status = StatusStrip {
+        mode_label: String::from("词典不可用，仅直通输入"),
+        chinese: true,
+        ..StatusStrip::default()
+    };
+    state.update(&chinese, container_cap(&chinese, &metrics), &metrics);
+    assert!(
+        state.chinese,
+        "the engine's mode bit is drawn as written, notice or not"
+    );
+}
+
+#[test]
+fn test_draw_state_status_delta_flags_a_chinese_bit_change() {
+    use super::{DrawState, container_cap};
+
+    // Boundary of the change detection: the bit is part of the `status` group, so a
+    // frame that flips nothing else still reaches the component. A frame that changes
+    // no flag at all stays an empty delta, which is what keeps a repeated keystroke
+    // free of property writes.
+    let metrics = layout::metrics().expect("the component declares the metrics block");
+    let mut state = DrawState::default();
+
+    let mut first = frame_with(1, "ni'hao", 1);
+    first.status = StatusStrip {
+        chinese: true,
+        ..StatusStrip::default()
+    };
+    state.update(&first, container_cap(&first, &metrics), &metrics);
+
+    let mut english = frame_with(2, "ni'hao", 1);
+    english.status = StatusStrip {
+        chinese: false,
+        ..StatusStrip::default()
+    };
+    let flipped = state.update(&english, container_cap(&english, &metrics), &metrics);
+    assert!(flipped.status, "a mode-bit flip is a visible change");
+    assert!(!state.chinese);
+
+    let replay = state.update(&english, container_cap(&english, &metrics), &metrics);
+    assert!(
+        replay.is_empty(),
+        "a frame that changes nothing writes nothing"
+    );
+}

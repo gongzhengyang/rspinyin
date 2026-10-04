@@ -86,6 +86,7 @@ mod session;
 mod user_store;
 
 pub use self::config::{on_config_reload, routing_config};
+pub use self::session::dictionary_unavailable;
 
 /// One step of the synchronous initialisation sequence.
 struct InitStep {

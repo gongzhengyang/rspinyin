@@ -1,7 +1,7 @@
 //! Wire-fidelity tests: every field the writer builds, read back from a captured sink.
 
 use super::*;
-use ime_types::{LayoutHint, OverlaySection, PageState, Preedit, PreeditSpan, RectI, StatusStrip};
+use ime_types::{LayoutHint, OverlaySection, PageState, Placement, Preedit, PreeditSpan, RectI, StatusStrip};
 
 /// What one sink call captured, copied out of the borrowed wire before returning.
 #[derive(Default)]
@@ -220,6 +220,7 @@ fn sample_frame() -> UiFrame {
             punctuation_full: false,
             has_user_dict_hit: true,
             readonly: true,
+            chinese: true,
             script: Script::Traditional,
         },
         anchor: Anchor {
@@ -408,4 +409,82 @@ fn test_dispatch_reports_a_missing_channel_and_registration_refuses_null() {
     assert!(!rspinyin_engine_register_ui_sinks(std::ptr::null()));
     // A null sink is refused rather than stored, so the slot stays empty.
     assert!(!dispatch(&UiCommand::Shutdown));
+}
+
+/// An `Anchor`-kind wire carrying a caret the reader can be asserted against.
+fn anchor_wire() -> RspinyinEventWire {
+    RspinyinEventWire {
+        kind: EVENT_KIND_ANCHOR,
+        revision: 0,
+        index: 0,
+        reason: 0,
+        anchor_x: -40,
+        anchor_y: 300,
+        anchor_w: 12,
+        anchor_h: 30,
+        anchor_screen: 1,
+        anchor_scale: 1.25,
+        anchor_placement: 1,
+    }
+}
+
+#[test]
+fn test_anchor_wire_reads_back_every_anchor_field() {
+    let anchor = anchor_from_wire(&anchor_wire()).expect("a well-formed anchor parses");
+    assert_eq!(
+        anchor.cursor,
+        RectI {
+            x: -40,
+            y: 300,
+            w: 12,
+            h: 30
+        },
+        "the caret rectangle travels field for field"
+    );
+    assert_eq!(anchor.screen, ime_types::ScreenId::new(1));
+    assert_eq!(anchor.scale, 1.25);
+    assert_eq!(anchor.placement, Placement::Above);
+}
+
+#[test]
+fn test_anchor_wire_is_not_a_window_event() {
+    // The anchor is engine state, so the event reader must refuse it: a caret report
+    // that could be mistaken for a click would step a session that never saw one.
+    assert!(event_from_wire(&anchor_wire()).is_none());
+}
+
+#[test]
+fn test_anchor_wire_rejects_a_negative_screen_or_unknown_placement() {
+    let mut wire = anchor_wire();
+    wire.anchor_screen = -1;
+    assert!(
+        anchor_from_wire(&wire).is_none(),
+        "a screen id cannot be negative, so the wire is malformed"
+    );
+    wire.anchor_screen = 1;
+    wire.anchor_placement = 3;
+    assert!(
+        anchor_from_wire(&wire).is_none(),
+        "a placement this version does not know is a drifted wire"
+    );
+}
+
+#[test]
+fn test_event_ingest_refuses_a_null_or_unreadable_wire() {
+    assert!(!rspinyin_event_ingest(1, std::ptr::null()));
+    let mut unknown = anchor_wire();
+    unknown.kind = 99;
+    assert!(
+        !rspinyin_event_ingest(1, &unknown),
+        "a kind this transcription cannot read is refused, not guessed"
+    );
+}
+
+#[test]
+fn test_event_ingest_accepts_a_well_formed_anchor() {
+    // With no session host installed the anchor still parses and is handed to the
+    // session layer, which records the missing host on its own; acceptance here is
+    // about the wire. The anchor's effect on the frames a session builds is asserted
+    // at the session-host level, where the routing table is in place.
+    assert!(rspinyin_event_ingest(1, &anchor_wire()));
 }

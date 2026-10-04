@@ -27,6 +27,7 @@
 
 use std::path::Path;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ime_config::VerifyDictOnLoad;
 use ime_core::privacy::DefaultPolicy;
@@ -208,6 +209,7 @@ pub(super) fn session_sources() -> &'static SessionSources {
 pub(super) fn sources_for(dictionary: Option<&Path>) -> SessionSources {
     let Some(path) = dictionary else {
         report_step_failure("lexicon", &"no data directory");
+        mark_dictionary_unavailable();
         return degraded();
     };
     let lexicon = match FstLexicon::load_with(path, verify_mode()) {
@@ -221,6 +223,7 @@ pub(super) fn sources_for(dictionary: Option<&Path>) -> SessionSources {
                 cause,
             };
             report_step_failure("lexicon", &error);
+            mark_dictionary_unavailable();
             return degraded();
         }
     };
@@ -236,6 +239,27 @@ pub(super) fn sources_for(dictionary: Option<&Path>) -> SessionSources {
         lm: LanguageModelSource::Mapped(Box::new(lm)),
         user_freq: user_frequency(),
     }
+}
+
+/// Whether the process started with no usable dictionary.
+///
+/// Set by [`sources_for`] on either degraded path and read by the engine's notice
+/// selection through the addon's re-export, which is the one visibility bridge the
+/// router's private module layout allows. Sticky for the process's life: remapping is
+/// not attempted after a failed load, so a cleared flag could only misreport.
+static DICTIONARY_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
+
+/// Records that this process has no usable dictionary.
+fn mark_dictionary_unavailable() {
+    DICTIONARY_UNAVAILABLE.store(true, Ordering::Release);
+}
+
+/// Whether this process started with no usable dictionary.
+///
+/// The engine's notice table reads this through `crate::addon`'s re-export to decide
+/// whether the `dict/unavailable` notice takes the status label.
+pub fn dictionary_unavailable() -> bool {
+    DICTIONARY_UNAVAILABLE.load(Ordering::Acquire)
 }
 
 /// The sources of a start with no dictionary to map.

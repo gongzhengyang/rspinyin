@@ -270,6 +270,13 @@ pub struct StatusView {
     pub has_user_dict_hit: bool,
     /// Whether the plugin is in read-only mode, which the strip shows as a lock.
     pub readonly: bool,
+    /// Whether the strip's mode dot reads Chinese — the engine's own bit, never an
+    /// inference from the label's text.
+    ///
+    /// The serde default keeps an older document a *format* refusal (the version check)
+    /// rather than a shape error, the same convention `highlight` follows.
+    #[serde(default)]
+    pub chinese: bool,
     /// Which script the strip shows.
     pub script: ScriptName,
 }
@@ -283,6 +290,7 @@ impl StatusView {
             punctuation_full: status.punctuation_full,
             has_user_dict_hit: status.has_user_dict_hit,
             readonly: status.readonly,
+            chinese: status.chinese,
             script: ScriptName::of(&status.script),
         }
     }
@@ -295,6 +303,7 @@ impl StatusView {
             punctuation_full: self.punctuation_full,
             has_user_dict_hit: self.has_user_dict_hit,
             readonly: self.readonly,
+            chinese: self.chinese,
             script: self.script.to_script(),
         }
     }

@@ -30,6 +30,7 @@
 #endif
 
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 
@@ -293,19 +294,18 @@ extern "C" const void *rspinyin_ui_frame_sink();
 
 namespace {
 
-/// Looks the engine's registration function up through probe `mechanism`.
+/// Looks an engine symbol up through probe `mechanism`.
 ///
 /// Returns null when that mechanism finds nothing. `handle_out`, when non-null,
 /// receives the handle the symbol came from (a `RTLD_NOLOAD` result, or null for
 /// `RTLD_DEFAULT`); the caller has no reason to close a `RTLD_NOLOAD` handle.
-rspinyin_register_sinks_fn find_engine_register(int mechanism, void **handle_out) {
+void *find_engine_symbol(int mechanism, const char *name, void **handle_out) {
     switch (mechanism) {
     case 1:
-        return reinterpret_cast<rspinyin_register_sinks_fn>(
-            dlsym(RTLD_DEFAULT, "rspinyin_engine_register_ui_sinks"));
+        return dlsym(RTLD_DEFAULT, name);
     case 2: {
         Dl_info info{};
-        void *self = reinterpret_cast<void *>(&find_engine_register);
+        void *self = reinterpret_cast<void *>(&find_engine_symbol);
         if (dladdr(self, &info) == 0 || info.dli_fname == nullptr) {
             return nullptr;
         }
@@ -321,8 +321,7 @@ rspinyin_register_sinks_fn find_engine_register(int mechanism, void **handle_out
         if (handle_out != nullptr) {
             *handle_out = handle;
         }
-        return reinterpret_cast<rspinyin_register_sinks_fn>(
-            dlsym(handle, "rspinyin_engine_register_ui_sinks"));
+        return dlsym(handle, name);
     }
     case 3: {
         void *handle = dlopen("librspinyin.so", RTLD_NOLOAD | RTLD_LAZY);
@@ -332,12 +331,20 @@ rspinyin_register_sinks_fn find_engine_register(int mechanism, void **handle_out
         if (handle_out != nullptr) {
             *handle_out = handle;
         }
-        return reinterpret_cast<rspinyin_register_sinks_fn>(
-            dlsym(handle, "rspinyin_engine_register_ui_sinks"));
+        return dlsym(handle, name);
     }
     default:
         return nullptr;
     }
+}
+
+/// Looks the engine's registration function up through probe `mechanism`.
+///
+/// Returns null when that mechanism finds nothing; see `find_engine_symbol`, which
+/// this is a spelling of for the frame handshake's own symbol.
+rspinyin_register_sinks_fn find_engine_register(int mechanism, void **handle_out) {
+    return reinterpret_cast<rspinyin_register_sinks_fn>(
+        find_engine_symbol(mechanism, "rspinyin_engine_register_ui_sinks", handle_out));
 }
 
 } // namespace
@@ -383,6 +390,172 @@ extern "C" void rspinyin_ui_transport_unregister() {
         if (clear != nullptr) {
             reinterpret_cast<void (*)()>(clear)();
             return;
+        }
+    }
+}
+
+// ── Event return channel (ADR-0011) ─────────────────────────────────────────────
+//
+// The candidate window's events are produced on the drain thread, but the engine's
+// session layer (`rspinyin_event_ingest`) runs on the Fcitx5 main loop and only
+// there. This outlet is the marshalling point between the two: `post` queues one
+// wire from the drain thread, and `flush` hands the queued events to the engine on
+// the loop thread. The Rust half calls `flush` from the callback-table entries that
+// the host dispatches on the loop (`on_input_panel_update`, `on_cursor_rect`), which
+// is the delivery path that needs no facility of the host's own.
+//
+// What is deliberately not here yet is the *wake*: a queued event reaches the engine
+// at the next loop dispatch, not at the moment it was queued, so a click on a window
+// the host has nothing new to dispatch for waits for the next dispatch. Waking an
+// idle loop needs one defer/post event source on the instance's event loop, whose
+// signature must be taken from the installed host headers rather than from memory
+// (the standard every other fcitx call in these files was held to). Until that lands,
+// the outlet is the proven half: queue, drain, and the probes below. ADR-0011
+// records this as the return channel's remaining piece.
+//
+// The engine's ingest is resolved with the same probe trio the frame handshake uses,
+// and dropped again when the transport unregisters, so a pointer into an engine that
+// unloaded first is never called.
+
+/// Mirrors the `#[repr(C)]` event wire in `src/ffi/transport.rs`, which transcribes
+/// the engine's reader. A plain integer struct: the whole wire crosses the drain
+/// thread's boundary as a copy.
+struct RspinyinEventWire {
+    std::uint32_t kind;
+    std::uint32_t revision;
+    std::uint16_t index;
+    std::uint32_t reason;
+    std::int32_t anchor_x;
+    std::int32_t anchor_y;
+    std::uint32_t anchor_w;
+    std::uint32_t anchor_h;
+    std::int32_t anchor_screen;
+    float anchor_scale;
+    std::uint32_t anchor_placement;
+};
+
+// The layout is shared with both Rust transcriptions; a field added must move all
+// three and this number.
+static_assert(sizeof(RspinyinEventWire) == 44,
+              "the event wire is the ABI: four words, a slot pair, and the anchor "
+              "seven-tuple");
+
+/// The engine's ingest, as the probes above hand it over.
+using rspinyin_event_ingest_fn = bool (*)(std::uint64_t, const RspinyinEventWire *);
+
+namespace {
+
+/// One queued event: the context it belongs to, and the wire it travels on.
+struct QueuedEvent {
+    std::uint64_t ic_id;
+    RspinyinEventWire wire;
+};
+
+/// How many events may wait for the main loop before a post is refused.
+///
+/// The rates are human-scale -- a click, a page turn, a throttled hover -- so the
+/// ceiling exists to bound the outlet's memory, not to absorb a burst. A full
+/// outbox refuses the new event, which the drain counts, because dropping an older
+/// one would reorder what the engine is told.
+constexpr std::size_t kEventOutboxCapacity = 64;
+
+/// The outlet state: the resolved ingest, and the events waiting for the loop.
+///
+/// A function-local static rather than a namespace-scope object, like the handshake
+/// state above: nothing in this library is initialised before Fcitx5 is ready for
+/// it. One mutex guards both, and it is a leaf lock -- nothing else is taken while
+/// it is held, and it is never held across the ingest call itself.
+struct EventOutlet {
+    std::mutex guard;
+    rspinyin_event_ingest_fn ingest = nullptr;
+    std::deque<QueuedEvent> outbox;
+};
+
+EventOutlet &event_outlet() {
+    static EventOutlet outlet;
+    return outlet;
+}
+
+} // namespace
+
+/// Resolves the engine's ingest and opens the outbox (ADR-0011).
+///
+/// Returns 1 when the ingest was resolved, 0 when no mechanism found a live engine.
+/// Arming again clears whatever a previous arm left queued: events encoded against
+/// one engine incarnation must not be delivered into the next.
+extern "C" std::uint32_t rspinyin_ui_event_outlet_arm() {
+    for (int mechanism = 1; mechanism <= 3; ++mechanism) {
+        void *handle = nullptr;
+        void *symbol = find_engine_symbol(mechanism, "rspinyin_event_ingest", &handle);
+        if (symbol == nullptr) {
+            continue;
+        }
+        EventOutlet &outlet = event_outlet();
+        {
+            const std::lock_guard<std::mutex> guard(outlet.guard);
+            outlet.ingest = reinterpret_cast<rspinyin_event_ingest_fn>(symbol);
+            outlet.outbox.clear();
+        }
+        return 1;
+    }
+    return 0;
+}
+
+/// Drops the engine's ingest and empties the outbox.
+///
+/// Called when the transport unregisters: an ingest pointer into an engine that
+/// unloaded first must never be called, and events queued behind a gone engine are
+/// dropped rather than delivered into a teardown.
+extern "C" void rspinyin_ui_event_outlet_disarm() {
+    EventOutlet &outlet = event_outlet();
+    const std::lock_guard<std::mutex> guard(outlet.guard);
+    outlet.ingest = nullptr;
+    outlet.outbox.clear();
+}
+
+/// Queues one event wire for the engine's main loop, from the drain thread.
+///
+/// Returns 1 when the wire was queued and 0 when it was not -- the outlet is
+/// disarmed, or the outbox is at its ceiling. The wire is copied before this
+/// returns: the drain thread's borrow ends with the call, and nothing queued
+/// outlives the copy.
+extern "C" std::uint32_t rspinyin_ui_event_outlet_post(std::uint64_t ic_id,
+                                                       const RspinyinEventWire *wire) {
+    if (wire == nullptr) {
+        return 0;
+    }
+    EventOutlet &outlet = event_outlet();
+    const std::lock_guard<std::mutex> guard(outlet.guard);
+    if (outlet.ingest == nullptr || outlet.outbox.size() >= kEventOutboxCapacity) {
+        return 0;
+    }
+    outlet.outbox.push_back(QueuedEvent{ic_id, *wire});
+    return 1;
+}
+
+/// Hands the outbox's queued events to the engine, on the calling thread.
+///
+/// Must be called from the Fcitx5 main loop, which is the only thread the engine's
+/// session layer runs on. The lock is released around each ingest call, so the
+/// drain thread's posts are never delayed by the engine's own work; the order the
+/// engine is told is still the order the events arrived in.
+extern "C" std::uint32_t rspinyin_ui_event_outlet_flush() {
+    std::uint32_t flushed = 0;
+    for (;;) {
+        rspinyin_event_ingest_fn ingest = nullptr;
+        QueuedEvent item{};
+        {
+            EventOutlet &outlet = event_outlet();
+            const std::lock_guard<std::mutex> guard(outlet.guard);
+            if (outlet.ingest == nullptr || outlet.outbox.empty()) {
+                return flushed;
+            }
+            item = outlet.outbox.front();
+            outlet.outbox.pop_front();
+            ingest = outlet.ingest;
+        }
+        if (ingest(item.ic_id, &item.wire)) {
+            ++flushed;
         }
     }
 }

@@ -21,10 +21,12 @@
 //! platform from elsewhere is the UI thread's own command queue (2.5.1).
 
 use std::cell::RefCell;
+use std::os::fd::OwnedFd;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use ime_types::{FrameToken, ImeError, PlatformError, RectI, SurfaceBackend, SurfaceEvent};
+use rustix::io::dup;
 use slint::PlatformError as SlintError;
 use slint::platform::{EventLoopProxy, Platform, WindowAdapter};
 
@@ -160,6 +162,22 @@ impl RspinyinPlatform {
                 .map_err(backend_error)?;
         }
         Ok(())
+    }
+
+    /// Duplicates the backend's connection descriptor, if it has one.
+    ///
+    /// The platform keeps the backend behind a `RefCell` shared with the window adapter,
+    /// so a descriptor borrowed from it cannot outlive this call — which is why the copy
+    /// is made here instead: the duplicate is an owned descriptor over the same open file
+    /// description, so a poll set watching it observes exactly the readiness the
+    /// connection itself reports. A backend with no descriptor (`None`) and a `dup` that
+    /// failed (descriptor-table exhaustion) both answer `None`, which puts the caller
+    /// back on its eventfd-only wait — the loop's documented fallback, not a lost
+    /// correctness property.
+    pub fn dup_connection_fd(&self) -> Option<OwnedFd> {
+        let backend = self.inner.backend.borrow();
+        let fd = backend.connection_fd()?;
+        dup(fd).ok()
     }
 
     /// Sets the interactive region of the surface, in physical pixels.
