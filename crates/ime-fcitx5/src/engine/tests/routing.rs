@@ -215,8 +215,9 @@ fn test_key_event_unrouted_key_is_handed_back() {
     activate_ordinary(&mut router, IC);
     let mut host = RecordingHost::default();
 
-    // F5, the keypad's Enter, a comma, and a bare modifier that is not Shift.
-    for sym in [0xffbe, 0xff8d, 0x002c, 0xffe3] {
+    // F5, the keypad's Enter, the slash — a mark the policy row does not name — and a
+    // bare modifier that is not Shift.
+    for sym in [0xffbe, 0xff8d, 0x002f, 0xffe3] {
         assert!(
             !router.key_event(IC, &press(sym, 0), &mut host),
             "sym {sym:#06x} is not the plugin's"
@@ -480,29 +481,73 @@ fn test_key_event_full_width_and_punctuation_toggle_the_status_strip() {
 }
 
 #[test]
-fn test_key_event_ctrl_space_toggles_the_host_input_state() {
+fn test_key_event_idle_full_width_toggle_is_claimed_without_reaching_the_host() {
+    // With nothing composing there is no window to repaint: the switch claims its key —
+    // the user asked for a change of mode, and the next composition will show it — but
+    // the only thing it produces is the diagnostic flash, which is no host call at all.
+    // Keeping the claim without pretending work happened is the honest shape of a mode
+    // switch in the idle state.
+    let fixture = Fixture::new();
+    let mut router = fixture.router();
+    activate_ordinary(&mut router, IC);
+    let mut host = RecordingHost::default();
+
+    assert!(
+        router.key_event(IC, &press(KEY_SPACE, SHIFT), &mut host),
+        "the switch is the plugin's key whatever is composing"
+    );
+    assert!(
+        !host.acted(),
+        "the idle switch reaches the diagnostic channel, never the host"
+    );
+    assert_eq!(
+        router.session(IC).map(|session| session.state),
+        Some(SessionState::Idle),
+        "and the session was not stepped into a composition by it"
+    );
+}
+
+#[test]
+fn test_key_event_ctrl_space_is_handed_back_to_the_host() {
+    // The language switch is the host's own hotkey, and the plugin can neither read nor
+    // write the state behind it — so the routing table claims no chord for it. The key
+    // reaches the application unclaimed, nothing is toggled, and the plugin's own mode
+    // is exactly where it was.
     let fixture = Fixture::new();
     let mut router = fixture.router();
     activate_ordinary(&mut router, IC);
     let mut host = RecordingHost::default();
 
     type_n(&mut router, IC, &mut host);
-    assert!(router.key_event(IC, &press(KEY_SPACE, CTRL), &mut host));
-    assert_eq!(
-        host.toggles(),
-        [false],
-        "switching to English hands the keyboard back to the application"
-    );
-    let frame = host.last_frame().expect("a frame");
-    assert_eq!(frame.status.mode_label, "英");
+    // A second keystroke, so the frame on record is the mode's own label rather than the
+    // first-run hint that borrows the slot on a process's first frame.
+    assert!(router.key_event(IC, &press(KEY_I, 0), &mut host));
 
-    // And back again: the switch is a toggle, not a one-way door.
-    assert!(router.key_event(IC, &press(KEY_SPACE, CTRL), &mut host));
-    assert_eq!(host.toggles(), [false, true]);
-    let frame = host.last_frame().expect("a frame");
+    // A recorder of its own, so "nothing reached the host" is about this key and not
+    // about the composition typed before it.
+    let mut chord_host = RecordingHost::default();
+    assert!(
+        !router.key_event(IC, &press(KEY_SPACE, CTRL), &mut chord_host),
+        "the language chord travels on to the host"
+    );
+    assert!(
+        chord_host.toggles().is_empty(),
+        "the plugin never touches the host's input-method state: {:?}",
+        chord_host.toggles()
+    );
+    assert!(
+        !chord_host.acted(),
+        "a chord the plugin did not act on is nobody's to keep"
+    );
+    let frame = host.last_frame().expect("the composing frame is on record");
     assert_eq!(
         frame.status.mode_label, "全拼",
-        "Chinese mode shows the layout's name again"
+        "the mode the user sees is unchanged by a key the plugin declined"
+    );
+    assert_eq!(frame.preedit.text, "ni", "and the composition survives it");
+    assert!(
+        router.key_event(IC, &press(KEY_H, 0), &mut host),
+        "the next letter is still the plugin's"
     );
 }
 

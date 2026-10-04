@@ -103,6 +103,8 @@ enum Keys {
     One(u32),
     /// An inclusive range of keysyms.
     Range(u32, u32),
+    /// An explicit set, for the marks that share one row.
+    Set(&'static [u32]),
 }
 
 impl Keys {
@@ -115,6 +117,17 @@ impl Keys {
         match self {
             Self::One(one) => sym == one,
             Self::Range(low, high) => sym >= low && sym <= high,
+            // `slice::contains` is not `const`, and the walk runs in one, so the scan
+            // is a loop over a list the compiler bounds at twelve entries.
+            Self::Set(set) => {
+                let mut found = false;
+                let mut index = 0;
+                while index < set.len() {
+                    found = found || set[index] == sym;
+                    index += 1;
+                }
+                found
+            }
         }
     }
 }
@@ -229,6 +242,16 @@ const ROWS: &[Row] = &[
         keys: Keys::One(KEY_APOSTROPHE),
         accepts: Accepts::BareOnly,
         action: separator,
+    },
+    // The punctuation the passthrough policy answers: the eleven substitutable marks and
+    // the at-sign. The row claims the key so the policy can decide what it becomes; the
+    // claim is not a promise to keep it, and a mark the policy hands back reaches the
+    // application exactly as an unclaimed key would. The apostrophe is the separator's
+    // key and deliberately absent here.
+    Row {
+        keys: Keys::Set(POLICY_MARKS),
+        accepts: Accepts::BareOnly,
+        action: policy_mark,
     },
     // The composing keymap: no document can unbind these.
     Row {
@@ -419,6 +442,54 @@ fn letter(sym: u32, _state: u32, _keys: &KeyBindings) -> Option<KeyAction> {
 /// Never.
 fn separator(_sym: u32, _state: u32, _keys: &KeyBindings) -> Option<KeyAction> {
     Some(KeyAction::InputChar(SYLLABLE_SEPARATOR))
+}
+
+/// The keysyms of the punctuation row, as their ASCII codes.
+///
+/// The eleven marks the substitution table carries, plus the at-sign — the one URL
+/// marker a single keystroke can produce, which is what gives `engine.passthrough_url`
+/// a key of its own to answer. The apostrophe is not among them: it is the separator's.
+const POLICY_MARKS: &[u32] = &[
+    0x21, // !
+    0x22, // "
+    0x28, // (
+    0x29, // )
+    0x2c, // ,
+    0x2e, // .
+    0x3a, // :
+    0x3b, // ;
+    0x3f, // ?
+    0x40, // @
+    0x5b, // [
+    0x5d, // ]
+];
+
+/// The punctuation row: the key becomes the mark itself, and the passthrough policy —
+/// not the table — decides what the mark is worth. The table is a function of the key
+/// and the modifiers and can see neither the mode bits nor the session, which is why
+/// the row answers with the bare character and stops.
+///
+/// # Panics
+///
+/// Never.
+fn policy_mark(sym: u32, _state: u32, _keys: &KeyBindings) -> Option<KeyAction> {
+    // The set holds ASCII codes only, so the low byte is the character.
+    Some(KeyAction::InputChar(char::from_u32(sym)?))
+}
+
+/// Whether a typed character is one of the punctuation row's marks.
+///
+/// The router asks this where the table cannot: while a composition is live, a mark is
+/// handed back to the application — the shape it had when the table claimed nothing —
+/// because the policy's composition half, a mark that carries the pending candidates
+/// out, is session-machine work that has not landed. A letter never satisfies this, so
+/// the composing input is untouched.
+///
+/// # Panics
+///
+/// Never.
+pub(crate) fn is_policy_mark(ch: char) -> bool {
+    POLICY_MARKS.contains(&(ch as u32))
 }
 
 /// The space bar: commit the candidate the highlight is on.

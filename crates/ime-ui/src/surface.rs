@@ -12,11 +12,12 @@
 //! that puts anything on screen: the panel is placed and its interactive region applied, and
 //! the rasterizer is asked for a frame if the scene is dirty. The device pixel ratio the
 //! surface runs at is adopted from the anchor at the same point, before the placement, so the
-//! hit map and the raster are always computed with one and the same ratio. Nothing animates
-//! yet -- the component declares no property for a motion output -- so `render` reports no
-//! deadline and the loop blocks indefinitely whenever the scene is clean, which is the whole
-//! of the idle CPU budget. A motion that did exist would be advanced here, before the
-//! rasterize call, so that the frame it produces is the one that reaches the surface.
+//! hit map and the raster are always computed with one and the same ratio. The motion is
+//! advanced in the same call, before the rasterize, so the frame it produces is the one that
+//! reaches the surface: the appear fade a `Show` starts, and the exit fade a `Hide` stages --
+//! which keeps the window mapped while it runs and is unmapped by its own last frame. While
+//! nothing is in flight `render` reports no deadline and the loop blocks indefinitely, which
+//! is the whole of the idle CPU budget.
 //!
 //! # The `Send` bound, and why it is gone
 //!
@@ -211,7 +212,9 @@ impl CandidateSurface {
     /// against the anchor the host sent, so a window that appears before its first frame still
     /// ends up where the caret is. The anchor's device pixel ratio is adopted on both a `Show`
     /// and a frame, before the placement runs, so the surface always draws at the ratio the
-    /// placement computes its geometry with.
+    /// placement computes its geometry with. A `Hide` does not unmap: it stages the exit fade,
+    /// which keeps the window on screen while it runs and unmaps on its own last frame, in
+    /// [`Self::render`].
     ///
     /// # Parameters
     ///
@@ -292,9 +295,10 @@ impl CandidateSurface {
     ///
     /// # Errors
     ///
-    /// Returns [`ImeError::CompositorUnsupported`] when the frame cannot be presented. A
-    /// backend that still holds the previous buffer is not an error: the frame is skipped and
-    /// stays dirty for the next call.
+    /// Returns [`ImeError::CompositorUnsupported`] when the frame cannot be presented, and
+    /// when the unmap a staged `Hide` has been fading toward cannot be performed. A backend
+    /// that still holds the previous buffer is not an error: the frame is skipped and stays
+    /// dirty for the next call.
     ///
     /// # Panics
     ///
@@ -308,16 +312,22 @@ impl CandidateSurface {
             None => 0.0,
         };
         // The properties are written before the rasterizer runs: `advance` is what moves the
-        // scene, and asking for a frame first would draw the previous one.
-        let animating = self.adapter.advance(step);
+        // scene, and asking for a frame first would draw the previous one. The staged unmap
+        // completes inside the same call -- its last frame is the one the window leaves the
+        // screen on -- so the deadline below drops the moment the exit fade is over.
+        let animating = self.adapter.advance(step)?;
         self.platform.render_if_dirty().map_err(ImeError::from)?;
         Ok(animating.then(|| now + FRAME_INTERVAL))
     }
 
     /// Unmaps the surface and releases it.
     ///
-    /// No disappearing motion runs: the component declares no property to draw one with, and
-    /// the host's shutdown budget is 200ms, which a motion the user cannot see must not spend.
+    /// The unmap is immediate and runs no exit fade, and that is the shutdown path's own
+    /// contract rather than an omission: the host's stop budget is 200ms, the loop stops
+    /// right after this call, and a fade here would have no frame left to run on. The
+    /// animated exit belongs to the `Hide` path, which keeps the window mapped while the
+    /// fade runs and unmaps on its last frame; a fade staged but not finished when the
+    /// shutdown lands is cancelled by the same unmap.
     ///
     /// # Errors
     ///
@@ -327,7 +337,7 @@ impl CandidateSurface {
     ///
     /// This function does not panic.
     pub fn close(&mut self) -> Result<(), ImeError> {
-        self.adapter.set_visible(false)
+        self.adapter.unmap_now()
     }
 
     /// Frames committed to the surface since it was created.

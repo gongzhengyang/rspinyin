@@ -1,5 +1,5 @@
-//! Colour arithmetic for the theme pipeline: alpha compositing and the WCAG
-//! contrast ratio.
+//! Colour arithmetic for the theme pipeline: alpha compositing, the WCAG contrast
+//! ratio, and the contrast report the degradation ladder enforces.
 //!
 //! Compositing is integer arithmetic on purpose. A token that reaches the
 //! framebuffer must not depend on how a floating-point library rounds, and the
@@ -9,8 +9,9 @@
 //!
 //! The contrast ratio is the one place floating point is allowed, because the WCAG
 //! formula is defined on linearised luminance. It only ever feeds a threshold
-//! comparison, and the closest pair either palette can produce clears its threshold
-//! by more than 20%, so no rounding difference can move the decision.
+//! comparison, and every call the palettes make sits orders of magnitude further
+//! from its floor than a rounding step can reach, so no rounding difference can move
+//! the decision.
 
 use ime_types::Rgba8;
 
@@ -30,6 +31,13 @@ pub const BLACK: Rgba8 = Rgba8 {
     b: 0,
     a: 255,
 };
+
+/// The contrast `text.primary` must reach against the opaque surface base (3.2).
+pub const CONTRAST_BODY: f32 = 7.0;
+
+/// The contrast every text/background pair must keep at every degradation tier
+/// (`features.md` §0.5.2 and 3.2).
+pub const CONTRAST_MINIMUM: f32 = 4.5;
 
 /// Replaces a colour's alpha channel, keeping its three colour channels.
 ///
@@ -164,6 +172,95 @@ fn linearise(channel: u8) -> f32 {
         value / 12.92
     } else {
         ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// The contrast ratios the window's drawn text has to keep.
+///
+/// The first three fields are the pairs 3.2 requires, and they are what makes "the
+/// acrylic degraded to an opaque colour" a supported state rather than a worse-looking
+/// one: the base may lose its transparency, but the text on it never loses its
+/// legibility. The other five are the dimmed text the view actually paints -- the
+/// candidate number label, the annotation, the preedit separator and the two secondary
+/// header runs -- each flattened over the background it draws on before it is measured,
+/// so a translucent base has to answer for them too.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContrastReport {
+    /// `text.primary` on the opaque surface base; must reach [`CONTRAST_BODY`].
+    pub primary_on_base: f32,
+    /// `text.primary` on the base composited over the worst-case backdrop; must reach
+    /// [`CONTRAST_MINIMUM`].
+    pub primary_on_fill: f32,
+    /// `text.primary` on the selected cell's background; must reach
+    /// [`CONTRAST_MINIMUM`].
+    pub primary_on_selected: f32,
+    /// The candidate number label -- `text.primary` at 3.1.1's 0.55 element opacity --
+    /// on the worst-case fill; must reach [`CONTRAST_MINIMUM`] while the base is
+    /// translucent, and is reported at the opaque tier.
+    pub number_on_fill: f32,
+    /// The candidate annotation, `text.primary` at 3.1.1's 0.50, on the worst-case
+    /// fill; gated and reported like [`ContrastReport::number_on_fill`].
+    pub annotation_on_fill: f32,
+    /// The preedit's syllable separator, the `text.separator` token at its own alpha,
+    /// on the worst-case fill; gated and reported like
+    /// [`ContrastReport::number_on_fill`].
+    pub separator_on_fill: f32,
+    /// The status strip's mode label, the `text.secondary` token at its own alpha, on
+    /// the worst-case fill; gated and reported like
+    /// [`ContrastReport::number_on_fill`].
+    pub mode_label_on_fill: f32,
+    /// A passthrough preedit run -- input the segmenter found no reading for -- which
+    /// draws the same `text.secondary` token as the mode label. Kept as its own pair so
+    /// the report mirrors what the window draws run by run; a future token of its own
+    /// then moves a field that already exists.
+    pub passthrough_on_fill: f32,
+}
+
+impl ContrastReport {
+    /// Whether the three pairs 3.2 requires clear their thresholds.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the theme is readable at its tier and no contrast degradation is
+    /// needed. The five dimmed pairs are measured beside these three; the resolution
+    /// gates them itself, because their floor applies while the base is translucent and
+    /// the opaque tier is the last rung the ladder can raise to.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn passes(&self) -> bool {
+        self.primary_on_base >= CONTRAST_BODY
+            && self.primary_on_fill >= CONTRAST_MINIMUM
+            && self.primary_on_selected >= CONTRAST_MINIMUM
+    }
+
+    /// Whether the five dimmed pairs clear [`CONTRAST_MINIMUM`].
+    ///
+    /// # Returns
+    ///
+    /// `true` when the number label, the annotation, the preedit separator and the two
+    /// secondary runs all measure at or above the floor. This is the condition a
+    /// translucent base has to meet: the dimmed text is what a translucent wash erodes
+    /// first, and it is the text the user reads most.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn dimmed_pairs_pass(&self) -> bool {
+        self.number_on_fill >= CONTRAST_MINIMUM
+            && self.annotation_on_fill >= CONTRAST_MINIMUM
+            && self.separator_on_fill >= CONTRAST_MINIMUM
+            && self.mode_label_on_fill >= CONTRAST_MINIMUM
+            && self.passthrough_on_fill >= CONTRAST_MINIMUM
     }
 }
 

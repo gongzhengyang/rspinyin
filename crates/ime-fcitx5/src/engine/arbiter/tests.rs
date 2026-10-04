@@ -389,7 +389,9 @@ fn step_acted(session: &Session, effects: &[Effect], was_temp_english: bool) -> 
 /// A step that only reports something did nothing the user can see, which is why such a key
 /// has to reach the application rather than being kept.
 fn is_not_a_diagnostic(effect: &Effect) -> bool {
-    !matches!(effect, Effect::Diagnose(_))
+    // The mode flash is the idle switch's one product and the executor turns it into a
+    // diagnostic line, so it counts as a report here exactly as `Diagnose` does.
+    !matches!(effect, Effect::Diagnose(_) | Effect::ModeFlash { .. })
 }
 
 // ── The mirror ───────────────────────────────────────────────────────────────────
@@ -632,15 +634,16 @@ fn test_arbitrate_without_a_session_ignores_every_action() {
 
 /// The engine's own mode chords are the plugin's with nothing composing.
 ///
-/// The three switches change bits the host or the engine owns, so they act with no session
-/// state to read; the layer that consumes them is the engine's, which is why they are not
-/// asked of the session.
+/// The two switches the routing table still claims change bits the engine owns, so they
+/// act with no session state to read; the layer that consumes them is the engine's, which
+/// is why they are not asked of the session. The language switch is not among them: its
+/// chord is the host's own hotkey, and the action stays in the vocabulary for the day a
+/// host carries the state the switch would write.
 #[test]
 fn test_arbitrate_claims_the_mode_chords_with_nothing_composing() {
     let cfg = SessionConfig::default();
     let session = Session::new();
     let chords = [
-        (KEY_SPACE, CTRL, KeyAction::ToggleLang),
         (KEY_SPACE, SHIFT, KeyAction::ToggleFullWidth),
         (KEY_PERIOD, CTRL, KeyAction::TogglePunct),
     ];

@@ -113,26 +113,166 @@ fn settle(surface: &mut CandidateSurface) -> Instant {
 }
 
 #[test]
-fn test_surface_show_frame_hide_commits_and_unmaps() {
-    let (committed, starved, shown, hidden) = with_surface(|surface, state| {
+fn test_surface_hide_fades_while_mapped_then_unmaps_and_goes_idle() {
+    let (committed, shown, mapped_mid_fade, fading, hidden, idle, idle_commits) =
+        with_surface(|surface, state| {
+            show_and_draw(surface, 9);
+            let settled = settle(surface);
+            let committed = surface.committed_frames();
+            let shown = state.lock().expect("the mock is not poisoned").visible;
+            surface
+                .apply(SurfaceUpdate::Hide {
+                    revision: 2,
+                    reason: HideReason::Committed,
+                })
+                .expect("the window can be hidden");
+            // One frame in: the window is still on screen and the exit fade reports a
+            // deadline, which is the loop's signal to come back for the next frame.
+            let due = surface
+                .render(settled + Duration::from_millis(8))
+                .expect("the first fade frame is drawn");
+            let mapped_mid_fade = state.lock().expect("the mock is not poisoned").visible;
+            // The fade runs to its own end: the frame that reports no deadline is the
+            // one the window left the screen on, and past it the surface is idle.
+            let mut now = settled + Duration::from_millis(8);
+            for _ in 0..64 {
+                now += Duration::from_millis(8);
+                if surface
+                    .render(now)
+                    .expect("a fade frame is drawn")
+                    .is_none()
+                {
+                    break;
+                }
+            }
+            let hidden = !state.lock().expect("the mock is not poisoned").visible;
+            let commits = state.lock().expect("the mock is not poisoned").commits;
+            let first = surface
+                .render(now + Duration::from_millis(8))
+                .expect("an idle frame is handled");
+            let second = surface
+                .render(now + Duration::from_millis(58))
+                .expect("an idle frame is handled");
+            let idle = first.is_none() && second.is_none();
+            let idle_commits = state.lock().expect("the mock is not poisoned").commits;
+            (
+                committed,
+                shown,
+                mapped_mid_fade,
+                due.is_some(),
+                hidden,
+                idle,
+                idle_commits - commits,
+            )
+        });
+    assert!(committed > 0, "the frame reaches the surface");
+    assert!(shown, "showing the window maps the surface");
+    assert!(
+        mapped_mid_fade,
+        "the staged Hide keeps the window mapped while the exit fade runs"
+    );
+    assert!(
+        fading,
+        "the fade reports a deadline, so the loop comes back for its frames"
+    );
+    assert!(
+        hidden,
+        "the fade's last frame is the one that unmaps the surface"
+    );
+    assert!(
+        idle,
+        "past the fade the surface reports no deadline, which is what lets the loop block"
+    );
+    assert_eq!(
+        idle_commits, 0,
+        "an idle surface commits nothing: the fade's wakeups end with it"
+    );
+}
+
+#[test]
+fn test_surface_rapid_show_hide_alternations_leave_no_residual() {
+    let (mapped_throughout, settled_hidden) = with_surface(|surface, state| {
         show_and_draw(surface, 9);
-        let committed = surface.committed_frames();
-        let starved = surface.starvation_streak();
-        let shown = state.lock().expect("the mock is not poisoned").visible;
+        let mut now = Instant::now();
+        // A hundred Show/Hide pairs faster than any fade can run: every Show cancels the
+        // staged unmap of the Hide before it, every Hide restages from wherever the fade
+        // was, and neither may leave the window stuck half way or unmapped early.
+        for step in 0..100u32 {
+            surface
+                .apply(SurfaceUpdate::Show {
+                    revision: step * 2 + 2,
+                    anchor: anchor(),
+                })
+                .expect("the window can be re-shown");
+            now += Duration::from_millis(4);
+            surface.render(now).expect("the show frame is drawn");
+            surface
+                .apply(SurfaceUpdate::Hide {
+                    revision: step * 2 + 3,
+                    reason: HideReason::Cancelled,
+                })
+                .expect("the window can be re-hidden");
+            now += Duration::from_millis(4);
+            surface.render(now).expect("the hide frame is drawn");
+        }
+        let mapped_throughout = state.lock().expect("the mock is not poisoned").visible;
+        // The last word was a Hide, so its staged fade must still run out to the unmap.
+        for _ in 0..64 {
+            now += Duration::from_millis(8);
+            if surface
+                .render(now)
+                .expect("a fade frame is drawn")
+                .is_none()
+            {
+                break;
+            }
+        }
+        let settled_hidden = !state.lock().expect("the mock is not poisoned").visible;
+        (mapped_throughout, settled_hidden)
+    });
+    assert!(
+        mapped_throughout,
+        "the window stays on screen through the whole alternation: no Hide unmapped early"
+    );
+    assert!(
+        settled_hidden,
+        "and the last Hide wins: its staged fade runs out to the one unmap"
+    );
+}
+
+#[test]
+fn test_surface_close_unmaps_immediately_in_the_middle_of_a_fade() {
+    let (mapped_mid_fade, hidden, second_clean) = with_surface(|surface, state| {
+        show_and_draw(surface, 9);
+        let settled = settle(surface);
         surface
             .apply(SurfaceUpdate::Hide {
                 revision: 2,
-                reason: HideReason::Committed,
+                reason: HideReason::FocusLost,
             })
             .expect("the window can be hidden");
-        surface.render(Instant::now()).expect("the hide is handled");
-        let hidden = state.lock().expect("the mock is not poisoned").visible;
-        (committed, starved, shown, hidden)
+        surface
+            .render(settled + Duration::from_millis(8))
+            .expect("the first fade frame is drawn");
+        let mapped_mid_fade = state.lock().expect("the mock is not poisoned").visible;
+        // The shutdown lands while the fade is still running: the close unmaps at once
+        // instead of waiting the fade out, which is the host's 200ms stop budget's due.
+        surface.close().expect("the surface can be closed");
+        let hidden = !state.lock().expect("the mock is not poisoned").visible;
+        // A second close is the same no-op it has always been.
+        surface.close().expect("a second close is a no-op");
+        let second_clean = !state.lock().expect("the mock is not poisoned").visible;
+        (mapped_mid_fade, hidden, second_clean)
     });
-    assert!(committed > 0, "the frame reaches the surface");
-    assert_eq!(starved, 0, "the mock always has a free buffer");
-    assert!(shown, "showing the window maps the surface");
-    assert!(!hidden, "hiding it unmaps the surface");
+    assert!(
+        mapped_mid_fade,
+        "the fade was still running when the close landed"
+    );
+    assert!(
+        hidden,
+        "the close unmaps at once, without waiting the fade out"
+    );
+    assert!(second_clean, "and the surface stays unmapped");
 }
 
 #[test]

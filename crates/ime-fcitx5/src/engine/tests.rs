@@ -7,6 +7,7 @@
 //! routing layer verifiable without Fcitx5 present.
 
 mod effects;
+mod passthrough_route;
 mod routing;
 mod table;
 

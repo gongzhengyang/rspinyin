@@ -133,3 +133,20 @@
 **连带登记**：`mode_label` 的字段文档同步冻结其双职责——该槽承载「模式自有文案 **或** 降级通知文案」，视图不得从文案内容反推任何语义状态；`script` 与 `has_user_dict_hit` 两个字段按 `DEF-12` 处置在字段文档登记「v1 无生产者，延后」，以字段文档为准而非删除（跨 addon wire 与镜像 schema 已携带它们，删除会二次搅动线格式）。
 
 **已知的非本 ADR 范围**：该位经跨 addon wire（ADR-0011 的 `RspinyinFrameWire` flags 位）转写属承接卡的落地范围；wire 不携带该位期间，通知位文案经 `mode_label` 已可达窗口，模式位直供则以 wire 侧同步追加为完成点。
+
+---
+
+## 增量登记（2026-10-04，空闲态模式切换反馈效果）
+
+承接卡：`docs/dev/opt-basic.md` `REFACTOR-P0.01.07`（模式位语义闭环），绑定缺陷 `DEF-13`、`DEF-14`、`DEF-15`、`DEF-33`（标点组）。
+
+| 类型 | 变更 | 类别 | 落地位置 | 承接卡 |
+|---|---|---|---|---|
+| `Effect`（`ime-core::state::effects`） | 尾部追加 `ModeFlash { bit: ModeBit }`（空闲态模式位切换反馈） | 追加（枚举） | `state/effects.rs` | `REFACTOR-P0.01.07` |
+| `ModeBit` | 新增 `pub enum ModeBit { FullWidth, PunctFull }` | 新增类型 | `state/effects.rs` | `REFACTOR-P0.01.07` |
+
+**决策依据**：模式位（全角、中英标点）是引擎自有状态，会话不持有；空闲态切换时组合窗口不在场，`StatusStrip` 无处可画，切换若无载体即为零反馈（`DEF-15`）。效果只携带「哪一位动了」而不携带新值：位在会话步进前已由引擎翻转，执行器从引擎自有状态读取当下真值渲染诊断行（`mode/full-width: on|off`、`mode/punct-full: on|off`），避免会话侧复本与引擎漂移。执行语义为**反馈而非工作**——只落诊断通道、不做任何宿主调用，因此它自身不构成按键被认领的理由（模式键由引擎层在步进前认领）；组合态内该效果不产生（窗口条即是反馈），`ToggleLang` 不产此效果（其中英切换已按 `ASM-02` 归还宿主，见本卡对 `CHORDS` 的缩表）。
+
+**连带登记（同卡的行为面，非契约类型）**：`ime-core` `passthrough` 新增纯函数 `transform_committed(text, punct_chinese, full_width) -> Cow<str>`（逐字符查表：中文标点替换 + 全角加宽，未变化时借用返回零分配），经 `ime_core::passthrough` 再导出供引擎 `Modes::transform_output` 在提交效果执行处消费——这是全角/标点两个模式位自落地以来第一个输出侧读者（`DEF-13`）。纯 Rust 契约面，不进 vtable，`RSPINYIN_ABI_VERSION` 保持不变。
+
+**已知的非本 ADR 范围**：`engine.auto_english_on_uppercase` 与 `engine.passthrough_url` 的生产接线点在 `RoutingConfig` 投影（`ime-fcitx5` `engine/router/config.rs`）与路由键路径，属承接卡合并后由主 Agent 补齐的投影行；分类语义已由 `ime-core` `classify` 完整实现并有测试。

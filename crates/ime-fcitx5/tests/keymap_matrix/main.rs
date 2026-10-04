@@ -394,15 +394,17 @@ fn rows() -> Vec<Row> {
             composing: Verdict::Passed,
             idle: Verdict::Passed,
         },
-        // The global mode chords.
+        // The global mode chords. `Ctrl+Space` is not one of them any more: the language
+        // switch is the host's own hotkey, the chord table claims no chord for it, and
+        // the key reaches the application whatever is composing.
         Row {
             label: "Ctrl+Space",
             sym: KEY_SPACE,
             state: CTRL,
             keys: None,
-            action: Some(KeyAction::ToggleLang),
-            composing: Verdict::Kept,
-            idle: Verdict::Kept,
+            action: Some(KeyAction::Ignore),
+            composing: Verdict::Passed,
+            idle: Verdict::Passed,
         },
         Row {
             label: "Shift+Space",
@@ -1017,12 +1019,13 @@ const PAGEABLE: [(&str, u32, FlipSet, KeyAction); 6] = [
 
 /// The actions the routing table can reach.
 ///
-/// The frozen enum carries nineteen variants; four of them were appended by the script,
-/// forget, pin and phrase work, and no key names them, so the table can reach fifteen.
-/// The list is written out rather than derived, because a variant that gained a key
-/// without anyone adding a row here is exactly the drift the coverage case exists to
-/// catch.
-const ROUTABLE_ACTIONS: [&str; 15] = [
+/// The frozen enum carries nineteen variants; five of them are named by no key. Four were
+/// appended by the script, forget, pin and phrase work; the fifth is the language switch,
+/// whose chord the host owns — the plugin that took the key could only have swallowed it,
+/// because Fcitx5's headers expose no state for the engine to switch. The list is written
+/// out rather than derived, because a variant that gained a key without anyone adding a
+/// row here is exactly the drift the coverage case exists to catch.
+const ROUTABLE_ACTIONS: [&str; 14] = [
     "input-char",
     "backspace",
     "commit-highlighted",
@@ -1032,7 +1035,6 @@ const ROUTABLE_ACTIONS: [&str; 15] = [
     "page-prev",
     "move-highlight",
     "move-caret",
-    "toggle-lang",
     "toggle-full-width",
     "toggle-punct",
     "enter-temp-english",

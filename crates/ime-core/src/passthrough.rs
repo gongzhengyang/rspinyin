@@ -37,7 +37,7 @@
 mod punctuation;
 mod surrounding;
 
-pub use self::punctuation::{PUNCTUATION_COUNT, PunctMode, to_full_width};
+pub use self::punctuation::{PUNCTUATION_COUNT, PunctMode, to_full_width, transform_committed};
 
 use self::punctuation::{commit_text, punctuation_decision};
 use self::surrounding::trailing_token;

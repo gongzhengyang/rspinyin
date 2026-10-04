@@ -79,6 +79,21 @@ pub enum Effect {
     /// lengths and counts; it never carries the characters the user typed, which is
     /// what keeps a diagnostic log out of the user's input.
     Diagnose(ImeError),
+    /// Announce that one of the engine's mode bits moved while nothing was composing.
+    ///
+    /// The session holds no mode bits — they are the engine's — so the payload names the
+    /// bit that moved rather than the value it took; the executor reads the new value from
+    /// the engine's own state when it renders the feedback. The effect exists because a
+    /// mode switch with no composition live has no window to repaint: the status strip
+    /// that carries the mode belongs to the candidate window, and there is no candidate
+    /// window when the session is idle. Executing it is feedback, not work — it reports a
+    /// line on the diagnostic channel and makes no host call — so it does not by itself
+    /// make a key the plugin keeps; the mode switches are claimed by the engine layer
+    /// that applied the bit before the session was stepped.
+    ModeFlash {
+        /// The mode bit the switch moved.
+        bit: ModeBit,
+    },
     /// Set or clear the application's preedit area directly.
     ///
     /// This module emits it only to clear the area when a composition ends; the
@@ -98,4 +113,18 @@ pub struct AnchorHint {
     pub revision: Revision,
     /// Requested side of the cursor.
     pub placement: Placement,
+}
+
+/// One of the engine's output mode bits, named so a [`Effect::ModeFlash`] can say which
+/// switch moved without the session holding a copy of the engine's state.
+///
+/// The engine reads the current value of the named bit from its own state, which is why
+/// the variants carry nothing: the session cannot know what the switch produced, and a
+/// value copied here could only disagree with the engine's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModeBit {
+    /// Whether the ASCII text the plugin commits is written full width.
+    FullWidth,
+    /// Whether the punctuation the plugin commits is Chinese.
+    PunctFull,
 }

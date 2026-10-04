@@ -363,6 +363,61 @@ fn test_showing_the_surface_again_repaints_all_of_it() {
 }
 
 #[test]
+fn test_render_if_dirty_skips_the_raster_while_the_surface_is_unmapped() {
+    // The belt-and-braces half of the staged hide: a scene dirtied behind an unmapped
+    // window must not be rasterized and committed to a surface nobody can see. The
+    // property write below marks the scene while the card is hidden; the guard answers
+    // Idle for it, and the show after it repaints the whole surface, so nothing the
+    // hidden frames skipped is half-applied.
+    let (hidden_outcome, commits_hidden, shown_outcome, damage) = on_own_thread(|| {
+        let (platform, card, state) = show_card();
+        platform
+            .render_if_dirty()
+            .expect("the first frame is committed");
+        card.hide().expect("the surface can be unmapped");
+        card.set_highlight(true);
+        let hidden_outcome = platform
+            .render_if_dirty()
+            .expect("a hidden window is skipped, which is not an error");
+        let commits_hidden = state.lock().expect("the mock is not poisoned").commits;
+        card.show().expect("the surface can be mapped again");
+        let shown_outcome = platform
+            .render_if_dirty()
+            .expect("the frame after the show is committed");
+        let damage = state
+            .lock()
+            .expect("the mock is not poisoned")
+            .damage
+            .clone();
+        (hidden_outcome, commits_hidden, shown_outcome, damage)
+    });
+    assert_eq!(
+        hidden_outcome,
+        RenderOutcome::Idle,
+        "an unmapped window enters no raster, however dirty its scene claims to be"
+    );
+    assert_eq!(
+        commits_hidden, 1,
+        "and it commits nothing: only the frame before the hide reached the surface"
+    );
+    assert!(
+        matches!(shown_outcome, RenderOutcome::Rendered { .. }),
+        "the frame after the re-show is drawn"
+    );
+    assert_eq!(
+        damage.last(),
+        Some(&RectI {
+            x: 0,
+            y: 0,
+            w: 160,
+            h: 64
+        }),
+        "the re-show repaints the whole surface, which is what folds the writes the \
+         hidden frames skipped into one consistent frame: {damage:?}"
+    );
+}
+
+#[test]
 fn test_apply_resize_follows_the_surface() {
     let backend: Rc<RefCell<Box<dyn SurfaceBackend>>> =
         Rc::new(RefCell::new(Box::new(MockSurface::new(160, 64, 2.0).0)));
@@ -616,10 +671,10 @@ fn panel_fill_alpha(step: f32, run_to_rest: bool) -> u8 {
             .set_visible(true)
             .expect("the surface can be mapped");
         assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 2)));
-        adapter.advance(step);
+        adapter.advance(step).expect("the motion advances");
         if run_to_rest {
             let mut frames = 0u32;
-            while adapter.advance(PANEL_FRAME_S) {
+            while adapter.advance(PANEL_FRAME_S).expect("the motion advances") {
                 frames += 1;
                 assert!(frames < 1_000, "the appear motion must come to rest");
             }

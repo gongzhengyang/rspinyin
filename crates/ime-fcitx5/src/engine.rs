@@ -47,8 +47,8 @@
 //! Two tables, both data rather than control flow, so that one more key is a row and not a
 //! new branch:
 //!
-//! * `CHORDS` holds the keys whose modifiers are part of the key — `Ctrl+Space` and its
-//!   neighbours — and a chord matches only the exact modifier set it declares.
+//! * `CHORDS` holds the keys whose modifiers are part of the key — the full-width and
+//!   punctuation switches and the temporary-English chord — matching exact modifier sets.
 //! * `rows` holds every other key, in evaluation order: the rows `keys.highlight_keys`
 //!   binds, then the rows `keys.flip_keys` binds, then the rows the configuration cannot
 //!   unbind.
@@ -84,6 +84,7 @@ pub use modifier::{
     check_modifier_mask,
 };
 pub use router::{KeyRouter, RoutingConfig};
+pub(crate) use rows::is_policy_mark;
 pub use sequence::{
     KeySequence, MAX_SEQUENCE_STROKES, SEQUENCE_CONFLICT_CODE, SEQUENCE_TIMEOUT_MS,
     SEQUENCE_TOO_LONG_CODE, SequenceDecision, SequencePrefix, SequenceState, SequenceTable,
@@ -270,7 +271,7 @@ pub(crate) struct Chord {
     pub(crate) sym: u32,
     /// The modifier set, compared for equality against `state & MODIFIER_MASK`.
     ///
-    /// Equality rather than a subset test: `Ctrl+Space` and `Ctrl+Shift+Space` are
+    /// Equality rather than a subset test: `Shift+Space` and `Ctrl+Shift+Space` are
     /// different keys, and a chord that accepted a superset would take keys the desktop
     /// environment owns.
     pub(crate) mask: u32,
@@ -281,8 +282,13 @@ pub(crate) struct Chord {
 /// The global mode chords, in match order.
 ///
 /// Every entry carries a modifier: a bare key is a row of the table rather than a chord,
-/// which is what lets the space bar be the commit key with nothing held and the language
-/// switch with `Ctrl` held.
+/// which is what lets the space bar commit with nothing held and `Shift+Space` toggle.
+///
+/// `Ctrl+Space` is deliberately absent. The language switch is the host's own hotkey
+/// (`ASM-02`), and Fcitx5 5.1.7's headers expose no per-context input-method state an
+/// engine could read or write, so a chord here could only swallow the key. The frozen
+/// [`KeyAction::ToggleLang`] stays for the day a host carries that state, and restoring
+/// the chord is then a one-row edit every reader of the table picks up from here.
 ///
 /// `Shift_L` and `Shift_R` are deliberately absent. A modifier's own press is not a chord,
 /// and treating it as one made every capital letter toggle the input mode; the held key is
@@ -291,11 +297,6 @@ pub(crate) struct Chord {
 ///
 /// Crate-visible for the reason [`Chord`] states.
 pub(crate) const CHORDS: &[Chord] = &[
-    Chord {
-        sym: KEY_SPACE,
-        mask: CTRL,
-        action: KeyAction::ToggleLang,
-    },
     Chord {
         sym: KEY_SPACE,
         mask: SHIFT,

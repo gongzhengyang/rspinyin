@@ -3,10 +3,13 @@
 //! # Responsibility
 //!
 //! A step answers with an [`Effects`] list; this module is what turns that list into
-//! something the user can see. Text is committed, the application's preedit area is filled
-//! or emptied, the candidate window is shown, hidden and repainted, a learned frequency is
-//! recorded through the privacy gate, a phrase the user saved is appended to their own
-//! document, and a condition the host should know about is reported.
+//! something the user can see. Text is committed — rewritten by the engine's full-width
+//! and punctuation switches on its way out, the one rewrite the commit path applies — the
+//! application's preedit area is filled or emptied, the candidate window is shown, hidden
+//! and repainted, a learned frequency is recorded through the privacy gate, a phrase the
+//! user saved is appended to their own document, a mode bit flipped with no window on
+//! screen reports itself on the diagnostic channel, and a condition the host should know
+//! about is reported.
 //!
 //! The one value it rewrites on the way through is the header's right-hand slot. The
 //! status strip the engine wrote before the step carries the standing answer, and a frame
@@ -148,6 +151,14 @@ impl Context {
                     applied.acted = true;
                 }
                 Effect::Commit(text) => {
+                    // The mode bits' one output reader sits here, at the only door text
+                    // leaves through: the full-width and punctuation switches rewrite the
+                    // commit before the host sees it, which is what makes them switches
+                    // rather than icons. Learning is untouched by the rewrite — the
+                    // record effect carries the key the user chose, before any
+                    // transformation — so the dictionary never learns a widened
+                    // spelling.
+                    let text = self.modes.transform_output(&text);
                     host.commit(self.ic, &text);
                     self.hide(HideReason::Committed, host);
                     applied.acted = true;
@@ -194,6 +205,18 @@ impl Context {
                     applied.acted = true;
                 }
                 Effect::Diagnose(err) => host.diagnose(self.ic, &err),
+                Effect::ModeFlash { bit } => {
+                    // A switch flipped with nothing composing has no window to repaint:
+                    // the strip that normally carries the mode belongs to the candidate
+                    // window, and there is no candidate window. This line is the whole
+                    // of the feedback the v1 build can give, and like every diagnostic
+                    // it makes no host call — it does not by itself make a key the
+                    // plugin's, because the mode switches are claimed by the engine
+                    // layer that applied the bit before the session was stepped. A
+                    // standing indicator outside the composition is a separate
+                    // feature's territory.
+                    emit_diagnostic(self.modes.mode_flash_line(bit));
+                }
             }
         }
         applied

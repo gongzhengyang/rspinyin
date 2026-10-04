@@ -303,10 +303,7 @@ mod tests {
     }
 
     fn hover(index: Option<u16>) -> UiEvent {
-        UiEvent::Hover {
-            revision: 7,
-            index,
-        }
+        UiEvent::Hover { revision: 7, index }
     }
 
     fn page() -> UiEvent {
@@ -392,19 +389,18 @@ mod tests {
         // The drop count is matched on this code by diagnostics and tests on both
         // sides of the channel, so its spelling is part of the contract.
         assert_eq!(ENGINE_GONE_CODE, "ui/event/engine-gone");
-        assert_eq!(
-            EVENT_OUTLET_UNAVAILABLE_CODE,
-            "ui/event/outlet-unavailable"
-        );
+        assert_eq!(EVENT_OUTLET_UNAVAILABLE_CODE, "ui/event/outlet-unavailable");
     }
 
     #[test]
     fn test_event_drain_forwards_events_in_order_until_it_is_stopped() {
         let queue = queue();
         let (sent, received) = mpsc::channel::<UiEvent>();
-        let drain = EventDrain::spawn_with(Arc::clone(&queue), move |event| {
-            sent.send(event.clone()).is_ok()
-        }, || {})
+        let drain = EventDrain::spawn_with(
+            Arc::clone(&queue),
+            move |event| sent.send(event.clone()).is_ok(),
+            || {},
+        )
         .expect("the drain thread starts");
 
         queue.post_select(select(1)).expect("the queue has room");
@@ -472,9 +468,11 @@ mod tests {
     fn test_event_drain_never_hands_on_a_rendered_receipt() {
         let queue = queue();
         let (sent, received) = mpsc::channel::<UiEvent>();
-        let drain = EventDrain::spawn_with(Arc::clone(&queue), move |event| {
-            sent.send(event.clone()).is_ok()
-        }, || {})
+        let drain = EventDrain::spawn_with(
+            Arc::clone(&queue),
+            move |event| sent.send(event.clone()).is_ok(),
+            || {},
+        )
         .expect("the drain thread starts");
 
         queue.post_rendered(stop_receipt());
@@ -492,8 +490,8 @@ mod tests {
     #[test]
     fn test_event_drain_stop_wakes_a_thread_parked_in_the_queue_wait() {
         let queue = queue();
-        let drain = EventDrain::spawn_with(queue, |_event| true, || {})
-            .expect("the drain thread starts");
+        let drain =
+            EventDrain::spawn_with(queue, |_event| true, || {}).expect("the drain thread starts");
         // The thread is parked in the queue's long wait; a lost wake-up would run
         // out the stop deadline instead of answering the letter, which is what the
         // assertion bounds.

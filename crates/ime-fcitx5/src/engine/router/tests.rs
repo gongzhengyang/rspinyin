@@ -438,6 +438,29 @@ fn test_step_session_of_a_context_with_no_session_does_nothing() {
     assert!(host.diagnostics.is_empty());
 }
 
+#[test]
+fn test_step_session_of_an_idle_mode_toggle_reports_only_the_flash() {
+    // The flash is diagnostic-class: the executor reports the mode line on the crash
+    // channel and makes no host call at all, so the step did nothing the plugin keeps a
+    // key for. The mode switches are claimed by the engine layer that flips the bit,
+    // before the session is ever stepped.
+    let fixture = Fixture::new("idle-flash");
+    let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
+    let mut router = fixture.router(handle);
+    router.activate_reported(IC, ordinary_report());
+    let mut host = RecordingHost::default();
+
+    assert!(
+        !router.step_session(IC, SessionEvent::Key(KeyAction::ToggleFullWidth), &mut host),
+        "the flash reaches no host method, so the step is not the plugin's doing"
+    );
+    assert!(
+        host.status.is_none(),
+        "no frame was sent: with nothing composing there is no window"
+    );
+    assert_eq!(host.hides, 0, "and nothing was hidden either");
+}
+
 // ── the label the window's header shows ────────────────────────────────────────────
 //
 // The label comes from the configuration rather than from the router: the layout's own name
@@ -485,9 +508,12 @@ fn test_key_event_falls_back_to_the_engine_label_without_a_scheme_hint() {
 }
 
 #[test]
-fn test_key_event_labels_english_mode_whatever_the_layout_is() {
-    // The label says which mode the keys are in: English mode shows English even though the
-    // configuration names a layout, and switching back shows the layout's name again.
+fn test_key_event_label_survives_the_host_s_language_chord() {
+    // `Ctrl+Space` is the host's own language switch now: the routing table claims no
+    // chord for it, so the key reaches the application and the plugin's label — the
+    // layout the configuration names — is exactly where it was. The English marker the
+    // old chord produced was the read-back of a state this boundary cannot write, which
+    // is why it is gone rather than wrong.
     let fixture = Fixture::new("english-label");
     let config = RoutingConfig {
         scheme_hint: Some("小鹤"),
@@ -498,13 +524,16 @@ fn test_key_event_labels_english_mode_whatever_the_layout_is() {
     let mut host = RecordingHost::default();
 
     type_ni(&mut router, &mut host);
-    assert!(router.key_event(IC, &press(KEY_SPACE, CTRL), &mut host));
+    assert!(!router.key_event(IC, &press(KEY_SPACE, CTRL), &mut host));
+    assert!(
+        host.is_enabled,
+        "the plugin never touches the host's input-method state"
+    );
     let status = host.status.clone().expect("a frame reached the window");
-    assert_eq!(status.mode_label, "英");
-
-    assert!(router.key_event(IC, &press(KEY_SPACE, CTRL), &mut host));
-    let status = host.status.clone().expect("a frame reached the window");
-    assert_eq!(status.mode_label, "小鹤");
+    assert_eq!(
+        status.mode_label, "小鹤",
+        "the layout's name is unchanged by a key the plugin declined"
+    );
 }
 
 // ── the badge the header's right-hand slot shows ─────────────────────────────────

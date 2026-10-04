@@ -291,3 +291,83 @@ fn test_key_event_client_preedit_policy_follows_the_configuration() {
     assert_eq!(text, "n");
     assert!(caret <= text.len() as u32, "the caret is inside the text");
 }
+
+#[test]
+fn test_key_event_full_width_rewrites_the_raw_commit_the_host_receives() {
+    // The full-width switch's one reader is the commit door: a raw commit is the
+    // plugin's own ASCII output, so it is the commit the switch rewrites, character
+    // for character, before the application sees any of it.
+    let fixture = Fixture::new();
+    let config = RoutingConfig {
+        keys: KeyBindings {
+            enter_commit_raw: true,
+            ..KeyBindings::default()
+        },
+        ..RoutingConfig::default()
+    };
+    let mut router = fixture.router_with(config);
+    activate_ordinary(&mut router, IC);
+    let mut host = RecordingHost::default();
+
+    assert!(
+        router.key_event(IC, &press(KEY_SPACE, SHIFT), &mut host),
+        "the full-width chord is the plugin's"
+    );
+    type_n(&mut router, IC, &mut host);
+    router.key_event(IC, &press(KEY_I, 0), &mut host);
+    // `enter_commit_raw` turns Return into the raw commit, so what reaches the
+    // application is the input the user typed, widened.
+    assert!(router.key_event(IC, &press(KEY_RETURN, 0), &mut host));
+
+    assert_eq!(
+        host.commits(),
+        ["ｎｉ"],
+        "the raw input commits full width, every typed ASCII character widened"
+    );
+}
+
+#[test]
+fn test_key_event_commit_under_the_default_modes_reaches_the_host_unchanged() {
+    // The shipped switches are half width with Chinese punctuation — the defaults —
+    // and the rewrite exists to serve them, never to alter a commit they have no
+    // opinion on: a candidate the modes cannot change is handed over byte for byte.
+    let fixture = Fixture::new();
+    let mut router = fixture.router();
+    activate_ordinary(&mut router, IC);
+    let mut host = RecordingHost::default();
+
+    type_n(&mut router, IC, &mut host);
+    router.key_event(IC, &press(KEY_I, 0), &mut host);
+    let frame = host.last_frame().expect("a frame");
+    let highlighted = frame.candidates[0].text.clone();
+    assert!(router.key_event(IC, &press(KEY_SPACE, 0), &mut host));
+
+    assert_eq!(host.commits(), [highlighted.as_str()]);
+}
+
+#[test]
+fn test_key_event_full_width_learn_key_is_the_word_the_user_chose() {
+    // The switch rewrites the text the application receives; it must not rewrite the
+    // word the dictionary learns. The two travel side by side through one commit, and
+    // a widened spelling in the user's frequencies would teach the decoder a word
+    // nothing can type.
+    let fixture = Fixture::new();
+    let mut router = fixture.router();
+    activate_ordinary(&mut router, IC);
+    let mut host = RecordingHost::default();
+
+    assert!(router.key_event(IC, &press(KEY_SPACE, SHIFT), &mut host));
+    type_n(&mut router, IC, &mut host);
+    router.key_event(IC, &press(KEY_I, 0), &mut host);
+    let frame = host.last_frame().expect("a frame");
+    let highlighted = frame.candidates[0].text.clone();
+    assert!(router.key_event(IC, &press(KEY_SPACE, 0), &mut host));
+
+    assert_eq!(host.commits(), [highlighted.as_str()]);
+    let recorded = fixture.user.recorded();
+    assert_eq!(recorded.len(), 1, "one commit, one record");
+    assert_eq!(
+        recorded[0].0, highlighted,
+        "the record carries the word the user chose, not a transformed one"
+    );
+}

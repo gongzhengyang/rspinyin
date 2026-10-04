@@ -55,6 +55,12 @@ pub struct RoutingConfig {
     /// each keystroke is no place to re-decide what a section says. It is user-facing copy,
     /// so it is Chinese like the rest of the window's text.
     pub scheme_hint: Option<&'static str>,
+    /// `[engine] auto_english_on_uppercase`: whether a leading uppercase letter is
+    /// committed as English instead of being handed to the decoder.
+    pub auto_english_on_uppercase: bool,
+    /// `[engine] passthrough_url`: whether keys are left to the application while the
+    /// caret sits inside a URL or an email address.
+    pub passthrough_url: bool,
 }
 
 impl Default for RoutingConfig {
@@ -72,6 +78,10 @@ impl Default for RoutingConfig {
             session: SessionConfig::default(),
             client_preedit: false,
             scheme_hint: Some(SchemeChoice::Full.hint()),
+            // The `[engine]` section's own defaults, so a caller with no document
+            // classifies exactly as a fresh installation does.
+            auto_english_on_uppercase: true,
+            passthrough_url: true,
         }
     }
 }
@@ -118,6 +128,8 @@ impl RoutingConfig {
             session,
             client_preedit: config.ui.client_preedit,
             scheme_hint: config.scheme.header_hint(),
+            auto_english_on_uppercase: config.engine.auto_english_on_uppercase,
+            passthrough_url: config.engine.passthrough_url,
         };
         (routing, warnings)
     }

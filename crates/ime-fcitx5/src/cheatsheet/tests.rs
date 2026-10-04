@@ -132,8 +132,8 @@ fn test_build_default_config_yields_three_groups_with_a_fixed_entry_count() {
         .collect();
     assert_eq!(
         counts,
-        [3, 6, 4],
-        "组字: highlight, page, enter; 模式: four chords and two panels; 编辑: four rows"
+        [3, 5, 4],
+        "组字: highlight, page, enter; 模式: three chords and two panels; 编辑: four rows"
     );
 }
 
@@ -194,10 +194,13 @@ fn test_build_lists_the_mode_chords_the_engine_table_declares() {
         .iter()
         .map(|entry| (entry.keys.as_str(), entry.label.as_str()))
         .collect();
+    // `Ctrl+Space` is not among them: the language switch is the host's own hotkey, the
+    // chord table claims no chord for it, and a discovery aid that names a key the
+    // routing table does not answer would be exactly the lie this panel exists to
+    // prevent.
     assert_eq!(
-        &named[..4],
+        &named[..3],
         &[
-            ("Ctrl+Space", "切换中英"),
             ("Shift+Space", "全角 / 半角"),
             ("Ctrl+.", "中英标点"),
             ("Ctrl+Shift+E", "临时英文"),
@@ -205,7 +208,7 @@ fn test_build_lists_the_mode_chords_the_engine_table_declares() {
         "the chords are read out of the engine's table, in its order"
     );
     assert_eq!(
-        &named[4..],
+        &named[3..],
         &[("Ctrl+Shift+/", "命令面板"), ("Ctrl+Shift+P", "诊断面板")],
         "the two fixed panel chords close the group"
     );

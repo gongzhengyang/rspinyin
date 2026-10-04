@@ -42,6 +42,8 @@ fn test_from_config_carries_every_setting_the_routing_layer_acts_on() {
     config.ui.max_width_dp = 900;
     config.ui.show_annotation = false;
     config.engine.max_raw_len = 32;
+    config.engine.auto_english_on_uppercase = false;
+    config.engine.passthrough_url = false;
     config.scheme.scheme = SchemeChoice::Xiaohe;
     config.scheme.keep_full_pinyin = false;
 
@@ -59,6 +61,11 @@ fn test_from_config_carries_every_setting_the_routing_layer_acts_on() {
     assert_eq!(projected.session.max_raw_len, 32);
     assert_eq!(projected.session.scheme, SchemeId::XIAOHE);
     assert!(!projected.session.keep_full_pinyin);
+    assert!(
+        !projected.auto_english_on_uppercase,
+        "`[engine]` reached the passthrough policy"
+    );
+    assert!(!projected.passthrough_url);
     assert_eq!(
         projected.scheme_hint,
         Some("小鹤"),

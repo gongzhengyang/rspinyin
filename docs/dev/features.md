@@ -1236,7 +1236,7 @@ pub enum ConfigError {
 | `Escape` | Composing | 取消本次输入（清除 preedit，不提交） | 否 |
 | `Backspace` | Composing | 删除末尾音节；`raw` 为空时透传给应用 | 否 |
 | `Shift`（按住） | 全局 | 临时切换中/英；松开恢复 | 是 |
-| `Ctrl+Space` | 全局 | 持久切换中/英 | 是 |
+| `Ctrl+Space` | 全局 | 持久切换中/英（**由 fcitx5 宿主处理**；插件路由表已不认领该键——5.1.7 头文件无每上下文输入法状态可读写，认领只会吞键） | 否（宿主） |
 | `Ctrl+Shift+E` | 全局 | 进入临时英文模式（所有键透传，直到 `Enter` 或 `Escape`） | 是 |
 | `Shift+Space` | 全局 | 切换全角/半角（Phase 1 仅作用于本插件输出的标点） | 是 |
 | `Ctrl+.` | 全局 | 切换中/英标点模式 | 是 |

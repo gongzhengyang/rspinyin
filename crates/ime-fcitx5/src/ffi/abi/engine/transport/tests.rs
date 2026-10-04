@@ -1,7 +1,9 @@
 //! Wire-fidelity tests: every field the writer builds, read back from a captured sink.
 
 use super::*;
-use ime_types::{LayoutHint, OverlaySection, PageState, Placement, Preedit, PreeditSpan, RectI, StatusStrip};
+use ime_types::{
+    LayoutHint, OverlaySection, PageState, Placement, Preedit, PreeditSpan, RectI, StatusStrip,
+};
 
 /// What one sink call captured, copied out of the borrowed wire before returning.
 #[derive(Default)]
@@ -257,9 +259,12 @@ fn test_frame_wire_round_trips_every_field() {
         assert_eq!(captured.candidate_sources, vec![1, 0]);
         assert_eq!(captured.page, [1, 3, 5]);
         assert_eq!(captured.mode_label, "拼音");
+        // `chinese` rides the same word since the strip grew its own bit (ADR-0005):
+        // the sample frame's strip is a Chinese one, so the flag travels beside the
+        // three it shares the word with.
         assert_eq!(
             captured.flags,
-            FLAG_FULL_WIDTH | FLAG_READONLY | FLAG_HAS_USER_DICT_HIT
+            FLAG_FULL_WIDTH | FLAG_READONLY | FLAG_HAS_USER_DICT_HIT | FLAG_CHINESE
         );
         assert_eq!(captured.script, 1);
         assert_eq!(captured.cursor, [10, 20, 30, 40]);

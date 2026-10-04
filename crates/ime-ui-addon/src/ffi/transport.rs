@@ -35,9 +35,9 @@ use std::str;
 use ime_types::ids::ScreenId;
 use ime_types::ui::Script;
 use ime_types::{
-    Anchor, Candidate, CandidateSource, ColorScheme, HideReason, LayoutHint,
-    OverlayFrame, OverlayKind, OverlaySection, PageState, Placement, Preedit, PreeditSpan, RectI,
-    Rgba8, SpanKind, StatusStrip, ThemeSpec, UiCommand, UiFrame,
+    Anchor, Candidate, CandidateSource, ColorScheme, HideReason, LayoutHint, OverlayFrame,
+    OverlayKind, OverlaySection, PageState, Placement, Preedit, PreeditSpan, RectI, Rgba8,
+    SpanKind, StatusStrip, ThemeSpec, UiCommand, UiFrame,
 };
 
 use super::emit_diagnostic;

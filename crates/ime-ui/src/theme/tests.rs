@@ -120,12 +120,18 @@ fn test_dark_palette_matches_the_specification_table() {
     // The alphas that `rgba()` builds are the truncated byte, not the rounded one:
     // `surface-stroke`, `state-pressed` and `separator` are a step below what rounding
     // 0.10, 0.14 and 0.10 would give, because that is the byte Slint paints with.
+    //
+    // The shipped request is acrylic at 0.85, and the dimmed-pair gate resolves it to the
+    // opaque tier -- the separator pair sits under the 4.5 floor on every translucent
+    // base the palette can produce -- so the bytes below are the resolved, opaque ones:
+    // the 217 `surface-fill` of the design table is dormant until the palette itself
+    // changes, which is a specification decision and not a code change.
     let tokens = tokens_for(&spec(ColorScheme::Dark), BlurNegotiation::Applied);
 
     assert!(tokens.dark);
-    assert_eq!(tokens.base_alpha, 217);
+    assert_eq!(tokens.base_alpha, 255);
     assert_eq!(tokens.surface_base, rgba(0x1C, 0x1C, 0x1E, 255));
-    assert_eq!(tokens.surface_fill, rgba(0x1C, 0x1C, 0x1E, 217));
+    assert_eq!(tokens.surface_fill, rgba(0x1C, 0x1C, 0x1E, 255));
     assert_eq!(tokens.surface_stroke, rgba(255, 255, 255, 25));
     assert_eq!(tokens.text_primary, rgba(0xF2, 0xF2, 0xF7, 255));
     assert_eq!(tokens.text_secondary, rgba(0xF2, 0xF2, 0xF7, 158));
@@ -147,13 +153,16 @@ fn test_dark_palette_matches_the_specification_table() {
 #[test]
 fn test_light_palette_matches_the_specification_table() {
     // As in the dark palette, the `rgba()` tokens carry the truncated byte:
-    // `text-annotation`, `state-pressed`, `shadow-outer` and `status-dot-idle`.
+    // `text-annotation`, `state-pressed`, `shadow-outer` and `status-dot-idle`. And as
+    // there, the dimmed-pair gate resolves the shipped acrylic request to the opaque
+    // tier -- every light dimmed pair is under the floor on a translucent base -- so the
+    // 217 `surface-fill` of the design table is dormant until the palette changes.
     let tokens = tokens_for(&spec(ColorScheme::Light), BlurNegotiation::Applied);
 
     assert!(!tokens.dark);
-    assert_eq!(tokens.base_alpha, 217);
+    assert_eq!(tokens.base_alpha, 255);
     assert_eq!(tokens.surface_base, rgba(0xFF, 0xFF, 0xFF, 255));
-    assert_eq!(tokens.surface_fill, rgba(0xFF, 0xFF, 0xFF, 217));
+    assert_eq!(tokens.surface_fill, rgba(0xFF, 0xFF, 0xFF, 255));
     assert_eq!(tokens.surface_stroke, rgba(0, 0, 0, 15));
     assert_eq!(tokens.text_primary, rgba(0x1C, 0x1C, 0x1E, 255));
     assert_eq!(tokens.text_secondary, rgba(0x1C, 0x1C, 0x1E, 153));
@@ -183,16 +192,26 @@ fn test_worst_case_backdrop_follows_the_scheme() {
 
 #[test]
 fn test_surface_fill_carries_the_base_alpha_and_nothing_else() {
+    // A translucent base never reaches the tokens any more -- the dimmed-pair gate
+    // degrades the request to opaque first -- so the reachable assertion is that the
+    // fill follows the base's *channels* and that both land opaque; the alpha pass-through
+    // itself is pinned by `slint_palette`'s own byte tests, which read the mapping
+    // without the resolution in the way.
     let spec = spec_with(ColorScheme::Dark, DEFAULT_ACCENT_DARK, true, 200);
     let tokens = tokens_for(&spec, BlurNegotiation::Applied);
 
-    assert_eq!(tokens.surface_fill, with_alpha(tokens.surface_base, 200));
     assert_eq!(tokens.surface_fill.r, tokens.surface_base.r);
+    assert_eq!(tokens.surface_fill.g, tokens.surface_base.g);
+    assert_eq!(tokens.surface_fill.b, tokens.surface_base.b);
+    assert_eq!(tokens.surface_fill.a, OPAQUE_ALPHA);
     assert_eq!(tokens.surface_base.a, OPAQUE_ALPHA);
 }
 
 #[test]
-fn test_contrast_dark_palette_clears_every_threshold() {
+fn test_contrast_dark_palette_clears_the_specification_thresholds() {
+    // The three pairs 3.2 requires hold on the acrylic tier's own report; the five
+    // dimmed pairs the view draws are measured beside them and gated by the resolution,
+    // which is the subject of the degradation tests below.
     let report = tokens_for(&spec(ColorScheme::Dark), BlurNegotiation::Applied).contrast();
 
     assert!(
@@ -214,7 +233,7 @@ fn test_contrast_dark_palette_clears_every_threshold() {
 }
 
 #[test]
-fn test_contrast_light_palette_clears_every_threshold() {
+fn test_contrast_light_palette_clears_the_specification_thresholds() {
     let report = tokens_for(&spec(ColorScheme::Light), BlurNegotiation::Applied).contrast();
 
     assert!(
@@ -263,6 +282,172 @@ fn test_contrast_light_palette_survives_every_accent_corner() {
     assert_every_accent_corner_is_readable(ColorScheme::Light);
 }
 
+/// `ui/candidate_grid.slint`, as text: the cells and their dimmed text.
+const SLINT_GRID: &str = include_str!("../../ui/candidate_grid.slint");
+
+/// The element opacities `ui/candidate_grid.slint` folds into its dimmed text, in
+/// declaration order: the fraction each `opacity: <fraction> * dim` binding spells.
+fn grid_dimmed_opacities(source: &str) -> Vec<f32> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let text = line.split("//").next().unwrap_or_default().trim();
+            let rest = text
+                .strip_prefix("opacity:")?
+                .trim()
+                .strip_suffix(';')?
+                .trim();
+            let (fraction, factor) = rest.split_once('*')?;
+            if factor.trim() != "dim" {
+                return None;
+            }
+            fraction.trim().parse::<f32>().ok()
+        })
+        .collect()
+}
+
+#[test]
+fn test_view_dimmed_text_opacities_are_the_frozen_fractions() {
+    // The gate measures the number label and the annotation at the fractions 3.1.1
+    // freezes; the view spells the same fractions as element opacities. One contract,
+    // two copies: a fraction that moved on either side alone would have the gate measure
+    // a text the window does not draw, so the test holds the bindings to the constants.
+    assert_eq!(
+        grid_dimmed_opacities(SLINT_GRID),
+        vec![NUMBER_LABEL_OPACITY, ANNOTATION_OPACITY]
+    );
+}
+
+#[test]
+fn test_contrast_dimmed_alphas_round_the_frozen_fractions() {
+    // The renderer folds an element opacity into the colour's alpha the way
+    // `Color::with_alpha` does -- by rounding the fraction against 255 -- so the bytes
+    // the gate flattens with are the rounded fractions, not truncations of them.
+    assert_eq!(NUMBER_LABEL_ALPHA, rounded_alpha(NUMBER_LABEL_OPACITY));
+    assert_eq!(ANNOTATION_ALPHA, rounded_alpha(ANNOTATION_OPACITY));
+}
+
+#[test]
+fn test_dark_tokens_carry_the_frozen_separator_and_secondary_fractions() {
+    // The preedit separator and the two secondary runs draw the tokens' own alphas, and
+    // the dark column's fractions are the design's 0.40 and 0.62, which Slint's `rgba()`
+    // truncates into the bytes the palette stores. The light column ships its own
+    // fractions (0.35 and 0.60), so this pin is per column, and the parity tests hold
+    // both columns to `ui/theme.slint`.
+    let dark = tokens_for(&spec(ColorScheme::Dark), BlurNegotiation::Applied);
+    assert_eq!(
+        dark.text_separator.a,
+        (SEPARATOR_FRACTION_DARK * 255.0) as u8
+    );
+    assert_eq!(
+        dark.text_secondary.a,
+        (SECONDARY_FRACTION_DARK * 255.0) as u8
+    );
+}
+
+#[test]
+fn test_contrast_acrylic_fill_puts_the_dark_dimmed_pairs_under_the_floor() {
+    // At the shipped 0.85 base the dark palette's composited fill is barely lighter than
+    // its opaque fill -- the panel's own fill token dominates the composite -- so the
+    // number label (5.42) and the annotation (4.75) clear the 4.5 floor exactly as they do
+    // on the opaque tier, and the separator (3.55) is the pair that drags the dark acrylic
+    // tier down the degradation ladder. The spread is why the gate measures the pairs one
+    // by one instead of degrading on the weakest alone.
+    let report = tokens_for(&spec(ColorScheme::Dark), BlurNegotiation::Applied).contrast();
+
+    assert!(report.separator_on_fill < CONTRAST_MINIMUM);
+    assert!(report.number_on_fill >= CONTRAST_MINIMUM);
+    assert!(report.annotation_on_fill >= CONTRAST_MINIMUM);
+    assert!(report.mode_label_on_fill >= CONTRAST_MINIMUM);
+    assert!(
+        report.number_on_fill > report.annotation_on_fill,
+        "the number label draws brighter than the annotation"
+    );
+    assert!(
+        report.annotation_on_fill > report.separator_on_fill,
+        "and the annotation brighter than the separator"
+    );
+    assert_eq!(
+        report.mode_label_on_fill, report.passthrough_on_fill,
+        "both secondary runs draw the same token today"
+    );
+}
+
+#[test]
+fn test_contrast_acrylic_fill_puts_the_light_dimmed_pairs_under_the_floor() {
+    // The light palette is washed towards white, where its near-black dimmed text fares
+    // no better: every one of the five pairs sits under the floor at the shipped base,
+    // which is what sends the light acrylic tier down the degradation ladder too.
+    let report = tokens_for(&spec(ColorScheme::Light), BlurNegotiation::Applied).contrast();
+
+    assert!(report.number_on_fill < CONTRAST_MINIMUM);
+    assert!(report.annotation_on_fill < CONTRAST_MINIMUM);
+    assert!(report.separator_on_fill < CONTRAST_MINIMUM);
+    assert!(report.mode_label_on_fill < CONTRAST_MINIMUM);
+    assert!(report.passthrough_on_fill < CONTRAST_MINIMUM);
+}
+
+#[test]
+fn test_contrast_opaque_tier_measures_the_dimmed_pairs_at_their_design_values() {
+    // On an opaque base the dimmed pairs sit exactly where the design tables put them:
+    // on the dark palette the number label and the annotation clear the 4.5 floor, as
+    // the specification's annotation note requires, while the separator and every light
+    // palette pair are auxiliary strokes whose fixed alphas no base alpha can raise. The
+    // report pins the measured values so a palette edit moves one of them as a decision,
+    // never as a drift.
+    let dark = tokens_for(&spec(ColorScheme::Dark), BlurNegotiation::Refused).contrast();
+    assert!(
+        (dark.number_on_fill - 5.42).abs() < 0.1,
+        "the dark number label measured {}",
+        dark.number_on_fill
+    );
+    assert!(
+        (dark.annotation_on_fill - 4.76).abs() < 0.1,
+        "the dark annotation measured {}",
+        dark.annotation_on_fill
+    );
+    assert!(
+        (dark.separator_on_fill - 3.55).abs() < 0.1,
+        "the dark separator measured {}",
+        dark.separator_on_fill
+    );
+    assert!(
+        (dark.mode_label_on_fill - 6.6).abs() < 0.1,
+        "the dark secondary runs measured {}",
+        dark.mode_label_on_fill
+    );
+    assert_eq!(dark.mode_label_on_fill, dark.passthrough_on_fill);
+    assert!(dark.number_on_fill >= CONTRAST_MINIMUM);
+    assert!(dark.annotation_on_fill >= CONTRAST_MINIMUM);
+    assert!(dark.separator_on_fill < CONTRAST_MINIMUM);
+
+    let light = tokens_for(&spec(ColorScheme::Light), BlurNegotiation::Refused).contrast();
+    assert!(
+        (light.number_on_fill - 3.84).abs() < 0.1,
+        "the light number label measured {}",
+        light.number_on_fill
+    );
+    assert!(
+        (light.annotation_on_fill - 3.32).abs() < 0.1,
+        "the light annotation measured {}",
+        light.annotation_on_fill
+    );
+    assert!(
+        (light.separator_on_fill - 2.17).abs() < 0.1,
+        "the light separator measured {}",
+        light.separator_on_fill
+    );
+    assert!(
+        (light.mode_label_on_fill - 4.47).abs() < 0.1,
+        "the light secondary runs measured {}",
+        light.mode_label_on_fill
+    );
+    assert_eq!(light.mode_label_on_fill, light.passthrough_on_fill);
+    assert!(light.number_on_fill < CONTRAST_MINIMUM);
+    assert!(light.annotation_on_fill < CONTRAST_MINIMUM);
+    assert!(light.separator_on_fill < CONTRAST_MINIMUM);
+}
+
 #[test]
 fn test_resolve_base_alpha_keeps_the_requested_alpha_when_blur_is_applied() {
     let decision = resolve_base_alpha(BlurNegotiation::Applied, 217);
@@ -306,22 +491,98 @@ fn test_resolve_forces_the_base_opaque_when_the_compositor_refuses_blur() {
 #[test]
 fn test_resolve_ignores_the_blur_answer_when_acrylic_is_off() {
     // A caller that skipped the round trip and passed `Refused` by mistake must not be
-    // able to force the window opaque against the user's explicit `acrylic = false`.
+    // able to report the compositor as the reason: with acrylic off no compositor was
+    // ever asked. The translucent base the user kept is still gated on the dimmed pairs,
+    // so the resolution may degrade -- but as a contrast fallback, never as a blur
+    // refusal.
     let spec = spec_with(ColorScheme::Dark, DEFAULT_ACCENT_DARK, false, 217);
     let resolution = ThemeResolution::resolve(&spec, BlurNegotiation::Refused);
 
-    assert_eq!(resolution.tokens.base_alpha, 217);
     assert!(!resolution.blur_unavailable);
-    assert_eq!(resolution.diagnostic_codes(), [None, None]);
+    assert!(resolution.contrast_fallback);
+    assert_eq!(resolution.tokens.base_alpha, OPAQUE_ALPHA);
+    assert_eq!(
+        resolution.diagnostic_codes(),
+        [None, Some(CONTRAST_FALLBACK)]
+    );
 }
 
 #[test]
-fn test_resolve_keeps_the_configured_alpha_at_the_shipped_default() {
+fn test_resolve_user_disabled_acrylic_still_gates_the_dimmed_pairs() {
+    // Keeping the base translucent without blur does not keep it ungated: the wash a
+    // 0.85 base adds is the same whether or not a compositor was asked to blur behind
+    // it, so the dimmed pairs decide the tier either way.
+    let spec = spec_with(
+        ColorScheme::Light,
+        DEFAULT_ACCENT_LIGHT,
+        false,
+        DEFAULT_BASE_ALPHA,
+    );
+    let resolution = ThemeResolution::resolve(&spec, BlurNegotiation::Disabled);
+
+    assert!(resolution.contrast_fallback);
+    assert!(!resolution.blur_unavailable);
+    assert_eq!(resolution.tokens.base_alpha, OPAQUE_ALPHA);
+    assert!(resolution.tokens.contrast().passes());
+}
+
+#[test]
+fn test_resolve_opaque_base_skips_the_dimmed_pair_gate() {
+    // A base pinned at full opacity is the ladder's last rung: the dimmed pairs sit at
+    // the alphas the design tables fix there, and there is nothing above opaque to raise,
+    // so the gate reports them without acting on them. Skipping the gate is what keeps
+    // the ladder total -- every resolution that comes back has cleared it.
+    let spec = spec_with(ColorScheme::Dark, DEFAULT_ACCENT_DARK, true, OPAQUE_ALPHA);
+    let resolution = ThemeResolution::resolve(&spec, BlurNegotiation::Applied);
+
+    assert!(!resolution.contrast_fallback);
+    assert!(!resolution.blur_unavailable);
+    assert_eq!(resolution.tokens.base_alpha, OPAQUE_ALPHA);
+    assert!(
+        !resolution.tokens.contrast().dimmed_pairs_pass(),
+        "the dark separator sits under the floor even on the opaque base"
+    );
+}
+
+#[test]
+fn test_resolve_degrades_the_shipped_acrylic_default_for_the_dimmed_pairs() {
+    // The shipped default is acrylic at 0.85. The dimmed text the view draws -- the
+    // number label, the annotation and the preedit separator -- measures under the 4.5
+    // floor against the worst-case fill that base produces, so the gate degrades a
+    // default that only used to be measured on the three full-alpha pairs. What ships
+    // is the opaque palette, and the degradation is recorded.
     let resolution = ThemeResolution::resolve(&spec(ColorScheme::Dark), BlurNegotiation::Applied);
 
-    assert_eq!(resolution.tokens.base_alpha, DEFAULT_BASE_ALPHA);
-    assert!(!resolution.contrast_fallback);
+    assert!(resolution.contrast_fallback);
+    assert!(!resolution.blur_unavailable);
+    assert_eq!(resolution.tokens.base_alpha, OPAQUE_ALPHA);
+    assert_eq!(
+        resolution.diagnostic_codes(),
+        [None, Some(CONTRAST_FALLBACK)]
+    );
     assert!(resolution.tokens.contrast().passes());
+}
+
+#[test]
+fn test_resolve_acrylic_tier_triggers_the_contrast_fallback_in_both_schemes() {
+    // The dark palette's dimmed pairs miss the floor three out of five and the light
+    // palette's miss it five out of five, so either scheme's acrylic tier ends on the
+    // ladder's last rung. What lands there is readable, which is the property the gate
+    // exists to guarantee.
+    for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+        let resolution = ThemeResolution::resolve(&spec(scheme), BlurNegotiation::Applied);
+
+        assert!(
+            resolution.contrast_fallback,
+            "{scheme:?}: the acrylic tier has dimmed pairs under the floor"
+        );
+        assert!(!resolution.blur_unavailable);
+        assert_eq!(resolution.tokens.base_alpha, OPAQUE_ALPHA);
+        assert!(
+            resolution.tokens.contrast().passes(),
+            "{scheme:?}: the degraded palette keeps the required pairs readable"
+        );
+    }
 }
 
 #[test]
@@ -403,23 +664,28 @@ fn test_degraded_base_keeps_text_readable_in_both_schemes() {
 }
 
 #[test]
-fn test_light_palette_tolerates_a_lower_base_alpha_than_the_dark_one() {
-    // The light palette is measured against black and the dark one against white, so
-    // the light base can lose more of its opacity before its text stops being
-    // readable: at 0.63 of full opacity the light palette still clears 4.5:1 while the
-    // dark one has fallen to 4.4:1 and has to be raised to opaque. The test pins that
-    // asymmetry, so neither floor can move unnoticed.
-    let light = spec_with(ColorScheme::Light, DEFAULT_ACCENT_LIGHT, true, 160);
-    let dark = spec_with(ColorScheme::Dark, DEFAULT_ACCENT_DARK, true, 160);
-    let light_resolution = ThemeResolution::resolve(&light, BlurNegotiation::Applied);
-    let dark_resolution = ThemeResolution::resolve(&dark, BlurNegotiation::Applied);
+fn test_light_palette_keeps_the_primary_floor_at_a_lower_alpha_than_the_dark_one() {
+    // The asymmetry the title names is real but sits one rung lower than the base alpha:
+    // the dimmed-pair gate degrades every translucent request before a report can be
+    // taken on one -- at 0.63 both schemes resolve with the fallback set and report the
+    // opaque tier's numbers -- so the observable asymmetry is on that tier. There the
+    // light palette, read against black, keeps `text.primary` above the floor and loses
+    // the number label; the dark palette, read against white, holds both.
+    let light = tokens_for(
+        &spec_with(ColorScheme::Light, DEFAULT_ACCENT_LIGHT, true, 160),
+        BlurNegotiation::Applied,
+    )
+    .contrast();
+    let dark = tokens_for(
+        &spec_with(ColorScheme::Dark, DEFAULT_ACCENT_DARK, true, 160),
+        BlurNegotiation::Applied,
+    )
+    .contrast();
 
-    assert!(!light_resolution.contrast_fallback);
-    assert_eq!(light_resolution.tokens.base_alpha, 160);
-    assert!(light_resolution.tokens.contrast().passes());
-    assert!(dark_resolution.contrast_fallback);
-    assert_eq!(dark_resolution.tokens.base_alpha, OPAQUE_ALPHA);
-    assert!(dark_resolution.tokens.contrast().passes());
+    assert!(light.primary_on_fill >= CONTRAST_MINIMUM);
+    assert!(dark.primary_on_fill >= CONTRAST_MINIMUM);
+    assert!(light.number_on_fill < CONTRAST_MINIMUM);
+    assert!(dark.number_on_fill >= CONTRAST_MINIMUM);
 }
 
 #[test]
@@ -598,6 +864,48 @@ fn test_resolve_never_returns_a_palette_under_the_contrast_floor() {
                 report.passes(),
                 "{scheme:?} at alpha {alpha} came back at {report:?}"
             );
+        }
+    }
+}
+
+#[test]
+fn test_resolve_random_accents_never_return_a_palette_under_the_floor() {
+    // Fifty pseudo-random accents stand in for everything a portal or a config file can
+    // hand the window, in the colours the eight RGB corners cannot reach. Whatever the
+    // accent, the resolution comes back with the three required pairs above their
+    // thresholds, on whatever tier the ladder lands on -- and the dimmed pairs, which no
+    // accent can reach, measure identically at the tier every accent resolves to.
+    let mut state: u32 = 0x5EED_1A2B;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        state
+    };
+    for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+        let mut reference: Option<ContrastReport> = None;
+        for _ in 0..50 {
+            let accent = rgba(
+                (next() % 256) as u8,
+                (next() % 256) as u8,
+                (next() % 256) as u8,
+                OPAQUE_ALPHA,
+            );
+            let custom = spec_with(scheme, accent, true, DEFAULT_BASE_ALPHA);
+            let resolution = ThemeResolution::resolve(&custom, BlurNegotiation::Applied);
+            let report = resolution.tokens.contrast();
+
+            assert!(
+                report.passes(),
+                "{scheme:?} with accent {accent:?} came back at {report:?}"
+            );
+            match reference {
+                None => reference = Some(report),
+                Some(previous) => assert_eq!(
+                    report.number_on_fill, previous.number_on_fill,
+                    "{scheme:?}: the dimmed pairs must not move with the accent"
+                ),
+            }
         }
     }
 }

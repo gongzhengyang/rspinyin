@@ -9,6 +9,13 @@
 //! this module builds — the bits, the label the window shows, the degradation notice that
 //! may occupy the label's slot, and the one place an action that flips a bit is applied.
 //!
+//! The two output switches have one reader each, and both live here so the bits cannot
+//! gain a meaning without it being written next to them: [`Modes::transform_output`] is
+//! the rewrite a commit goes through on its way to the application, and
+//! [`Modes::mode_flash_line`] is the line a switch reports when it is flipped with no
+//! composition on screen — the one state where the strip that normally carries the mode
+//! does not exist.
+//!
 //! # The notice slot
 //!
 //! The strip's label slot doubles as the degradation notice slot: when the process carries
@@ -30,6 +37,10 @@
 //! Plain Rust over values. The one call that leaves the process — flipping the host's input
 //! state — goes through [`Host`], exactly as every other host effect does.
 
+use std::borrow::Cow;
+
+use ime_core::passthrough::{PassthroughFlags, PunctMode, transform_committed};
+use ime_core::state::effects::ModeBit;
 use ime_dict::paths;
 use ime_types::{KeyAction, StatusStrip};
 
@@ -40,6 +51,18 @@ const MODE_LABEL_CHINESE: &str = "中";
 
 /// What the status strip shows in English mode, temporary English included.
 const MODE_LABEL_ENGLISH: &str = "英";
+
+/// The line an idle full-width switch reports when it switched on.
+const FULL_WIDTH_FLASH_ON: &str = "mode/full-width: on";
+
+/// The line an idle full-width switch reports when it switched off.
+const FULL_WIDTH_FLASH_OFF: &str = "mode/full-width: off";
+
+/// The line an idle punctuation switch reports when it switched to Chinese punctuation.
+const PUNCT_FLASH_ON: &str = "mode/punct-full: on";
+
+/// The line an idle punctuation switch reports when it switched to English punctuation.
+const PUNCT_FLASH_OFF: &str = "mode/punct-full: off";
 
 /// One row of the frozen notice table: a degradation, the sentence the user reads, and the
 /// priority that decides which sentence wins when several hold at once. Lower numbers win.
@@ -194,6 +217,13 @@ pub(super) struct Modes {
 impl Default for Modes {
     /// A freshly activated context: Chinese, half width, Chinese punctuation — the three
     /// values the shipped configuration declares.
+    ///
+    /// The two output bits are the `[engine]` section's own defaults (`punct_mode`
+    /// "chinese", `full_width` false). They live here rather than in a second projection
+    /// because the switches are runtime state — the user flips them while typing — and
+    /// the configuration only says where they start; this constructor is therefore the
+    /// one place the document's defaults and the engine's switches can drift, which is
+    /// why both sides of the alignment are named in one sentence.
     fn default() -> Self {
         Self {
             is_chinese: true,
@@ -289,6 +319,11 @@ impl Modes {
     pub(super) fn apply(&mut self, action: KeyAction, ic: u64, host: &mut dyn Host) -> bool {
         match action {
             KeyAction::ToggleLang => {
+                // No chord of the routing table produces this action any more — the
+                // language switch is the host's own hotkey — so the arm runs only when a
+                // future host hands the key over. The read-back is what keeps it honest
+                // when that day comes: the bit is the state the host reports, never the
+                // state the switch was hoped to produce.
                 self.is_chinese = host.toggle_enabled(ic);
                 true
             }
@@ -301,6 +336,103 @@ impl Modes {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Rewrites committed text by the output half of the mode bits.
+    ///
+    /// This is the reader the full-width and punctuation switches existed for: with the
+    /// switches on, the marks and ASCII characters a commit carries come out the way the
+    /// switches promise, and with them off the text comes back borrowed and untouched.
+    /// The one call sits at the commit door — see the effect executor — because that is
+    /// the only place text leaves for the application, which is what makes the switches
+    /// true switches: they change what the user's next commit looks like, not only an
+    /// icon.
+    ///
+    /// The per-character work is `ime-core`'s passthrough policy, which owns the
+    /// substitution table and the widening map; this method is the engine's one call into
+    /// it, so the two ends of the mapping cannot drift.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` — the text a commit effect is about to hand to the host.
+    ///
+    /// # Returns
+    ///
+    /// The text to commit. It borrows `text` whenever no character changes — the whole
+    /// hot path, a commit of Chinese candidates included — so a commit the mode bits
+    /// cannot alter allocates nothing.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn transform_output<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        transform_committed(text, self.is_punct_full, self.is_full_width)
+    }
+
+    /// The passthrough policy's view of this context, as one value for `classify`.
+    ///
+    /// The two output switches are the context's runtime state and the two input flags
+    /// are the document's, so neither side can build the policy's flags alone; this
+    /// constructor is the one place they meet. `temp_english` is deliberately absent:
+    /// the router answers a context in that mode before the policy is ever asked, so a
+    /// value that reaches here is always `false`, and carrying a lie would let the
+    /// policy's rule order drift away from the router's.
+    ///
+    /// # Arguments
+    ///
+    /// * `auto_english_on_uppercase` — `[engine] auto_english_on_uppercase`, as the
+    ///   configuration projects it.
+    /// * `passthrough_url` — `[engine] passthrough_url`, as the configuration projects
+    ///   it.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn passthrough_flags(
+        &self,
+        auto_english_on_uppercase: bool,
+        passthrough_url: bool,
+    ) -> PassthroughFlags {
+        PassthroughFlags {
+            auto_english_on_uppercase,
+            passthrough_url,
+            punct_mode: if self.is_punct_full {
+                PunctMode::Chinese
+            } else {
+                PunctMode::English
+            },
+            full_width: self.is_full_width,
+            temp_english: false,
+        }
+    }
+
+    /// The diagnostic line an idle mode switch reports, named for the bit and the state
+    /// it took.
+    ///
+    /// The bits are applied before the session is stepped, so by the time the flash
+    /// effect is executed the fields already hold the value the switch produced: the
+    /// line is the truth the user now owns, never the state they left. The four spellings
+    /// are constants because the codes are matched by tests and by a reader's eye, and a
+    /// formatted string would make both guess.
+    ///
+    /// # Arguments
+    ///
+    /// * `bit` — the mode bit the flash announces.
+    ///
+    /// # Returns
+    ///
+    /// The stable line the executor reports on the diagnostic channel.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn mode_flash_line(&self, bit: ModeBit) -> &'static str {
+        match (bit, self.is_full_width, self.is_punct_full) {
+            (ModeBit::FullWidth, true, _) => FULL_WIDTH_FLASH_ON,
+            (ModeBit::FullWidth, false, _) => FULL_WIDTH_FLASH_OFF,
+            (ModeBit::PunctFull, _, true) => PUNCT_FLASH_ON,
+            (ModeBit::PunctFull, _, false) => PUNCT_FLASH_OFF,
         }
     }
 }

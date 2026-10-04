@@ -23,6 +23,7 @@ use ime_types::{HideReason, ImeError, KeyAction, PageDir, UiEvent};
 
 use crate::input::BackspaceOutcome;
 use crate::state::SessionConfig;
+use crate::state::effects::ModeBit;
 use crate::state::machine::{Ctx, Effect, PendingCommit, Session, SessionEvent, SessionState};
 
 impl Session {
@@ -117,10 +118,26 @@ impl Session {
         match action {
             KeyAction::InputChar(ch) => self.start_composing(ch, ctx),
             KeyAction::EnterTempEnglish => self.temp_english = true,
+            // The full-width and punctuation switches are the engine's bits: the session
+            // does not hold them, so all it contributes is the announcement that one
+            // moved, which is the feedback a switch has when there is no window to
+            // repaint. The engine applied the bit before stepping the session, so the
+            // executor reads the new value from its own state.
+            KeyAction::ToggleFullWidth => {
+                ctx.push(Effect::ModeFlash {
+                    bit: ModeBit::FullWidth,
+                });
+            }
+            KeyAction::TogglePunct => {
+                ctx.push(Effect::ModeFlash {
+                    bit: ModeBit::PunctFull,
+                });
+            }
             // Everything else has nothing to act on without a composition, and is
-            // handed back to the host. The mode keys are the engine's: it owns the
-            // Chinese / English, full-width, punctuation and script bits, and writes
-            // them into the frame context itself.
+            // handed back to the host. The language and script switches are the
+            // engine's too, and the plugin's routing table no longer claims a chord
+            // for the language switch at all — switching it is the host's own hotkey —
+            // so neither action reaches this machine from a key today.
             //
             // The user-word actions have no highlight to act on here for the same reason
             // `CommitHighlighted` does not: there is no candidate list and no session to
@@ -134,8 +151,6 @@ impl Session {
             | KeyAction::MoveHighlight(_)
             | KeyAction::MoveCaret(_)
             | KeyAction::ToggleLang
-            | KeyAction::ToggleFullWidth
-            | KeyAction::TogglePunct
             | KeyAction::ToggleScript
             | KeyAction::ForgetHighlighted
             | KeyAction::PinHighlighted

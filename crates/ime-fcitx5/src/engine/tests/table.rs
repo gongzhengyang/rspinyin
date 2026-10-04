@@ -67,7 +67,14 @@ fn is_routed(sym: u32, state: u32) -> bool {
         KEY_PAGE_DOWN,
     ];
     let read = fold_shifted_letter(sym, state);
-    (KEY_A..=KEY_Z).contains(&read) || (KEY_0..=KEY_9).contains(&read) || NAMED.contains(&read)
+    let policy_mark = state == 0
+        && char::from_u32(sym)
+            .map(crate::engine::is_policy_mark)
+            .unwrap_or(false);
+    (KEY_A..=KEY_Z).contains(&read)
+        || (KEY_0..=KEY_9).contains(&read)
+        || NAMED.contains(&read)
+        || policy_mark
 }
 
 #[test]
@@ -492,7 +499,6 @@ fn test_translate_key_maps_the_global_mode_chords() {
     let keys = KeyBindings::default();
     assert_rows(
         &[
-            (press(KEY_SPACE, CTRL), KeyAction::ToggleLang),
             (press(KEY_SPACE, SHIFT), KeyAction::ToggleFullWidth),
             (press(KEY_PERIOD, CTRL), KeyAction::TogglePunct),
             // A chord is its whole modifier set: one extra modifier is another key.
@@ -500,9 +506,42 @@ fn test_translate_key_maps_the_global_mode_chords() {
             (press(KEY_SPACE, CTRL | SHIFT), KeyAction::Ignore),
             (press(KEY_SPACE, SHIFT | SUPER), KeyAction::Ignore),
             (press(KEY_PERIOD, CTRL | SHIFT), KeyAction::Ignore),
-            (press(KEY_PERIOD, 0), KeyAction::Ignore),
+            // The bare period is the policy mark's, not a chord: the policy decides
+            // what it commits, and the chord table stays out of its way.
+            (press(KEY_PERIOD, 0), KeyAction::InputChar('.')),
         ],
         &keys,
+    );
+}
+
+#[test]
+fn test_translate_key_no_longer_claims_the_language_chord() {
+    // The language switch is the host's own hotkey, and Fcitx5's headers expose no
+    // per-context state the plugin could write, so a chord here could only swallow the
+    // key and answer it with nothing. The table names no chord for it at all: the key
+    // reaches the host whatever is held beside it, which is the whole of the honesty
+    // this table can offer.
+    let keys = KeyBindings::default();
+    for state in [CTRL, CTRL | SHIFT, CTRL | ALT] {
+        assert_eq!(
+            translate_key(&press(KEY_SPACE, state), &keys),
+            KeyAction::Ignore,
+            "space with {state:#x} belongs to the host"
+        );
+    }
+    // The bare space was never the language switch's: it commits the highlighted
+    // candidate, and it still does.
+    assert_eq!(
+        translate_key(&press(KEY_SPACE, 0), &keys),
+        KeyAction::CommitHighlighted
+    );
+    // And no chord of the table names the keysym with Ctrl held, so the audit and the
+    // table cannot drift back apart silently.
+    assert!(
+        CHORDS
+            .iter()
+            .all(|chord| !(chord.sym == KEY_SPACE && chord.mask == CTRL)),
+        "no chord claims Ctrl+Space"
     );
 }
 
@@ -530,9 +569,9 @@ fn test_translate_key_has_no_row_for_a_modifier_press() {
 fn test_translate_key_matches_every_chord_it_declares() {
     // Written out rather than read from `CHORDS`, so that a chord added to the table has to
     // be added here too: the table is data, and a data edit nobody exercised is how a key
-    // silently changes meaning.
+    // silently changes meaning. `Ctrl+Space` is the row the table deliberately no longer
+    // holds — see the test above it — which is why the language switch is not among them.
     let rows = [
-        (KEY_SPACE, CTRL, KeyAction::ToggleLang),
         (KEY_SPACE, SHIFT, KeyAction::ToggleFullWidth),
         (KEY_PERIOD, CTRL, KeyAction::TogglePunct),
         (KEY_E, CTRL | SHIFT, KeyAction::EnterTempEnglish),
@@ -555,7 +594,6 @@ fn test_translate_key_requires_a_chords_whole_modifier_set() {
     // `Ctrl+Shift+.` all have to reach the application.
     let keys = KeyBindings::default();
     let chords = [
-        (KEY_SPACE, CTRL),
         (KEY_SPACE, SHIFT),
         (KEY_PERIOD, CTRL),
         (KEY_E, CTRL | SHIFT),
@@ -673,7 +711,9 @@ fn test_translate_key_ignores_keys_the_table_does_not_name() {
             (press(0xffbe, 0), KeyAction::Ignore),
             (press(0xff63, 0), KeyAction::Ignore),
             (press(0xff8d, 0), KeyAction::Ignore),
-            (press(0x002c, 0), KeyAction::Ignore),
+            // The slash is not a policy mark either: the marks it does name moved to
+            // their own row, so the "not named" list leans on a neighbour of theirs.
+            (press(0x002f, 0), KeyAction::Ignore),
             (press(0xffe3, SHIFT), KeyAction::Ignore),
         ],
         &keys,

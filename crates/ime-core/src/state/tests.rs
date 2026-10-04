@@ -20,6 +20,7 @@ use super::paging::Paging;
 use super::{Effect, SessionConfig};
 use crate::lm::InMemoryLm;
 use crate::segment::{SYLLABLES, SyllableDag, normalize};
+use crate::state::effects::ModeBit;
 use crate::viterbi::Decoder;
 use crate::viterbi::lattice::testing::MockLexicon;
 
@@ -128,6 +129,7 @@ fn kind(effect: &Effect) -> &'static str {
         Effect::ForgetUserWord { .. } => "forget-user-word",
         Effect::Diagnose(_) => "diagnose",
         Effect::SetClientPreedit(_) => "set-client-preedit",
+        Effect::ModeFlash { .. } => "mode-flash",
     }
 }
 
@@ -407,8 +409,7 @@ fn test_idle_keys_with_nothing_to_act_on_are_handed_back() {
         KeyAction::MoveHighlight(1),
         KeyAction::MoveCaret(-1),
         KeyAction::ToggleLang,
-        KeyAction::ToggleFullWidth,
-        KeyAction::TogglePunct,
+        KeyAction::ToggleScript,
         KeyAction::Escape,
         KeyAction::Ignore,
     ];
@@ -426,6 +427,54 @@ fn test_idle_keys_with_nothing_to_act_on_are_handed_back() {
             "{action:?} must not emit a frame"
         );
     }
+}
+
+#[test]
+fn test_idle_mode_toggles_flash_their_own_bits_and_touch_nothing_else() {
+    let cfg = SessionConfig::default();
+    let fixture = Fixture::new();
+    let env = fixture.env();
+
+    // Each switch announces its own bit, and does nothing else: with nothing composing
+    // there is no window to repaint, so the flash is the whole of the transition.
+    for (action, bit) in [
+        (KeyAction::ToggleFullWidth, ModeBit::FullWidth),
+        (KeyAction::TogglePunct, ModeBit::PunctFull),
+    ] {
+        let mut session = Session::new();
+        let effects = session.handle_key(action, &cfg, &env);
+        assert_eq!(
+            kinds(&effects),
+            ["mode-flash"],
+            "{action:?} announces itself, and does nothing else"
+        );
+        assert!(
+            matches!(effects.first(), Some(Effect::ModeFlash { bit: named }) if *named == bit),
+            "{action:?} names the bit it moved"
+        );
+        assert_eq!(session.state, SessionState::Idle, "{action:?}");
+        assert_eq!(
+            session.revision.value(),
+            0,
+            "{action:?} must not emit a frame: there is no window"
+        );
+    }
+}
+
+#[test]
+fn test_composing_full_width_toggle_repaints_the_window_and_flashes_nothing() {
+    // Inside a composition the window is on screen and its strip catches up on the
+    // frame: that repaint is the feedback, and a flash beside it would say the same
+    // thing twice.
+    let cfg = SessionConfig::default();
+    let fixture = Fixture::new();
+    let env = fixture.env();
+    let mut session = composing(&cfg, &env, "ni");
+
+    let effects = session.handle_key(KeyAction::ToggleFullWidth, &cfg, &env);
+
+    assert_eq!(kinds(&effects), ["send-frame"]);
+    assert_eq!(session.state, SessionState::Composing);
 }
 
 #[test]

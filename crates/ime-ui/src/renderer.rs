@@ -389,6 +389,12 @@ pub(crate) struct SlintWindowAdapter {
     starved: Cell<u32>,
     /// Frames committed since the window was created.
     committed: Cell<u64>,
+    /// Whether the surface is mapped, as the last visibility change left it.
+    ///
+    /// Slint reports the window's own show and hide through the
+    /// [`WindowAdapter::set_visible`] call below, so this is the one fact the raster path
+    /// needs to keep an unmapped window out of it.
+    visible: Cell<bool>,
 }
 
 impl SlintWindowAdapter {
@@ -429,6 +435,7 @@ impl SlintWindowAdapter {
                     geometry: Cell::new(geometry),
                     starved: Cell::new(0),
                     committed: Cell::new(0),
+                    visible: Cell::new(false),
                 }
             });
         adapter
@@ -444,11 +451,22 @@ impl SlintWindowAdapter {
     /// This is the whole render loop as the UI thread sees it: it does nothing when Slint
     /// has no dirty state, and it never waits for the compositor.
     ///
+    /// An unmapped window never enters the raster at all. Slint's dirty state cannot tell
+    /// mapped from unmapped -- a property written while the window is hidden still marks the
+    /// scene -- so the visibility tracked by the [`WindowAdapter::set_visible`] call below is
+    /// the guard: without it, a scene dirtied behind an unmapped window would be rasterized
+    /// and committed to a surface nobody can see. The exit fade is not affected by the
+    /// guard, on purpose: a staged Hide keeps its window mapped for exactly as long as the
+    /// fade still has frames to draw.
+    ///
     /// # Errors
     ///
     /// Propagates a backend failure. A backend with no free buffer is *not* an error: the
     /// frame is reported as [`RenderOutcome::Skipped`] and stays dirty.
     pub(crate) fn render_if_dirty(&self) -> Result<RenderOutcome, PlatformError> {
+        if !self.visible.get() {
+            return Ok(RenderOutcome::Idle);
+        }
         // Rasterizes unconditionally, because Slint's own repaint buffer is the dirty
         // oracle: a property the scene reads reaches the renderer without anyone calling
         // `request_redraw` -- that is the component-level path the highlight animation
@@ -624,6 +642,10 @@ impl WindowAdapter for SlintWindowAdapter {
     }
 
     fn set_visible(&self, visible: bool) -> Result<(), SlintError> {
+        // Tracked before the backend call: a backend that refuses the change reports
+        // through the error below, and the raster guard must not outlive the fact either
+        // way.
+        self.visible.set(visible);
         self.backend
             .borrow_mut()
             .set_visible(visible)

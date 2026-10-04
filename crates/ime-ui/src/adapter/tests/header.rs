@@ -8,10 +8,8 @@
 use crate::renderer::mock::{MockState, MockSurface, on_own_thread};
 use crate::slint_platform::RspinyinPlatform;
 
-use super::{
-    Adapter, BYTES_PER_PIXEL, PIXEL_HEIGHT_DP, PIXEL_WIDTH_DP, frame_with, metrics, run_kinds,
-    run_texts, with_adapter,
-};
+use super::pixels::{BYTES_PER_PIXEL, PIXEL_HEIGHT_DP, PIXEL_WIDTH_DP, metrics};
+use super::{Adapter, frame_with, run_kinds, run_texts, with_adapter};
 
 #[test]
 fn test_adapter_splits_the_preedit_around_a_caret_in_the_middle() {
@@ -173,12 +171,14 @@ fn test_adapter_dropping_the_secondary_markers_frees_their_room() {
         // header's other accent-coloured run -- out of the scan below, and the label is not,
         // because the mode dot is the accent colour only while the strip carries a mode.
         let mut wide = frame_with(1, "", 1);
+        wide.status.chinese = true;
         wide.status.mode_label = String::from("拼音输入");
         assert!(adapter.apply_frame(&wide));
         let shown = settle();
 
         // 3.6's dictionary notice takes the preedit's room away, and the cluster drops them.
         let mut narrow = frame_with(2, "", 1);
+        narrow.status.chinese = true;
         narrow.status.mode_label = String::from("词库不可用词库不可用");
         assert!(adapter.apply_frame(&narrow));
         let dropped = settle();

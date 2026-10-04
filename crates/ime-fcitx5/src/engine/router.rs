@@ -64,14 +64,16 @@
 
 use std::collections::HashMap;
 
+use ime_core::passthrough::{PassthroughDecision, classify};
 use ime_core::privacy::InputContextKind;
 use ime_core::state::{FrameContext, Session, SessionEnv, SessionEvent, SessionState};
-use ime_types::{Anchor, UiEvent};
+use ime_types::{Anchor, KeyAction, UiEvent};
 
 use crate::engine::badge::BadgeState;
 use crate::engine::host::Host;
 use crate::engine::{
-    claims_key, is_shift_press, is_syllable_separator, leaves_temp_english, translate_key,
+    claims_key, is_policy_mark, is_shift_press, is_syllable_separator, leaves_temp_english,
+    translate_key,
 };
 use crate::ffi::{FcitxKeyEvent, emit_diagnostic};
 use crate::privacy_impl::{ContextPrivacy, ContextReport, report_suppression};
@@ -520,6 +522,62 @@ impl<'a> KeyRouter<'a> {
         // cannot see the session, so the guard lives here, where the session is.
         if is_syllable_separator(action) && ctx.session.state != SessionState::Composing {
             return false;
+        }
+        // A text-producing key that lands on an idle session is the passthrough policy's
+        // to answer, not the session's: the uppercase letter, the URL keystroke and the
+        // bare punctuation mark are decisions about text the user typed, and the decoder
+        // must not see them — a character outside the pinyin alphabet would only be
+        // swallowed with a diagnostic, which is the defect this answers. While a
+        // composition is live the session keeps every key it has always had: the
+        // policy's composition half — a mark that carries the pending candidates out —
+        // is session-machine work and stays there.
+        if let KeyAction::InputChar(ch) = action {
+            // While a composition is live a mark belongs to the application, exactly as
+            // it did when the table claimed no punctuation: the policy's composition
+            // half — a mark that carries the pending candidates out — is session-machine
+            // work that has not landed. A letter never satisfies this, so the composing
+            // input is untouched.
+            if ctx.session.state != SessionState::Idle && is_policy_mark(ch) {
+                return false;
+            }
+            if ctx.session.state == SessionState::Idle {
+                // The typed character as the keyboard produced it, read off the raw
+                // keysym: the routing table folds a shifted letter before its rows see
+                // it, and the uppercase signal is the user's rather than the fold's.
+                // The ASCII filter keeps the non-Latin keysym ranges — a frontend's
+                // function and modifier keys — out of the policy entirely; they are not
+                // `InputChar` actions anyway, so this is the guard that keeps the two
+                // tables from being able to disagree.
+                let typed = char::from_u32(key.sym).filter(char::is_ascii);
+                if let Some(ch) = typed {
+                    // The typed character is the whole raw text the policy sees; the
+                    // stack buffer keeps the key path allocation-free. The surrounding
+                    // text stays `None` because the `Host` boundary carries no accessor
+                    // for it yet, so the URL rule sees only the evidence the keystroke
+                    // itself provides.
+                    let flags = ctx.modes.passthrough_flags(
+                        config.auto_english_on_uppercase,
+                        config.passthrough_url,
+                    );
+                    let mut raw = [0u8; 4];
+                    match classify(ch.encode_utf8(&mut raw), flags, None) {
+                        PassthroughDecision::HostHandles => return false,
+                        PassthroughDecision::CommitDirectly(text) => {
+                            // The same door a session commit leaves through, minus the
+                            // hide: an idle session has no window to take down.
+                            // Learning is untouched — typed English is not a candidate
+                            // choice.
+                            let text = ctx.modes.transform_output(&text);
+                            host.commit(ic, &text);
+                            return true;
+                        }
+                        // The shortcut is the router's own chord: `classify` never
+                        // answers it, so the arm is unreachable, and a key the policy
+                        // has no answer for belongs to the session below.
+                        PassthroughDecision::EnterTempEnglish | PassthroughDecision::Decode => {}
+                    }
+                }
+            }
         }
         // The mode bits go into the session before the step, so the frame a mode key
         // repaints carries the switch that key just made.

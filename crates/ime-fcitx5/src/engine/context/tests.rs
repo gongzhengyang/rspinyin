@@ -552,7 +552,9 @@ fn test_dispatch_in_session_layer_takes_only_the_keys_an_idle_session_owns() {
         (KEY_Z, SHIFT, Consumed::Consumed),
         (KEY_E, CTRL | SHIFT, Consumed::Consumed),
         // The mode chords the engine owns.
-        (KEY_SPACE, CTRL, Consumed::Consumed),
+        // The language chord belongs to the host: the routing table claims it no more,
+        // so Ctrl+Space travels on untouched.
+        (KEY_SPACE, CTRL, Consumed::Ignored),
         (KEY_SPACE, SHIFT, Consumed::Consumed),
         (KEY_PERIOD, CTRL, Consumed::Consumed),
         // Everything else is the application's: the keys the table names and the ones it

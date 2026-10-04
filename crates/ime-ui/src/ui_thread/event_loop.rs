@@ -264,7 +264,9 @@ mod tests {
             Some(Instant::now() + Duration::from_secs(5)),
         );
         let started = Instant::now();
-        let woken = loop_state.wait().expect("a ready descriptor is not an error");
+        let woken = loop_state
+            .wait()
+            .expect("a ready descriptor is not an error");
         assert!(
             started.elapsed() < Duration::from_secs(4),
             "the wait ended on the surface descriptor, not on its timeout"

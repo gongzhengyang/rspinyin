@@ -15,9 +15,9 @@
 //! | `SC-KEY-05` syllable delete | `n i h a o BackSpace` | `test_scenario_05_backspace_removes_a_syllable_leaving_the_ni_readings` |
 //! | `SC-KEY-06` caret move | `n i h a o Left` | `test_scenario_06_caret_left_lands_after_the_ni_syllable` |
 //! | `SC-KEY-07` cancel | `n i h a o Escape` | `test_scenario_07_escape_delivers_no_text_and_hides_the_window` |
-//! | `SC-KEY-08` mode chord | `Ctrl+Space` then letters | `test_scenario_08_the_disabled_context_hands_the_letters_back` |
+//! | `SC-KEY-08` mode chord | `Ctrl+Space` then letters | `test_scenario_08_the_language_chord_belongs_to_the_host` |
 //! | `SC-KEY-09` temporary English | `Ctrl+Shift+E n i h a o Return n i h a o Space` | `test_scenario_09_temporary_english_passes_the_first_phrase_through` |
-//! | `SC-KEY-10` full width | `Shift+Space n i h a o Space` | `test_scenario_10_full_width_commits_the_phrase_and_flags_the_strip` |
+//! | `SC-KEY-10` full width | `Shift+Space n i h a o Space`, then the raw commit | `test_scenario_10_full_width_commits_the_phrase_and_flags_the_strip` |
 //! | `SC-KEY-11` punctuation | `Ctrl+. ,` | `test_scenario_11_punctuation_english_hands_the_comma_back` |
 //! | `SC-KEY-12` cheat sheet | hold `Shift` 300 ms, release | `test_scenario_12_long_press_shift_offers_the_cheat_sheet_and_keeps_the_mode` |
 //! | `SC-KEY-13` focus loss | `n i h a o` and the focus goes | `test_scenario_13_focus_loss_delivers_no_text_and_hides_the_window` |
@@ -44,7 +44,6 @@ use ime_types::HideReason;
 use rspinyin::engine::{
     Consumed, Dispatcher, HoldOutcome, KeyBindings, KeyEvent, KeyRouter, Overlay, SessionView,
 };
-use rspinyin::ffi::FcitxKeyEvent;
 
 use crate::support::{
     CTRL, FOCUS_WINDOW_ID, Fixture, IC, KEY_1, KEY_3, KEY_A, KEY_BACKSPACE, KEY_COMMA, KEY_E,
@@ -74,21 +73,6 @@ fn type_nihao(router: &mut KeyRouter<'_>, host: &mut RecordingHost) {
             router.key_event(IC, &press(sym, state), host),
             "the letter {sym:#06x} is kept while the phrase is being typed"
         );
-    }
-}
-
-/// Routes one key the way the host thread does: a context the host reports disabled
-/// is never consulted, and its keys go straight to the application.
-///
-/// Fcitx5 stops calling the engine once the input method is switched off; the
-/// recorder's `is_enabled` is the recorded host state, and this gate is the model of
-/// the host's half of the chain. Without it the harness would keep asking an engine
-/// the host no longer calls.
-fn route_key(router: &mut KeyRouter<'_>, host: &mut RecordingHost, event: FcitxKeyEvent) -> bool {
-    if host.is_enabled {
-        router.key_event(IC, &event, host)
-    } else {
-        false
     }
 }
 
@@ -423,40 +407,34 @@ fn test_scenario_07_escape_delivers_no_text_and_hides_the_window() {
     );
 }
 
-/// `SC-KEY-08`: the mode chord. `Ctrl+Space` hands the keyboard back to the
-/// application, and the letters that follow reach it as the literal keystrokes
-/// `nihao`.
+/// `SC-KEY-08`: the mode chord. `Ctrl+Space` is the host's own language switch: the
+/// plugin claims no chord for it, touches none of the host's state, and the letters
+/// that follow still compose — the host, not the plugin, decides whether they reach
+/// the engine at all.
 #[test]
-fn test_scenario_08_the_disabled_context_hands_the_letters_back() {
+fn test_scenario_08_the_language_chord_belongs_to_the_host() {
     let fixture = Fixture::default();
     let mut host = RecordingHost::default();
     let mut router = fixture.router(KeyBindings::default());
 
     assert!(
-        router.key_event(IC, &press(KEY_SPACE, CTRL), &mut host),
-        "the language chord is the plugin's in any state"
+        !router.key_event(IC, &press(KEY_SPACE, CTRL), &mut host),
+        "the language chord travels on to the host unclaimed"
     );
     assert_eq!(
-        host.toggles, 1,
-        "the chord flipped the host's input-method state once"
+        host.toggles, 0,
+        "the plugin never touches the host's input-method state"
     );
-    assert!(!host.is_enabled, "the host reports the context disabled");
 
-    for &(sym, state) in &NIHAO {
-        assert!(
-            !route_key(&mut router, &mut host, press(sym, state)),
-            "with the input method off, {sym:#06x} reaches the application untranslated"
-        );
-    }
+    type_nihao(&mut router, &mut host);
     assert!(
-        host.commits.is_empty(),
-        "the plugin committed nothing: the application received the literal \
-         keystrokes nihao: {:?}",
-        host.commits
+        router.key_event(IC, &press(KEY_SPACE, 0), &mut host),
+        "Space commits the highlighted candidate"
     );
     assert_eq!(
-        host.toggles, 1,
-        "nothing in the walk switched the mode back"
+        host.commits,
+        vec![PHRASE],
+        "the walk after the chord composes and commits as usual"
     );
 }
 
@@ -510,8 +488,9 @@ fn test_scenario_09_temporary_english_passes_the_first_phrase_through() {
 
 /// `SC-KEY-10`: the full-width path. `Shift+Space` turns the plugin's output to
 /// full width, the strip the candidate window draws flags it, and the phrase
-/// commits as itself: full width rewrites the plugin's own punctuation output, not
-/// a Chinese candidate.
+/// commits as itself — full width rewrites the plugin's own ASCII output, not a
+/// Chinese candidate. A raw commit is that output, so the same walk commits the
+/// typed pinyin again with every ASCII character widened, mark for mark.
 #[test]
 fn test_scenario_10_full_width_commits_the_phrase_and_flags_the_strip() {
     let fixture = Fixture::default();
@@ -545,6 +524,29 @@ fn test_scenario_10_full_width_commits_the_phrase_and_flags_the_strip() {
         host.commits,
         vec![PHRASE],
         "the application received the full-width text: the phrase itself"
+    );
+
+    // The switch's output half, on text it can actually change: a raw commit is the
+    // plugin's own ASCII, and under `enter_commit_raw` the `Return` key commits it.
+    let raw = KeyBindings {
+        enter_commit_raw: true,
+        ..KeyBindings::default()
+    };
+    let mut host = RecordingHost::default();
+    let mut router = fixture.router(raw);
+    assert!(
+        router.key_event(IC, &press(KEY_SPACE, SHIFT), &mut host),
+        "the switch is still the plugin's in a fresh context"
+    );
+    type_nihao(&mut router, &mut host);
+    assert!(
+        router.key_event(IC, &press(KEY_RETURN, 0), &mut host),
+        "the raw commit is the plugin's too"
+    );
+    assert_eq!(
+        host.commits,
+        vec!["ｎｉｈａｏ"],
+        "the typed pinyin commits full width, every ASCII character widened"
     );
 }
 
@@ -727,9 +729,9 @@ fn test_scenario_14_focus_window_id_never_changes() {
     assert!(!router.key_event(IC, &press(KEY_COMMA, 0), &mut host));
     assert_eq!(host.window_id, FOCUS_WINDOW_ID, "after the mode walks");
 
-    // The language chord, which flips the host's own input-method state and still
-    // may not touch the focus.
-    assert!(router.key_event(IC, &press(KEY_SPACE, CTRL), &mut host));
+    // The language chord: the host's own switch, which the plugin hands back
+    // unclaimed and which may still not touch the focus.
+    assert!(!router.key_event(IC, &press(KEY_SPACE, CTRL), &mut host));
     assert_eq!(host.window_id, FOCUS_WINDOW_ID, "after the language chord");
 
     assert!(

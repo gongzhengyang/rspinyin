@@ -3,13 +3,18 @@
 //! Responsibility: answer what a key press that produced one ASCII mark commits -- the
 //! Chinese mark the table names, or nothing when the mode leaves the mark to the
 //! application -- and widen one character to its full-width form, which is how the
-//! substituted marks and the leading uppercase letter reach the screen.
+//! substituted marks and the leading uppercase letter reach the screen. The same two
+//! mappings, applied over whole committed text, are the output half of the policy:
+//! [`transform_committed`] is what a host calls on the one string that leaves for the
+//! application.
 //!
 //! Boundaries: this module owns the table, the mode and the mapping, and nothing else. It
 //! never sees the whole input, never orders the rules (the parent applies them in order)
 //! and never allocates more than the one-character payload a decision carries. Pairing a
 //! double quote asks [`has_unclosed_quote`] instead of reading the text around the caret
 //! itself, so every scan of that text lives in one place.
+
+use std::borrow::Cow;
 
 use ime_types::ConfigError;
 
@@ -216,4 +221,213 @@ pub(super) fn commit_text(ch: char, full_width: bool) -> String {
     let mut text = String::with_capacity(MAX_UTF8_LEN);
     text.push(ch);
     text
+}
+
+/// Rewrites one piece of committed text by the output half of the passthrough policy.
+///
+/// This is what the full-width switch and the punctuation mode mean once the plugin has
+/// text on its way out: with the punctuation mode on Chinese, every ASCII mark the table
+/// names is replaced with the mark it commits on a keystroke; with the full-width flag
+/// on, every remaining printable ASCII character -- the letters, digits and space a raw
+/// commit is made of -- is widened. Chinese text and the already substituted marks pass
+/// both mappings unchanged, which is what makes applying this to a decoded candidate a
+/// no-op rather than a rewrite.
+///
+/// The two flags are the plugin's live mode bits rather than a [`PassthroughFlags`],
+/// because the switches are the engine's to flip while it runs; the flags struct carries
+/// the configuration's *initial* values, and this function must follow the switches.
+///
+/// # Parameters
+///
+/// - `text`: the text a commit is about to hand to the application.
+/// - `punct_chinese`: whether the plugin's punctuation output is Chinese
+///   (`[engine] punct_mode` "chinese", the live switch's position).
+/// - `full_width`: whether the plugin's ASCII output is written full width
+///   (`[engine] full_width`, the live switch's position).
+///
+/// # Returns
+///
+/// The text to commit. It borrows `text` whenever no character changes -- the whole hot
+/// path, a commit of Chinese candidates included -- so a commit that the mode bits cannot
+/// alter allocates nothing.
+///
+/// # Panics
+///
+/// Never: the body is a per-character table lookup over `text`'s own `char_indices`, and
+/// the slice split before the first divergence is on a boundary `char_indices` produced.
+///
+/// # Examples
+///
+/// ```
+/// use std::borrow::Cow;
+///
+/// use ime_core::passthrough::transform_committed;
+///
+/// // Full width widens the plugin's own ASCII output ...
+/// assert_eq!(
+///     transform_committed("nihao", false, true).as_ref(),
+///     "ｎｉｈａｏ"
+/// );
+/// // ... and leaves text that has no ASCII in it borrowed, so the hot path is free.
+/// assert_eq!(
+///     transform_committed("你好", false, true),
+///     Cow::Borrowed("你好")
+/// );
+/// // Chinese punctuation substitutes the marks the table names.
+/// assert_eq!(
+///     transform_committed("a,b", true, false).as_ref(),
+///     "a，b"
+/// );
+/// // With both switches off the text is the application's, unchanged.
+/// assert_eq!(
+///     transform_committed("a,b", false, false),
+///     Cow::Borrowed("a,b")
+/// );
+/// ```
+pub fn transform_committed<'a>(
+    text: &'a str,
+    punct_chinese: bool,
+    full_width: bool,
+) -> Cow<'a, str> {
+    if !punct_chinese && !full_width {
+        return Cow::Borrowed(text);
+    }
+    // The rewrite allocates at most once, and only when a character actually changes:
+    // until the first divergence the borrow stands, and everything the divergence
+    // leaves behind is copied in one `String::from` rather than pushed char by char.
+    let mut rewritten: Option<String> = None;
+    for (index, ch) in text.char_indices() {
+        let substituted = if punct_chinese {
+            punctuation_target(ch).unwrap_or(ch)
+        } else {
+            ch
+        };
+        let widened = if full_width {
+            to_full_width(substituted)
+        } else {
+            substituted
+        };
+        if widened == ch {
+            if let Some(out) = rewritten.as_mut() {
+                out.push(ch);
+            }
+        } else {
+            let out = rewritten.get_or_insert_with(|| String::from(&text[..index]));
+            out.push(widened);
+        }
+    }
+    match rewritten {
+        Some(out) => Cow::Owned(out),
+        None => Cow::Borrowed(text),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use super::{PUNCTUATION_TABLE, transform_committed};
+
+    /// The ASCII text every case below rewrites, chosen so that letters, a digit, a
+    /// space and a mark of the table all appear in one string.
+    const SAMPLE: &str = "ni hao, 3 ok";
+
+    #[test]
+    fn test_transform_committed_with_both_switches_off_borrows_the_text() {
+        assert_eq!(
+            transform_committed(SAMPLE, false, false),
+            Cow::Borrowed(SAMPLE),
+            "the switches off leave every character, and the allocation, out"
+        );
+        assert_eq!(transform_committed("", false, false), Cow::Borrowed(""));
+    }
+
+    #[test]
+    fn test_transform_committed_full_width_widens_ascii_and_spares_cjk() {
+        let out = transform_committed("nihao 3", false, true);
+        assert_eq!(
+            out.as_ref(),
+            "ｎｉｈａｏ　３",
+            "every printable ASCII widens"
+        );
+        // The ideographic space is what the ASCII space widened into.
+        assert!(matches!(out, Cow::Owned(_)));
+        // CJK text has no printable ASCII in it, so the borrow survives the flag.
+        assert_eq!(
+            transform_committed("你好", false, true),
+            Cow::Borrowed("你好"),
+            "already full-width text is not rewritten"
+        );
+    }
+
+    #[test]
+    fn test_transform_committed_chinese_punct_substitutes_every_mark_the_table_commits() {
+        // One committed character per table row, in the table's own order, so the
+        // substitution and the table cannot drift apart silently. The apostrophe
+        // carries `None`: it is the syllable separator, deliberately not a mark the
+        // output rewrites.
+        let input: String = PUNCTUATION_TABLE.iter().map(|(mark, _)| *mark).collect();
+        let expected: String = PUNCTUATION_TABLE
+            .iter()
+            .map(|(mark, target)| target.unwrap_or(*mark))
+            .collect();
+        assert_eq!(
+            transform_committed(&input, true, false).as_ref(),
+            expected,
+            "the eleven committed marks substitute and the apostrophe stands"
+        );
+        assert_eq!(
+            transform_committed("a,b", true, false).as_ref(),
+            "a，b",
+            "a mark inside ordinary text is substituted where it stands"
+        );
+    }
+
+    #[test]
+    fn test_transform_committed_english_punct_keeps_marks_that_full_width_then_widens() {
+        // English punctuation mode leaves the ASCII marks alone ...
+        assert_eq!(
+            transform_committed("a,b", false, false),
+            Cow::Borrowed("a,b"),
+            "and with full width off too, the text is borrowed whole"
+        );
+        // ... but the full-width switch is its own axis: with it on, every printable
+        // ASCII widens, the marks included -- the mark and its widened form are the same
+        // character the substitution would have produced.
+        assert_eq!(
+            transform_committed("a,b", false, true).as_ref(),
+            "ａ，ｂ",
+            "the widened mark and the substituted one are the same character"
+        );
+    }
+
+    #[test]
+    fn test_transform_committed_substitution_then_widening_leaves_marks_full_width() {
+        // Chinese punctuation plus full width is the shipped switched-on state: the
+        // substitution lands first, and widening covers every printable ASCII the table
+        // did not substitute -- letters included, which is the mapping features.md 3.4
+        // freezes (`0x21..=0x7E` -> `0xFF01..=0xFF5E`). The two switches compose because
+        // widening a mark that is already full width changes nothing.
+        assert_eq!(transform_committed("a,b", true, true).as_ref(), "ａ，ｂ");
+    }
+
+    #[test]
+    fn test_transform_committed_twice_is_the_same_as_once() {
+        let once = transform_committed(SAMPLE, true, true);
+        let twice = transform_committed(once.as_ref(), true, true);
+        assert_eq!(
+            twice.as_ref(),
+            once.as_ref(),
+            "the mappings are idempotent, so a rewritten text is stable"
+        );
+    }
+
+    #[test]
+    fn test_transform_committed_partial_rewrite_keeps_the_untouched_head() {
+        // The rewrite starts at the first character that changes; everything before it
+        // must survive byte for byte, which is what the borrowed-head copy guards.
+        let out = transform_committed("ab,c", true, false);
+        assert_eq!(out.as_ref(), "ab，c");
+        assert!(matches!(out, Cow::Owned(_)));
+    }
 }

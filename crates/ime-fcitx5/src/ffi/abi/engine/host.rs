@@ -29,6 +29,8 @@
 //! [`HostCtx::is_enabled`] answers the only state this boundary can observe, and
 //! [`HostCtx::set_enabled`] has no call to make. The read-back is what keeps the status
 //! strip truthful: a switch this boundary cannot perform is never reported as performed.
+//! The routing table binds no chord to the switch any more — `Ctrl+Space` is the host's —
+//! so the state this boundary cannot write is also one the key path never asks it to.
 //!
 //! # The pure-Rust build
 //!

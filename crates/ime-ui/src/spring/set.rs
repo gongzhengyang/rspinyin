@@ -167,6 +167,17 @@ impl AnimationSet {
         self.page_slide.snap();
     }
 
+    /// Resets the window fade to the hidden baseline of a window never shown.
+    ///
+    /// This is the reset the real unmap performs once the disappear motion has
+    /// settled: that motion rests on the disappear's own end values, whose scale is
+    /// not the appear's starting one, so a window re-shown from there would grow
+    /// from a size no first show grows from. The highlight and the page slide are
+    /// content motions the next frame re-drives, so they are left alone.
+    pub fn reset_window_fade(&mut self) {
+        self.appear.snap_hidden();
+    }
+
     /// A configured duration, or zero when the window does not animate at all.
     fn duration(&self, configured_s: f32) -> f32 {
         if self.config.enabled {
@@ -304,6 +315,42 @@ mod tests {
         // 3.3.2 derives 139ms for the page-slide spring; the content must be home in
         // well under the 160ms the table allots it.
         assert!(!set.is_animating());
+    }
+
+    #[test]
+    fn test_animation_set_reset_window_fade_returns_to_the_hidden_baseline() {
+        let mut set = AnimationSet::new(MotionConfig::default());
+        set.appear();
+        run_to_rest(&mut set);
+        assert_eq!(set.opacity(), 1.0);
+        set.disappear();
+        run_to_rest(&mut set);
+        assert_eq!(set.opacity(), 0.0);
+        let rested_scale = set.scale();
+        assert_ne!(
+            rested_scale,
+            AppearAnim::hidden().scale(),
+            "the disappear rests on its own end scale, so the reset has something to move"
+        );
+
+        // The reset is the snap the real unmap performs: the fade goes back to the
+        // state a never-shown window starts from, and the next appear is identical to
+        // the first one instead of continuing from the disappear's end values.
+        set.reset_window_fade();
+        assert_eq!(set.opacity(), 0.0);
+        assert_eq!(set.scale(), AppearAnim::hidden().scale());
+        assert!(!set.is_animating(), "a reset is a snap, not a motion");
+
+        // The appear that follows grows from that baseline, exactly as a first
+        // appear does.
+        set.appear();
+        set.step(FRAME_S, 1.0);
+        assert!(
+            set.opacity() > 0.0,
+            "the fade rises again from the baseline, got {}",
+            set.opacity()
+        );
+        assert!(set.scale() > AppearAnim::hidden().scale());
     }
 
     #[test]

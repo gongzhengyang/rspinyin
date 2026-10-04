@@ -38,9 +38,10 @@
 //! Every token is an 8-bit integer. Alpha compositing is integer arithmetic with
 //! round-half-up, which reproduces the worked examples in 3.2 exactly: `#1C1C1E` at
 //! alpha 0.85 over white is `#3E3E40`, and `#FFFFFF` at 0.85 over black is `#D9D9D9`.
-//! Floating point appears only in the contrast gate, which compares against a
-//! threshold the closest pair clears by more than 20%, so no rounding difference can
-//! move a decision. The same [`ThemeSpec`] therefore produces the same tokens byte
+//! Floating point appears only in the contrast gate, and it only ever feeds a
+//! threshold comparison; every call the palettes make sits orders of magnitude
+//! further from its floor than a rounding step can reach, so no rounding difference
+//! can move a decision. The same [`ThemeSpec`] therefore produces the same tokens byte
 //! for byte.
 //!
 //! # Agreement with `ui/theme.slint`
@@ -63,10 +64,17 @@
 //!
 //! | Tier | Base alpha | Diagnostic |
 //! |---|---|---|
-//! | The compositor blurs behind the window | `ui.base_alpha` (0.85) | none |
+//! | The compositor blurs behind the window | `ui.base_alpha` (0.85), if the gate accepts it | `ui/theme/contrast-fallback` otherwise |
 //! | Blur refused, or no way to ask | opaque | `ui/theme/blur-unavailable` |
-//! | The user turned acrylic off | `ui.base_alpha` (0.85) | none |
+//! | The user turned acrylic off | `ui.base_alpha` (0.85), if the gate accepts it | `ui/theme/contrast-fallback` otherwise |
 //! | A colour pair turns out unreadable | opaque | `ui/theme/contrast-fallback` |
+//!
+//! The contrast gate measures the three pairs 3.2 requires at every tier, and the five
+//! dimmed pairs the view actually draws -- the number label, the annotation, the
+//! preedit separator and the two secondary runs -- while the base is translucent. The
+//! shipped dimmed alphas (3.1.1's 0.55 and 0.50, plus the two tokens' own fractions) do
+//! not clear 4.5:1 over a 0.85 base, so a translucent tier resolves through the last
+//! row: the base ships opaque and the fallback is recorded -- the gate working, not a defect.
 //!
 //! Raising the base to opaque is the only automatic degradation the design allows: a
 //! user whose accent makes a pair unreadable gets a darker base, never a rejected
@@ -81,18 +89,14 @@ mod slint_palette;
 #[cfg(test)]
 mod tests;
 
-pub use color::{BLACK, WHITE, composite_over, contrast_ratio, relative_luminance, with_alpha};
+pub use color::{
+    BLACK, CONTRAST_BODY, CONTRAST_MINIMUM, ContrastReport, WHITE, composite_over, contrast_ratio,
+    relative_luminance, with_alpha,
+};
 pub use scheme::{
     DEFAULT_ACCENT_DARK, DEFAULT_ACCENT_LIGHT, PortalColorScheme, SchemeSignals, default_accent,
     resolve_accent, resolve_scheme,
 };
-
-/// The contrast `text.primary` must reach against the opaque surface base (3.2).
-pub const CONTRAST_BODY: f32 = 7.0;
-
-/// The contrast every text/background pair must keep at every degradation tier
-/// (`features.md` §0.5.2 and 3.2).
-pub const CONTRAST_MINIMUM: f32 = 4.5;
 
 /// The alpha that makes the base fully opaque.
 pub const OPAQUE_ALPHA: u8 = 255;
@@ -270,6 +274,38 @@ pub struct ThemeTokens {
     pub status_dot_idle: Rgba8,
 }
 
+/// The element opacity of a candidate cell's number label: 3.1.1's 0.55, fixed by the
+/// specification's annotation note as the label's *effective* alpha. `ui/candidate_grid.slint`
+/// spells the same fraction; the tests beside this file hold the two copies together.
+///
+/// Test-only because the renderer folds the fraction into a byte — [`NUMBER_LABEL_ALPHA`]
+/// — and the palette and the `.slint` source carry the values the pixels are actually
+/// drawn with; this spelling exists so the frozen fractions are pinned in one place.
+#[cfg(test)]
+const NUMBER_LABEL_OPACITY: f32 = 0.55;
+
+/// The candidate annotation's element opacity: 3.1.1's 0.50, on the same ruling as above.
+#[cfg(test)]
+const ANNOTATION_OPACITY: f32 = 0.50;
+
+/// The fraction 3.2 fixes for the dark palette's `text.separator`; the light column
+/// ships 0.35. Slint's `rgba()` truncates both into the bytes the palettes store.
+#[cfg(test)]
+const SEPARATOR_FRACTION_DARK: f32 = 0.40;
+
+/// The fraction 3.2 fixes for the dark palette's `text.secondary`, the token the mode
+/// label and the passthrough runs draw with. The light column ships 0.60.
+#[cfg(test)]
+const SECONDARY_FRACTION_DARK: f32 = 0.62;
+
+/// The byte the renderer's opacity folding turns [`NUMBER_LABEL_OPACITY`] into:
+/// `0.55 x 255` is 140.25, and `Color::with_alpha` rounds.
+const NUMBER_LABEL_ALPHA: u8 = 140;
+
+/// The byte the folding turns [`ANNOTATION_OPACITY`] into: `0.50 x 255` lands exactly on
+/// the halfway point, which rounds away from zero to 128.
+const ANNOTATION_ALPHA: u8 = 128;
+
 impl ThemeTokens {
     /// The backdrop this palette's worst case is measured against: white for the dark
     /// palette and black for the light one, because that is the desktop colour that
@@ -290,12 +326,19 @@ impl ThemeTokens {
         if self.dark { WHITE } else { BLACK }
     }
 
-    /// The three contrast pairs 3.2 requires, evaluated worst case.
+    /// The eight contrast pairs the window paints, evaluated worst case.
+    ///
+    /// The first three are the pairs 3.2 requires. The other five are the dimmed text
+    /// the view actually draws: the number label and the annotation at the element
+    /// opacities 3.1.1 freezes, and the preedit separator and the two secondary runs at
+    /// their tokens' own alphas. Each dimmed colour is flattened over the background it
+    /// draws on before it is measured, which is the value the renderer commits.
     ///
     /// # Returns
     ///
-    /// A report holding the three ratios; [`ContrastReport::passes`] says whether all
-    /// of them clear their threshold.
+    /// A report holding the eight ratios; [`ContrastReport::passes`] says whether the
+    /// three required pairs clear their thresholds, and
+    /// [`ContrastReport::dimmed_pairs_pass`] whether the dimmed five clear theirs.
     ///
     /// # Errors
     ///
@@ -312,45 +355,15 @@ impl ThemeTokens {
             primary_on_base: contrast_ratio(self.text_primary, self.surface_base),
             primary_on_fill: contrast_ratio(self.text_primary, fill),
             primary_on_selected: contrast_ratio(self.text_primary, selected),
+            number_on_fill: contrast_ratio(with_alpha(self.text_primary, NUMBER_LABEL_ALPHA), fill),
+            annotation_on_fill: contrast_ratio(
+                with_alpha(self.text_primary, ANNOTATION_ALPHA),
+                fill,
+            ),
+            separator_on_fill: contrast_ratio(self.text_separator, fill),
+            mode_label_on_fill: contrast_ratio(self.text_secondary, fill),
+            passthrough_on_fill: contrast_ratio(self.text_secondary, fill),
         }
-    }
-}
-
-/// The three contrast ratios a theme has to keep.
-///
-/// These are the pairs 3.2 names, and they are what makes "the acrylic degraded to an
-/// opaque colour" a supported state rather than a worse-looking one: the base may
-/// lose its transparency, but the text on it never loses its legibility.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ContrastReport {
-    /// `text.primary` on the opaque surface base; must reach [`CONTRAST_BODY`].
-    pub primary_on_base: f32,
-    /// `text.primary` on the base composited over the worst-case backdrop; must reach
-    /// [`CONTRAST_MINIMUM`].
-    pub primary_on_fill: f32,
-    /// `text.primary` on the selected cell's background; must reach
-    /// [`CONTRAST_MINIMUM`].
-    pub primary_on_selected: f32,
-}
-
-impl ContrastReport {
-    /// Whether all three pairs clear their threshold.
-    ///
-    /// # Returns
-    ///
-    /// `true` when the theme is readable and no degradation is needed.
-    ///
-    /// # Errors
-    ///
-    /// This function is infallible: it returns no `Result`.
-    ///
-    /// # Panics
-    ///
-    /// Never panics.
-    pub fn passes(&self) -> bool {
-        self.primary_on_base >= CONTRAST_BODY
-            && self.primary_on_fill >= CONTRAST_MINIMUM
-            && self.primary_on_selected >= CONTRAST_MINIMUM
     }
 }
 
@@ -372,7 +385,8 @@ impl ThemeResolution {
     ///
     /// - `spec`: the host's theme request. `acrylic` decides whether `blur` is
     ///   consulted at all: with acrylic off the round trip was skipped, so the answer
-    ///   is ignored and the base stays translucent.
+    ///   is ignored and the base keeps the configured alpha unless the contrast gate
+    ///   raises it.
     /// - `blur`: what the compositor answered.
     ///
     /// # Returns
@@ -402,7 +416,16 @@ impl ThemeResolution {
         };
         let decision = resolve_base_alpha(outcome, spec.base_alpha);
         let tokens = palette.tokens(accent, decision.alpha);
-        if tokens.contrast().passes() {
+        let report = tokens.contrast();
+        // The three pairs 3.2 requires must hold at every tier. While the base is
+        // translucent the five dimmed pairs must hold too: they are the text the user
+        // reads most, and the wash of a translucent base is what erodes them first. At
+        // the opaque tier the dimmed pairs sit at the alphas the design tables fix, and
+        // opaque is the last rung the ladder can raise to, so there they are reported
+        // rather than gated.
+        let readable =
+            report.passes() && (decision.alpha == OPAQUE_ALPHA || report.dimmed_pairs_pass());
+        if readable {
             return Self {
                 tokens,
                 blur_unavailable: decision.unavailable,

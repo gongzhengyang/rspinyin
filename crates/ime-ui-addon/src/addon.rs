@@ -49,7 +49,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use ime_types::{ColorScheme, ImeError, SurfaceBackend, ThemeSpec, UiCommand, Rgba8};
+use ime_types::{ColorScheme, ImeError, Rgba8, SurfaceBackend, ThemeSpec, UiCommand};
 use ime_ui::channel::UiEventQueue;
 use ime_ui::surface::CandidateSurface;
 use ime_ui::ui_thread::{UiSurface, UiThread, UiThreadConfig};
