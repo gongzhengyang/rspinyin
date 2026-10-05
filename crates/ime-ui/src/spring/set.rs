@@ -16,7 +16,8 @@
 use ime_types::PageDir;
 
 use super::{
-    AppearAnim, HighlightAnim, HighlightRect, HighlightStep, MotionConfig, Spring1D, SpringParams,
+    AppearAnim, HighlightAnim, HighlightRect, HighlightStep, MotionConfig, PressSpring, Spring1D,
+    SpringParams,
 };
 
 /// What one frame of the whole window's motion produced.
@@ -35,6 +36,9 @@ pub struct FrameMotion {
     pub scale: f32,
     /// The page content's horizontal offset for this frame, in dp.
     pub page_offset_dp: f32,
+    /// The scale the pressed cell draws at this frame: `1.0` at rest, and the pressed
+    /// floor of 3.4's Active row once the sink has landed.
+    pub press_scale: f32,
     /// Whether any motion is still in flight after this step.
     pub animating: bool,
 }
@@ -45,6 +49,8 @@ pub struct AnimationSet {
     highlight: HighlightAnim,
     appear: AppearAnim,
     page_slide: Spring1D,
+    /// The pressed cell's sink (3.4's Active row), the set's fifth motion.
+    press: PressSpring,
     config: MotionConfig,
 }
 
@@ -59,6 +65,7 @@ impl AnimationSet {
             highlight: HighlightAnim::new(config.spring, HighlightRect::ZERO),
             appear: AppearAnim::hidden(),
             page_slide: Spring1D::new(page.omega0, page.zeta, page.mass, 0.0),
+            press: PressSpring::new(),
             config,
         }
     }
@@ -83,13 +90,34 @@ impl AnimationSet {
         self.page_slide.x
     }
 
+    /// The scale the pressed cell draws at, `1.0` when no press is in flight.
+    pub fn press_scale(&self) -> f32 {
+        self.press.scale()
+    }
+
+    /// Starts or ends a press on a candidate cell (3.4's Active row).
+    ///
+    /// A repeated call with the answer the set already holds retargets the spring onto
+    /// where it already travels and arms nothing, which is why the adapter may drive
+    /// this from every pointer update. A window with the motion switched off lands the
+    /// sink or the rebound at once, like every motion here.
+    pub fn set_pressed(&mut self, down: bool) {
+        self.press.set_pressed(down);
+        if !self.config.enabled {
+            self.press.snap();
+        }
+    }
+
     /// Whether any motion is still in flight.
     ///
     /// This is the only input the frame-pacing decision needs: when it is false the
     /// UI thread may block indefinitely, and when it is true the thread must come
     /// back for the next frame.
     pub fn is_animating(&self) -> bool {
-        !(self.highlight.is_settled() && self.appear.is_settled() && self.page_slide.is_settled())
+        !(self.highlight.is_settled()
+            && self.appear.is_settled()
+            && self.page_slide.is_settled()
+            && self.press.is_settled())
     }
 
     /// Turns the motion on or off, bringing everything to a stop when it goes off.
@@ -148,11 +176,13 @@ impl AnimationSet {
         let highlight = self.highlight.step(dt, scale);
         self.appear.step(dt);
         self.page_slide.step(dt);
+        self.press.step(dt);
         FrameMotion {
             highlight,
             opacity: self.appear.opacity(),
             scale: self.appear.scale(),
             page_offset_dp: self.page_slide.x,
+            press_scale: self.press.scale(),
             animating: self.is_animating(),
         }
     }
@@ -165,6 +195,7 @@ impl AnimationSet {
         self.highlight.snap();
         self.appear.snap_to_end();
         self.page_slide.snap();
+        self.press.snap();
     }
 
     /// Resets the window fade to the hidden baseline of a window never shown.
@@ -366,5 +397,69 @@ mod tests {
         let idle = set.step(FRAME_S, 1.0);
         assert_eq!(idle.highlight.damage, None);
         assert!(!idle.animating);
+    }
+
+    #[test]
+    fn test_animation_set_press_sinks_and_releases_as_one_motion_of_the_set() {
+        let mut set = AnimationSet::new(MotionConfig::default());
+        assert_eq!(
+            set.press_scale(),
+            1.0,
+            "a fresh set draws every cell full size"
+        );
+        set.set_pressed(true);
+        assert!(set.is_animating(), "the sink is in flight");
+        run_to_rest(&mut set);
+        assert_eq!(set.press_scale(), crate::spring::PRESS_SCALE_TO);
+        assert!(!set.is_animating(), "a landed press arms no timer");
+
+        // A press the pointer already holds reaches the set again on the next pointer
+        // update; it must answer with rest, not with a motion that never ends.
+        set.set_pressed(true);
+        assert!(!set.is_animating());
+
+        // The release rebounds, and the set goes idle once it has landed.
+        set.set_pressed(false);
+        assert!(set.is_animating(), "the rebound is in flight");
+        run_to_rest(&mut set);
+        assert_eq!(set.press_scale(), 1.0);
+        assert!(!set.is_animating());
+    }
+
+    #[test]
+    fn test_animation_set_disabled_press_lands_at_once() {
+        // The disabled path is the screenshot path: the pressed cell draws its pressed
+        // scale on the first frame, with nothing left in flight.
+        let mut set = AnimationSet::new(MotionConfig::instant());
+        set.set_pressed(true);
+        assert!(!set.is_animating(), "the disabled path springs nothing");
+        assert_eq!(set.press_scale(), crate::spring::PRESS_SCALE_TO);
+
+        // Switching the motion off mid-sink lands the press where it was headed.
+        let mut set = AnimationSet::new(MotionConfig::default());
+        set.set_pressed(true);
+        set.step(FRAME_S, 1.0);
+        assert!(set.is_animating());
+        set.set_enabled(false);
+        assert!(!set.is_animating());
+        assert_eq!(set.press_scale(), crate::spring::PRESS_SCALE_TO);
+    }
+
+    #[test]
+    fn test_animation_set_page_turn_during_a_press_releases_the_sink() {
+        // A page turn invalidates the press -- the router forgets it when the new
+        // frame is adopted -- and the cell the pointer no longer presses rebounds
+        // while the page content slides in: both motions run on the one clock, and
+        // the set goes idle only when both have landed.
+        let mut set = AnimationSet::new(MotionConfig::default());
+        set.set_pressed(true);
+        set.step(FRAME_S, 1.0);
+        set.turn_page(PageDir::Next);
+        set.set_pressed(false);
+        assert!(set.is_animating());
+        let motion = run_to_rest(&mut set);
+        assert_eq!(set.press_scale(), 1.0, "the invalidated press rebounded");
+        assert_eq!(motion.page_offset_dp, 0.0, "the page content slid home");
+        assert!(!set.is_animating());
     }
 }

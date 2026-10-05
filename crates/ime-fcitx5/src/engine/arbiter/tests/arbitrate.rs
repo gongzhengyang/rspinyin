@@ -5,6 +5,7 @@
 use ime_core::state::{Session, SessionConfig};
 use ime_types::KeyAction;
 
+use crate::engine::rows::{KEY_DELETE, KEY_END, KEY_HOME};
 use crate::engine::*;
 
 use super::{
@@ -55,6 +56,10 @@ fn test_arbitrate_composing_keeps_the_keys_the_session_acts_on() {
         (KEY_DOWN, 0),
         (KEY_1, 0),
         (KEY_5, 0),
+        // The jump to the last page, from the first page the fixture opens on.
+        (KEY_END, 0),
+        // The user-word chord, with a highlighted candidate to forget.
+        (KEY_DELETE, CTRL),
     ];
     for (sym, state) in keys {
         let action = action_of(sym, state);
@@ -85,6 +90,7 @@ fn test_arbitrate_composing_hands_back_the_keys_that_would_do_nothing() {
         (KEY_MINUS, 0, "and no page to turn back to"),
         (KEY_TAB, SHIFT, "the highlight is on the first candidate"),
         (KEY_RIGHT, 0, "the caret is already at the end of the input"),
+        (KEY_HOME, 0, "the jump names the end the grid is already on"),
     ];
     for (sym, state, why) in keys {
         let action = action_of(sym, state);

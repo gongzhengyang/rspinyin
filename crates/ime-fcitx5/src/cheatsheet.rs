@@ -473,6 +473,8 @@ fn chord_label(action: KeyAction) -> Option<&'static str> {
         | KeyAction::SelectIndex(_)
         | KeyAction::PageNext
         | KeyAction::PagePrev
+        | KeyAction::PageFirst
+        | KeyAction::PageLast
         | KeyAction::MoveHighlight(_)
         | KeyAction::MoveCaret(_)
         | KeyAction::Escape

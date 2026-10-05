@@ -46,6 +46,7 @@
 //! | Appear | `110ms`, `cubic-bezier(0.22, 1.0, 0.36, 1.0)`, scale `0.96 -> 1.0` |
 //! | Disappear | `90ms`, `cubic-bezier(0.4, 0.0, 1.0, 1.0)`, scale `1.0 -> 0.98` |
 //! | Status icon, theme | `120ms`, `ease-in-out` |
+//! | Press sink | `omega0 = 130.0`, `zeta = 1.0`, `m = 1.0`, scale `1.0 -> 0.985` |
 //!
 //! # Panics
 //!
@@ -54,10 +55,12 @@
 //! is answered with a clamped value instead.
 
 pub mod highlight;
+pub mod press;
 pub mod set;
 pub mod transition;
 
 pub use self::highlight::{HighlightAnim, HighlightRect, HighlightStep, union_rects};
+pub use self::press::{PRESS_OMEGA0, PRESS_SCALE_TO, PRESS_ZETA, PressSpring};
 pub use self::set::{AnimationSet, FrameMotion};
 pub use self::transition::{
     AppearAnim, Blend, BlendTransition, CROSSFADE_S, CubicBezier, TRANSPARENT, TimedTransition,

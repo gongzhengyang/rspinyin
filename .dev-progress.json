@@ -2,7 +2,7 @@
   "total": 219,
   "completed": 188,
   "is_workspace": true,
-  "ledger_revision": 29,
+  "ledger_revision": 30,
   "reconciled_at": "2026-09-30",
   "reconcile_basis": "Round 1 closed the 103 cards of the seven Hub documents and set ALL_COMPLETED. That was a false completion: opt-deploy/keymap/perf/ui are Hub & Spoke documents whose P1/P2 cards live in opt-<name>/phase-{2,3}.md, and the run only ever read the Hubs. This round scans the shards too (53 open cards) plus docs/dev/tests.md (30 cases still 未通过). The 103 round-1 cards stay COMPLETED and are not re-opened.",
   "wave_plan": "W0=1.01.01-03 | W1=1.02.01,1.03.01-03,1.04.01 | W2=1.02.02-07,1.03.04-07,1.04.02-05 | W3=1.04.06-07,1.05.01-08 | W4=1.06.01-03,1.07.01,1.08.01-03",
@@ -2102,7 +2102,7 @@
       "wave": "R6",
       "track": "C",
       "depends": "P0.01.01",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2113,7 +2113,7 @@
       "wave": "R1",
       "track": "B",
       "depends": "无",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {
@@ -2234,7 +2234,7 @@
       "wave": "R5",
       "track": "B",
       "depends": "P0.02.01",
-      "status": "PENDING",
+      "status": "READY_FOR_FINAL_GATE",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
     },
     {

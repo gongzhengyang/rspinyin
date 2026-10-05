@@ -277,6 +277,8 @@ pub fn action_name(action: KeyAction) -> String {
         KeyAction::ForgetHighlighted => String::from("forget-highlighted"),
         KeyAction::PinHighlighted => String::from("pin-highlighted"),
         KeyAction::AddPhrase => String::from("add-phrase"),
+        KeyAction::PageFirst => String::from("page-first"),
+        KeyAction::PageLast => String::from("page-last"),
     }
 }
 
@@ -309,6 +311,8 @@ fn parse_action(text: &str) -> Result<KeyAction, String> {
         ("commit-raw", None) => Ok(KeyAction::CommitRaw),
         ("page-next", None) => Ok(KeyAction::PageNext),
         ("page-prev", None) => Ok(KeyAction::PagePrev),
+        ("page-first", None) => Ok(KeyAction::PageFirst),
+        ("page-last", None) => Ok(KeyAction::PageLast),
         ("toggle-lang", None) => Ok(KeyAction::ToggleLang),
         ("toggle-full-width", None) => Ok(KeyAction::ToggleFullWidth),
         ("toggle-punct", None) => Ok(KeyAction::TogglePunct),

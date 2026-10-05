@@ -34,11 +34,25 @@
 use ime_types::KeyAction;
 
 use super::{
-    DigitZero, FlipSet, HighlightSet, KEY_0, KEY_1, KEY_9, KEY_A, KEY_APOSTROPHE, KEY_BACKSPACE,
-    KEY_DOWN, KEY_EQUAL, KEY_ESCAPE, KEY_LEFT, KEY_MINUS, KEY_PAGE_DOWN, KEY_PAGE_UP, KEY_RETURN,
-    KEY_RIGHT, KEY_SPACE, KEY_TAB, KEY_UP, KEY_Z, KeyBindings, MODIFIER_MASK, NON_SHIFT_MODIFIERS,
-    SHIFT, SYLLABLE_SEPARATOR,
+    CTRL, DigitZero, FlipSet, HighlightSet, KEY_0, KEY_1, KEY_9, KEY_A, KEY_APOSTROPHE,
+    KEY_BACKSPACE, KEY_DOWN, KEY_EQUAL, KEY_ESCAPE, KEY_LEFT, KEY_MINUS, KEY_PAGE_DOWN,
+    KEY_PAGE_UP, KEY_RETURN, KEY_RIGHT, KEY_SPACE, KEY_TAB, KEY_UP, KEY_Z, KeyBindings,
+    MODIFIER_MASK, NON_SHIFT_MODIFIERS, SHIFT, SYLLABLE_SEPARATOR,
 };
+
+// The keysyms of the three rows this module added, declared beside the rows that read
+// them: each has exactly one reader, and the module root's keysym table holds the keys
+// the whole routing layer names.
+
+/// `FcitxKey_Home`, which jumps to the first page when `keys.flip_keys` names it.
+pub(super) const KEY_HOME: u32 = 0xff50;
+
+/// `FcitxKey_End`, which jumps to the last page when `keys.flip_keys` names it.
+pub(super) const KEY_END: u32 = 0xff57;
+
+/// `FcitxKey_Delete`, whose `Ctrl` chord drops the highlighted word from the user's
+/// learned frequencies.
+pub(super) const KEY_DELETE: u32 = 0xffff;
 
 /// The table's answer for one key press, or `None` when no row names the key.
 ///
@@ -141,6 +155,10 @@ enum Accepts {
     /// typed and how `Shift+Tab` reverses a direction, so a row that accepts it reads the
     /// state to tell its two shapes apart.
     BareOrShift,
+    /// Only with `Ctrl` held, and nothing beside it: the exact set, compared the way a
+    /// chord's is, so `Ctrl+Shift+Delete` stays the application's exactly as an
+    /// over-specified chord does.
+    CtrlOnly,
 }
 
 impl Accepts {
@@ -153,6 +171,7 @@ impl Accepts {
         match self {
             Self::BareOnly => (state & MODIFIER_MASK) == 0,
             Self::BareOrShift => (state & NON_SHIFT_MODIFIERS) == 0,
+            Self::CtrlOnly => (state & MODIFIER_MASK) == CTRL,
         }
     }
 }
@@ -225,6 +244,16 @@ const ROWS: &[Row] = &[
         accepts: Accepts::BareOnly,
         action: page_down,
     },
+    Row {
+        keys: Keys::One(KEY_HOME),
+        accepts: Accepts::BareOnly,
+        action: home_page,
+    },
+    Row {
+        keys: Keys::One(KEY_END),
+        accepts: Accepts::BareOnly,
+        action: end_page,
+    },
     // The digits, `0` among them because `keys.digit_zero` decides what it does.
     Row {
         keys: Keys::Range(KEY_0, KEY_9),
@@ -283,6 +312,15 @@ const ROWS: &[Row] = &[
         keys: Keys::One(KEY_BACKSPACE),
         accepts: Accepts::BareOnly,
         action: backspace,
+    },
+    // The user-word chord: `Ctrl+Delete` drops the highlighted word from the learned
+    // frequencies. Like the composing keymap above it, no document can unbind it -- and
+    // unlike the rows before it, it answers only while a composition has a candidate to
+    // act on, which is the session's and the arbitrator's to decide, not the table's.
+    Row {
+        keys: Keys::One(KEY_DELETE),
+        accepts: Accepts::CtrlOnly,
+        action: ctrl_delete_forget,
     },
 ];
 
@@ -391,6 +429,24 @@ fn page_up(_sym: u32, _state: u32, keys: &KeyBindings) -> Option<KeyAction> {
 /// Never.
 fn page_down(_sym: u32, _state: u32, keys: &KeyBindings) -> Option<KeyAction> {
     bound_page(keys.flip_keys, FlipSet::PAGE_DOWN, KeyAction::PageNext)
+}
+
+/// The `Home` row of `keys.flip_keys`: jump straight to the first page.
+///
+/// # Panics
+///
+/// Never.
+fn home_page(_sym: u32, _state: u32, keys: &KeyBindings) -> Option<KeyAction> {
+    bound_page(keys.flip_keys, FlipSet::HOME, KeyAction::PageFirst)
+}
+
+/// The `End` row of `keys.flip_keys`: jump straight to the last page.
+///
+/// # Panics
+///
+/// Never.
+fn end_page(_sym: u32, _state: u32, keys: &KeyBindings) -> Option<KeyAction> {
+    bound_page(keys.flip_keys, FlipSet::END, KeyAction::PageLast)
 }
 
 /// The digit row: `1`-`9` select a candidate, `0` pages or stays with the host.
@@ -554,6 +610,23 @@ fn backspace(_sym: u32, _state: u32, _keys: &KeyBindings) -> Option<KeyAction> {
     Some(KeyAction::Backspace)
 }
 
+/// The `Ctrl+Delete` row: drop the highlighted word from the learned frequencies.
+///
+/// The row names the key in every context, and the guards that keep it inside a
+/// composition are the arbitrator's and the session's, asked by the layers that hold a
+/// session: with nothing composing, or with no candidate under the highlight, the key
+/// travels on to the application instead of being swallowed by a row that could do
+/// nothing with it. The answer is fixed rather than read from `[keys]`, because a
+/// binding that could delete a learned word is the one gesture this table must never
+/// let a stray document silence.
+///
+/// # Panics
+///
+/// Never.
+fn ctrl_delete_forget(_sym: u32, _state: u32, _keys: &KeyBindings) -> Option<KeyAction> {
+    Some(KeyAction::ForgetHighlighted)
+}
+
 /// The highlight move a binding names, or `None` when the configuration did not bind it.
 ///
 /// # Panics
@@ -571,4 +644,87 @@ fn bound_highlight(set: HighlightSet, binding: HighlightSet, delta: i8) -> Optio
 /// Never.
 fn bound_page(set: FlipSet, binding: FlipSet, action: KeyAction) -> Option<KeyAction> {
     set.contains(binding).then_some(action)
+}
+
+#[cfg(test)]
+mod tests {
+    //! The rows this module added, one case per row: the two page jumps the
+    //! configuration binds, and the one fixed chord no document touches.
+    //!
+    //! The rest of the table is walked row by row in `engine::tests::table`; these live
+    //! beside the rows they cover so that a row and its case cannot drift apart in two
+    //! files.
+
+    use ime_types::KeyAction;
+
+    use crate::engine::{CTRL, FlipSet, KeyBindings, SHIFT, translate_key};
+    use crate::ffi::FcitxKeyEvent;
+
+    use super::{KEY_DELETE, KEY_END, KEY_HOME};
+
+    /// A key press of `sym` with `state` held.
+    fn press(sym: u32, state: u32) -> FcitxKeyEvent {
+        FcitxKeyEvent {
+            sym,
+            state,
+            is_release: false,
+            time_ms: 0,
+        }
+    }
+
+    #[test]
+    fn test_home_and_end_jump_pages_when_the_configuration_names_them() {
+        // The shipped document binds both jumps; they are page keys like any other, so
+        // a configuration that leaves them out hands the keys back.
+        let shipped = KeyBindings::default();
+        assert_eq!(
+            translate_key(&press(KEY_HOME, 0), &shipped),
+            KeyAction::PageFirst
+        );
+        assert_eq!(
+            translate_key(&press(KEY_END, 0), &shipped),
+            KeyAction::PageLast
+        );
+        // The jump rows are bare presses, like every other page row.
+        assert_eq!(
+            translate_key(&press(KEY_HOME, SHIFT), &shipped),
+            KeyAction::Ignore
+        );
+        let jumps_dropped = KeyBindings {
+            flip_keys: FlipSet::MINUS | FlipSet::EQUAL,
+            ..KeyBindings::default()
+        };
+        assert_eq!(
+            translate_key(&press(KEY_HOME, 0), &jumps_dropped),
+            KeyAction::Ignore
+        );
+        assert_eq!(
+            translate_key(&press(KEY_END, 0), &jumps_dropped),
+            KeyAction::Ignore
+        );
+    }
+
+    #[test]
+    fn test_ctrl_delete_is_the_fixed_user_word_chord() {
+        // The exact modifier set is part of the key, the way a chord's is: one modifier
+        // more or fewer and the key belongs to the application. The bare key has no row
+        // at all.
+        let keys = KeyBindings::default();
+        assert_eq!(
+            translate_key(&press(KEY_DELETE, CTRL), &keys),
+            KeyAction::ForgetHighlighted
+        );
+        for state in [0, SHIFT, CTRL | SHIFT] {
+            assert_eq!(
+                translate_key(&press(KEY_DELETE, state), &keys),
+                KeyAction::Ignore,
+                "delete with {state:#x} is the application's"
+            );
+        }
+        // The chord is on Delete, not on its neighbour.
+        assert_eq!(
+            translate_key(&press(crate::engine::KEY_BACKSPACE, CTRL), &keys),
+            KeyAction::Ignore
+        );
+    }
 }

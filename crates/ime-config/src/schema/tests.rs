@@ -36,7 +36,7 @@ fn with_lists(flip: Vec<KeyName>, highlight: Vec<KeyName>) -> Config {
 ///
 /// Deliberately not derived from `KeyName`: a variant nobody adds here is exactly the drift
 /// these walks exist to catch, so deriving the list would defeat them.
-const WHITELIST: [&str; 10] = [
+const WHITELIST: [&str; 12] = [
     "minus",
     "equal",
     "up",
@@ -47,6 +47,8 @@ const WHITELIST: [&str; 10] = [
     "shift_tab",
     "page_up",
     "page_down",
+    "home",
+    "end",
 ];
 
 /// The `config/invalid` key of each diagnostic.

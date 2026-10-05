@@ -148,6 +148,8 @@ impl Session {
             | KeyAction::SelectIndex(_)
             | KeyAction::PageNext
             | KeyAction::PagePrev
+            | KeyAction::PageFirst
+            | KeyAction::PageLast
             | KeyAction::MoveHighlight(_)
             | KeyAction::MoveCaret(_)
             | KeyAction::ToggleLang
@@ -176,6 +178,8 @@ impl Session {
             KeyAction::SelectIndex(digit) => self.select_digit(digit, ctx),
             KeyAction::PageNext => self.flip_page(PageDir::Next, ctx),
             KeyAction::PagePrev => self.flip_page(PageDir::Prev, ctx),
+            KeyAction::PageFirst => self.flip_page_edge(false, ctx),
+            KeyAction::PageLast => self.flip_page_edge(true, ctx),
             KeyAction::MoveHighlight(delta) => self.move_highlight(delta, ctx),
             KeyAction::MoveCaret(delta) => self.move_caret(delta, ctx),
             KeyAction::Escape => self.cancel(ctx),
@@ -223,6 +227,24 @@ impl Session {
     fn flip_page(&mut self, dir: PageDir, ctx: &mut Ctx<'_>) {
         let total = self.candidate_count();
         if self.paging.flip(dir, total) {
+            self.emit_frame(ctx.cfg, ctx);
+        }
+    }
+
+    /// Jumps to the first or last page, if the list spans more than one.
+    ///
+    /// The same frame path a page flip takes: a jump that lands re-sends the frame, and
+    /// one that finds the grid already at that end changes nothing, which is what lets
+    /// the router hand the key back instead of swallowing it for an answer the window
+    /// cannot see.
+    fn flip_page_edge(&mut self, to_last: bool, ctx: &mut Ctx<'_>) {
+        let total = self.candidate_count();
+        let moved = if to_last {
+            self.paging.flip_to_last(total)
+        } else {
+            self.paging.flip_to_first(total)
+        };
+        if moved {
             self.emit_frame(ctx.cfg, ctx);
         }
     }
@@ -554,243 +576,4 @@ impl Session {
 /// apostrophe that pins a syllable boundary.
 fn is_input_char(ch: char) -> bool {
     ch.is_ascii_alphabetic() || ch == '\''
-}
-
-/// Tests for the arms this file gained on their own.
-///
-/// The rest of the transition table is covered by the table-driven suite next door;
-/// this module holds the phrase a user saves from a highlighted candidate, which is
-/// the one action of this file that hands work to a subsystem that exists today, and
-/// the reload property that action's card requires of a live session.
-#[cfg(test)]
-mod tests {
-    use ime_types::KeyAction;
-
-    use crate::state::SessionConfig;
-    use crate::state::machine::{Effect, Session, SessionEvent, SessionState, step};
-    use crate::state::tests::Fixture;
-
-    /// A session with `raw` typed into it, and the sources it was decoded against.
-    fn composing(raw: &str) -> (Session, Fixture) {
-        let fixture = Fixture::new();
-        let mut session = Session::new();
-        let cfg = SessionConfig::default();
-        for ch in raw.chars() {
-            let effects = session.handle_key(KeyAction::InputChar(ch), &cfg, &fixture.env());
-            assert!(!effects.is_empty(), "typing {ch:?} composes");
-        }
-        assert_eq!(session.state, SessionState::Composing);
-        (session, fixture)
-    }
-
-    /// The text of the candidate the highlight is on.
-    fn highlighted(session: &Session) -> String {
-        session
-            .highlighted_candidate()
-            .map(|held| held.text.clone())
-            .unwrap_or_default()
-    }
-
-    #[test]
-    fn test_forget_highlighted_preserves_highlight() {
-        let (mut session, fixture) = composing("ni");
-        let cfg = SessionConfig::default();
-        // Off the first candidate, so that "the highlight followed the words" and "the
-        // highlight was reset" are different outcomes rather than the same one.
-        session.handle_key(KeyAction::MoveHighlight(2), &cfg, &fixture.env());
-        assert_eq!(
-            session.paging.highlight, 2,
-            "the fixture pages enough to move"
-        );
-        let dropped = highlighted(&session);
-        let next = session
-            .decoded()
-            .candidates
-            .get(3)
-            .map(|held| held.text.clone())
-            .expect("a candidate behind the highlighted one");
-
-        let effects = session.handle_key(KeyAction::ForgetHighlighted, &cfg, &fixture.env());
-
-        assert_eq!(
-            session.state,
-            SessionState::Composing,
-            "the composition survives the removal"
-        );
-        assert_eq!(session.buf.raw(), "ni", "and so does the input");
-        assert_eq!(
-            effects.len(),
-            2,
-            "the store is told and the window is re-sent"
-        );
-        match effects.first() {
-            Some(Effect::ForgetUserWord { key }) => {
-                assert_eq!(key.as_str(), dropped.as_str());
-            }
-            other => panic!("expected a forget effect first, got {other:?}"),
-        }
-        assert!(
-            matches!(effects.last(), Some(Effect::SendFrame(_))),
-            "the window draws the list without the word"
-        );
-        assert!(
-            !session
-                .decoded()
-                .candidates
-                .iter()
-                .any(|held| held.text == dropped),
-            "the word is gone from the candidate list"
-        );
-        assert_eq!(
-            session.paging.highlight, 2,
-            "the highlight stayed where the user was looking"
-        );
-        assert_eq!(
-            highlighted(&session),
-            next,
-            "on the word that took the removed one's place"
-        );
-        for (position, candidate) in session.decoded().candidates.iter().enumerate() {
-            assert_eq!(
-                usize::from(candidate.index),
-                position + 1,
-                "the display numbers still match the positions"
-            );
-        }
-    }
-
-    #[test]
-    fn test_forget_highlighted_at_the_end_keeps_a_neighbour() {
-        let (mut session, fixture) = composing("ni");
-        let cfg = SessionConfig::default();
-        let last = session.candidate_count().saturating_sub(1);
-        assert!(last > 1, "the fixture offers a list to stand at the end of");
-        session.paging.highlight = last;
-        let before = session
-            .decoded()
-            .candidates
-            .get(usize::from(last) - 1)
-            .map(|held| held.text.clone())
-            .expect("a candidate in front of the last one");
-
-        let effects = session.handle_key(KeyAction::ForgetHighlighted, &cfg, &fixture.env());
-
-        assert!(matches!(
-            effects.first(),
-            Some(Effect::ForgetUserWord { .. })
-        ));
-        assert_eq!(
-            highlighted(&session),
-            before,
-            "the highlight falls back onto the word in front of the one removed"
-        );
-        assert!(
-            session.paging.highlight > 0,
-            "and not back to the top of the list"
-        );
-    }
-
-    #[test]
-    fn test_forget_highlighted_arm_does_nothing_without_a_composition() {
-        let fixture = Fixture::new();
-        let mut session = Session::new();
-        let effects = session.handle_key(
-            KeyAction::ForgetHighlighted,
-            &SessionConfig::default(),
-            &fixture.env(),
-        );
-        assert!(effects.is_empty(), "there is no highlight to forget");
-        assert_eq!(session.state, SessionState::Idle);
-    }
-
-    #[test]
-    fn test_add_phrase_arm_records_the_highlighted_candidate() {
-        let (mut session, fixture) = composing("ni");
-        let expected = highlighted(&session);
-        assert!(
-            !expected.is_empty(),
-            "a composition has a candidate to save"
-        );
-
-        let effects = session.handle_key(
-            KeyAction::AddPhrase,
-            &SessionConfig::default(),
-            &fixture.env(),
-        );
-        assert_eq!(effects.len(), 1, "the arm emits exactly one effect");
-        assert!(
-            matches!(effects.first(), Some(Effect::AddPhrase { .. })),
-            "the arm saves the phrase rather than reporting it unsupported"
-        );
-        if let Some(Effect::AddPhrase { key, text }) = effects.first() {
-            assert_eq!(key.as_str(), "ni", "the key is the input the user typed");
-            assert_eq!(text.as_str(), expected);
-        }
-    }
-
-    #[test]
-    fn test_add_phrase_arm_leaves_the_composition_alone() {
-        let (mut session, fixture) = composing("ni");
-        let before = session.decoded().clone();
-        let raw = String::from(session.buf.raw());
-        let id = session.id;
-
-        let effects = session.handle_key(
-            KeyAction::AddPhrase,
-            &SessionConfig::default(),
-            &fixture.env(),
-        );
-        assert_eq!(session.state, SessionState::Composing);
-        assert_eq!(session.id, id, "the composition is the same one");
-        assert_eq!(session.buf.raw(), raw.as_str());
-        assert_eq!(
-            session.decoded(),
-            &before,
-            "the candidate list is untouched"
-        );
-        assert_eq!(effects.len(), 1, "nothing is re-sent to the window");
-    }
-
-    #[test]
-    fn test_add_phrase_arm_does_nothing_without_a_composition() {
-        let fixture = Fixture::new();
-        let mut session = Session::new();
-        let effects = session.handle_key(
-            KeyAction::AddPhrase,
-            &SessionConfig::default(),
-            &fixture.env(),
-        );
-        assert!(effects.is_empty(), "there is no highlight to save");
-        assert_eq!(session.state, SessionState::Idle);
-    }
-
-    #[test]
-    fn test_reload_preserves_active_session() {
-        // A reload of the configuration -- the phrase table included, which is swapped
-        // in the layer that owns it -- never resets a composition in progress (0.4
-        // rule 10): the input, the candidates and the session's own identity all
-        // survive it, and only the frame is re-sent under the new values.
-        let (mut session, fixture) = composing("ni");
-        let cfg = SessionConfig::default();
-        let before = session.decoded().clone();
-        let raw = String::from(session.buf.raw());
-        let id = session.id;
-
-        let next = SessionConfig {
-            max_per_row: 7,
-            ..SessionConfig::default()
-        };
-        let effects = step(
-            &mut session,
-            SessionEvent::ConfigReloaded(next),
-            &cfg,
-            &fixture.env(),
-        );
-        assert_eq!(session.state, SessionState::Composing);
-        assert_eq!(session.id, id, "the composition is not restarted");
-        assert_eq!(session.buf.raw(), raw.as_str());
-        assert_eq!(session.decoded(), &before);
-        assert_eq!(effects.len(), 1, "only the frame is re-sent");
-        assert!(matches!(effects.first(), Some(Effect::SendFrame(_))));
-    }
 }

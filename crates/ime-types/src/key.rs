@@ -32,6 +32,15 @@ pub enum KeyAction {
     PageNext,
     /// Show the previous page of candidates.
     PagePrev,
+    /// Jump straight to the first page of candidates.
+    ///
+    /// Appended by ADR-0005. The jump obeys the paging boundaries the flips do: on the
+    /// first page already, it is inert and the key travels back to the host rather than
+    /// wrapping or repainting.
+    PageFirst,
+    /// Jump straight to the last page of candidates. Appended by ADR-0005, with the
+    /// same boundary rule as [`KeyAction::PageFirst`].
+    PageLast,
     /// Move the highlight by the given number of candidates.
     MoveHighlight(i8),
     /// Move the preedit caret by the given number of syllables.
@@ -79,6 +88,8 @@ mod tests {
             KeyAction::SelectIndex(_) => "select-index",
             KeyAction::PageNext => "page-next",
             KeyAction::PagePrev => "page-prev",
+            KeyAction::PageFirst => "page-first",
+            KeyAction::PageLast => "page-last",
             KeyAction::MoveHighlight(_) => "move-highlight",
             KeyAction::MoveCaret(_) => "move-caret",
             KeyAction::ToggleLang => "toggle-lang",
@@ -105,6 +116,7 @@ mod tests {
     #[test]
     fn test_key_action_unit_variants_are_distinct() {
         assert_ne!(KeyAction::PageNext, KeyAction::PagePrev);
+        assert_ne!(KeyAction::PageFirst, KeyAction::PageLast);
         assert_ne!(KeyAction::Ignore, KeyAction::Escape);
         assert_eq!(KeyAction::Backspace, KeyAction::Backspace);
     }

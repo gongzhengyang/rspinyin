@@ -277,10 +277,58 @@ fn test_measure_width_follows_the_script_of_each_character() {
     assert_eq!(measure.width("你好", 10.0), 20.0, "CJK is one em");
     assert_eq!(
         measure.width("ni好", 10.0),
-        20.0,
-        "a mixed text adds the two"
+        18.0,
+        "a mixed text adds the tiers: half an em, three tenths, one em"
     );
     assert_eq!(measure.width("", 10.0), 0.0, "an empty text is no width");
+}
+
+#[test]
+fn test_measure_width_prices_the_wide_ascii_tier_above_the_ordinary_one() {
+    let mut measure = Measure::default();
+    assert_eq!(
+        measure.width("W", 10.0),
+        6.0,
+        "`W` is six tenths of an em, not half"
+    );
+    assert_eq!(
+        measure.width("@%", 10.0),
+        12.0,
+        "the widest punctuation sits there too"
+    );
+    assert_eq!(
+        measure.width("0123", 10.0),
+        24.0,
+        "the digits sit in the wide tier beside the letters"
+    );
+    assert!(
+        measure.width("mm", 10.0) > measure.width("nn", 10.0),
+        "the wide tier is what tells `m` from `n`"
+    );
+}
+
+#[test]
+fn test_character_em_places_every_character_in_one_of_four_ordered_tiers() {
+    for character in [
+        'i', 'l', 'j', 't', 'f', 'r', '.', ',', '\'', ':', ';', '!', '|',
+    ] {
+        assert_eq!(character_em(character), 0.3, "{character} is narrow ASCII");
+    }
+    for character in ['W', 'M', '@', '%', 'm', 'w', '0', '5', '9'] {
+        assert_eq!(character_em(character), 0.6, "{character} is wide ASCII");
+    }
+    assert_eq!(character_em('n'), 0.5, "an ordinary letter is half an em");
+    assert_eq!(character_em(' '), 0.5, "a space is ordinary ASCII");
+    assert_eq!(character_em('你'), 1.0, "CJK fills its em box");
+    assert_eq!(
+        character_em('α'),
+        1.0,
+        "anything outside ASCII rounds up to the em"
+    );
+    assert!(
+        NARROW_ASCII_EM < ASCII_EM && ASCII_EM < WIDE_ASCII_EM && WIDE_ASCII_EM < WIDE_EM,
+        "the tiers are ordered narrow, ordinary, wide, outside ASCII"
+    );
 }
 
 #[test]

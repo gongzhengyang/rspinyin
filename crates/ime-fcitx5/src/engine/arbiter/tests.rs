@@ -36,6 +36,7 @@ use ime_types::{
 };
 
 use super::{Executability, arbitrate, arbitrate_sequence, executability, is_mode_chord};
+use crate::engine::rows::{KEY_DELETE, KEY_END, KEY_HOME};
 use crate::engine::*;
 
 /// `FcitxKey_3`, a digit a short page does not reach.
@@ -306,6 +307,8 @@ fn actions() -> Vec<KeyAction> {
         KeyAction::SelectIndex(9),
         KeyAction::PageNext,
         KeyAction::PagePrev,
+        KeyAction::PageFirst,
+        KeyAction::PageLast,
         KeyAction::MoveHighlight(1),
         KeyAction::MoveHighlight(-1),
         KeyAction::MoveCaret(1),
@@ -341,6 +344,11 @@ fn composing_keymap() -> Vec<(u32, u32)> {
         (KEY_RIGHT, 0),
         (KEY_UP, 0),
         (KEY_DOWN, 0),
+        (KEY_HOME, 0),
+        (KEY_END, 0),
+        // The user-word chord: a fixed row of the table, with the exact modifier set
+        // the row's `Accepts` names.
+        (KEY_DELETE, CTRL),
     ];
     keys.extend((KEY_1..=KEY_9).map(|sym| (sym, 0)));
     keys

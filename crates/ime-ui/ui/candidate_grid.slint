@@ -92,6 +92,10 @@ export component CandidateGrid inherits VerticalLayout {
     in property <length> small-font-size: 0px;
     // 3.1.1's candidate-area padding, which is the container padding.
     in property <length> area-padding: 0px;
+    // The pressed cell's sink (3.4's Active row): `1.0` at rest, `0.985` fully pressed.
+    // Written per frame by the adapter's press spring like every motion above, and
+    // applied by each cell as geometry -- see the note on the cell below.
+    in property <float> press-scale: 1.0;
 
     padding: root.area-padding;
     spacing: root.grid-gap;
@@ -132,98 +136,112 @@ export component CandidateGrid inherits VerticalLayout {
             // own opacity. See the note on `opacity` below.
             private property <float> dim: cell.is-disabled ? 0.32 : 1.0;
 
+            // The cell's slot in the row, at the full cell size. The layout places *this*
+            // rectangle, so a pressed cell sinks inside its own slot instead of
+            // reflowing the row around it: the neighbours keep their positions, which is
+            // what keeps a press from reading as the whole grid shuffling.
             width: root.cell-width;
             height: root.cell-height;
-            border-radius: root.cell-radius;
 
-            // 3.4's five states, spelled in the priority the table gives them. The
-            // ranking itself is resolved in `src/adapter.rs` into the three flags, so at
-            // most one of them is set and this expression only has to name the table's
-            // rows: Active, then Focus Ring, then Hover, then Default.
-            background: cell.is-pressed ? Theme.state-pressed
-                : cell.is-highlighted ? Theme.state-selected-bg
-                : cell.is-hovered ? Theme.state-hover
-                : transparent;
-            // The focus ring of 3.4, one pixel inside the cell so it never changes the
-            // cell's size. A pressed cell draws the Active fill instead.
-            border-width: cell.is-highlighted && !cell.is-pressed ? 1px : 0px;
-            border-color: Theme.state-selected-stroke;
-            // 3.4's `Disabled` row. Nothing sets the flag in this phase; the row is drawn
-            // so that the table is complete and testable.
-            //
-            // 3.4's `Active` row also presses the cell in by 3% over 60ms. That motion
-            // belongs to 3.3.2, which is what drives the frames it would run over; a static
-            // transform here would be a jump, not a press.
-            //
-            // This dims the cell's own fill and border. It deliberately does *not* reach the
-            // text: a child that sets its own `opacity` masks the inherited one rather than
-            // multiplying with it, so a number label at 0.55 would draw at 0.55 whether its
-            // cell was disabled or not. The children apply `dim` themselves, below.
-            opacity: dim;
+            // The pressed cell (3.4's Active row): its background and corner radius
+            // shrink about the centre by `press-scale`, written per frame by the
+            // adapter's press spring. Slint has no transform -- exactly as the window's
+            // own appear motion is drawn -- so the scale is geometry. The text is
+            // deliberately *not* scaled: a 3% glyph scale is sub-pixel jitter, not
+            // information, and the sinking rectangle carries the unscaled content
+            // centred while it moves.
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: parent.width * root.press-scale;
+                height: parent.height * root.press-scale;
+                border-radius: root.cell-radius * root.press-scale;
 
-            HorizontalLayout {
-                // The cell's text takes the window's optical nudge (`Theme.optical-nudge`),
-                // the same shift the header strip takes, so the two lines share one optical
-                // baseline. It belongs to this layout rather than to a text element: Slint
-                // gives an element *inside* a layout its position from the layout and
-                // rejects a binding of its own.
-                y: Theme.optical-nudge;
-                padding-left: root.cell-padding-h;
-                padding-right: root.cell-padding-h;
-                padding-top: root.cell-padding-v;
-                padding-bottom: root.cell-padding-v;
-                spacing: root.number-gap;
-
-                // The number key of 3.5, at 3.1.1's 11sp/500 and 0.55. The colour is
-                // `text.primary` rather than `text.annotation` because 3.2 fixes the 0.55
-                // as the final effective alpha and forbids multiplying it by the token's
-                // own alpha -- 0.48 x 0.55 would be unreadable.
+                // 3.4's five states, spelled in the priority the table gives them. The
+                // ranking itself is resolved in `src/adapter.rs` into the three flags, so at
+                // most one of them is set and this expression only has to name the table's
+                // rows: Active, then Focus Ring, then Hover, then Default.
+                background: cell.is-pressed ? Theme.state-pressed
+                    : cell.is-highlighted ? Theme.state-selected-bg
+                    : cell.is-hovered ? Theme.state-hover
+                    : transparent;
+                // The focus ring of 3.4, one pixel inside the cell so it never changes the
+                // cell's size. A pressed cell draws the Active fill instead.
+                border-width: cell.is-highlighted && !cell.is-pressed ? 1px : 0px;
+                border-color: Theme.state-selected-stroke;
+                // 3.4's `Disabled` row. Nothing sets the flag in this phase; the row is drawn
+                // so that the table is complete and testable.
                 //
-                // The label is drawn in a fixed-width slot and aligned to its left edge, so
-                // the candidate text beside it starts at one x for every cell in the row.
-                Text {
-                    text: cell.label;
-                    width: root.number-slot-width;
-                    horizontal-alignment: left;
-                    font-family: Theme.font-family;
-                    font-size: root.small-font-size;
-                    font-weight: 500;
-                    color: Theme.text-primary;
-                    opacity: 0.55 * dim;
-                    vertical-alignment: center;
-                }
+                // This dims the cell's own fill and border. It deliberately does *not* reach the
+                // text: a child that sets its own `opacity` masks the inherited one rather than
+                // multiplying with it, so a number label at 0.55 would draw at 0.55 whether its
+                // cell was disabled or not. The children apply `dim` themselves, below.
+                opacity: dim;
 
-                // The text and its annotation are one group: the number gap separates the
-                // label from this group, the annotation gap separates the two inside it.
                 HorizontalLayout {
-                    spacing: root.annotation-gap;
+                    // The cell's text takes the window's optical nudge (`Theme.optical-nudge`),
+                    // the same shift the header strip takes, so the two lines share one optical
+                    // baseline. It belongs to this layout rather than to a text element: Slint
+                    // gives an element *inside* a layout its position from the layout and
+                    // rejects a binding of its own.
+                    y: Theme.optical-nudge;
+                    padding-left: root.cell-padding-h;
+                    padding-right: root.cell-padding-h;
+                    padding-top: root.cell-padding-v;
+                    padding-bottom: root.cell-padding-v;
+                    spacing: root.number-gap;
 
+                    // The number key of 3.5, at 3.1.1's 11sp/500 and 0.55. The colour is
+                    // `text.primary` rather than `text.annotation` because 3.2 fixes the 0.55
+                    // as the final effective alpha and forbids multiplying it by the token's
+                    // own alpha -- 0.48 x 0.55 would be unreadable.
+                    //
+                    // The label is drawn in a fixed-width slot and aligned to its left edge, so
+                    // the candidate text beside it starts at one x for every cell in the row.
                     Text {
-                        text: cell.display-text;
-                        font-family: Theme.font-family;
-                        font-size: root.text-font-size;
-                        // 3.1.1: the highlighted candidate is a weight heavier.
-                        font-weight: cell.is-highlighted ? 500 : 400;
-                        color: Theme.text-primary;
-                        opacity: dim;
-                        vertical-alignment: center;
-                        overflow: elide;
-                        wrap: no-wrap;
-                    }
-
-                    // 3.1.1's annotation: 11sp/400 at 0.50, with the same ruling on the
-                    // alpha as the number label above.
-                    Text {
-                        visible: root.show-annotation && cell.annotation != "";
-                        text: cell.annotation;
+                        text: cell.label;
+                        width: root.number-slot-width;
+                        horizontal-alignment: left;
                         font-family: Theme.font-family;
                         font-size: root.small-font-size;
-                        font-weight: 400;
+                        font-weight: 500;
                         color: Theme.text-primary;
-                        opacity: 0.50 * dim;
+                        opacity: 0.55 * dim;
                         vertical-alignment: center;
-                        overflow: elide;
-                        wrap: no-wrap;
+                    }
+
+                    // The text and its annotation are one group: the number gap separates the
+                    // label from this group, the annotation gap separates the two inside it.
+                    HorizontalLayout {
+                        spacing: root.annotation-gap;
+
+                        Text {
+                            text: cell.display-text;
+                            font-family: Theme.font-family;
+                            font-size: root.text-font-size;
+                            // 3.1.1: the highlighted candidate is a weight heavier.
+                            font-weight: cell.is-highlighted ? 500 : 400;
+                            color: Theme.text-primary;
+                            opacity: dim;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            wrap: no-wrap;
+                        }
+
+                        // 3.1.1's annotation: 11sp/400 at 0.50, with the same ruling on the
+                        // alpha as the number label above.
+                        Text {
+                            visible: root.show-annotation && cell.annotation != "";
+                            text: cell.annotation;
+                            font-family: Theme.font-family;
+                            font-size: root.small-font-size;
+                            font-weight: 400;
+                            color: Theme.text-primary;
+                            opacity: 0.50 * dim;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            wrap: no-wrap;
+                        }
                     }
                 }
             }

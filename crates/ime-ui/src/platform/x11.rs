@@ -49,9 +49,11 @@ use super::{
 };
 
 mod blur;
+mod cursor;
 mod translate;
 
 pub use self::blur::BlurHandle;
+pub(crate) use self::cursor::{CursorState, PointerShape};
 pub(crate) use self::translate::{Decoded, classify_event, effective_alpha, select_argb_visual};
 // The event translator's scale-step and alpha constants have no production reader in
 // this module; only the platform tests assert on them.
@@ -156,6 +158,8 @@ pub struct X11Backend {
     /// The blur-behind state: the interned KDE atom when this window manager takes
     /// the request, and the slot a capability handle writes into.
     blur: blur::BlurChannel,
+    /// The pointer cursor the mapped window carries; installed once, on the first map.
+    cursor: cursor::CursorState,
     composited: bool,
     shape_available: bool,
     protocol_errors: u32,
@@ -275,6 +279,7 @@ impl X11Backend {
             position: (0, 0),
             input_region: Vec::new(),
             blur,
+            cursor: cursor::CursorState::new(),
             composited,
             shape_available,
             protocol_errors: 0,
@@ -551,6 +556,11 @@ impl SurfaceBackend for X11Backend {
         }
         if visible {
             self.conn.map_window(self.window).map_err(disconnected)?;
+            // The mapped window carries the arrow a clickable panel is pointed at with.
+            // The shaped input region leaves the window only the panel, so one static
+            // shape covers every point the pointer can reach; the shadow reserve falls
+            // through to the application underneath.
+            cursor::ensure(&mut self.cursor, &self.conn, self.window)?;
         } else {
             self.conn.unmap_window(self.window).map_err(disconnected)?;
         }

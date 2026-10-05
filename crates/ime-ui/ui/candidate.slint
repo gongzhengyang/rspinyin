@@ -638,6 +638,11 @@ export component CandidateWindow inherits Window {
     // springs home. The header does not move -- the preedit did not change page.
     in property <length> page-offset-dp: 0px;
 
+    // 3.4's Active-row press: the pressed candidate cell sinks to this scale, animated
+    // by the adapter's press spring like every motion above and passed through to the
+    // grid, which applies it as geometry.
+    in property <float> press-scale: 1.0;
+
     // 3.6's input-limit state, bound down to the Header: the adapter computes it from
     // the preedit's own length, so the window needs no logic of its own.
     in property <bool> input-full: false;
@@ -818,6 +823,7 @@ export component CandidateWindow inherits Window {
                     cell-width: root.cell-width;
                     cell-height: CandidateMetrics.cell-height;
                     cell-radius: root.cell-radius;
+                    press-scale: root.press-scale;
                     cell-padding-h: CandidateMetrics.cell-padding-h;
                     cell-padding-v: CandidateMetrics.cell-padding-v;
                     number-slot-width: CandidateMetrics.number-slot-width;

@@ -18,7 +18,7 @@ use crate::Config;
 ///
 /// Deliberately not derived from `KeyName`: a variant nobody adds here is exactly the drift
 /// these tests exist to catch.
-const WHITELIST: [&str; 10] = [
+const WHITELIST: [&str; 12] = [
     "minus",
     "equal",
     "up",
@@ -29,6 +29,8 @@ const WHITELIST: [&str; 10] = [
     "shift_tab",
     "page_up",
     "page_down",
+    "home",
+    "end",
 ];
 
 /// A configuration whose two binding lists are the given ones.
@@ -72,7 +74,12 @@ fn test_project_keys_defaults_match_the_shipped_table() {
     assert_eq!(bindings, KeyBindings::default());
     assert_eq!(
         bindings.flip_keys,
-        FlipSet::MINUS | FlipSet::EQUAL | FlipSet::UP | FlipSet::DOWN
+        FlipSet::MINUS
+            | FlipSet::EQUAL
+            | FlipSet::UP
+            | FlipSet::DOWN
+            | FlipSet::HOME
+            | FlipSet::END
     );
     assert_eq!(
         bindings.highlight_keys,

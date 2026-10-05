@@ -67,6 +67,8 @@ const PAGEABLE: &[KeyName] = &[
     KeyName::Down,
     KeyName::PageUp,
     KeyName::PageDown,
+    KeyName::Home,
+    KeyName::End,
 ];
 
 /// The names `keys.highlight_keys` can move the highlight with.
@@ -82,9 +84,11 @@ const HIGHLIGHTABLE: &[KeyName] = &[
 bitflags::bitflags! {
     /// The keys that page the candidate list (`[keys] flip_keys`).
     ///
-    /// A flag set rather than the four-field struct this used to be: the configuration's
-    /// whitelist offers six pageable keys and the struct could carry four, so `page_up` and
-    /// `page_down` were accepted by the configuration and then dropped in silence.
+    /// A flag set rather than the four-field struct this used to be: the whitelist keeps
+    /// outgrowing any fixed shape a struct could carry — the arrows, the minus and equal
+    /// pair, the page pair and now the `Home`/`End` jumps — and a field that does not
+    /// exist for a name means the configuration accepts it and a binding drops it in
+    /// silence.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct FlipSet: u8 {
         /// `-`.
@@ -99,6 +103,10 @@ bitflags::bitflags! {
         const PAGE_UP = 1 << 4;
         /// `Page_Down`.
         const PAGE_DOWN = 1 << 5;
+        /// `Home`, which jumps to the first page.
+        const HOME = 1 << 6;
+        /// `End`, which jumps to the last page.
+        const END = 1 << 7;
     }
 
     /// The keys that move the candidate highlight (`[keys] highlight_keys`).
@@ -150,7 +158,12 @@ impl Default for KeyBindings {
         Self {
             digit_zero: DigitZero::Passthrough,
             enter_commit_raw: false,
-            flip_keys: FlipSet::MINUS | FlipSet::EQUAL | FlipSet::UP | FlipSet::DOWN,
+            flip_keys: FlipSet::MINUS
+                | FlipSet::EQUAL
+                | FlipSet::UP
+                | FlipSet::DOWN
+                | FlipSet::HOME
+                | FlipSet::END,
             highlight_keys: HighlightSet::TAB | HighlightSet::SHIFT_TAB,
         }
     }
@@ -223,7 +236,12 @@ impl KeyBindings {
 /// assert!(warnings.is_empty(), "every shipped default is routable");
 /// assert_eq!(
 ///     bindings.flip_keys,
-///     FlipSet::MINUS | FlipSet::EQUAL | FlipSet::UP | FlipSet::DOWN
+///     FlipSet::MINUS
+///         | FlipSet::EQUAL
+///         | FlipSet::UP
+///         | FlipSet::DOWN
+///         | FlipSet::HOME
+///         | FlipSet::END
 /// );
 /// ```
 pub fn project_keys(keys: &KeysConfig) -> (KeyBindings, Vec<ImeError>) {
@@ -274,6 +292,8 @@ fn page_bit(name: KeyName) -> Option<FlipSet> {
         KeyName::Down => Some(FlipSet::DOWN),
         KeyName::PageUp => Some(FlipSet::PAGE_UP),
         KeyName::PageDown => Some(FlipSet::PAGE_DOWN),
+        KeyName::Home => Some(FlipSet::HOME),
+        KeyName::End => Some(FlipSet::END),
         KeyName::Left | KeyName::Right | KeyName::Tab | KeyName::ShiftTab => None,
     }
 }
@@ -288,6 +308,9 @@ fn highlight_bit(name: KeyName) -> Option<HighlightSet> {
         KeyName::Left => Some(HighlightSet::LEFT),
         KeyName::Right => Some(HighlightSet::RIGHT),
         KeyName::Minus | KeyName::Equal | KeyName::PageUp | KeyName::PageDown => None,
+        // Home and End page, they do not highlight: the two bits they carry live in
+        // `FlipSet`, and the highlight list has no use for them.
+        KeyName::Home | KeyName::End => None,
     }
 }
 

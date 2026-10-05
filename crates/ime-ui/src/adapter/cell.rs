@@ -33,8 +33,12 @@ use slint::SharedString;
 use crate::layout::Metrics;
 use crate::ui_generated::CandidateData;
 
-/// The character a cut text ends with (3.1.3).
-const ELLIPSIS: char = '…';
+/// The ellipsis of 3.1.3: the one mark a cut carries.
+///
+/// A candidate cell that cannot show all of its text ends with it, and a preedit that
+/// cannot show all of its input starts with it. Both are baked here, so what the
+/// components draw is finished text and neither has to branch on a cut of its own.
+pub(crate) const ELLIPSIS: char = '…';
 
 /// How many distinct texts the width cache holds.
 ///
@@ -43,10 +47,27 @@ const ELLIPSIS: char = '…';
 /// only leaves it once the user has typed past a few hundred distinct words.
 pub const MEASURE_CACHE_CAPACITY: usize = 512;
 
-/// The width of one ASCII character in ems.
+/// The width of a narrow ASCII character in ems.
 ///
-/// Latin, digits and punctuation advance by roughly half an em at any font size.
+/// `i l j t f r` and the punctuation that hugs its neighbour advance by roughly three
+/// tenths of an em. Pricing them at half an em holds back text that would have fit, which
+/// in the preedit is visible on every keystroke: the separators between syllables are all
+/// narrow, so a reading is always cut a run or two earlier than it has to be.
+const NARROW_ASCII_EM: f32 = 0.3;
+
+/// The width of one ordinary ASCII character in ems.
+///
+/// Latin letters advance by roughly half an em at any font size.
 const ASCII_EM: f32 = 0.5;
+
+/// The width of a wide ASCII character in ems.
+///
+/// `W M @ % m w` and the digits advance by six tenths of an em and more -- a `W` or an `@`
+/// approaches a full em -- so they share one upper-bound tier rather than each carrying a
+/// constant of its own. Pricing them at half an em lets the drawn text run past the room
+/// it was budgeted, and the overflow lands on the newest input, the half the cut of 3.1.3
+/// exists to protect.
+const WIDE_ASCII_EM: f32 = 0.6;
 
 /// The width of one character outside ASCII, in ems.
 ///
@@ -424,10 +445,11 @@ fn annotation_of(candidate: &Candidate, geometry: CellGeometry) -> &str {
 
 /// The width estimator of the candidate grid.
 ///
-/// One em per character outside ASCII and half an em per ASCII one: the window draws CJK
-/// candidates, where a glyph fills its em box, and Latin text advances by roughly half of
-/// one. Estimating a Latin character at a full em would cut text that fits, and a CJK one
-/// at half an em would let it overflow the cell.
+/// Every character is priced from one of four tiers -- narrow ASCII, ordinary ASCII, wide
+/// ASCII, one full em outside ASCII -- and a text is the sum of its characters at the font
+/// size it is drawn at. The window draws CJK candidates, where a glyph fills its em box,
+/// and Latin text that advances by a fraction of one; the tiers lean high on purpose, so
+/// the estimate never promises room the glyphs then take twice.
 ///
 /// This is an estimate, not a font measurement: the view layer owns no font metrics
 /// (`ASM-09`), and the component's `overflow: elide` stays the last-resort guard it is
@@ -639,21 +661,32 @@ fn text_ems(text: &str) -> f32 {
     text.chars().map(character_em).sum()
 }
 
-/// The width of one character in ems.
+/// The width of one character in ems, from one of four tiers.
 ///
-/// Crate-visible rather than private because the preedit's cut walks a span a character at a
-/// time and must not spend a cache entry per character doing it; see
+/// Narrow ASCII, ordinary ASCII, wide ASCII and everything outside ASCII, widest last.
+/// The tiers are a table and not a measurement, because the view layer owns no font
+/// metrics (`ASM-09`); the wide tiers are upper bounds, which is what keeps the error on
+/// the safe side of the cut -- the estimate decides how much text is drawn, and showing
+/// slightly less than fits is recoverable where showing more than fits is not.
+///
+/// Crate-visible rather than private because the preedit's cut walks a span a character at
+/// a time and must not spend a cache entry per character doing it; see
 /// [`super::preedit`].
 pub(crate) fn character_em(character: char) -> f32 {
-    if character.is_ascii() {
-        ASCII_EM
-    } else {
-        WIDE_EM
+    if !character.is_ascii() {
+        return WIDE_EM;
+    }
+    match character {
+        'i' | 'l' | 'j' | 't' | 'f' | 'r' | '.' | ',' | '\'' | ':' | ';' | '!' | '|' => {
+            NARROW_ASCII_EM
+        }
+        'W' | 'M' | '@' | '%' | 'm' | 'w' | '0'..='9' => WIDE_ASCII_EM,
+        _ => ASCII_EM,
     }
 }
 
 /// The width of the ellipsis in logical pixels.
-fn ellipsis_width(font_size: f32) -> f32 {
+pub(crate) fn ellipsis_width(font_size: f32) -> f32 {
     character_em(ELLIPSIS) * font_size
 }
 

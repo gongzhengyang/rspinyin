@@ -163,8 +163,8 @@ pub struct Adapter {
     /// The width estimator, kept across frames so a candidate text is measured once rather
     /// than once per keystroke.
     measure: Measure,
-    /// The window's motions: the highlight slide, the appear and disappear motion, and the
-    /// page-content slide.
+    /// The window's motions: the highlight slide, the appear and disappear motion, the
+    /// page-content slide, and the pressed cell's sink of 3.4's Active row.
     ///
     /// Owned here rather than by the surface because the highlight's resting place is a
     /// function of the cell geometry and the pointer state, both of which this type owns. The
@@ -330,6 +330,9 @@ impl Adapter {
             return false;
         }
         self.state.pointer = pointer;
+        // 3.4's Active sink is the fifth motion: a press that starts or ends moves the
+        // spring; one already held retargets it where it travels and arms nothing.
+        self.motion.set_pressed(pointer.pressed.is_some());
         // Before the early return below: a pointer that changed nothing the grid draws can
         // still have moved the highlight, and the box must be redirected either way.
         self.retarget_highlight();
@@ -562,6 +565,9 @@ impl Adapter {
         let visible = self.motion.highlight().is_visible();
         if self.drawn_motion != Some(motion) || self.window.get_highlight_visible() != visible {
             self.write_motion(&motion);
+            // The pressed cell's scale travels in the motion frame, so a frame that
+            // differs at all writes it too and a settled window still writes nothing.
+            self.window.set_press_scale(motion.press_scale);
             self.drawn_motion = Some(motion);
             self.request_repaint();
         }

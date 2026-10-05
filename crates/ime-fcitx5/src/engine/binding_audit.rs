@@ -26,12 +26,19 @@
 //!   bound is a capacity rather than a number.
 //! * When a key is named by both binding lists, the list the router favours is the list the
 //!   configuration keeps.
+//! * Every [`KeyAction`] variant is reachable by at least one key press, or is registered
+//!   in [`UNBOUND_WHITELIST`] with its reason -- "implemented but reachable by no key" is
+//!   the state the shortcut table forbids, and it fails here as a gate error rather than
+//!   living on as a comment.
 //!
 //! # The coupling this module expects
 //!
 //! A variant added to `KeyName` must be registered here as well: [`key_for`] matches every
 //! variant exhaustively, so a name that reaches the configuration without a row here stops
-//! the build rather than being accepted and ignored.
+//! the build rather than being accepted and ignored. The same holds the other way for
+//! `KeyAction`: [`canonical`] matches every variant of the action enum without a wildcard,
+//! so an action that reaches the executor without an entry in [`EVERY_ACTION`] stops the
+//! build until the audit decides whether a key produces it or the whitelist excuses it.
 
 use ime_config::keymap::project_keys;
 use ime_config::schema::{Config, KeyName, KeysConfig, MAX_KEY_BINDINGS};
@@ -39,13 +46,14 @@ use ime_types::KeyAction;
 
 use crate::ffi::FcitxKeyEvent;
 
+use super::rows::{KEY_END, KEY_HOME};
 use super::*;
 
 /// The key-name whitelist, spelled out by hand.
 ///
 /// Deliberately not derived from [`KeyName`]: a variant that nobody adds here is exactly
 /// the drift these assertions exist to catch, so deriving the list would defeat them.
-const WHITELIST: [&str; 10] = [
+const WHITELIST: [&str; 12] = [
     "minus",
     "equal",
     "up",
@@ -56,6 +64,8 @@ const WHITELIST: [&str; 10] = [
     "shift_tab",
     "page_up",
     "page_down",
+    "home",
+    "end",
 ];
 
 /// The configuration key the whitelist is read under.
@@ -110,6 +120,8 @@ fn key_for(name: KeyName) -> FcitxKeyEvent {
         KeyName::ShiftTab => (KEY_TAB, SHIFT),
         KeyName::PageUp => (KEY_PAGE_UP, 0),
         KeyName::PageDown => (KEY_PAGE_DOWN, 0),
+        KeyName::Home => (KEY_HOME, 0),
+        KeyName::End => (KEY_END, 0),
     };
     press(sym, state)
 }
@@ -257,6 +269,142 @@ fn bindable_counts() -> (usize, usize) {
     (pageable, highlightable)
 }
 
+// ── The action audit ─────────────────────────────────────────────────────────────
+//
+// The whitelist above holds the configuration's half together with the table's; this
+// half holds the executor's half together with it. The rule it enforces is the one the
+// shortcut table states: an action is either reachable from the keyboard or excused in
+// the whitelist, and there is no third state.
+
+/// The actions the executor implements that deliberately have no binding.
+///
+/// The list is read by the assertions below, so an entry that stopped being true -- a
+/// binding added for one of these, say -- fails a test instead of rotting into an alibi
+/// for an action that has long been reachable.
+///
+/// * [`KeyAction::ToggleLang`] -- the language switch is the host's own hotkey
+///   (`ASM-02`): Fcitx5's headers expose no per-context input-method state an engine
+///   could read or write, so a chord here could only swallow the key.
+/// * [`KeyAction::ToggleScript`] -- v1 does not enable the simplified/traditional
+///   conversion, so binding a key that flips a display nothing changes would be the
+///   "claimed a key with no effect" defect; the chord returns when the conversion ships.
+/// * [`KeyAction::PinHighlighted`] -- the pin set does not exist yet: the step reports
+///   `dict/unsupported` and changes nothing, so no key may be taken for it.
+/// * [`KeyAction::AddPhrase`] -- waiting on the phrase-editor delivery, which binds it
+///   when the workflow it belongs to exists.
+const UNBOUND_WHITELIST: [KeyAction; 4] = [
+    KeyAction::ToggleLang,
+    KeyAction::ToggleScript,
+    KeyAction::PinHighlighted,
+    KeyAction::AddPhrase,
+];
+
+/// Every variant of the frozen action enum, with a representative payload for the ones
+/// that carry one.
+///
+/// Spelled out and sized by hand, like [`WHITELIST`]: a variant nobody adds here is
+/// exactly the gap the assertions below exist to catch, and the explicit size is what
+/// makes adding one a conscious edit rather than an accident of enumeration.
+const EVERY_ACTION: [KeyAction; 21] = [
+    KeyAction::InputChar('a'),
+    KeyAction::Backspace,
+    KeyAction::CommitHighlighted,
+    KeyAction::CommitRaw,
+    KeyAction::SelectIndex(1),
+    KeyAction::PageNext,
+    KeyAction::PagePrev,
+    KeyAction::PageFirst,
+    KeyAction::PageLast,
+    KeyAction::MoveHighlight(1),
+    KeyAction::MoveCaret(-1),
+    KeyAction::ToggleLang,
+    KeyAction::ToggleFullWidth,
+    KeyAction::TogglePunct,
+    KeyAction::EnterTempEnglish,
+    KeyAction::Escape,
+    KeyAction::Ignore,
+    KeyAction::ToggleScript,
+    KeyAction::ForgetHighlighted,
+    KeyAction::PinHighlighted,
+    KeyAction::AddPhrase,
+];
+
+/// The canonical form of `action`, exhaustively matched over the frozen enum.
+///
+/// The match is the tripwire that pairs this module with the contract: a variant added
+/// to `KeyAction` stops the build here until it has an arm and an entry in
+/// [`EVERY_ACTION`], which is what turns "an action no key can ever produce" from a
+/// silent gap into a compile error.
+///
+/// # Panics
+///
+/// Never.
+fn canonical(action: KeyAction) -> KeyAction {
+    match action {
+        KeyAction::InputChar(_) => KeyAction::InputChar('a'),
+        KeyAction::Backspace => KeyAction::Backspace,
+        KeyAction::CommitHighlighted => KeyAction::CommitHighlighted,
+        KeyAction::CommitRaw => KeyAction::CommitRaw,
+        KeyAction::SelectIndex(_) => KeyAction::SelectIndex(1),
+        KeyAction::PageNext => KeyAction::PageNext,
+        KeyAction::PagePrev => KeyAction::PagePrev,
+        KeyAction::PageFirst => KeyAction::PageFirst,
+        KeyAction::PageLast => KeyAction::PageLast,
+        KeyAction::MoveHighlight(_) => KeyAction::MoveHighlight(1),
+        KeyAction::MoveCaret(_) => KeyAction::MoveCaret(-1),
+        KeyAction::ToggleLang => KeyAction::ToggleLang,
+        KeyAction::ToggleFullWidth => KeyAction::ToggleFullWidth,
+        KeyAction::TogglePunct => KeyAction::TogglePunct,
+        KeyAction::EnterTempEnglish => KeyAction::EnterTempEnglish,
+        KeyAction::Escape => KeyAction::Escape,
+        KeyAction::Ignore => KeyAction::Ignore,
+        KeyAction::ToggleScript => KeyAction::ToggleScript,
+        KeyAction::ForgetHighlighted => KeyAction::ForgetHighlighted,
+        KeyAction::PinHighlighted => KeyAction::PinHighlighted,
+        KeyAction::AddPhrase => KeyAction::AddPhrase,
+    }
+}
+
+/// The modifier sets the reachability walk holds while it presses.
+///
+/// Nothing, Shift, Ctrl and the Ctrl+Shift pair: the four sets every chord and every
+/// row of the table answers for. A key under any other set belongs to the desktop, and
+/// no binding may live there.
+const WALKED_STATES: [u32; 4] = [0, SHIFT, CTRL, CTRL | SHIFT];
+
+/// Every action the table produces anywhere in the walked key space.
+///
+/// The walk presses each keysym [`SWEPT_RANGES`] covers, under each of
+/// [`WALKED_STATES`], through two binding tables: everything the configuration can
+/// bind, and nothing bound with `enter_commit_raw` on. The second table is not
+/// variation for its own sake -- the caret rows answer only where the highlight rows
+/// do not, and `Return` commits the raw input only when the document says so -- so
+/// each of the two is the only shape that reaches some of the actions.
+///
+/// # Panics
+///
+/// Never.
+fn produced_actions() -> Vec<KeyAction> {
+    let tables = [
+        everything_bound(),
+        KeyBindings {
+            enter_commit_raw: true,
+            ..nothing_bound()
+        },
+    ];
+    let mut produced = Vec::new();
+    for keys in &tables {
+        for (low, high) in SWEPT_RANGES {
+            for sym in low..=high {
+                for state in WALKED_STATES {
+                    produced.push(translate_key(&press(sym, state), keys));
+                }
+            }
+        }
+    }
+    produced
+}
+
 #[test]
 fn test_every_whitelisted_key_name_is_routable() {
     // A name the configuration accepts and the table has no row for is a setting that is
@@ -293,6 +441,9 @@ fn test_routes_any_binding_answers_false_for_a_key_nothing_binds() {
     assert!(!routes_any_binding(KeyName::PageUp, &nothing));
     assert!(!routes_any_binding(KeyName::Tab, &nothing));
     assert!(!routes_any_binding(KeyName::Minus, &nothing));
+    // The page jumps are pageable names like the others: unbound, they are the host's.
+    assert!(!routes_any_binding(KeyName::Home, &nothing));
+    assert!(!routes_any_binding(KeyName::End, &nothing));
     // The caret rows are the other side of it: no document can unbind `Left` or `Right`,
     // so the audit must still find them routed with the two lists empty.
     assert!(routes_any_binding(KeyName::Left, &nothing));
@@ -383,4 +534,58 @@ fn test_every_key_the_configuration_can_bind_is_named_by_the_whitelist() {
         }
     }
     assert!(decided > 0, "the sweep must have compared something");
+}
+
+#[test]
+fn test_every_key_action_is_reachable_by_a_key_or_whitelisted() {
+    // The audit that closes the executor's half: an action the executor supports but
+    // no key can reach is a user who cannot delete a mis-learned word, pin one or
+    // save a phrase from the keyboard, whatever they write into `[keys]`. Every
+    // variant of the frozen enum is either produced somewhere in the walked key space
+    // or registered in [`UNBOUND_WHITELIST`] with its reason; anything else fails
+    // here as a gate error rather than living on as a comment beside the enum.
+    let produced = produced_actions();
+    let mut unreachable = Vec::new();
+    for action in EVERY_ACTION {
+        let action = canonical(action);
+        if UNBOUND_WHITELIST.contains(&action) {
+            continue;
+        }
+        if !produced.contains(&action) {
+            unreachable.push(action);
+        }
+    }
+    assert!(
+        unreachable.is_empty(),
+        "implemented, bound nowhere and excused nowhere: {unreachable:?}"
+    );
+}
+
+#[test]
+fn test_the_unbound_whitelist_stays_unbound() {
+    // The same walk read the other way: a whitelist entry that a key has begun to
+    // produce is a stale excuse -- the action it excuses has a binding this list
+    // pretends does not exist. The entry then leaves the list, and its reason with it.
+    let produced = produced_actions();
+    for whitelisted in UNBOUND_WHITELIST {
+        assert!(
+            !produced.contains(&whitelisted),
+            "{whitelisted:?} is excused as unbound and produced by a key"
+        );
+    }
+}
+
+#[test]
+fn test_the_unbound_whitelist_names_actions_the_frozen_enum_defines() {
+    // The whitelist is an annotation over the enum, so every entry has to be one of
+    // the audited actions, already in the canonical form the reachability walk
+    // compares: an entry that misspelled a variant or carried a payload would quietly
+    // excuse nothing while looking like an excuse.
+    for whitelisted in UNBOUND_WHITELIST {
+        assert!(
+            EVERY_ACTION.contains(&whitelisted),
+            "{whitelisted:?} is not one of the audited actions"
+        );
+        assert_eq!(canonical(whitelisted), whitelisted);
+    }
 }

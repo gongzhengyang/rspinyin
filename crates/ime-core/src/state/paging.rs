@@ -32,7 +32,9 @@
 //! wrapping around. Wrapping would send a user who held a page key from the last page
 //! back to the first, and a user who scrolled up from the first page to the last; the
 //! window's dismiss-on-scroll-up behaviour (`DismissReason::ScrollUpEmpty`) depends on
-//! the boundary being an event rather than a wrap.
+//! the boundary being an event rather than a wrap. The end jumps (`Paging::flip_to_first`
+//! and [`Paging::flip_to_last`]) stop at the same boundaries: on the end they name they
+//! are the same inert event a flip there is.
 
 use ime_types::{Candidate, PageDir, PageState};
 
@@ -214,6 +216,38 @@ impl Paging {
             PageDir::Next => self.page_start(),
             PageDir::Prev => self.page_end(total).saturating_sub(1),
         };
+        true
+    }
+
+    /// Jumps straight to the first page, and reports whether the page moved.
+    ///
+    /// The highlight lands on the first candidate of that page, which is where a
+    /// forward [`Paging::flip`] puts it. A session already on the first page — whatever
+    /// its highlight is on — is left untouched and answers `false`: a jump is a page
+    /// gesture, and a page that does not move is the boundary event the caller hands
+    /// back to the application rather than a repaint of an unchanged grid.
+    pub fn flip_to_first(&mut self, total: u16) -> bool {
+        if self.page_count(total) == 0 || self.page == 0 {
+            return false;
+        }
+        self.page = 0;
+        self.highlight = 0;
+        true
+    }
+
+    /// Jumps straight to the last page, and reports whether the page moved.
+    ///
+    /// The highlight lands on the last candidate the page holds, which is where a
+    /// backward [`Paging::flip`] puts it; a partly filled last page ends where the list
+    /// does. A session already on the last page, and an empty list, are left untouched
+    /// and answer `false`, for the same reason [`Paging::flip_to_first`] does.
+    pub fn flip_to_last(&mut self, total: u16) -> bool {
+        let pages = self.page_count(total);
+        if pages == 0 || self.page == pages - 1 {
+            return false;
+        }
+        self.page = pages - 1;
+        self.highlight = self.page_end(total).saturating_sub(1);
         true
     }
 
@@ -409,6 +443,60 @@ mod tests {
         assert_eq!(paging, Paging::new());
         // An empty list has no page to turn to at all.
         assert!(!paging.flip(PageDir::Next, 0));
+    }
+
+    #[test]
+    fn test_flip_to_first_returns_to_the_first_candidate_of_the_first_page() {
+        let mut paging = Paging::with_page_size(5);
+        paging.highlight = 12;
+        paging.page = 2;
+
+        assert!(paging.flip_to_first(45));
+
+        assert_eq!(paging.page, 0);
+        assert_eq!(paging.highlight, 0);
+        assert_eq!(paging.local_index(), 0);
+    }
+
+    #[test]
+    fn test_flip_to_last_lands_on_the_last_candidate_of_the_last_page() {
+        // Forty-five candidates fill the five-page window exactly; the jump ends on the
+        // last page's last candidate, the same place a backward flip would have landed.
+        let mut paging = Paging::with_page_size(5);
+        assert!(paging.flip_to_last(45));
+        assert_eq!(paging.page, MAX_PAGES - 1);
+        assert_eq!(paging.highlight, u16::from(MAX_PAGES) * 5 - 1);
+
+        // A partly filled last page ends where the list does, not where the grid does.
+        let mut short = Paging::with_page_size(5);
+        assert!(short.flip_to_last(13));
+        assert_eq!(short.page, 2);
+        assert_eq!(short.highlight, 12);
+        assert_eq!(short.page_end(13).saturating_sub(1), 12);
+    }
+
+    #[test]
+    fn test_flip_to_first_on_the_first_page_stays_and_reports_false() {
+        let mut paging = Paging::with_page_size(5);
+        // The highlight is mid-list on the first page: the page gesture must not move
+        // it, because the grid the window shows is already the one the jump names.
+        paging.highlight = 3;
+        assert!(!paging.flip_to_first(45));
+        assert_eq!(paging.page, 0);
+        assert_eq!(paging.highlight, 3);
+    }
+
+    #[test]
+    fn test_flip_to_last_on_the_last_page_stays_and_reports_false() {
+        let mut paging = Paging::with_page_size(9);
+        assert!(paging.flip_to_last(45));
+        let at_the_end = paging;
+        assert!(!paging.flip_to_last(45));
+        assert_eq!(paging, at_the_end);
+        // An empty list has no last page to jump to.
+        let mut empty = Paging::with_page_size(9);
+        assert!(!empty.flip_to_last(0));
+        assert_eq!(empty, Paging::with_page_size(9));
     }
 
     #[test]

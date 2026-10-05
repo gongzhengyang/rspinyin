@@ -12,6 +12,7 @@ mod frame;
 mod idle;
 mod scheme;
 mod session;
+mod transitions;
 mod workspace;
 
 use std::sync::Mutex;
@@ -270,7 +271,7 @@ pub(super) fn representative(index: usize, revision: u32) -> super::SessionEvent
 }
 
 /// Every key action the frozen contract defines.
-pub(super) fn every_key_action() -> [KeyAction; 19] {
+pub(super) fn every_key_action() -> [KeyAction; 21] {
     [
         KeyAction::InputChar('n'),
         KeyAction::Backspace,
@@ -279,6 +280,8 @@ pub(super) fn every_key_action() -> [KeyAction; 19] {
         KeyAction::SelectIndex(1),
         KeyAction::PageNext,
         KeyAction::PagePrev,
+        KeyAction::PageFirst,
+        KeyAction::PageLast,
         KeyAction::MoveHighlight(1),
         KeyAction::MoveCaret(1),
         KeyAction::ToggleLang,

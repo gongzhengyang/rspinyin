@@ -39,13 +39,14 @@ pub const MAX_DOCUMENT_KEYS: usize = 192;
 
 /// The largest number of entries one key-binding list may hold.
 ///
-/// Six, because six is what a list can act on rather than a round number: `keys.flip_keys`
-/// accepts the six pageable names and `keys.highlight_keys` the six highlightable ones, and
-/// the routing table has a row for each of them. The bound used to be eight, which
-/// described neither the whitelist nor the table -- a list of eight entries could only be
-/// built out of names one of the two lists cannot route, so the limit was reachable as a
-/// length and never as a set of working keys. The routing layer's `binding_audit` asserts
-/// the relation from the other side, so the two cannot drift apart again.
+/// Six, a reviewable length rather than a count of the whitelist: the whitelist has
+/// since grown past it -- eight pageable names and six highlightable ones -- and a
+/// list may hold six of whichever it likes. The bound used to be eight, which
+/// described neither the whitelist nor the table: a list of eight entries could be
+/// built only out of names one of the two lists cannot route, so the limit was
+/// reachable as a length and never as a set of working keys. The routing layer's
+/// `binding_audit` asserts the relation from the other side, so the two cannot drift
+/// apart again.
 pub const MAX_KEY_BINDINGS: usize = 6;
 
 /// The largest value `engine.max_raw_len` accepts, in characters of raw input.
@@ -212,6 +213,10 @@ pub enum KeyName {
     PageUp,
     /// `Page_Down`.
     PageDown,
+    /// `Home`, which jumps to the first page of candidates.
+    Home,
+    /// `End`, which jumps to the last page of candidates.
+    End,
 }
 
 impl KeyName {
@@ -238,6 +243,8 @@ impl KeyName {
             "shift_tab" => Ok(Self::ShiftTab),
             "page_up" => Ok(Self::PageUp),
             "page_down" => Ok(Self::PageDown),
+            "home" => Ok(Self::Home),
+            "end" => Ok(Self::End),
             other => Err(invalid(key, format!("unknown key name: {other}"))),
         }
     }
@@ -256,6 +263,8 @@ impl KeyName {
             Self::ShiftTab => "shift_tab",
             Self::PageUp => "page_up",
             Self::PageDown => "page_down",
+            Self::Home => "home",
+            Self::End => "end",
         }
     }
 }
@@ -570,7 +579,14 @@ impl Default for Config {
             keys: KeysConfig {
                 digit_zero: DigitZero::Passthrough,
                 enter_commit_raw: false,
-                flip_keys: vec![KeyName::Minus, KeyName::Equal, KeyName::Up, KeyName::Down],
+                flip_keys: vec![
+                    KeyName::Minus,
+                    KeyName::Equal,
+                    KeyName::Up,
+                    KeyName::Down,
+                    KeyName::Home,
+                    KeyName::End,
+                ],
                 highlight_keys: vec![KeyName::Tab, KeyName::ShiftTab],
             },
             phrases: PhraseConfig {

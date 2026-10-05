@@ -150,3 +150,19 @@
 **连带登记（同卡的行为面，非契约类型）**：`ime-core` `passthrough` 新增纯函数 `transform_committed(text, punct_chinese, full_width) -> Cow<str>`（逐字符查表：中文标点替换 + 全角加宽，未变化时借用返回零分配），经 `ime_core::passthrough` 再导出供引擎 `Modes::transform_output` 在提交效果执行处消费——这是全角/标点两个模式位自落地以来第一个输出侧读者（`DEF-13`）。纯 Rust 契约面，不进 vtable，`RSPINYIN_ABI_VERSION` 保持不变。
 
 **已知的非本 ADR 范围**：`engine.auto_english_on_uppercase` 与 `engine.passthrough_url` 的生产接线点在 `RoutingConfig` 投影（`ime-fcitx5` `engine/router/config.rs`）与路由键路径，属承接卡合并后由主 Agent 补齐的投影行；分类语义已由 `ime-core` `classify` 完整实现并有测试。
+
+---
+
+## 增量登记（2026-10-05，`KeyAction::PageFirst` / `PageLast` 页跳转）
+
+承接卡：`docs/dev/opt-basic/phase-3.md` `REFACTOR-P2.05.04`（未绑定动作的默认绑定与路由审计扩展），绑定缺陷 `DEF-39`、`DEF-12`。
+
+| 类型 | 变更 | 类别 | 落地位置 | 承接卡 |
+|---|---|---|---|---|
+| `KeyAction` | 追加 `PageFirst`、`PageLast`（首/末页跳转，无载荷） | 追加（枚举） | `key.rs` | `REFACTOR-P2.05.04` |
+
+**决策依据**：候选分页此前只有相邻翻页（`PageNext`/`PagePrev`），长列表的末页不可直达；微软拼音等标杆均提供 Home/End 直达语义。会话侧语义冻结为：跳转与 `Paging::flip` 同规——**边界不回绕、不重置高亮之外的任何状态**，落在已命中的那一端时动作惰性（不重发帧），按键按既有 paging 规则交还宿主（`ime-core` `Paging::flip_to_first`/`flip_to_last`，纯函数；`transitions` 复用 `page_event` 帧通路）。默认绑定 `Home`/`End`，走 `keys.flip_keys` 既有可配置通路（`KeyName` 白名单与 `FlipSet` 位同步追加，`MAX_KEY_BINDINGS` 维持 6 不变——白名单长于上界正是「上界是容量而非计数」的前提，既有断言覆盖）。
+
+**同卡的非契约面**：`Ctrl+Delete` → `ForgetHighlighted` 为不可解绑固定行（`rows.rs` 新增 `Accepts::CtrlOnly` 精确修饰集）；`ToggleScript` 按 `REFACTOR-P0.01.06` 的 v1 裁决（简繁切换不启用）**不设绑定**，与 `ToggleLang`/`PinHighlighted`/`AddPhrase` 一同进入 `binding_audit` 新增的 `UNBOUND_WHITELIST`——该审计把「动作已实现却不可达」从注释升级为门禁错误（每个变体必须 ≥1 绑定行或在白名单内，且白名单条目必须确实无键产出）。四者各有理由注释，后续卡片绑定对应动作时须同步把条目移出白名单。
+
+**穷尽 match 的连带落点**：`ime-core` `transitions.rs`（idle/composing 两处）、`ime-fcitx5` `arbiter.rs`（`idle`/`composing` 两处，镜像探针 `flip_edge`）、`key.rs` `label()`、`xtask` `testd` 的 `action_name()` 均随本登记同步。纯 Rust 契约面，不进 vtable，`RSPINYIN_ABI_VERSION` 保持不变。

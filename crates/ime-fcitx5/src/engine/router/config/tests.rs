@@ -97,7 +97,7 @@ fn test_from_config_reads_the_binding_lists_as_flag_sets() {
 fn test_from_config_routes_every_name_the_whitelist_offers() {
     // Every name the two lists accept has to become a binding in the list that can carry
     // it: a name the configuration takes and the routing table then drops is the defect the
-    // flag sets exist to close, and the six pageable and six highlightable names are the
+    // flag sets exist to close, and the eight pageable and six highlightable names are the
     // whole of what `keys.flip_keys` and `keys.highlight_keys` can hold.
     let (pages, page_warnings) = RoutingConfig::from_config(&keys_with(
         vec![
@@ -107,6 +107,8 @@ fn test_from_config_routes_every_name_the_whitelist_offers() {
             KeyName::Down,
             KeyName::PageUp,
             KeyName::PageDown,
+            KeyName::Home,
+            KeyName::End,
         ],
         Vec::new(),
     ));
@@ -119,6 +121,8 @@ fn test_from_config_routes_every_name_the_whitelist_offers() {
             | FlipSet::DOWN
             | FlipSet::PAGE_UP
             | FlipSet::PAGE_DOWN
+            | FlipSet::HOME
+            | FlipSet::END
     );
 
     let (highlights, highlight_warnings) = RoutingConfig::from_config(&keys_with(

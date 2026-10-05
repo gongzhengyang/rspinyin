@@ -8,6 +8,7 @@
 
 use ime_types::KeyAction;
 
+use crate::engine::rows::{KEY_DELETE, KEY_END, KEY_HOME};
 use crate::engine::*;
 
 use super::{keysym_stream, press, release};
@@ -49,7 +50,7 @@ fn punctuation_flip_bindings() -> KeyBindings {
 /// only because the fold turns a shifted one back into its lowercase shape: a bare
 /// uppercase keysym has no row, and the sweep below asserts that it stays with the host.
 fn is_routed(sym: u32, state: u32) -> bool {
-    const NAMED: [u32; 15] = [
+    const NAMED: [u32; 18] = [
         KEY_SPACE,
         KEY_APOSTROPHE,
         KEY_PERIOD,
@@ -65,6 +66,9 @@ fn is_routed(sym: u32, state: u32) -> bool {
         KEY_DOWN,
         KEY_PAGE_UP,
         KEY_PAGE_DOWN,
+        KEY_HOME,
+        KEY_END,
+        KEY_DELETE,
     ];
     let read = fold_shifted_letter(sym, state);
     let policy_mark = state == 0
@@ -94,7 +98,12 @@ fn test_key_bindings_default_matches_the_shipped_configuration() {
     assert!(!keys.enter_commit_raw);
     assert_eq!(
         keys.flip_keys,
-        FlipSet::MINUS | FlipSet::EQUAL | FlipSet::UP | FlipSet::DOWN
+        FlipSet::MINUS
+            | FlipSet::EQUAL
+            | FlipSet::UP
+            | FlipSet::DOWN
+            | FlipSet::HOME
+            | FlipSet::END
     );
     assert_eq!(
         keys.highlight_keys,
@@ -417,9 +426,10 @@ fn test_translate_key_prefers_the_highlight_binding_over_the_page_binding() {
 
 #[test]
 fn test_translate_key_pages_with_every_flip_key_the_whitelist_names() {
-    // The six names `keys.flip_keys` accepts, all bound at once. The four-field struct the
+    // The eight names `keys.flip_keys` accepts, all bound at once. The four-field struct the
     // set replaced could carry four of them, so `page_up` and `page_down` were accepted by
-    // the configuration and then read by no row at all.
+    // the configuration and then read by no row at all; the jumps arrived with a bit each
+    // from the start.
     let all = KeyBindings {
         flip_keys: FlipSet::all(),
         ..KeyBindings::default()
@@ -432,6 +442,8 @@ fn test_translate_key_pages_with_every_flip_key_the_whitelist_names() {
             (press(KEY_DOWN, 0), KeyAction::PageNext),
             (press(KEY_PAGE_UP, 0), KeyAction::PagePrev),
             (press(KEY_PAGE_DOWN, 0), KeyAction::PageNext),
+            (press(KEY_HOME, 0), KeyAction::PageFirst),
+            (press(KEY_END, 0), KeyAction::PageLast),
         ],
         &all,
     );
@@ -440,6 +452,7 @@ fn test_translate_key_pages_with_every_flip_key_the_whitelist_names() {
         &[
             (press(KEY_MINUS, SHIFT), KeyAction::Ignore),
             (press(KEY_PAGE_UP, SHIFT), KeyAction::Ignore),
+            (press(KEY_END, SHIFT), KeyAction::Ignore),
         ],
         &all,
     );

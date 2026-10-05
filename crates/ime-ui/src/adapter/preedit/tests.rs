@@ -1,9 +1,9 @@
 //! Unit tests for the preedit's layout: the cut, the caret split and the kinds.
 //!
 //! Pure functions of a `Preedit`, so they need no component, no platform and no fixtures.
-//! The widths they assert on are the estimator's own -- one em per character outside ASCII
-//! and half an em per ASCII one -- multiplied by the font size the case draws at, which is
-//! what makes the expected cut arithmetic rather than a measurement.
+//! The widths they assert on are the estimator's own -- the four tiers of
+//! [`crate::adapter::cell::character_em`] multiplied by the font size the case draws at --
+//! which is what makes the expected cut arithmetic rather than a measurement.
 
 use ime_types::{Preedit, PreeditSpan, SpanKind};
 
@@ -14,14 +14,21 @@ use super::{
     layout_preedit,
 };
 
-/// The width one ASCII character occupies at `font_size`, per the estimator.
-fn ascii(font_size: f32) -> f32 {
-    0.5 * font_size
+/// The width one character occupies at `font_size`, per the estimator's tiers.
+fn character_width(character: char, font_size: f32) -> f32 {
+    super::character_em(character) * font_size
 }
 
-/// The width one character outside ASCII occupies at `font_size`.
-fn wide(font_size: f32) -> f32 {
-    font_size
+/// The estimator's width of a text at `font_size`.
+fn text_width(text: &str, font_size: f32) -> f32 {
+    text.chars()
+        .map(|character| character_width(character, font_size))
+        .sum()
+}
+
+/// The width the head ellipsis occupies at `font_size`.
+fn marker_width(font_size: f32) -> f32 {
+    super::ellipsis_width(font_size)
 }
 
 /// A preedit whose spans are `pieces`, in order, with a caret span at `caret`.
@@ -88,18 +95,7 @@ fn texts(runs: &[super::PreeditRun]) -> Vec<&str> {
 /// The estimator's width of a run list at `font_size`.
 fn runs_width(runs: &[super::PreeditRun], font_size: f32) -> f32 {
     runs.iter()
-        .map(|run| {
-            run.text
-                .chars()
-                .map(|character| {
-                    if character.is_ascii() {
-                        ascii(font_size)
-                    } else {
-                        wide(font_size)
-                    }
-                })
-                .sum::<f32>()
-        })
+        .map(|run| text_width(&run.text, font_size))
         .sum()
 }
 
@@ -171,20 +167,25 @@ fn test_layout_preedit_cuts_the_head_and_keeps_the_newest_input() {
         &mut super::Measure::default(),
     );
 
-    // The tail is what survives: 3 whole syllables of 21dp each plus the separators between
-    // them are 84dp, and the remainder of 16dp pays for two of the three characters of the
-    // syllable the cut lands in.
+    // The tail is what survives, whole runs first: four syllables of 21dp each plus the
+    // three separators between them -- separators are narrow ASCII -- are 96.6dp, and the
+    // 3.4dp of remainder neither pays for another syllable nor for the mark, so the cut
+    // stays where the last whole run begins and goes out unmarked.
     assert_eq!(
         texts(&layout.before),
-        ["ao", "'", "hao", "'", "hao", "'", "hao"]
+        ["hao", "'", "hao", "'", "hao", "'", "hao"]
     );
     assert!(layout.truncated, "a dropped prefix is reported");
+    assert_eq!(
+        layout.head_cut_run, None,
+        "a remainder that cannot pay for the mark marks nothing"
+    );
     assert!(
         runs_width(&layout.before, font_size) <= budget,
         "what is drawn fits the budget it was given"
     );
     assert!(
-        reading.ends_with("hao'hao'hao"),
+        reading.ends_with("hao'hao'hao'hao"),
         "the newest input is the part that survives"
     );
 }
@@ -247,6 +248,7 @@ fn test_layout_preedit_of_an_empty_preedit_draws_nothing() {
         "there is no composing session to put a caret in"
     );
     assert!(!layout.truncated);
+    assert_eq!(layout.head_cut_run, None, "nothing drawn, nothing marked");
 }
 
 #[test]
@@ -300,12 +302,21 @@ fn test_layout_preedit_cuts_on_a_character_boundary() {
 
     // A line this narrow is below the markers' minimum, so the markers give their room
     // back and the preedit's budget is the line plus `SECONDARY_STATUS_WIDTH_DP`: 70dp.
-    // Five full-width characters are 70dp and six are 84dp, so the budget keeps exactly
-    // the last five -- whole characters, never half of one.
-    assert_eq!(texts(&layout.before), ["好世界你好"]);
+    // The mark is paid for first (14dp), and the 56dp it leaves keep exactly the last four
+    // whole characters -- never half of one.
+    assert_eq!(texts(&layout.before), ["…世界你好"]);
     assert!(layout.truncated);
+    assert_eq!(
+        layout.head_cut_run,
+        Some(0),
+        "the mark rides the first drawn run"
+    );
     assert_eq!(layout.before[0].kind, RunKind::Passthrough);
     assert_eq!(layout.before[0].kind.code(), 2);
+    assert!(
+        runs_width(&layout.before, font_size) <= 30.0 + SECONDARY_STATUS_WIDTH_DP,
+        "the mark was paid for before the characters were placed"
+    );
 }
 
 #[test]
@@ -319,11 +330,17 @@ fn test_layout_preedit_bounds_the_drawn_text_by_the_character_ceiling() {
 
     assert!(layout.truncated);
     assert_eq!(layout.before.len(), 1);
+    assert!(
+        layout.before[0].text.starts_with(super::ELLIPSIS),
+        "a ceiling cut is a head cut, and it is marked like one"
+    );
+    let body = &layout.before[0].text[super::ELLIPSIS.len_utf8()..];
     assert_eq!(
-        layout.before[0].text.chars().count(),
+        body.chars().count(),
         ceiling,
         "the drawn run is bounded by the character ceiling"
     );
+    assert_eq!(layout.head_cut_run, Some(0));
 }
 
 #[test]
@@ -395,4 +412,308 @@ fn test_secondary_status_width_matches_the_cluster_the_component_draws() {
             "the preedit is never given less room than the markers it displaces"
         );
     }
+}
+
+#[test]
+fn test_layout_preedit_bakes_the_head_ellipsis_into_the_leftmost_drawn_run() {
+    let font_size = 10.0;
+    // `abcdefghijkl` is 60dp against a 48dp budget: the mark is paid for first and the
+    // 38dp it leaves keep the last seven characters. The mark is baked into the run's own
+    // text, so a redrawn frame writes nothing at all.
+    let preedit = preedit_of(&[(SpanKind::Passthrough, "abcdefghijkl")], 12);
+    let mut layout = PreeditLayout::default();
+    let mut measure = super::Measure::default();
+
+    assert!(layout.update(&preedit, 48.0, font_size, &mut measure));
+    assert_eq!(texts(&layout.before), ["…fghijkl"]);
+    assert!(layout.after.is_empty());
+    assert!(layout.truncated);
+    assert_eq!(layout.head_cut_run, Some(0));
+    assert!(
+        runs_width(&layout.before, font_size) <= 48.0,
+        "the marked line fits the budget it was cut to"
+    );
+    assert!(
+        !layout.update(&preedit, 48.0, font_size, &mut measure),
+        "a redrawn marked line is change-detected like any other"
+    );
+}
+
+#[test]
+fn test_layout_preedit_marks_a_whole_run_when_the_cut_lands_on_a_boundary() {
+    let font_size = 10.0;
+    // `abcd` (20dp) then `efghijkl` (40dp) against 52dp: `efghijkl` is kept whole and the
+    // 12dp remainder pays for the mark but not for a character of `abcd` -- five a
+    // character -- so the mark rides the whole run beside the cut instead.
+    let preedit = preedit_of(
+        &[
+            (SpanKind::Passthrough, "abcd"),
+            (SpanKind::Passthrough, "efghijkl"),
+        ],
+        12,
+    );
+    let layout = layout_preedit(&preedit, 52.0, font_size, &mut super::Measure::default());
+
+    assert_eq!(texts(&layout.before), ["…efghijkl"]);
+    assert!(layout.after.is_empty());
+    assert!(layout.truncated);
+    assert_eq!(layout.head_cut_run, Some(0));
+    assert!(runs_width(&layout.before, font_size) <= 52.0);
+}
+
+#[test]
+fn test_layout_preedit_leaves_the_cut_unmarked_when_the_remainder_cannot_pay_for_the_mark() {
+    let font_size = 10.0;
+    // `ni` (8dp) `好` (10) `hao` (15) `123` (18) against 50dp: the last three runs are kept
+    // whole and 7dp of `ni` survive, but 7dp is short of the mark's em. Drawing the mark
+    // anyway would push the line past its budget, onto the newest input, so the cut goes
+    // out unmarked.
+    let preedit = preedit_of(
+        &[
+            (SpanKind::Passthrough, "ni"),
+            (SpanKind::Passthrough, "好"),
+            (SpanKind::Passthrough, "hao"),
+            (SpanKind::Passthrough, "123"),
+        ],
+        11,
+    );
+    let layout = layout_preedit(&preedit, 50.0, font_size, &mut super::Measure::default());
+
+    assert_eq!(texts(&layout.before), ["i", "好", "hao", "123"]);
+    assert!(layout.after.is_empty());
+    assert!(layout.truncated);
+    assert_eq!(layout.head_cut_run, None);
+    assert!(
+        !layout
+            .before
+            .iter()
+            .any(|run| run.text.contains(super::ELLIPSIS)),
+        "no run carries a mark the budget did not pay for"
+    );
+    assert!(runs_width(&layout.before, font_size) <= 50.0);
+}
+
+#[test]
+fn test_layout_preedit_marks_the_after_list_when_the_caret_sits_on_the_cut() {
+    let font_size = 10.0;
+    // `abcdefghij` is 50dp against 48dp: the mark is paid first and 38dp keep the seven
+    // tail characters. The caret sits exactly on the cut, so no run is left of it and the
+    // mark rides the after list's first run instead.
+    let preedit = preedit_of(&[(SpanKind::Passthrough, "abcdefghij")], 3);
+    let layout = layout_preedit(&preedit, 48.0, font_size, &mut super::Measure::default());
+
+    assert!(
+        layout.before.is_empty(),
+        "the cut starts where the caret is"
+    );
+    assert_eq!(texts(&layout.after), ["…defghij"]);
+    assert!(
+        layout.caret_visible,
+        "a caret on the cut is still on screen"
+    );
+    assert_eq!(layout.head_cut_run, Some(0));
+}
+
+#[test]
+fn test_layout_preedit_marks_the_surviving_tail_when_the_cut_drops_the_caret() {
+    let font_size = 10.0;
+    // The same cut as a caret on it, only with the caret left of the cut: the caret is the
+    // one thing that cannot be drawn, and the marked tail is drawn as the after list.
+    let preedit = preedit_of(&[(SpanKind::Passthrough, "abcdefghij")], 1);
+    let layout = layout_preedit(&preedit, 48.0, font_size, &mut super::Measure::default());
+
+    assert!(!layout.caret_visible);
+    assert!(layout.before.is_empty());
+    assert_eq!(texts(&layout.after), ["…defghij"]);
+    assert_eq!(layout.head_cut_run, Some(0));
+}
+
+#[test]
+fn test_layout_preedit_keeps_the_cut_run_kind_when_the_mark_is_baked() {
+    let font_size = 10.0;
+    // `nihao` (25dp) then `12345678` (40dp) against 55dp: the passthrough is kept whole,
+    // the mark is paid, and the 5dp that remain keep exactly the syllable's last
+    // character. The fragment is still a syllable run -- the mark changes what the run
+    // opens with, not what it is.
+    let preedit = preedit_of(
+        &[
+            (SpanKind::Syllable, "nihao"),
+            (SpanKind::Passthrough, "12345678"),
+        ],
+        13,
+    );
+    let layout = layout_preedit(&preedit, 55.0, font_size, &mut super::Measure::default());
+
+    assert_eq!(texts(&layout.before), ["…o", "12345678"]);
+    assert_eq!(
+        layout.before[0].kind,
+        RunKind::Syllable,
+        "the cut run keeps the kind it was cut from"
+    );
+    assert_eq!(layout.head_cut_run, Some(0));
+    assert!(runs_width(&layout.before, font_size) <= 55.0);
+}
+
+#[test]
+fn test_layout_preedit_drawn_tail_always_matches_the_input_tail() {
+    // One text of every script class the estimator prices, from a fit to a deep cut: what
+    // is drawn must stay a suffix of the input wherever the caret is on screen.
+    let cases = [
+        ("ni'hao", 6),
+        ("你好世界", 12),
+        ("ni好hao世界123", 17),
+        ("W@%123", 6),
+        ("你好，世界！", 18),
+    ];
+    for (text, caret) in cases {
+        let preedit = preedit_of(&[(SpanKind::Passthrough, text)], caret);
+        let mut budget = 48.0;
+        while budget <= 60.0 {
+            let layout = layout_preedit(&preedit, budget, 10.0, &mut super::Measure::default());
+            if layout.caret_visible {
+                let drawn: String = layout
+                    .before
+                    .iter()
+                    .chain(layout.after.iter())
+                    .map(|run| run.text.as_str())
+                    .collect();
+                let body = drawn.strip_prefix(super::ELLIPSIS).unwrap_or(&drawn);
+                assert!(
+                    text.ends_with(body),
+                    "{text:?} at {budget}dp drew {drawn:?}, which is not its tail"
+                );
+            }
+            budget += 1.0;
+        }
+    }
+}
+
+#[test]
+fn test_layout_preedit_budget_sweep_shrinks_the_line_continuously_and_keeps_the_tail() {
+    let font_size = 10.0;
+    // CJK, a narrow separator, ordinary and wide ASCII in one line of 82dp; the caret
+    // stays at the end, so the tail promise holds at every step of the sweep.
+    let input = "ni'haoW@%123世界";
+    let preedit = preedit_of(
+        &[
+            (SpanKind::Syllable, "ni"),
+            (SpanKind::Separator, "'"),
+            (SpanKind::Syllable, "hao"),
+            (SpanKind::Passthrough, "W@%123"),
+            (SpanKind::Passthrough, "世界"),
+        ],
+        18,
+    );
+
+    let mut previous_width = 0.0;
+    let mut budget = 48.0;
+    while budget <= 90.0 {
+        let layout = layout_preedit(&preedit, budget, font_size, &mut super::Measure::default());
+        let runs: Vec<&super::PreeditRun> =
+            layout.before.iter().chain(layout.after.iter()).collect();
+        let width: f32 = runs
+            .iter()
+            .map(|run| text_width(&run.text, font_size))
+            .sum();
+
+        assert!(
+            width <= budget + 1.0e-3,
+            "{budget}dp: the drawn line is {width}dp wide, past the room it was given"
+        );
+        assert!(
+            width > budget - 10.0 - 1.0e-3,
+            "{budget}dp: the packing fills the budget to within one character, drew {width}dp"
+        );
+        assert!(
+            width + 1.0e-3 >= previous_width,
+            "{budget}dp: more room never draws less -- {width}dp after {previous_width}dp"
+        );
+
+        let drawn: String = runs.iter().map(|run| run.text.as_str()).collect();
+        let marks = drawn.matches(super::ELLIPSIS).count();
+        assert!(
+            marks <= 1,
+            "{budget}dp: at most one mark on the line, got {marks}"
+        );
+        assert_eq!(
+            layout.head_cut_run.is_some(),
+            marks == 1,
+            "{budget}dp: the record and the drawn mark agree"
+        );
+        if let Some(index) = layout.head_cut_run {
+            assert_eq!(index, 0, "{budget}dp: the mark rides the first drawn run");
+        }
+        let body = drawn.strip_prefix(super::ELLIPSIS).unwrap_or(&drawn);
+        assert!(
+            input.ends_with(body),
+            "{budget}dp: drew {drawn:?}, which is not the tail of {input:?}"
+        );
+
+        previous_width = width;
+        budget += 1.0;
+    }
+}
+
+#[test]
+fn test_kept_start_leaves_the_cut_unmarked_when_the_budget_cannot_pay_for_the_mark() {
+    // One run `abc` of 15dp against a 9dp budget: even with nothing kept beside it, the
+    // mark's 10dp do not fit, so the walk keeps what the 9dp buy and reports no mark.
+    let preedit = preedit_of(&[(SpanKind::Passthrough, "abc")], 3);
+    let kept = super::kept_start(
+        &preedit.text,
+        &preedit.spans,
+        9.0,
+        10.0,
+        &mut super::Measure::default(),
+    );
+
+    assert_eq!(kept.start, 2, "one tail character of 5dp fits, two do not");
+    assert!(!kept.marked);
+}
+
+#[test]
+fn test_kept_start_marks_the_ceiling_cut_when_the_room_pays_for_it() {
+    // A budget wide enough for everything, so the character ceiling is the only cut -- and
+    // it is marked like any other head cut.
+    let text: String = "a".repeat(PREEDIT_MAX_CHARS + 6);
+    let preedit = preedit_of(&[(SpanKind::Passthrough, text.as_str())], text.len());
+    let kept = super::kept_start(
+        &text,
+        &preedit.spans,
+        10_000.0,
+        10.0,
+        &mut super::Measure::default(),
+    );
+
+    assert_eq!(
+        kept.start,
+        super::truncation_start(&text, PREEDIT_MAX_CHARS)
+    );
+    assert!(kept.marked, "10_000dp of room pays for a 10dp mark");
+}
+
+#[test]
+fn test_kept_start_deepens_the_ceiling_cut_when_the_mark_is_short_of_room() {
+    // 64 kept characters of 5dp are 320dp against a budget of 326dp: the 6dp of slack are
+    // short of the mark, so the walk gives a character back and marks the deeper cut
+    // instead of drawing the marked line past its budget.
+    let text: String = "a".repeat(PREEDIT_MAX_CHARS + 6);
+    let preedit = preedit_of(&[(SpanKind::Passthrough, text.as_str())], text.len());
+    let kept = super::kept_start(
+        &text,
+        &preedit.spans,
+        326.0,
+        10.0,
+        &mut super::Measure::default(),
+    );
+
+    assert_eq!(
+        kept.start,
+        super::truncation_start(&text, PREEDIT_MAX_CHARS) + 1
+    );
+    assert!(kept.marked);
+
+    let layout = layout_preedit(&preedit, 326.0, 10.0, &mut super::Measure::default());
+    assert_eq!(layout.head_cut_run, Some(0));
+    assert!(runs_width(&layout.before, 10.0) <= 326.0);
 }

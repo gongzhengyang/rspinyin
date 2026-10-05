@@ -25,6 +25,7 @@ mod crossfade;
 mod header;
 mod motion;
 mod pixels;
+mod press;
 
 use motion::FRAME_S;
 

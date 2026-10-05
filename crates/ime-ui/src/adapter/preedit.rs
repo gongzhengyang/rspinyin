@@ -8,10 +8,17 @@
 //! # The cut
 //!
 //! 3.1.3 cuts a preedit that does not fit from the *left*, keeping the newest input: the
-//! user is typing the tail, so the head is the half that can be spared. The cut is computed
-//! rather than measured, because this layer has to run with no display server and no live
-//! component -- it uses the same deterministic estimate the candidate cells use
-//! ([`Measure`]) and the component's `overflow: elide` stays the last-resort guard.
+//! user is typing the tail, so the head is the half that can be spared. The packing is
+//! right-aligned -- runs are kept from the tail until the budget is spent, the one run the
+//! budget runs out in is cut at a character, and everything left of it is dropped whole --
+//! so what survives is always a suffix of the input and the newest key is the last thing
+//! the cut can take. The cut run carries the ellipsis as a *prefix*, baked into its text
+//! here: the component draws finished runs and branches on nothing.
+//!
+//! The cut is computed rather than measured, because this layer has to run with no display
+//! server and no live component -- it uses the same deterministic estimate the candidate
+//! cells use ([`Measure`]) and the component's `overflow: elide` stays the last-resort
+//! guard.
 //!
 //! # The caret
 //!
@@ -28,11 +35,13 @@
 //! changes nothing reports nothing.
 
 #[cfg(test)]
+mod golden;
+#[cfg(test)]
 mod tests;
 
 use ime_types::{Preedit, PreeditSpan, SpanKind};
 
-use super::cell::{Measure, character_em, replace, write_text};
+use super::cell::{ELLIPSIS, Measure, character_em, ellipsis_width, replace, write_text};
 
 /// The longest preedit the adapter hands to the component, in characters.
 ///
@@ -156,6 +165,15 @@ pub struct PreeditLayout {
     pub caret_visible: bool,
     /// Whether a prefix was dropped to make the preedit fit.
     pub truncated: bool,
+    /// The drawn run the head ellipsis was baked into: its index in the drawn run
+    /// sequence -- `before` followed by `after`, the caret slot taking no index.
+    ///
+    /// Right-aligned packing only ever cuts the leftmost run it keeps, so the value is
+    /// `Some(0)` whenever a mark is drawn -- the mark is always the drawn preedit's first
+    /// run -- and `None` when the preedit fits whole, or was cut so hard that nothing is
+    /// left to carry it. The mark itself travels inside the run's text; this field is the
+    /// layout's own record that it did.
+    pub head_cut_run: Option<usize>,
     /// Whether the status cluster's two secondary markers are drawn.
     pub show_secondary_status: bool,
 }
@@ -174,6 +192,7 @@ impl Default for PreeditLayout {
             after: Vec::new(),
             caret_visible: false,
             truncated: false,
+            head_cut_run: None,
             show_secondary_status: true,
         }
     }
@@ -236,7 +255,8 @@ impl PreeditLayout {
         } else {
             available_dp + SECONDARY_STATUS_WIDTH_DP
         };
-        let keep_from = kept_start(text, spans, budget, font_size_dp, measure);
+        let kept = kept_start(text, spans, budget, font_size_dp, measure);
+        let keep_from = kept.start;
         let caret = usize::try_from(preedit.caret)
             .unwrap_or(usize::MAX)
             .min(text.len());
@@ -244,12 +264,25 @@ impl PreeditLayout {
         // position cannot be drawn: 3.1.3 spares the tail, and the caret was in the head.
         let caret_visible = !text.is_empty() && caret >= keep_from;
         let split = if caret_visible { caret } else { keep_from };
+        // The head mark rides the leftmost drawn run: the runs left of the caret when the
+        // cut is left of the caret, the runs right of it otherwise -- which covers both the
+        // caret sitting exactly on the cut and the caret the cut dropped.
+        let mark_before = kept.marked && split > keep_from;
+        let mark_after = kept.marked && split <= keep_from;
 
         let mut changed = false;
-        changed |= write_runs(&mut self.before, text, spans, keep_from, split);
-        changed |= write_runs(&mut self.after, text, spans, split, text.len());
+        changed |= write_runs(&mut self.before, text, spans, keep_from, split, mark_before);
+        changed |= write_runs(&mut self.after, text, spans, split, text.len(), mark_after);
         changed |= replace(&mut self.caret_visible, caret_visible);
         changed |= replace(&mut self.truncated, keep_from > 0);
+        // The record follows what was actually drawn: a mark with no run left to carry it
+        // -- a budget that dropped everything -- is recorded as no mark at all.
+        let head_marked = if mark_before {
+            !self.before.is_empty()
+        } else {
+            mark_after && !self.after.is_empty()
+        };
+        changed |= replace(&mut self.head_cut_run, head_marked.then_some(0));
         changed |= replace(&mut self.show_secondary_status, show_secondary);
         changed
     }
@@ -289,15 +322,27 @@ pub fn layout_preedit(
     layout
 }
 
-/// The byte offset the drawn preedit starts at.
+/// Where the drawn preedit starts, and whether its head is marked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Kept {
+    /// The byte offset the drawn preedit starts at.
+    start: usize,
+    /// Whether the leftmost drawn run carries the head ellipsis.
+    marked: bool,
+}
+
+/// Where the drawn preedit starts, and whether its head is marked.
 ///
 /// The spans tile the text, so walking them from the tail accumulates the newest input
-/// first: the walk stops at the first span that does not fit, keeps as much of that span's
-/// tail as the remainder pays for, and reports the offset it stopped at. The character
-/// bound of [`PREEDIT_MAX_CHARS`] is applied on top, so the answer is the later of the two
-/// cuts.
+/// first: the walk keeps whole runs while they fit, stops in the first run that does not,
+/// and keeps as much of that run's tail as the remainder pays for -- with the ellipsis
+/// paid for out of the same remainder before a single character is placed, so a marked cut
+/// never draws wider than the budget. Everything left of that run is dropped whole. The
+/// character bound of [`PREEDIT_MAX_CHARS`] is applied on top, and when it is the only cut
+/// that binds it pays for the mark the same way, so either way the answer is the later of
+/// the two cuts.
 ///
-/// One pass over the spans plus one over the characters of the span the cut lands in, so
+/// One pass over the spans plus one over the characters of the run the cut lands in, so
 /// the whole walk is linear in the length of the text.
 fn kept_start(
     text: &str,
@@ -305,8 +350,9 @@ fn kept_start(
     budget: f32,
     font_size_dp: f32,
     measure: &mut Measure,
-) -> usize {
+) -> Kept {
     let floor = truncation_start(text, PREEDIT_MAX_CHARS);
+    let mark = ellipsis_width(font_size_dp);
     let mut start = text.len();
     let mut used = 0.0f32;
     for span in spans.iter().rev() {
@@ -326,10 +372,47 @@ fn kept_start(
             start = from;
             continue;
         }
+        // The budget runs out inside this run: it is the one run that is cut, and the mark
+        // is paid for before any character of its tail is placed. A remainder too small
+        // for the mark leaves the cut unmarked rather than drawing past the budget -- an
+        // unpaid mark would push the line's own newest characters out of the room the
+        // header gave it, which is the miscount the cut exists to prevent.
         let room = (budget - used).max(0.0);
-        return (from + suffix_start(slice, room, font_size_dp)).max(floor);
+        let marked = room >= mark;
+        let chars_room = if marked { room - mark } else { room };
+        let cut = from + suffix_start(slice, chars_room, font_size_dp);
+        return Kept {
+            start: cut.max(floor),
+            marked,
+        };
     }
-    start.max(floor)
+    // Every run fits the width budget, so the character ceiling is the only cut that can
+    // bind. It cuts the same left edge and pays for the mark the same way: out of the room
+    // the kept text leaves, deepening the cut when that room is short of one mark.
+    let start = start.max(floor);
+    if start == 0 {
+        return Kept {
+            start: 0,
+            marked: false,
+        };
+    }
+    let kept = text.get(start..).unwrap_or("");
+    if budget - measure.width(kept, font_size_dp) >= mark {
+        return Kept {
+            start,
+            marked: true,
+        };
+    }
+    if budget >= mark {
+        return Kept {
+            start: start + suffix_start(kept, budget - mark, font_size_dp),
+            marked: true,
+        };
+    }
+    Kept {
+        start,
+        marked: false,
+    }
 }
 
 /// The offset inside `slice` at which the suffix that fits `room` logical pixels begins.
@@ -356,10 +439,12 @@ fn suffix_start(slice: &str, room: f32, font_size_dp: f32) -> usize {
 /// Writes the runs `spans` describes between `from` and `to` into `target`.
 ///
 /// A span that only partly falls inside the range is written as the part that does, which
-/// is how the two ends of a cut preedit are drawn as the fragments they are. Slots the
-/// target already holds are written into rather than replaced, and the target is truncated
-/// to what was written, so a shorter preedit keeps its capacity and a longer one grows into
-/// it.
+/// is how the two ends of a cut preedit are drawn as the fragments they are. The first run
+/// written carries the head ellipsis when `head_marker` says so: the caller has already
+/// reserved the mark's room in the budget, and the mark is what tells the user the drawn
+/// line opens a cut. Slots the target already holds are written into rather than replaced,
+/// and the target is truncated to what was written, so a shorter preedit keeps its
+/// capacity and a longer one grows into it.
 ///
 /// # Returns
 ///
@@ -370,6 +455,7 @@ fn write_runs(
     spans: &[PreeditSpan],
     from: usize,
     to: usize,
+    head_marker: bool,
 ) -> bool {
     let mut written = 0usize;
     let mut changed = false;
@@ -385,16 +471,26 @@ fn write_runs(
         let Some(slice) = text.get(start..end) else {
             continue;
         };
+        // The mark lands on the first run that ends up drawn, whatever span produced it:
+        // a cut that kept no character of the run it landed in marks the whole run beside
+        // it, which is still the drawn preedit's left edge.
+        let head = head_marker && written == 0;
         match target.get_mut(written) {
             Some(run) => {
-                changed |= write_text(&mut run.text, slice);
+                changed |= if head {
+                    write_head_cut(&mut run.text, slice)
+                } else {
+                    write_text(&mut run.text, slice)
+                };
                 changed |= replace(&mut run.kind, kind);
             }
             None => {
-                target.push(PreeditRun {
-                    text: String::from(slice),
-                    kind,
-                });
+                let mut line = String::new();
+                if head {
+                    line.push(ELLIPSIS);
+                }
+                line.push_str(slice);
+                target.push(PreeditRun { text: line, kind });
                 changed = true;
             }
         }
@@ -405,6 +501,21 @@ fn write_runs(
         changed = true;
     }
     changed
+}
+
+/// Writes the head-cut form of `slice` into `target`: the ellipsis of 3.1.3, then the kept
+/// text.
+///
+/// The comparison comes first so a run whose marked text did not change keeps its buffer,
+/// the same bargain [`write_text`] strikes for an unmarked one.
+fn write_head_cut(target: &mut String, slice: &str) -> bool {
+    if target.starts_with(ELLIPSIS) && &target[ELLIPSIS.len_utf8()..] == slice {
+        return false;
+    }
+    target.clear();
+    target.push(ELLIPSIS);
+    target.push_str(slice);
+    true
 }
 
 /// The byte offset at which the tail of `text` that fits `max_chars` characters begins.

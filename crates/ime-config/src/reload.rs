@@ -148,7 +148,8 @@ digit_zero = "passthrough"
 # Commit the raw input on Enter instead of the highlighted candidate.
 enter_commit_raw = false
 # Keys that page the candidate list, at most six, and keys that move the highlight.
-flip_keys = ["minus", "equal", "up", "down"]
+# "home" jumps to the first page and "end" to the last.
+flip_keys = ["minus", "equal", "up", "down", "home", "end"]
 highlight_keys = ["tab", "shift_tab"]
 
 [scheme]

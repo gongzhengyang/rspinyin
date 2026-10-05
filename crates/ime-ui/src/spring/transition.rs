@@ -476,7 +476,6 @@ impl MarkerFades {
             lock.value(),
         ]
     }
-
 }
 
 /// The appear and disappear motion: opacity, plus the scale the window grows from.

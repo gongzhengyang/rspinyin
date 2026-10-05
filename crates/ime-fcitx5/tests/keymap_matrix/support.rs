@@ -106,6 +106,12 @@ pub const KEY_DOWN: u32 = 0xff54;
 pub const KEY_PAGE_UP: u32 = 0xff55;
 /// `FcitxKey_Page_Down`.
 pub const KEY_PAGE_DOWN: u32 = 0xff56;
+/// `FcitxKey_End`, the jump to the last page the shipped configuration binds.
+pub const KEY_END: u32 = 0xff57;
+/// `FcitxKey_Home`, the jump to the first page the shipped configuration binds.
+pub const KEY_HOME: u32 = 0xff50;
+/// `FcitxKey_Delete`, the key of the user-word chord `Ctrl+Delete`.
+pub const KEY_DELETE: u32 = 0xffff;
 /// `FcitxKey_Shift_L`.
 pub const KEY_SHIFT_L: u32 = 0xffe1;
 /// `FcitxKey_Shift_R`.

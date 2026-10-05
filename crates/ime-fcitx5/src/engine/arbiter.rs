@@ -302,8 +302,9 @@ pub fn arbitrate_sequence<T>(decision: &SequenceDecision<T>) -> Consumed {
 ///
 /// With nothing composing, a session acts on exactly two things: a typed character, which
 /// starts a composition, and the chord that turns temporary English on. Every other routed
-/// key — `Space`, the digits, `Return`, `BackSpace`, `Escape`, `Tab`, the arrows and the
-/// page keys — has nothing to act on, and keeping it is the swallowed-key defect.
+/// key — `Space`, the digits, `Return`, `BackSpace`, `Escape`, `Tab`, the arrows, the page
+/// keys and the page jumps — has nothing to act on, and keeping it is the swallowed-key
+/// defect.
 fn idle(action: KeyAction) -> Executability {
     match action {
         KeyAction::InputChar(ch) if is_input_char(ch) => Executability::Executable,
@@ -316,6 +317,8 @@ fn idle(action: KeyAction) -> Executability {
         | KeyAction::SelectIndex(_)
         | KeyAction::PageNext
         | KeyAction::PagePrev
+        | KeyAction::PageFirst
+        | KeyAction::PageLast
         | KeyAction::MoveHighlight(_)
         | KeyAction::MoveCaret(_)
         | KeyAction::ToggleLang
@@ -341,6 +344,8 @@ fn composing(session: &Session, action: KeyAction, cfg: &SessionConfig) -> Execu
         KeyAction::SelectIndex(digit) => selectable(session, digit),
         KeyAction::PageNext => flip(session, PageDir::Next),
         KeyAction::PagePrev => flip(session, PageDir::Prev),
+        KeyAction::PageFirst => flip_edge(session, false),
+        KeyAction::PageLast => flip_edge(session, true),
         KeyAction::MoveHighlight(delta) => move_highlight(session, delta),
         KeyAction::MoveCaret(delta) => move_caret(session, delta),
         // The window is repainted with the status strip the engine wrote for the new bits.
@@ -418,6 +423,24 @@ fn add_phrase(session: &Session) -> Executability {
 fn flip(session: &Session, dir: PageDir) -> Executability {
     let mut probe = session.paging;
     if probe.flip(dir, total(session)) {
+        return Executability::Executable;
+    }
+    Executability::Inert
+}
+
+/// Whether the jump to the first or last page would move.
+///
+/// Asked of a copy of the paging state, like [`flip`]: a jump that lands re-sends the
+/// frame, and one that finds the grid already at that end is a key the plugin would
+/// swallow for nothing.
+fn flip_edge(session: &Session, to_last: bool) -> Executability {
+    let mut probe = session.paging;
+    let moved = if to_last {
+        probe.flip_to_last(total(session))
+    } else {
+        probe.flip_to_first(total(session))
+    };
+    if moved {
         return Executability::Executable;
     }
     Executability::Inert

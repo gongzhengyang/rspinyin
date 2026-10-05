@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use ime_types::{FrameToken, PixelBufferMut, PlatformError, RectI, SurfaceBackend, SurfaceEvent};
 
 use super::raster::BYTES_PER_PIXEL;
+use crate::platform::x11::{CursorState, PointerShape};
 use crate::theme::BlurSurface;
 
 /// Everything a test can observe about a [`MockSurface`].
@@ -41,6 +42,11 @@ pub(crate) struct MockState {
     ///
     /// Refused attempts are recorded too: the refusal is itself what a test asserts.
     pub(crate) blur_requests: Vec<Vec<RectI>>,
+    /// The pointer cursor the surface carries, per the map-installs rule the real
+    /// backends implement.
+    pub(crate) cursor_shape: Option<PointerShape>,
+    /// How many cursor installs were sent; a surface shown again sends none.
+    pub(crate) cursor_installs: usize,
 }
 
 impl MockState {
@@ -71,6 +77,8 @@ pub(crate) struct MockSurface {
     width_dp: u32,
     height_dp: u32,
     scale: f32,
+    /// The pointer-cursor dedupe state, the same type the X11 backend runs.
+    cursor: CursorState,
 }
 
 impl MockSurface {
@@ -89,6 +97,7 @@ impl MockSurface {
             width_dp,
             height_dp,
             scale,
+            cursor: CursorState::new(),
         };
         (surface, state)
     }
@@ -217,8 +226,16 @@ impl SurfaceBackend for MockSurface {
     }
 
     fn set_visible(&mut self, visible: bool) -> Result<(), PlatformError> {
+        // The same map-installs-the-cursor rule the X11 backend implements, through the
+        // same dedupe state: showing the surface installs the arrow once, so what a test
+        // observes is the request a real backend would have sent.
+        let install = visible && self.cursor.begin_install(PointerShape::Arrow);
         let mut state = self.lock()?;
         state.visible = visible;
+        if install {
+            state.cursor_shape = Some(PointerShape::Arrow);
+            state.cursor_installs = state.cursor_installs.saturating_add(1);
+        }
         Ok(())
     }
 
@@ -329,6 +346,38 @@ mod tests {
         assert!(
             surface.connection_fd().is_none(),
             "the mock has no connection for the poll set to watch"
+        );
+    }
+
+    #[test]
+    fn test_mock_surface_records_the_arrow_cursor_installed_on_the_first_show() {
+        let (mut surface, state) = MockSurface::new(64, 32, 1.0);
+        // The cursor is a property of a mapped window, not of the connection: an
+        // unshown surface has installed nothing.
+        {
+            let state = state.lock().expect("the state is not poisoned");
+            assert_eq!(state.cursor_shape, None);
+            assert_eq!(state.cursor_installs, 0);
+        }
+        surface.set_visible(true).expect("the mock maps");
+        {
+            let state = state.lock().expect("the state is not poisoned");
+            assert_eq!(
+                state.cursor_shape,
+                Some(PointerShape::Arrow),
+                "the shown surface carries the arrow the panel is pointed at with"
+            );
+            assert_eq!(state.cursor_installs, 1);
+        }
+        // Hiding and showing again re-sends nothing: the window attribute survived the
+        // unmap, which is the same dedupe the X11 backend runs.
+        surface.set_visible(false).expect("the mock unmaps");
+        surface.set_visible(true).expect("the mock maps again");
+        let state = state.lock().expect("the state is not poisoned");
+        assert_eq!(state.cursor_shape, Some(PointerShape::Arrow));
+        assert_eq!(
+            state.cursor_installs, 1,
+            "a re-shown window re-sends nothing"
         );
     }
 }
