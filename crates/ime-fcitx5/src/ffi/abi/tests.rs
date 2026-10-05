@@ -13,7 +13,7 @@ use ime_types::ImeError;
 
 use crate::ffi::{PanicReport, catch_ffi, guard_ffi, guard_ffi_with};
 
-use super::lifecycle::{PluginContext, Registration, register};
+use super::lifecycle::{PluginContext, Registration, register, rspinyin_config_reload};
 
 use super::*;
 
@@ -337,9 +337,9 @@ fn test_every_ffi_entry_point_runs_under_the_panic_guard() {
         }
     }
     assert_eq!(
-        entries, 13,
+        entries, 14,
         "the entry points this walks are the ones that ship: the nine engine callbacks \
-         and the four exported symbols"
+         and the five exported symbols"
     );
 }
 
@@ -421,6 +421,53 @@ fn test_on_set_preedit_ignores_invalid_buffer_without_panicking() {
     assert!(
         outcome.is_ok(),
         "an invalid preedit must be diagnosed, not panicked"
+    );
+}
+
+#[test]
+fn test_rspinyin_config_reload_without_a_store_or_host_answers_its_documented_value() {
+    // Nothing installed is the state a reload can arrive in: before the steps have run,
+    // or after the shutdown sweep. The slot must not make it a failure — the handler
+    // reports the missing halves on the diagnostic channel and the values in force, the
+    // defaults, are what the broadcast hands on — and it must answer what its contract
+    // documents: the reload ran, so `true`.
+    let _slot = crate::session_host::lock_slot_for_tests();
+    let before = crate::addon::routing_config();
+
+    assert!(
+        rspinyin_config_reload(),
+        "a reload with nothing to re-read still ran, which is what the answer says"
+    );
+    assert_eq!(
+        crate::addon::routing_config(),
+        before,
+        "the table in force is kept when there is no store to re-read"
+    );
+}
+
+/// The C++ translation unit the addon instance lives in.
+///
+/// The `reloadConfig` override is what turns the host's reload action into the export
+/// above, so the wiring exists only in that file's source — there is no Rust-side caller
+/// to drive, and no Fcitx5 to fire the slot in a test.
+const ENGINE_GLUE: &str = include_str!("../cpp/engine_glue.cpp");
+
+#[test]
+fn test_the_engine_glue_overrides_reload_config_and_forwards_the_export() {
+    // The three lines the wiring is made of: the override that gives Fcitx5's virtual a
+    // body, the declaration that makes the forward link, and the call itself. A rename
+    // on either side of the forward fails here instead of at the user's first reload.
+    assert!(
+        ENGINE_GLUE.contains("void reloadConfig() override"),
+        "the addon instance must override the host's reloadConfig slot"
+    );
+    assert!(
+        ENGINE_GLUE.contains("extern \"C\" bool rspinyin_config_reload()"),
+        "the Rust export must be declared in the glue for the forward to link"
+    );
+    assert!(
+        ENGINE_GLUE.contains("rspinyin_config_reload()"),
+        "the override must forward to the Rust export"
     );
 }
 

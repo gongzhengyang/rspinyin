@@ -29,15 +29,21 @@
 //! runs on the Fcitx5 main loop and none of them blocks, allocates without bound or
 //! waits for the candidate window (`ASM-04`).
 //!
-//! # Not installed yet
+//! # Installation
 //!
-//! Nothing installs the host at load: the environment a session decodes against needs the
-//! memory-mapped dictionary and the user-frequency store, and the startup step that
-//! assembles them has not landed. Until it does, every callback answers its documented
-//! safe default — no key is claimed, so nothing is swallowed — and records
-//! [`NO_SESSION_HOST_CODE`] once per window. That is the same behaviour the plugin has
-//! today, which is why the gap is safe to leave open; [`install`] is the seam the step
-//! plugs into.
+//! The `session-host` step of the addon's start-up sequence installs the one host of
+//! this process: `addon::session` assembles the environment a session decodes against —
+//! the decoder, the mapped dictionary, the language model built over it and the user's
+//! frequency store — and hands it to [`install`] together with the privacy state and the
+//! routing configuration the `key-bindings` step projected. Before that step runs, a
+//! callback has nothing to arrive at: it answers its documented safe default — no key is
+//! claimed, so nothing is swallowed — and records [`NO_SESSION_HOST_CODE`] once per
+//! window.
+//!
+//! A second install is refused rather than replacing the first, and reported as a failed
+//! `session-host` step: the router already in the slot is the one a key may be running
+//! through, and swapping it under that key would drop the composition the user is in the
+//! middle of. The refusal is what makes the step idempotent rather than destructive.
 //!
 //! # Threading
 //!

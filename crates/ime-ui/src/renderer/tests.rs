@@ -28,7 +28,7 @@ use slint::platform::software_renderer::PhysicalRegion;
 use slint::{ComponentHandle as _, PhysicalSize};
 
 use super::mock::{MockState, MockSurface, on_own_thread};
-use super::raster::BYTES_PER_PIXEL;
+use super::raster::{BYTES_PER_PIXEL, SHRINK_AFTER_FRAMES};
 use super::{FrameState, RenderOutcome, SlintWindowAdapter};
 use crate::adapter::Adapter;
 use crate::adapter::tests::frame_with;
@@ -456,6 +456,82 @@ fn test_apply_scale_rescales_the_physical_size() {
         .apply_geometry_event(SurfaceEvent::Scale { factor: 0.0 })
         .expect("a degenerate scale is replaced, not rejected");
     assert_eq!(adapter.size(), PhysicalSize::new(160, 64));
+}
+
+/// Feeds an anchor-driven scale change through the poll, as the surface synthesizes one.
+///
+/// The mock adopts the ratio into its own buffers and the platform applies it to the
+/// window, which is the chain a real backend runs; the scratch then follows the size the
+/// window reports, exactly as it follows a resize.
+fn rescale(platform: &RspinyinPlatform, state: &Arc<Mutex<MockState>>, factor: f32) {
+    state
+        .lock()
+        .expect("the mock is not poisoned")
+        .pending
+        .push(SurfaceEvent::Scale { factor });
+    platform
+        .poll_events(&mut Vec::new())
+        .expect("the scale change is applied");
+}
+
+#[test]
+fn test_a_scale_round_trip_gives_the_allocation_back_after_the_streak() {
+    // The peak comes from a scale adoption rather than a resize, which is how the candidate
+    // window actually grows: the anchor's ratio moves every linear extent at once. 3.0 is a
+    // supported ratio whose returned-to frame still fits a quarter of the peak allocation,
+    // so the streak -- not the round trip itself -- decides the shrink, and the frame that
+    // shrinks the scratch must repaint everything, exactly as the resize case must.
+    let shrinking = on_own_thread(|| {
+        let (platform, card, state) = show_card();
+        platform
+            .render_if_dirty()
+            .expect("the first frame is committed");
+        rescale(&platform, &state, 3.0);
+        platform
+            .render_if_dirty()
+            .expect("the frame at the tripled ratio is committed");
+        rescale(&platform, &state, 1.0);
+        let mut highlight = false;
+        let mut shrinking = None;
+        for frame in 1..=SHRINK_AFTER_FRAMES {
+            highlight = !highlight;
+            card.set_highlight(highlight);
+            let outcome = platform
+                .render_if_dirty()
+                .expect("a frame of the shrink streak is committed");
+            if frame == SHRINK_AFTER_FRAMES {
+                shrinking = Some(outcome);
+            }
+        }
+        shrinking
+    });
+    let settled = shrinking.expect("the streak ends in a shrink");
+    let (bounding, rectangles, copies, copy_bytes) = match settled {
+        RenderOutcome::Rendered {
+            bounding,
+            rectangles,
+            copies,
+            copy_bytes,
+        } => (bounding, rectangles, copies, copy_bytes),
+        outcome => panic!("the shrinking frame reaches the surface: {outcome:?}"),
+    };
+    assert_eq!(
+        bounding,
+        RectI {
+            x: 0,
+            y: 0,
+            w: 160,
+            h: 64,
+        },
+        "the frame that gives the scale peak back repaints the whole surface"
+    );
+    assert_eq!(rectangles, 1, "a full repaint is one rectangle");
+    assert_eq!(copies, 1, "and it is carried over in one copy");
+    assert_eq!(
+        copy_bytes,
+        160 * 64 * BYTES_PER_PIXEL as u64,
+        "the copy covers the whole surface: the smaller scratch no longer holds what was shown"
+    );
 }
 
 #[test]

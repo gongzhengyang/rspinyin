@@ -66,6 +66,7 @@ fn state_at(level: LevelFilter) -> Arc<RedactState> {
     Arc::new(RedactState::new(
         level,
         LevelFilter::ERROR,
+        false,
         Some(PathBuf::from(TEST_HOME)),
     ))
 }
@@ -182,6 +183,42 @@ fn test_redact_state_mark_sensitive_session_downgrades_following_events() {
     assert!(
         !text.contains("raw_len") && !text.contains("session=9"),
         "{text}"
+    );
+}
+
+#[test]
+fn test_set_configured_level_follows_the_configuration_and_keeps_the_floor() {
+    // The level a reconfiguration asks for is one atomic store, and it is in force on the
+    // next event -- but the degradation floor `crate::log` decided on at install time is
+    // not the configuration's to move: however quiet a reload asks the process to be, the
+    // floors the degradations imposed stay in force.
+    // A state shaped like the input-content switch's: the DEBUG floor binds upward, so
+    // it is in force from the start -- which is what the real install produces too, by
+    // raising the configured level before the state is built.
+    let state = RedactState::new(LevelFilter::INFO, LevelFilter::DEBUG, false, None);
+    assert_eq!(
+        state.level(),
+        LevelFilter::DEBUG,
+        "the floor opens in force"
+    );
+
+    state.set_configured_level(LevelFilter::TRACE);
+    assert_eq!(
+        state.level(),
+        LevelFilter::TRACE,
+        "the configured level is the one in force"
+    );
+
+    state.set_configured_level(LevelFilter::ERROR);
+    assert_eq!(
+        state.level(),
+        LevelFilter::DEBUG,
+        "and a quiet reload does not take the detail back"
+    );
+    assert_eq!(
+        state.level(),
+        LevelFilter::DEBUG,
+        "the degradation floor is never broken"
     );
 }
 

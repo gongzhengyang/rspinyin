@@ -3,8 +3,10 @@
 //!
 //! Responsibility: read `$XDG_CONFIG_HOME/rspinyin/config.toml` into a [`ConfigStore`],
 //! keep that store in the process-wide slot every later reader goes through, project its
-//! `[keys]` section onto the routing layer's table, and re-read it when the host reports
-//! that the document changed.
+//! `[keys]` section onto the routing layer's table, hand the `[diagnostics]` and `[data]`
+//! sections the engine applies itself to the steps that own them — at load and at every
+//! reload that adopts a document — and re-read the file when the host reports that it
+//! changed.
 //!
 //! Boundaries: `ime-config` owns the document, the merge over the built-in defaults and
 //! the projection; this module owns where the store lives and which steps read it. It never
@@ -27,9 +29,7 @@ use ime_types::ImeError;
 use crate::engine::router::RoutingConfig;
 use crate::ffi::emit_diagnostic;
 
-use super::lock;
-use super::probes;
-use super::report_step_failure;
+use super::{diagnostics, lock, probes, report_step_failure, user_store};
 
 /// The configuration in force: installed by the `config` step, re-read by a reload.
 ///
@@ -97,11 +97,14 @@ pub(super) fn load_config_at(path: Option<&Path>) -> Result<(), ImeError> {
     for warning in &warnings {
         emit_diagnostic(&warning.to_string());
     }
-    // The probes are the one `[diagnostics]` key that can be applied after the fact: the
-    // subscriber is installed before this step runs, so the level and the rolling policy
-    // stay at the documented defaults, while the probe switch is a runtime flag on a
-    // structure that already exists.
+    // The subscriber was installed before this step, deliberately: `tracing` allows one
+    // subscriber per process and the diagnostics step runs first (`BUDGET-LAT-05`). What
+    // this step does with the `[diagnostics]` section is therefore re-aim the policy the
+    // installed sink applies — the level, the rotation size and the kept-file count —
+    // through the handle, which is an atomic swap and no reinstall, and to switch the
+    // probes, which are a runtime flag on a structure that already exists.
     probes::set_enabled(store.current().diagnostics.probes);
+    diagnostics::apply_diagnostics_config(&store.current().diagnostics);
     install_config_store(store);
     Ok(())
 }
@@ -160,8 +163,9 @@ pub(super) fn init_key_bindings() -> Result<(), ImeError> {
 /// and adopts the routing table the new document projects to. The store it re-reads and the
 /// table it replaces are what the steps above install, so this step is where the sequence
 /// records the subscription. The trigger itself is the host's `reloadConfig()` callback,
-/// whose slot this build's ABI does not carry yet; the step reports the gap it is waiting on
-/// and succeeds, because a reload no host can trigger costs the user nothing.
+/// which the glue's override forwards to the `rspinyin_config_reload` export; what the
+/// step's `pending` line says is the one thing still missing, whichever of the two halves
+/// of the subscription that is.
 ///
 /// # Errors
 ///
@@ -172,9 +176,11 @@ pub(super) fn init_key_bindings() -> Result<(), ImeError> {
 /// Never.
 pub(super) fn start_config_watch() -> Result<(), ImeError> {
     // Which half of the subscription is missing, when either is: a build with no store has
-    // nothing to re-read, and one with a store is only waiting for the trigger.
+    // nothing to re-read, and one with a store is wired end to end — the glue's override
+    // reaches the export, the export reaches the reload handler — and only waits for the
+    // host to fire it, which at load time it never yet has.
     let awaiting = if has_config_store() {
-        "the host's reloadConfig callback slot"
+        "the host's first reloadConfig call"
     } else {
         "a configuration store"
     };
@@ -242,6 +248,12 @@ pub(super) fn with_config_store<T>(read: impl FnOnce(&ConfigStore) -> T) -> Opti
 /// configuration and nothing else: the file is never written, a document that cannot be
 /// parsed never replaces one that can, and a composition in progress is never reset.
 ///
+/// What the engine applies itself is applied from the document that was adopted: the
+/// routing table is installed, and the `[diagnostics]` and `[data]` halves the engine
+/// owns are re-aimed in place — the log policy through the diagnostics handle, the
+/// user-store batching window through the store. A document that is kept because it
+/// cannot be parsed replaces nothing, so nothing is re-aimed either.
+///
 /// # Returns
 ///
 /// The routing configuration in force after the reload: the value a caller hands to
@@ -267,10 +279,19 @@ pub fn on_config_reload() -> RoutingConfig {
                 ReloadOutcome::Updated { .. } => Some(RoutingConfig::from_config(store.current())),
                 ReloadOutcome::Unchanged | ReloadOutcome::Kept { .. } => None,
             };
-            (outcome, routing)
+            // The sections the engine applies itself ride along, so they are read from the
+            // document that was adopted rather than fetched again after the lock is
+            // released. Both are `Copy`, so the snapshot is two small values.
+            let applied = match &outcome {
+                ReloadOutcome::Updated { .. } => {
+                    Some((store.current().diagnostics, store.current().data))
+                }
+                ReloadOutcome::Unchanged | ReloadOutcome::Kept { .. } => None,
+            };
+            (outcome, routing, applied)
         })
     };
-    let Some((outcome, routing)) = reloaded else {
+    let Some((outcome, routing, applied)) = reloaded else {
         // Nothing has been read, so nothing can have changed.
         report_step_failure("config-reload", &"no configuration store");
         return routing_config();
@@ -281,6 +302,12 @@ pub fn on_config_reload() -> RoutingConfig {
     };
     for warning in &warnings {
         emit_diagnostic(&warning.to_string());
+    }
+    // `applied` is `Some` exactly when `routing` is — both match the same outcome — so the
+    // adopted document's engine halves land whenever the routing table does.
+    if let Some((diag, data)) = applied {
+        diagnostics::apply_diagnostics_config(&diag);
+        user_store::apply_data_config(&data);
     }
     install_routing_config(routing);
     routing

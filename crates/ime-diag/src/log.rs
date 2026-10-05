@@ -37,7 +37,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use ime_types::ImeError;
 use tracing::Subscriber;
-use tracing::level_filters::LevelFilter;
+// Re-exported so a host crate can spell the level vocabulary this module's API speaks
+// (`DiagConfig::level`, `DiagHandle::reconfigure`) without taking a `tracing`
+// dependency of its own: the host layer maps the configuration's `diagnostics.level`
+// onto these filters when it re-aims the policy.
+pub use tracing::level_filters::LevelFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::registry;
@@ -238,7 +242,12 @@ pub fn init_logging(cfg: &DiagConfig) -> Result<DiagHandle, ImeError> {
     }
 
     let prepared = Prepared::open(cfg);
-    let state = Arc::new(RedactState::new(prepared.level, prepared.floor, home_dir()));
+    let state = Arc::new(RedactState::new(
+        prepared.level,
+        prepared.floor,
+        prepared.log_path.is_none(),
+        home_dir(),
+    ));
     let subscriber = build_subscriber(&prepared, Arc::clone(&state));
     if let Err(err) = tracing::subscriber::set_global_default(subscriber) {
         // Another library claimed the global subscriber first. Clearing the guard

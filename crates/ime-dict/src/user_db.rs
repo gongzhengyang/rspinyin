@@ -63,7 +63,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use ime_types::{DictError, ImeError, UserFreqSource, WordRef};
 use redb::{Database, Durability, ReadableTable, ReadableTableMetadata, TableDefinition};
@@ -73,6 +73,7 @@ use std::cell::Cell;
 
 mod backup;
 mod cache;
+mod clock;
 mod evict;
 mod export;
 mod flush;
@@ -89,6 +90,7 @@ pub use self::backup::{
     BACKUP_SUBDIR, BackupConfig, BackupFile, BackupOutcome, MAX_BACKUP_KEEP, RestoreOutcome,
     backup_dir, list_backups, recover_user_db_with_backup, run_backup,
 };
+pub use self::clock::{Clock, SystemClock};
 pub use self::export::{EXPORT_LIMIT_BYTES, ImportReport};
 pub use self::flush::CommitReport;
 pub use self::manage::{ForgetOutcome, MAX_LIST_LIMIT, UserRecord};
@@ -180,54 +182,6 @@ const USER_WORDS: TableDefinition<&str, (u32, u64)> = TableDefinition::new("user
 const USER_META: TableDefinition<&str, (u64, u64)> = TableDefinition::new("user_meta");
 /// Store-wide markers; version 1 holds only the schema version.
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
-
-/// The time source the store reads.
-///
-/// Injected rather than called directly because the commit interval, the `last_used_ms`
-/// stamps and the idle sweep are all timing decisions, and no test in this workspace may
-/// depend on the wall clock.
-pub trait Clock: Send + Sync {
-    /// Wall-clock milliseconds since the Unix epoch, stored per record.
-    fn now_ms(&self) -> u64;
-    /// Nanoseconds of a monotonic clock; only differences are meaningful.
-    fn now_nanos(&self) -> u64;
-}
-
-/// The clock a running store uses: the system wall clock and a monotonic counter started
-/// when the store was opened.
-#[derive(Debug)]
-pub struct SystemClock {
-    epoch: Instant,
-}
-
-impl SystemClock {
-    /// Starts a clock whose monotonic reading is zero now.
-    pub fn new() -> Self {
-        Self {
-            epoch: Instant::now(),
-        }
-    }
-}
-
-impl Default for SystemClock {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Clock for SystemClock {
-    fn now_ms(&self) -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| {
-                u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-            })
-    }
-
-    fn now_nanos(&self) -> u64 {
-        u64::try_from(self.epoch.elapsed().as_nanos()).unwrap_or(u64::MAX)
-    }
-}
 
 /// Everything the store holds in memory between two flushes.
 #[derive(Debug, Default)]

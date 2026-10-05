@@ -1,14 +1,12 @@
 //! The view's side of the window's shadow material: the geometry
-//! `ui/candidate.slint` declares, and the height of each ramp in
-//! `ui/theme.slint`'s band tables.
+//! `ui/candidate.slint` declares, and how its rings tile the two band tables of
+//! `ui/theme.slint`. Each ramp's height lives only in its table -- the peak scalars
+//! `CandidateMetrics` once declared are gone -- and `slint_palette.rs` holds the
+//! tables to the falloff 3.1.2 describes.
 
 use ime_types::ColorScheme;
 
-use super::{spec, tokens_for};
-use crate::theme::{
-    BlurNegotiation,
-    slint_palette::{SLINT_CANDIDATE, SLINT_THEME, evaluate_bands, rounded_alpha},
-};
+use crate::theme::slint_palette::{SLINT_CANDIDATE, SLINT_THEME, evaluate_bands};
 
 // ---------------------------------------------------------------------------
 // The candidate window's shadow material (3.1.2)
@@ -16,7 +14,8 @@ use crate::theme::{
 //
 // Three files hold one contract: 3.1.2 fixes the geometry, `ui/theme.slint` carries the falloff
 // as per-band colours, and `ui/candidate.slint` tiles it. `slint_palette.rs` pins the ramps'
-// shape; the tests below pin the view's side -- its geometry, and the height of each ramp.
+// shape and height; the tests below pin the view's side -- its geometry, and that the rings
+// tile the tables it paints from.
 
 /// The number `ui/candidate.slint` declares for the `CandidateMetrics` constant `name`.
 ///
@@ -35,21 +34,6 @@ fn candidate_metric(name: &str) -> Option<f32> {
         let digits = value.strip_suffix("px").unwrap_or(value);
         digits.trim().parse::<f32>().ok()
     })
-}
-
-/// The peak alpha of the outer shadow's ramp: `CandidateMetrics.shadow-band-opacity`.
-///
-/// Named rather than passed to [`candidate_metric`] as a string, because this token is the one
-/// the view declares and does not read -- the ramp reaches the rasterizer as the per-band
-/// colours of `Theme.shadow-outer-bands` -- so the pin below is all that holds the two together.
-fn shadow_band_opacity() -> Option<f32> {
-    candidate_metric("shadow-band-opacity")
-}
-
-/// The share of `shadow-inner`'s own alpha the band against the panel carries:
-/// `CandidateMetrics.shadow-inner-opacity`. Named for the reason above.
-fn shadow_inner_opacity() -> Option<f32> {
-    candidate_metric("shadow-inner-opacity")
 }
 
 /// Whether any line of `source` outside a comment mentions `needle`.
@@ -138,7 +122,15 @@ fn test_view_inner_shadow_stays_within_its_two_dp() {
         step * count,
         "and the bands tile the spread exactly"
     );
-    let peak = shadow_inner_opacity().expect("the layer declares a peak");
+    // The layer's peak is the alpha of the band against the panel, read straight out of
+    // the table the view paints from: a fully opaque ring is a drawn line, not an edge
+    // darkening.
+    let inner = evaluate_bands(SLINT_THEME, "shadow-inner-bands", ColorScheme::Dark);
+    let peak = inner
+        .last()
+        .expect("the table holds the band against the panel")
+        .a;
+    let peak = f32::from(peak) / 255.0;
     assert!(
         peak < 1.0,
         "a fully opaque ring is a drawn line, found {peak}"
@@ -194,32 +186,4 @@ fn test_view_shadow_band_counts_match_the_theme_tables() {
             "{scheme:?}: the inner layer tiles the table it paints from"
         );
     }
-}
-
-#[test]
-fn test_view_shadow_peaks_match_the_theme_ramps() {
-    // The height of each ramp is declared twice: as the alpha the band against the panel paints
-    // at in `ui/theme.slint`, and as `shadow-band-opacity` / `shadow-inner-opacity` in the
-    // view. Nothing on the drawing path reads the two tokens, so these assertions are the only
-    // thing that keeps an edit to one of the two copies from being silent.
-    let peak = shadow_band_opacity().expect("the outer layer declares a peak");
-    let outer = evaluate_bands(SLINT_THEME, "shadow-outer-bands", ColorScheme::Dark);
-    assert_eq!(
-        outer.last().map(|band| band.a),
-        Some(rounded_alpha(peak)),
-        "the band against the panel paints at the declared peak"
-    );
-
-    let weight = shadow_inner_opacity().expect("the inner layer declares one");
-    let token = tokens_for(&spec(ColorScheme::Dark), BlurNegotiation::Applied).shadow_inner;
-    let inner = evaluate_bands(SLINT_THEME, "shadow-inner-bands", ColorScheme::Dark);
-    assert_eq!(
-        inner.last().map(|band| band.a),
-        Some(rounded_alpha(f32::from(token.a) / 255.0 * weight)),
-        "the band against the panel carries the declared share of the token"
-    );
-    assert!(
-        inner.first().map(|band| band.a) < inner.last().map(|band| band.a),
-        "and the band outside it is the lighter one"
-    );
 }

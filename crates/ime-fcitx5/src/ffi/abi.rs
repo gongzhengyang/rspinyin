@@ -36,7 +36,8 @@
 //! * `types` — the frozen ABI version, the registration handshake and the `#[repr(C)]`
 //!   payload mirrors.
 //! * `lifecycle` — the plugin context, the handshake's registration with the glue, the
-//!   addon factory, and the addon construction and destruction callbacks.
+//!   addon factory, the addon construction and destruction callbacks, and the export the
+//!   glue's `reloadConfig` override forwards the host's configuration reload to.
 //! * `engine` — the input-method-engine callbacks, which are the host-to-engine
 //!   direction.
 //!
@@ -67,7 +68,8 @@ pub use self::engine::{
     on_key_event, on_reset, on_set_preedit,
 };
 pub use self::lifecycle::{
-    fcitx_addon_factory_instance, on_addon_destroy, on_addon_init, rspinyin_plugin_init,
+    fcitx_addon_factory_instance, on_addon_destroy, on_addon_init, rspinyin_config_reload,
+    rspinyin_plugin_init,
 };
 pub use self::types::{FcitxKeyEvent, RSPINYIN_ABI_VERSION, RspinyinHandshake};
 

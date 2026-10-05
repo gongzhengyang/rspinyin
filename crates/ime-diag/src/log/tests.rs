@@ -254,7 +254,12 @@ fn test_subscriber_writes_redacted_lines_to_the_log_file() {
     let cfg = DiagConfig::new(dir.clone());
     let prepared = Prepared::open(&cfg);
     assert!(matches!(prepared.sink, Sink::File(_)));
-    let state = Arc::new(RedactState::new(prepared.level, prepared.floor, None));
+    let state = Arc::new(RedactState::new(
+        prepared.level,
+        prepared.floor,
+        prepared.log_path.is_none(),
+        None,
+    ));
     let subscriber = build_subscriber(&prepared, Arc::clone(&state));
     let _guard = tracing::subscriber::set_default(subscriber);
 
@@ -305,7 +310,12 @@ fn test_prepare_announces_the_input_content_switch_without_recording_characters(
         ..DiagConfig::new(dir.clone())
     };
     let prepared = Prepared::open(&cfg);
-    let state = Arc::new(RedactState::new(prepared.level, prepared.floor, None));
+    let state = Arc::new(RedactState::new(
+        prepared.level,
+        prepared.floor,
+        prepared.log_path.is_none(),
+        None,
+    ));
     let subscriber = build_subscriber(&prepared, Arc::clone(&state));
     let _guard = tracing::subscriber::set_default(subscriber);
 
@@ -343,7 +353,12 @@ fn test_stderr_fallback_admits_only_warn_and_above() {
         ..DiagConfig::new(dir.clone())
     };
     let prepared = Prepared::open(&cfg);
-    let state = Arc::new(RedactState::new(prepared.level, prepared.floor, None));
+    let state = Arc::new(RedactState::new(
+        prepared.level,
+        prepared.floor,
+        prepared.log_path.is_none(),
+        None,
+    ));
     let subscriber = build_subscriber(&prepared, Arc::clone(&state));
     let _guard = tracing::subscriber::set_default(subscriber);
 
@@ -368,7 +383,12 @@ fn test_zero_trace_scan_finds_no_input_content_in_the_log_or_the_crash_record() 
     let dir = scratch_dir("zero-trace");
     let cfg = DiagConfig::new(dir.clone());
     let prepared = Prepared::open(&cfg);
-    let state = Arc::new(RedactState::new(prepared.level, prepared.floor, None));
+    let state = Arc::new(RedactState::new(
+        prepared.level,
+        prepared.floor,
+        prepared.log_path.is_none(),
+        None,
+    ));
     let subscriber = build_subscriber(&prepared, Arc::clone(&state));
     let _guard = tracing::subscriber::set_default(subscriber);
 
@@ -429,5 +449,116 @@ fn test_zero_trace_scan_finds_no_input_content_in_the_log_or_the_crash_record() 
         log.lines().filter(|line| line.contains("raw_len")).count(),
         1,
         "a sensitive session records no input length:\n{log}"
+    );
+}
+
+// ── reconfiguration ────────────────────────────────────────────────────────────────
+//
+// The configuration step re-aims the installed policy instead of reinstalling the
+// subscriber: the level, the rotation size and the kept-file count are what
+// `DiagHandle::reconfigure` swaps. A handle built beside a `Prepared` is what a test
+// drives, because the subscriber itself is once-per-process.
+
+/// A handle over `prepared`, built the way `init_logging` builds one: the same level
+/// policy and the same sink, minus the once-per-process installation.
+fn handle_of(prepared: &Prepared) -> DiagHandle {
+    DiagHandle {
+        state: Arc::new(RedactState::new(
+            prepared.level,
+            prepared.floor,
+            prepared.log_path.is_none(),
+            None,
+        )),
+        log_path: prepared.log_path.clone(),
+        sink: Some(prepared.sink.clone()),
+    }
+}
+
+#[test]
+fn test_reconfigure_level_follows_the_configuration() {
+    let prepared = Prepared::open(&DiagConfig::new(scratch_dir("reconfigure-level")));
+    let handle = handle_of(&prepared);
+    assert_eq!(
+        handle.level(),
+        LevelFilter::INFO,
+        "the default is in force first"
+    );
+
+    for level in [
+        LevelFilter::ERROR,
+        LevelFilter::WARN,
+        LevelFilter::DEBUG,
+        LevelFilter::TRACE,
+    ] {
+        handle.reconfigure(level, 8, 3);
+        assert_eq!(
+            handle.level(),
+            level,
+            "the level the configuration asks for is the one in force"
+        );
+    }
+
+    handle.reconfigure(LevelFilter::OFF, 8, 3);
+    assert_eq!(
+        handle.level(),
+        LevelFilter::OFF,
+        "`off` means no diagnostics at all"
+    );
+}
+
+#[test]
+fn test_reconfigure_cannot_break_through_a_degradation_floor() {
+    // The two degradations of `open` -- the stderr fallback and the input-content switch
+    // -- are floors: a reconfiguration may quieten or enrich around them and never past
+    // them, which is what keeps a configuration edit from flooding the host's log or
+    // turning the recording of input detail off.
+    let fallback = Prepared::open(&DiagConfig::new(unwritable_log_dir("reconfigure-floor")));
+    let handle = handle_of(&fallback);
+    handle.reconfigure(LevelFilter::TRACE, 1, 2);
+    assert_eq!(handle.level(), LevelFilter::WARN, "the stderr floor holds");
+
+    let switched = Prepared::open(&DiagConfig {
+        log_input_content: true,
+        ..DiagConfig::new(scratch_dir("reconfigure-floor-switch"))
+    });
+    let handle = handle_of(&switched);
+    handle.reconfigure(LevelFilter::ERROR, 1, 2);
+    assert_eq!(
+        handle.level(),
+        LevelFilter::DEBUG,
+        "the input-content floor holds"
+    );
+}
+
+#[test]
+fn test_reconfigure_swaps_a_rolling_policy_the_write_path_enforces() {
+    let dir = scratch_dir("reconfigure-rolling");
+    let prepared = Prepared::open(&DiagConfig::new(dir.clone()));
+    let handle = handle_of(&prepared);
+    let Sink::File(writer) = &prepared.sink else {
+        panic!("the fixture opens a file sink");
+    };
+    let mut sink_writer = writer.clone();
+    write_lines(&mut sink_writer, 3);
+
+    // The reconfigured policy is readable back from the atomics it landed on.
+    handle.reconfigure(LevelFilter::INFO, 1, 2);
+    let file = writer.lock();
+    assert_eq!(
+        file.max_bytes.load(Ordering::Acquire),
+        MEBIBYTE,
+        "one mebibyte, as the configuration asked"
+    );
+    assert_eq!(file.keep_files.load(Ordering::Acquire), 2);
+    drop(file);
+
+    // And the write path enforces it without a restart: fifteen bytes were already in the
+    // file when the policy changed, and the lines that push past the new one-mebibyte
+    // limit roll the active file into a history bounded by the reconfigured count.
+    write_lines(&mut sink_writer, MEBIBYTE as usize / 5);
+    assert_eq!(
+        file_names(&dir),
+        [LOG_FILE_NAME, "rspinyin.log.1"],
+        "the new limit rolled the file and the new count bounds the history"
     );
 }

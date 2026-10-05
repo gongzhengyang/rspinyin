@@ -18,6 +18,7 @@ use super::{Adapter, COMPONENT_FAILED_CODE, PointerState};
 use crate::layout;
 use crate::renderer::mock::{MockState, MockSurface, on_own_thread};
 use crate::slint_platform::RspinyinPlatform;
+use crate::spring::MotionConfig;
 use crate::theme::{BlurNegotiation, ThemeResolution};
 use crate::ui_generated::{PreeditRun, Theme};
 
@@ -138,13 +139,26 @@ fn run_kinds(model: &slint::ModelRc<PreeditRun>) -> Vec<i32> {
 
 /// Builds an adapter on a fresh thread and runs `scene` against it.
 fn with_adapter<R: Send + 'static>(scene: impl FnOnce(&mut Adapter) -> R + Send + 'static) -> R {
+    with_motion_adapter(MotionConfig::default(), scene)
+}
+
+/// Builds an adapter whose motion comes from `motion`, on a fresh thread.
+///
+/// This is the production constructor: the window is parameterized by what
+/// `[ui.animation]` assembled, so a test can drive the configured motion the same way
+/// the addon's start-up does. The plain [`with_adapter`] covers the default settings.
+fn with_motion_adapter<R: Send + 'static>(
+    motion: MotionConfig,
+    scene: impl FnOnce(&mut Adapter) -> R + Send + 'static,
+) -> R {
     on_own_thread(move || {
         let (backend, _state) = MockSurface::new(320, 160, 1.0);
         let platform = RspinyinPlatform::new(Box::new(backend));
         platform
             .install()
             .expect("a fresh thread has no Slint platform yet");
-        let mut adapter = Adapter::new().expect("the component binds to the platform");
+        let mut adapter =
+            Adapter::with_motion(motion).expect("the component binds to the platform");
         scene(&mut adapter)
     })
 }

@@ -5,13 +5,14 @@
 //! reads the motion back through the properties the component holds — the same facts the
 //! renderer draws from. The clock stays out: the tests step `FRAME_S` themselves.
 
+use ime_config::AnimationConfig;
 use ime_types::Placement;
 
-use crate::spring::{PAGE_SLIDE_DP, REST_POSITION_DP};
+use crate::spring::{MotionConfig, PAGE_SLIDE_DP, REST_POSITION_DP};
 
 use super::PointerState;
 use super::pixels::{cell_width, metrics};
-use super::{Adapter, frame_with, with_adapter, with_mapped_adapter};
+use super::{Adapter, frame_with, with_adapter, with_mapped_adapter, with_motion_adapter};
 
 /// The frame rate the motion tests step at, in seconds per frame.
 ///
@@ -197,6 +198,77 @@ fn test_adapter_motion_disabled_lands_on_the_end_values_at_once() {
         "the box is already on the cell the highlight moved to"
     );
     assert!(!animating, "a disabled motion has nothing in flight");
+}
+
+#[test]
+fn test_adapter_motion_config_disabled_lands_on_the_end_values_at_once() {
+    // The configuration path of the same switch: the window is built with what
+    // `[ui.animation]` assembled, so `enabled = false` holds from the first frame
+    // without anybody calling the runtime switch at all.
+    let config = MotionConfig::from_animation(AnimationConfig {
+        enabled: false,
+        omega0: 26.0,
+        zeta: 0.85,
+        appear_ms: 110,
+        disappear_ms: 90,
+    });
+    let (scale, opacity, animating) = with_motion_adapter(config, |adapter| {
+        assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 9)));
+        adapter
+            .set_visible(true)
+            .expect("the surface can be mapped");
+        let animating = adapter.advance(FRAME_S).expect("the motion advances");
+        let window = adapter.window();
+        (
+            window.get_window_scale(),
+            window.get_window_opacity(),
+            animating,
+        )
+    });
+    assert_eq!(scale, 1.0, "the built window does not grow");
+    assert_eq!(opacity, 1.0, "and it does not fade in");
+    assert!(!animating, "a disabled motion has nothing in flight");
+}
+
+#[test]
+fn test_adapter_motion_config_scale_spring_drives_the_window_scale() {
+    // Two builds of the window whose only difference is the configured omega0: the
+    // stiffer fade spring is further into the grow at the same slice of the appear
+    // window, and both land exactly on the full size when their window closes.
+    let run = |omega0: f32| {
+        let config = MotionConfig::from_animation(AnimationConfig {
+            enabled: true,
+            omega0,
+            zeta: 1.0,
+            appear_ms: 110,
+            disappear_ms: 90,
+        });
+        with_motion_adapter(config, |adapter| {
+            assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 9)));
+            adapter
+                .set_visible(true)
+                .expect("the surface can be mapped");
+            adapter.advance(0.0).expect("the motion advances");
+            for _ in 0..6 {
+                adapter.advance(FRAME_S).expect("the motion advances");
+            }
+            let mid = adapter.window().get_window_scale();
+            while adapter.advance(FRAME_S).expect("the motion advances") {}
+            (mid, adapter.window().get_window_scale())
+        })
+    };
+    let (stiff_mid, stiff_end) = run(60.0);
+    let (soft_mid, soft_end) = run(12.0);
+    assert!(
+        stiff_mid > soft_mid,
+        "the stiffer spring grows faster, got {stiff_mid} vs {soft_mid}"
+    );
+    assert!(
+        soft_mid > 0.96,
+        "the soft spring has left its starting scale, got {soft_mid}"
+    );
+    assert_eq!(stiff_end, 1.0, "the window closes on the full size");
+    assert_eq!(soft_end, 1.0, "and so does the slow one, exactly");
 }
 
 #[test]

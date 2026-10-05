@@ -159,7 +159,7 @@ directory. It is written with every key present and a comment above each one the
 time the plugin starts without one, so the file is its own documentation.
 
 ```toml
-schema_version = 1
+schema_version = 2
 
 [engine]
 punct_mode = "chinese"          # "chinese" or "english"
@@ -167,36 +167,68 @@ full_width = false
 auto_english_on_uppercase = true
 passthrough_url = true
 max_raw_len = 64                # 1..=64
+verify_dict_on_load = "full"    # "full" or "header"
+abbrev = false                  # `nh` reaches `你好`
 
 [ui]
 client_preedit = false          # show the composing text in the application instead
 max_per_row = 5                 # 3..=9
+show_annotation = true          # word annotation beside each candidate
 max_width_dp = 720              # 220..=1200
-base_alpha = 217                # 0..=255
+corner_radius_dp = 12           # 8..=20
+base_alpha = 217                # 0..=255; 217 is 0.85
+
+[ui.animation]
+enabled = true
+omega0 = 26.0                   # 4.0..=80.0 rad/s
+zeta = 0.85                     # 0.3..=2.0
+appear_ms = 110                 # 0..=600 ms
+disappear_ms = 90               # 0..=600 ms
 
 [theme]
 scheme = "auto"                 # "auto", "light" or "dark"
-accent = "#4C9AFF"
+accent = "#4C9AFF"              # #RRGGBB
 
 [keys]
 digit_zero = "passthrough"      # "passthrough" or "flip"
-flip_keys = ["minus", "equal", "up", "down"]
+enter_commit_raw = false        # Enter commits the raw input, not the highlight
+flip_keys = ["minus", "equal", "up", "down", "home", "end"]
 highlight_keys = ["tab", "shift_tab"]
+
+[scheme]
+scheme = "full"                 # "full", or a double-pinyin layout
+show_hint = true                # name the layout in the window's header
+keep_full_pinyin = true
+
+[phrases]
+enabled = true
+file = ""                       # empty: the default location
+max_entries = 5000              # 1..=50000
 
 [data]
 durability = "eventual"         # "eventual" batches writes, "immediate" flushes each
+backup_enabled = true           # copy the learned words automatically
+backup_keep = 3                 # 1..=32 generations
 
 [diagnostics]
-level = "info"
+level = "info"                  # "error" .. "trace"
 log_rotation_mb = 8
 log_keep_files = 3
+log_input_content = false       # accepted, no effect: input is never logged
+probes = true
 ```
 
 Every key is optional: an absent key keeps the built-in default shown above. The file
-is read at startup and again whenever Fcitx5 asks the addon to reload, and a change
-takes effect on the next keystroke without a restart. A file that cannot be read or
-parsed never stops the input method: the configuration already in force is kept, the
-reason is reported in the log, and an in-progress composition is never reset.
+is read when the plugin starts and re-read when Fcitx5 triggers a configuration
+reload — Fcitx5's own reload action applies a change the moment it runs. Every key of
+the generated file states in its comment how a change takes effect: on a reload, at
+the next Fcitx5 restart for the settings read once at start-up, or not yet, for the
+handful this build accepts but does not read. A build whose host glue carries no
+reload callback cannot re-read the file at all: an edit there waits for the next
+Fcitx5 restart, and the log reports the gap as `lifecycle/pending`. A file that
+cannot be read or parsed never stops the input method: the configuration already in
+force is kept, the reason is reported in the log, and an in-progress composition is
+never reset.
 
 ## Architecture
 
@@ -229,7 +261,7 @@ Under the hood the workspace is a set of small crates with one-way dependencies
   function with no filesystem, clock or environment.
 - `ime-dict` owns the dictionary format, the `mmap`-backed lexicon and the user
   frequency store.
-- `ime-config` is the TOML model, the loader and the hot reload.
+- `ime-config` is the TOML model, the loader and the host-triggered reload.
 - `ime-ui` is the view layer: geometry, theme, spring animation, software raster, and
   the X11 and Wayland backends.
 - `ime-fcitx5` and `ime-ui-addon` are the two C ABI layers, one per shared object.

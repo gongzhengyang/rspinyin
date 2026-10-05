@@ -57,6 +57,7 @@
 #include <vector>
 
 #include <fcitx-utils/key.h>
+#include <fcitx-utils/log.h>
 #include <fcitx/addoninstance.h>
 #include <fcitx/addonmanager.h>
 #include <fcitx/event.h>
@@ -178,6 +179,14 @@ fcitx::InputContext *resolveContext(std::uint64_t context_id) {
 }
 
 } // namespace rspinyin
+
+// ── The Rust export the host's reload action travels through ────────────────────
+//
+// The addon's `reloadConfig` override below forwards into this function. It is linked
+// directly, like `rspinyin_plugin_init` in `addon_glue.cpp`: both halves of the call
+// live in one cdylib. The symbol travels the ADR-0011 append-only path — an added
+// export, not a callback-table slot — so the ABI version does not move.
+extern "C" bool rspinyin_config_reload();
 
 namespace {
 
@@ -383,6 +392,25 @@ public:
     /// whose initialisation declined part-way is released exactly like one that
     /// completed.
     ~RspinyinAddon() override { rspinyin::stopPlugin(); }
+
+    /// Reloads the configuration, on the host's request.
+    ///
+    /// `fcitx::AddonInstance::reloadConfig()` is the slot Fcitx5 fires when its own
+    /// reload action runs (`fcitx5-remote --reload`, or an apply from the
+    /// configuration tools); overriding it here is what turns that action into a
+    /// re-read instead of the base class's silent default. The virtual answers void,
+    /// so the boolean the Rust entry returns is logged rather than mapped: `false`
+    /// means the entry did not run to completion, and the condition it names is
+    /// already on the diagnostic channel the Rust side keeps. The work is the re-read
+    /// of one small TOML document on this thread — the same bounded read Fcitx5's own
+    /// reload performs.
+    void reloadConfig() override {
+        if (rspinyin_config_reload()) {
+            FCITX_INFO() << "rspinyin: configuration reloaded";
+        } else {
+            FCITX_WARN() << "rspinyin: configuration reload did not run to completion";
+        }
+    }
 };
 
 // The invariant the whole file exists for: an instance that is not an

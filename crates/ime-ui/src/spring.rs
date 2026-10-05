@@ -43,8 +43,10 @@
 //! | Highlight slide | `omega0 = 26.0`, `zeta = 0.85`, `m = 1.0` |
 //! | Page slide | `omega0 = 32.0`, `zeta = 0.90`, `m = 1.0`, travel `12dp` |
 //! | Window resize | `omega0 = 30.0`, `zeta = 0.92`, `m = 1.0` |
-//! | Appear | `110ms`, `cubic-bezier(0.22, 1.0, 0.36, 1.0)`, scale `0.96 -> 1.0` |
-//! | Disappear | `90ms`, `cubic-bezier(0.4, 0.0, 1.0, 1.0)`, scale `1.0 -> 0.98` |
+//! | Appear | `110ms` window; opacity on the designed bezier, scale on the
+//!   `[ui.animation]` spring |
+//! | Disappear | `90ms` window; opacity on the designed bezier, scale on the
+//!   `[ui.animation]` spring |
 //! | Status icon, theme | `120ms`, `ease-in-out` |
 //! | Press sink | `omega0 = 130.0`, `zeta = 1.0`, `m = 1.0`, scale `1.0 -> 0.985` |
 //!
@@ -63,9 +65,11 @@ pub use self::highlight::{HighlightAnim, HighlightRect, HighlightStep, union_rec
 pub use self::press::{PRESS_OMEGA0, PRESS_SCALE_TO, PRESS_ZETA, PressSpring};
 pub use self::set::{AnimationSet, FrameMotion};
 pub use self::transition::{
-    AppearAnim, Blend, BlendTransition, CROSSFADE_S, CubicBezier, TRANSPARENT, TimedTransition,
+    AppearAnim, Blend, BlendTransition, CROSSFADE_S, CubicBezier, Easing, SpringEase, TRANSPARENT,
+    TimedTransition,
 };
 
+use ime_config::AnimationConfig;
 use ime_types::PageDir;
 
 /// The largest time step the integrator will accept, in seconds.
@@ -100,6 +104,14 @@ pub const RESIZE_OMEGA0: f32 = 30.0;
 
 /// Damping ratio of the window-resize spring.
 pub const RESIZE_ZETA: f32 = 0.92;
+
+/// Natural frequency of the scale spring the appear and disappear fades run on, in
+/// rad/s. It is the built-in default of `[ui.animation]`'s `omega0`.
+pub const SCALE_OMEGA0: f32 = 26.0;
+
+/// Damping ratio of the scale spring the appear and disappear fades run on. It is the
+/// built-in default of `[ui.animation]`'s `zeta`.
+pub const SCALE_ZETA: f32 = 0.85;
 
 /// The mass every spring in the window runs with.
 pub const DEFAULT_MASS: f32 = 1.0;
@@ -148,6 +160,15 @@ impl SpringParams {
     pub const RESIZE: Self = Self {
         omega0: RESIZE_OMEGA0,
         zeta: RESIZE_ZETA,
+        mass: DEFAULT_MASS,
+    };
+
+    /// The spring that carries the window's scale through the appear and disappear
+    /// fades. `[ui.animation]`'s `omega0` and `zeta` replace it in a
+    /// configuration-assembled [`MotionConfig`].
+    pub const SCALE: Self = Self {
+        omega0: SCALE_OMEGA0,
+        zeta: SCALE_ZETA,
         mass: DEFAULT_MASS,
     };
 
@@ -348,18 +369,25 @@ impl Spring1D {
 /// The motion settings the window runs on.
 ///
 /// The fields mirror `[ui.animation]` after validation: `enabled` switches every
-/// motion off, `spring` carries the frequency and damping the user may tune, and the
-/// two durations are the appear and disappear times. The page-slide and resize
-/// springs are not configurable and are not here.
+/// motion off, `scale_spring` carries the frequency and damping the configuration
+/// tunes the scale half of the appear and disappear fades with, and the two durations
+/// are the appear and disappear windows. The highlight, page and resize springs are
+/// the design's, so `spring` is [`SpringParams::HIGHLIGHT`] in any value
+/// [`MotionConfig::from_animation`] assembles.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MotionConfig {
     /// Whether the window animates at all.
     pub enabled: bool,
-    /// The highlight-slide spring.
+    /// The highlight-slide spring. The design fixes it; the configuration never
+    /// reaches it.
     pub spring: SpringParams,
-    /// The appear duration, in seconds.
+    /// The spring that carries the window's scale through the appear and disappear
+    /// fades. `omega0` and `zeta` assemble it; the opacity fades keep the designed
+    /// curves.
+    pub scale_spring: SpringParams,
+    /// The appear fade's window, in seconds. Zero shows the window at once.
     pub appear_s: f32,
-    /// The disappear duration, in seconds.
+    /// The disappear fade's window, in seconds. Zero hides it at once.
     pub disappear_s: f32,
 }
 
@@ -368,6 +396,7 @@ impl Default for MotionConfig {
         Self {
             enabled: true,
             spring: SpringParams::HIGHLIGHT,
+            scale_spring: SpringParams::SCALE,
             appear_s: transition::APPEAR_S,
             disappear_s: transition::DISAPPEAR_S,
         }
@@ -375,6 +404,22 @@ impl Default for MotionConfig {
 }
 
 impl MotionConfig {
+    /// Assembles the motion settings from the `[ui.animation]` section.
+    ///
+    /// `omega0` and `zeta` become the fade's scale spring and the millisecond durations
+    /// become seconds; the highlight slide keeps its built-in spring, which is why the
+    /// section has no key for it. A zero duration survives as zero, the direct-show and
+    /// direct-hide semantics.
+    pub fn from_animation(animation: AnimationConfig) -> Self {
+        Self {
+            enabled: animation.enabled,
+            spring: SpringParams::HIGHLIGHT,
+            scale_spring: SpringParams::from_config(animation.omega0, animation.zeta),
+            appear_s: f32::from(animation.appear_ms) / 1000.0,
+            disappear_s: f32::from(animation.disappear_ms) / 1000.0,
+        }
+    }
+
     /// Every motion completes instantly.
     ///
     /// This is the `enabled = false` path and the path a visual regression
@@ -716,5 +761,40 @@ mod tests {
             "the resize spring settled in {measured_ms}ms, far off its 140ms allotment"
         );
         assert_eq!(spring.x, 0.0);
+    }
+
+    #[test]
+    fn test_motion_config_from_animation_maps_every_key() {
+        // The highlight slide is the design's: the section has no key for it, so an
+        // assembled config carries the built-in preset whatever omega0 says, while
+        // omega0 and zeta land on the fade's scale spring.
+        let config = MotionConfig::from_animation(AnimationConfig {
+            enabled: true,
+            omega0: 40.0,
+            zeta: 1.2,
+            appear_ms: 220,
+            disappear_ms: 0,
+        });
+        assert!(config.enabled);
+        assert_eq!(config.spring, SpringParams::HIGHLIGHT);
+        assert_eq!(config.scale_spring, SpringParams::from_config(40.0, 1.2));
+        assert_eq!(config.appear_s, 0.22);
+        assert_eq!(
+            config.disappear_s, 0.0,
+            "a zero duration keeps its direct-hide semantics"
+        );
+
+        // The built-in default is the section's own default: a window built without a
+        // document moves exactly like one built from the shipped values.
+        let shipped = MotionConfig::from_animation(AnimationConfig {
+            enabled: true,
+            omega0: SCALE_OMEGA0,
+            zeta: SCALE_ZETA,
+            appear_ms: 110,
+            disappear_ms: 90,
+        });
+        assert_eq!(shipped, MotionConfig::default());
+        assert_eq!(shipped.appear_s, transition::APPEAR_S);
+        assert_eq!(shipped.disappear_s, transition::DISAPPEAR_S);
     }
 }

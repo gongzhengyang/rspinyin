@@ -102,3 +102,13 @@ void rspinyin_engine_clear_ui_sinks(void);
 **③ 回程的符号与出口（对决策 3 预告的落地裁决）。** 决策 3 曾预告引擎追加注册符号 `rspinyin_engine_register_event_ingest`。实际落库**不需要**该注册符号：引擎直接导出 `rspinyin_event_ingest(ic_id, *const RspinyinEventWire) -> bool`（guard 包裹，仅可由主循环线程调用；kind 4 转写进 `session_host::set_anchor`，其余经 `session_host::ui_event`），UI 侧 glue 用与帧握手相同的三机制探测按名解析它——一次握手流程、一个导出符号，无需引擎侧再开槽位。`Anchor` kind 的锚点上行随之落库于引擎半侧；候选窗回调里的解析-上行生产者（`ime-ui-addon` 的 caret 回调）与 `events` 模块的挂载属下一批主 Agent 变更，不在本 ADR 的形状裁决范围内。
 
 **④ 回程出口与遗留项。** 排空线程与主循环线程之间的编组点为 UI glue 的事件出口：`rspinyin_ui_event_outlet_arm/disarm/post/flush`（C++，`ui_addon_glue.cpp`，上限 64 条、leaf 锁、ingest 指针随传输注销一并清除）。排空线程 `post` 入队；主循环线程在宿主派发的 UI 回调处 `flush`。**遗留（明示）：** 尚无让空闲主循环立即出队所需的唤醒源（一次 `Instance::eventLoop()` 的 defer/post 事件），其 5.1.7 签名必须按装机头文件落笔、`check-host` 实证——在此之前，排队事件于下一次宿主派发时到达引擎。此项为事件回程 E2E（点选即上屏）验收前必须补齐的最后一块。
+
+### 修订 2（2026-10-05）：配置热重载的触发符号（`rspinyin_config_reload`）
+
+**⑤ `reloadConfig` 宿主槽位的导出符号。** fcitx5 的 `AddonInstance::reloadConfig()` 虚函数（5.1.7 头文件，带默认实现，实测证据见 `docs/dev/spikes/abi-spike.md` §1(c)）是宿主重载动作（`fcitx5-remote --reload`、配置工具的应用）到达插件的唯一槽位。沿决策 3 的「只增不改」路径追加一个导出符号，不动 vtable、不 bump `RSPINYIN_ABI_VERSION`：
+
+| 符号 | 形状 | 语义 |
+|---|---|---|
+| `rspinyin_config_reload` | `extern "C" bool rspinyin_config_reload(void)` | guard 包裹；内部调 `on_config_reload()`（re-read 文档、`report_reload` 诊断行、投影并安装新 `RoutingConfig`），再把生效的 `RoutingConfig` 经 `session_host::reload` 广播到每个活跃会话（组合不重置，0.4 规则 10）。`true` = 重载序列完整执行；`false` = guard 兜底（入口 panic）。无配置库、无会话宿主等降级照旧走既有诊断行（`lifecycle/step-failed: config-reload`、`ffi/no-session-host`），不经返回值表达。 |
+
+C++ 侧由 `engine_glue.cpp`（addon 子类 `RspinyinAddon` 所在翻译单元——`addon_glue.cpp` 只持工厂，不含实例类）override `reloadConfig()` 转发该符号，链接方式与 `rspinyin_plugin_init` 相同（同库直连）；fcitx5 的虚函数返回 `void`，布尔只用于 glue 日志（INFO=已重载 / WARN=未完整执行）。广播的 host 边界复用 `with_host` 构造、绑定保留的「无输入上下文」id 0——重载的效应只有窗口命令，不带上下文身份。

@@ -1,4 +1,4 @@
-//! The floating highlight box and the damage it leaves behind.
+//! The floating highlight box.
 //!
 //! The highlight is not the background of a candidate cell: it is one rectangle
 //! floating above the grid, driven by four independent springs, so that a cross-row
@@ -6,10 +6,11 @@
 //! reshapes rather than sliding, and mid-flight it overlaps two cells -- which is
 //! exactly what the motion is meant to look like.
 //!
-//! This module also owns the *damage* the motion produces. Redrawing the whole
-//! window on every step of a 181ms slide would eat the raster budget several times
-//! over, so a step reports the union of where the box was and where it is now, and
-//! nothing else.
+//! A step reports where the box is and whether the motion has settled, and nothing
+//! else. The damage a frame leaves is the renderer's business (`crate::renderer`'s
+//! `record_damage`): the region Slint reports as actually drawn is the ground truth
+//! for what has to be copied, and a damage prediction computed here could only
+//! disagree with it.
 
 use ime_types::RectI;
 
@@ -26,7 +27,8 @@ const MAX_COORD_DP: f32 = 1.0e6;
 ///
 /// The springs integrate in dp because that is the unit the `.slint` properties and
 /// the configured layout are expressed in; the conversion to physical pixels happens
-/// once, in [`HighlightRect::bounds`], at the point where a damage region is needed.
+/// in [`HighlightRect::bounds`], which rounds outward so a region built from it
+/// always covers the box.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HighlightRect {
     /// Left edge, in dp.
@@ -115,10 +117,6 @@ pub struct HighlightStep {
     /// The rectangle to draw this frame, in dp; this is what the `.slint` properties
     /// take.
     pub rect: HighlightRect,
-    /// The region that must be redrawn, in physical pixels. `None` when the box did
-    /// not move, so the previous frame's pixels still stand and there is nothing to
-    /// do.
-    pub damage: Option<RectI>,
     /// Whether all four springs are at rest after this step.
     pub settled: bool,
 }
@@ -136,9 +134,6 @@ pub struct HighlightAnim {
     w: Spring1D,
     h: Spring1D,
     visible: bool,
-    /// The bounds drawn last frame, so the next step can report the union. `None`
-    /// until the box has been drawn once.
-    drawn: Option<RectI>,
 }
 
 impl HighlightAnim {
@@ -155,7 +150,6 @@ impl HighlightAnim {
             w: Spring1D::new(omega0, zeta, mass, rect.w),
             h: Spring1D::new(omega0, zeta, mass, rect.h),
             visible: false,
-            drawn: None,
         }
     }
 
@@ -204,7 +198,6 @@ impl HighlightAnim {
         self.visible = visible;
         if !visible {
             self.snap();
-            self.drawn = None;
         }
     }
 
@@ -233,20 +226,24 @@ impl HighlightAnim {
         self.x.is_settled() && self.y.is_settled() && self.w.is_settled() && self.h.is_settled()
     }
 
-    /// Advances the box by `dt` and reports what has to be redrawn.
+    /// Advances the box by `dt` and reports where it is.
     ///
     /// All four springs advance on every frame even when the first of them is
     /// already at rest: short-circuiting the sequence would freeze whichever
     /// components came after it, which is a box that slides horizontally while its
     /// height stays stuck at the previous cell's.
-    pub fn step(&mut self, dt: f32, scale: f32) -> HighlightStep {
+    ///
+    /// `_scale` is accepted and ignored. The damage report this parameter once fed --
+    /// the union of the box's previous and current pixel bounds -- was a prediction,
+    /// and the renderer's own region is the ground truth for what a frame changed
+    /// (`crate::renderer`'s `record_damage`). The parameter stays so that every step
+    /// in `super` keeps one shape for the callers that advance the whole set.
+    pub fn step(&mut self, dt: f32, _scale: f32) -> HighlightStep {
         if !self.visible {
-            // A hidden box neither moves nor leaves a trail; the window-level fade
-            // owns the pixels it used to occupy.
-            self.drawn = None;
+            // A hidden box does not move; the window-level fade owns the pixels it
+            // used to occupy.
             return HighlightStep {
                 rect: self.rect(),
-                damage: None,
                 settled: true,
             };
         }
@@ -254,23 +251,8 @@ impl HighlightAnim {
         let settled_y = self.y.step(dt);
         let settled_w = self.w.step(dt);
         let settled_h = self.h.step(dt);
-        let rect = self.rect();
-        let bounds = rect.bounds(scale);
-        // Damage is the union of where the box was and where it is now: anything
-        // smaller leaves a smear along the trailing edge, anything larger spends
-        // raster time on pixels that did not change.
-        let damage = if self.drawn == Some(bounds) {
-            None
-        } else {
-            Some(match self.drawn {
-                Some(previous) => union_rects(previous, bounds),
-                None => bounds,
-            })
-        };
-        self.drawn = Some(bounds);
         HighlightStep {
-            rect,
-            damage,
+            rect: self.rect(),
             settled: settled_x && settled_y && settled_w && settled_h,
         }
     }
@@ -359,59 +341,20 @@ mod tests {
     }
 
     #[test]
-    fn test_highlight_step_reports_damage_covering_old_and_new_bounds() {
-        let mut anim = HighlightAnim::new(highlight_params(), cell(0.0, 0.0));
-        anim.set_visible(true);
-        anim.retarget(cell(0.0, 1.0));
-        let mut previous = anim.rect();
-        let mut widest = 0u64;
-        let mut frame = 0u32;
-        loop {
-            let step = anim.step(FRAME_S, 1.0);
-            frame += 1;
-            assert!(frame < 1_000, "the highlight must settle");
-            // A frame whose sub-pixel movement stays inside the same integer bounds
-            // reports no damage at all, which is the point of rounding outward: the
-            // caller gets `None` rather than a one-pixel repaint.
-            if let Some(damage) = step.damage {
-                let union = union_rects(previous.bounds(1.0), step.rect.bounds(1.0));
-                let damaged_area = u64::from(damage.w) * u64::from(damage.h);
-                let union_area = u64::from(union.w) * u64::from(union.h);
-                assert!(
-                    damaged_area as f64 <= union_area as f64 * 1.2,
-                    "damage {damaged_area}px^2 exceeds the union {union_area}px^2 by over 20%"
-                );
-                widest = widest.max(damaged_area);
-            }
-            previous = step.rect;
-            if step.settled {
-                break;
-            }
-        }
-        assert!(widest > 0, "a box that moved must have been damaged");
-        // One cell tall plus one cell of travel, not the whole 600x140dp window.
-        assert!(
-            widest <= 88 * 62,
-            "the worst damage was {widest}px^2, which is more than the box's path"
-        );
-    }
-
-    #[test]
-    fn test_highlight_settled_box_reports_no_damage() {
+    fn test_highlight_settled_box_steps_without_motion() {
         let mut anim = HighlightAnim::new(highlight_params(), cell(0.0, 0.0));
         anim.set_visible(true);
         anim.retarget(cell(1.0, 0.0));
         settle(&mut anim, 1.0);
         let idle = anim.step(FRAME_S, 1.0);
-        assert_eq!(idle.damage, None, "a resting box redraws nothing");
-        assert!(idle.settled);
+        assert!(idle.settled, "a resting box reports a settled step");
+        assert_eq!(idle.rect, cell(1.0, 0.0), "and it stays on the cell");
     }
 
     #[test]
-    fn test_highlight_hidden_box_neither_moves_nor_damages() {
+    fn test_highlight_hidden_box_neither_moves_nor_animates() {
         let mut anim = HighlightAnim::new(highlight_params(), cell(0.0, 0.0));
         let step = anim.step(FRAME_S, 1.0);
-        assert_eq!(step.damage, None);
         assert!(step.settled, "a hidden box is never animating");
 
         // While hidden a redirect is a jump, so the next appearance cannot drift in

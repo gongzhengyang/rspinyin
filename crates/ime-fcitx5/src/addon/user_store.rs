@@ -31,26 +31,31 @@
 //!
 //! # Where the store lives
 //!
-//! The directory is the `data-dirs` step's layout, and the backup policy is the backup
-//! module's default — one day apart, three generations kept. The `[data]` keys of the
-//! configuration document are not applied yet: the policy is read here, before the
-//! `config` step has installed the store that carries them.
+//! The directory is the `data-dirs` step's layout. The `[data]` keys of the configuration
+//! document are in force by the time this step runs — the `config` step precedes it in the
+//! sequence — so the store is adopted under the policy they name: the backup policy is
+//! assembled from `backup_enabled` and `backup_keep`, and `durability` is applied to the
+//! store's batching window through `UserDb::set_flush_window`, the parameter channel the
+//! reload path re-aims as well. An environment with no configuration directory leaves the
+//! built-in defaults in force, which is what a fresh installation runs with.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+use ime_config::{DataConfig, Durability};
 use ime_dict::paths::READONLY_CODE;
 use ime_dict::recover::USER_DB_RECOVERED_CODE;
 use ime_dict::user_db::{
-    BACKUP_FAILED_CODE, BACKUP_RESTORED_CODE, BackupConfig, BackupOutcome, Clock, LARGE_STORE_CODE,
-    RestoreOutcome, SLOW_DISK_CODE, SystemClock, UserDb, backup_dir, list_backups,
-    recover_user_db_with_backup, run_backup,
+    BACKUP_FAILED_CODE, BACKUP_RESTORED_CODE, BackupConfig, BackupOutcome, COMMIT_BATCH,
+    COMMIT_INTERVAL_MS, Clock, LARGE_STORE_CODE, RestoreOutcome, SLOW_DISK_CODE, SystemClock,
+    UserDb, backup_dir, list_backups, recover_user_db_with_backup, run_backup,
 };
 use ime_types::ImeError;
 
 use crate::ffi::emit_diagnostic;
 
+use super::config::with_config_store;
 use super::layout;
 use super::lock;
 use super::report_step_failure;
@@ -71,8 +76,9 @@ pub(super) struct UserStore {
     pub(super) db: Mutex<UserDb>,
     /// The backup policy: how many generations are kept, and how far apart they are.
     ///
-    /// The directory is [`backup_dir`] of the data directory; the rest is the backup
-    /// module's default until the configuration step reads the `[data]` keys.
+    /// Assembled from the `[data]` section the `config` step has already installed —
+    /// see [`backup_policy`]. The policy is read when the store is adopted, because the
+    /// shutdown path reads it through the store handle the sessions share.
     pub(super) backup: BackupConfig,
 }
 
@@ -143,6 +149,11 @@ pub(super) fn recover_stores() -> Result<(), ImeError> {
         report_step_failure("store-recovery", &"no data directory");
         return Ok(());
     };
+    // The `[data]` section is in force by now — the `config` step precedes this one in the
+    // sequence — so the store is adopted under the policy it names. An environment with no
+    // configuration directory leaves the built-in defaults in force, which is what a fresh
+    // installation runs with.
+    let data = with_config_store(|store| store.current().data).unwrap_or_default();
     let directory = backup_dir(&paths.data_dir);
     match recover_store(&paths.user_db, &directory) {
         Ok(outcome) => emit_notice(restore_notice(outcome)),
@@ -157,12 +168,81 @@ pub(super) fn recover_stores() -> Result<(), ImeError> {
             }
             install_user_store(UserStore {
                 db: Mutex::new(db),
-                backup: BackupConfig::new(directory),
+                backup: backup_policy(&data, &directory),
             });
+            apply_data_config(&data);
         }
         Err(error) => report_step_failure("store-recovery", &error),
     }
     Ok(())
+}
+
+/// The backup policy the `[data]` section names, over `directory`.
+///
+/// `backup_enabled = false` is the backup module's disabled policy, which writes nothing
+/// and does not even create the directory; `backup_keep` is carried through
+/// `with_keep`, whose clamp is the second line of defence behind the configuration
+/// layer's `1..=MAX_BACKUP_KEEP` repair. The interval between generations is the backup
+/// module's own — the schema names no key for it.
+///
+/// # Panics
+///
+/// Never.
+fn backup_policy(data: &DataConfig, directory: &Path) -> BackupConfig {
+    let policy = if data.backup_enabled {
+        BackupConfig::new(directory)
+    } else {
+        BackupConfig::disabled(directory)
+    };
+    policy.with_keep(data.backup_keep)
+}
+
+/// The batching window a `data.durability` value names, as [`UserDb::set_flush_window`]
+/// takes it.
+///
+/// `eventual` is the shipped window: the batch trigger at [`COMMIT_BATCH`] distinct keys
+/// or [`COMMIT_INTERVAL_MS`] of typing, whichever first. `immediate` is the zero window:
+/// one record and no delay, so every commit is handed to the flush thread as it happens
+/// and a graceful shutdown's flush has nothing left to write. The record path itself never
+/// changes — the window is the store's own trigger parameters, not a new path, and the
+/// host thread stays as unblocked as it was.
+///
+/// # Panics
+///
+/// Never.
+fn flush_window(durability: Durability) -> (usize, u64) {
+    /// The record count the immediate window batches: one, so nothing accumulates.
+    const IMMEDIATE_BATCH: usize = 1;
+    /// The delay the immediate window allows: none.
+    const IMMEDIATE_INTERVAL_MS: u64 = 0;
+
+    match durability {
+        Durability::Eventual => (COMMIT_BATCH, COMMIT_INTERVAL_MS),
+        Durability::Immediate => (IMMEDIATE_BATCH, IMMEDIATE_INTERVAL_MS),
+    }
+}
+
+/// Applies the `[data]` keys the engine can re-aim while it runs.
+///
+/// `data.durability` is live: the batching window lives in atomics the record path reads
+/// per record, so a load and a reload both land without disturbing a session. The two
+/// backup keys are deliberately absent here — the backup policy is a value the shutdown
+/// path reads through the store handle the sessions share, so it is assembled when the
+/// recovery step adopts the store ([`recover_stores`]) and a reload that edits it takes
+/// effect the next time the store is adopted.
+///
+/// With no store installed — the recovery step has not adopted one, or the environment
+/// has no data directory — there is nothing to apply and this is a no-op.
+///
+/// # Panics
+///
+/// Never.
+pub(super) fn apply_data_config(data: &DataConfig) {
+    let Some(store) = user_store() else {
+        return;
+    };
+    let (batch, interval_ms) = flush_window(data.durability);
+    lock(&store.db).set_flush_window(batch, interval_ms);
 }
 
 /// Wall-clock milliseconds since the Unix epoch: the stamp a generation is named after.
@@ -342,5 +422,75 @@ pub(super) fn start_shutdown_backup(
             report_step_failure("user-data-backup", &error);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the `[data]` policy the recovery step assembles and a reload re-aims.
+    //!
+    //! What the store does with the values — a disabled policy writing nothing, a
+    //! rotation keeping the configured count, a zero window flushing per record — is
+    //! pinned where the mechanism lives: the backup module's and the flush path's own
+    //! tests. What is pinned here is that the configuration's vocabulary reaches it
+    //! unchanged.
+    use ime_config::DEFAULT_BACKUP_KEEP;
+    use ime_dict::user_db::BACKUP_INTERVAL_MS;
+
+    use super::*;
+
+    #[test]
+    fn test_backup_policy_follows_the_data_section() {
+        let directory = Path::new("/data/rspinyin/backups");
+        let turned_off = backup_policy(
+            &DataConfig {
+                backup_enabled: false,
+                backup_keep: 7,
+                ..DataConfig::default()
+            },
+            directory,
+        );
+        assert!(
+            !turned_off.enabled,
+            "backup_enabled = false is the disabled policy, which writes nothing"
+        );
+        assert_eq!(turned_off.keep, 7, "backup_keep is carried through");
+        assert_eq!(turned_off.directory, directory);
+
+        let shipped = backup_policy(&DataConfig::default(), directory);
+        assert!(shipped.enabled, "the shipped default keeps the copies on");
+        assert_eq!(
+            shipped.keep, DEFAULT_BACKUP_KEEP,
+            "and keeps the shipped generation count"
+        );
+        assert_eq!(
+            shipped.interval_ms, BACKUP_INTERVAL_MS,
+            "the schema names no interval key, so the module's own interval stands"
+        );
+    }
+
+    #[test]
+    fn test_flush_window_follows_the_durability() {
+        assert_eq!(
+            flush_window(Durability::Eventual),
+            (COMMIT_BATCH, COMMIT_INTERVAL_MS),
+            "eventual is the shipped batching window"
+        );
+        assert_eq!(
+            flush_window(Durability::Immediate),
+            (1, 0),
+            "immediate is the zero window: one record, no delay"
+        );
+    }
+
+    #[test]
+    fn test_apply_data_config_without_a_store_is_a_noop() {
+        // The recovery step has not adopted a store in this process, so there is nothing
+        // to re-aim and the call must not reach for one: a configuration applied to a
+        // store nobody installed would be a wiring defect, not a value. The slot the steps
+        // fill is process-wide, so the test starts from a known empty state.
+        let _ = take_user_store();
+        apply_data_config(&DataConfig::default());
+        assert!(user_store().is_none(), "the slot stays empty");
     }
 }

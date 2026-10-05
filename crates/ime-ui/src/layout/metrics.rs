@@ -93,10 +93,6 @@ pub struct Metrics {
     pub shadow_inner_offset_y: f32,
     /// 3.1.2: how many bands the outer shadow is drawn with.
     pub shadow_band_count: u8,
-    /// 3.1.2: opacity of one outer shadow band.
-    pub shadow_band_opacity: f32,
-    /// 3.1.2: opacity of the inner shadow layer.
-    pub shadow_inner_opacity: f32,
     /// 3.1.3: text wider than this is elided instead of widening the cell.
     pub max_text_width: f32,
     /// 3.1.3: what a cell spends on everything except its text.
@@ -327,8 +323,6 @@ impl Metrics {
             shadow_inner_spread: take(found, "shadow-inner-spread")?,
             shadow_inner_offset_y: take(found, "shadow-inner-offset-y")?,
             shadow_band_count: take_count(found, "shadow-band-count")?,
-            shadow_band_opacity: take(found, "shadow-band-opacity")?,
-            shadow_inner_opacity: take(found, "shadow-inner-opacity")?,
             max_text_width: take(found, "max-text-width")?,
             cell_chrome_width: take(found, "cell-chrome-width")?,
             max_pages: take_count(found, "max-pages")?,
@@ -378,11 +372,11 @@ mod tests {
     ///
     /// The panel's fade and the grid's four dims are bindings this way; `window-opacity`
     /// -- the appear motion's property, which the panel's binding *reads* -- must not
-    /// match, and neither may a token such as `shadow-band-opacity`, whose name only ends
-    /// in the same word. A *binding* is the property name at the start of the line and
-    /// nothing before it.
+    /// match, and neither may any other line that merely contains the word. A *binding*
+    /// is the property name at the start of the line and nothing before it.
     fn binds_opacity(line: &str) -> bool {
-        // Matching the name anywhere in the line would call every band token a binding.
+        // Matching the name anywhere in the line would call a property that only reads
+        // `window-opacity` a binding.
         line.trim_start().starts_with("opacity:")
     }
 
@@ -524,14 +518,14 @@ mod tests {
         ] {
             source.push_str(&format!("    out property <int> {name}: 5;\n"));
         }
-        for name in ["shadow-band-opacity", "shadow-inner-opacity"] {
-            source.push_str(&format!("    out property <float> {name}: 0.5;\n"));
-        }
+        // A float the parser reads but nothing takes: every metric of the block is a
+        // length or a count today, and this line is what keeps the float arm of the line
+        // parser covered.
+        source.push_str("    out property <float> spare-fraction: 0.5;\n");
         source.push_str("}\n");
         let metrics = parse_metrics(&source).expect("every metric is declared");
         assert_eq!(metrics.shadow_margin, 8.0);
         assert_eq!(metrics.max_pages, 5);
-        assert_eq!(metrics.shadow_band_opacity, 0.5);
     }
 
     #[test]

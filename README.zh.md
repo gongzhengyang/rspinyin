@@ -138,7 +138,7 @@ bash packaging/install.sh
 该文件的情况下启动时会写出全部键并在每个键上方附注释，因此文件本身就是它的文档。
 
 ```toml
-schema_version = 1
+schema_version = 2
 
 [engine]
 punct_mode = "chinese"          # "chinese" 或 "english"
@@ -146,34 +146,64 @@ full_width = false
 auto_english_on_uppercase = true
 passthrough_url = true
 max_raw_len = 64                # 1..=64
+verify_dict_on_load = "full"    # "full" 或 "header"
+abbrev = false                  # 展开首字母缩写，`nh` 可达 `你好`
 
 [ui]
 client_preedit = false          # 把编码串显示在应用内而不是候选框中
 max_per_row = 5                 # 3..=9
+show_annotation = true          # 在候选词旁显示注释
 max_width_dp = 720              # 220..=1200
-base_alpha = 217                # 0..=255
+corner_radius_dp = 12           # 8..=20
+base_alpha = 217                # 0..=255；217 即 0.85
+
+[ui.animation]
+enabled = true
+omega0 = 26.0                   # 4.0..=80.0 rad/s
+zeta = 0.85                     # 0.3..=2.0
+appear_ms = 110                 # 0..=600 ms
+disappear_ms = 90               # 0..=600 ms
 
 [theme]
 scheme = "auto"                 # "auto"、"light" 或 "dark"
-accent = "#4C9AFF"
+accent = "#4C9AFF"              # #RRGGBB
 
 [keys]
 digit_zero = "passthrough"      # "passthrough" 或 "flip"
-flip_keys = ["minus", "equal", "up", "down"]
+enter_commit_raw = false        # Enter 上屏原始输入而非高亮候选
+flip_keys = ["minus", "equal", "up", "down", "home", "end"]
 highlight_keys = ["tab", "shift_tab"]
+
+[scheme]
+scheme = "full"                 # "full" 或某个双拼布局
+show_hint = true                # 在候选框头部显示当前布局名
+keep_full_pinyin = true
+
+[phrases]
+enabled = true
+file = ""                       # 留空：使用默认位置
+max_entries = 5000              # 1..=50000
 
 [data]
 durability = "eventual"         # "eventual" 批量写盘，"immediate" 每次立即写盘
+backup_enabled = true           # 自动备份学习成果
+backup_keep = 3                 # 保留 1..=32 代
 
 [diagnostics]
-level = "info"
+level = "info"                  # "error" .. "trace"
 log_rotation_mb = 8
 log_keep_files = 3
+log_input_content = false       # 接受但无效果：输入内容绝不会被记录
+probes = true
 ```
 
-每个键都可省略：省略的键保持上表所示的内置默认值。文件在启动时读取，并在 Fcitx5 要求
-addon 重新加载时再次读取；改动在下一次按键即生效，无需重启。无法读取或无法解析的文件
-绝不会让输入法停摆：沿用当前生效的配置，把原因写入日志，并且绝不重置进行中的输入。
+每个键都可省略：省略的键保持上表所示的内置默认值。文件在插件启动时读取，并在 Fcitx5
+触发配置重载时重新读取——Fcitx5 自身的重载动作一执行，改动即落地。生成文件中每个键的
+注释都写明其生效方式：重载即生效；启动时只读一次的设置需待下次重启 Fcitx5；本版本接受
+但尚未读取的少数键也会如实标注。若所安装版本的宿主胶水层未接线重载回调，文件便无法被
+重新读取：改动要等下次重启 Fcitx5 才生效，日志会以 `lifecycle/pending` 行报告该缺口。
+无法读取或无法解析的文件绝不会让输入法停摆：沿用当前生效的配置，把原因写入日志，并且
+绝不重置进行中的输入。
 
 ## 架构
 
@@ -201,7 +231,7 @@ librspinyin_ui.so   Category=UI            候选框
 - `ime-core` 是解码器——切分、Viterbi k-best、会话状态——以纯函数形式实现，不碰文件
   系统、时钟与环境。
 - `ime-dict` 负责词库格式、`mmap` 零拷贝词表与用户词频库。
-- `ime-config` 是 TOML 模型、加载器与热重载。
+- `ime-config` 是 TOML 模型、加载器与由宿主触发的重载。
 - `ime-ui` 是视图层：几何、主题、弹簧动画、软件光栅，以及 X11 与 Wayland 后端。
 - `ime-fcitx5` 与 `ime-ui-addon` 是两个 C ABI 层，各自对应一个共享库。
 - `ime-diag` 是诊断叶子 crate：日志、脱敏、崩溃记录。

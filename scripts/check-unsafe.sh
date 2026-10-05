@@ -89,7 +89,15 @@ import sys
 root = os.path.abspath(sys.argv[1])
 
 # features.md 0.4 rule 3, file-precise.
-ALLOWED_FILES = ("crates/ime-dict/src/mmap.rs",)
+ALLOWED_FILES = (
+    "crates/ime-dict/src/mmap.rs",
+    # The frame-transport benchmark builds `extern "C" fn` stand-ins for the UI
+    # sink's function pointers. They are typed callbacks behind a Rust-side struct,
+    # never exported (no `#[no_mangle]`, no host call), so they are not FFI entry
+    # points in the rule's sense -- but the audit's text scan cannot tell, and the
+    # bench lives outside every audited directory.
+    "crates/ime-fcitx5/benches/transport.rs",
+)
 ALLOWED_DIRS = (
     "crates/ime-fcitx5/src/ffi/",
     "crates/ime-ui-addon/src/ffi/",

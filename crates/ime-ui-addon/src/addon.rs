@@ -51,6 +51,7 @@ use std::time::Duration;
 
 use ime_types::{ColorScheme, ImeError, Rgba8, SurfaceBackend, ThemeSpec, UiCommand};
 use ime_ui::channel::UiEventQueue;
+use ime_ui::spring::MotionConfig;
 use ime_ui::surface::CandidateSurface;
 use ime_ui::ui_thread::{UiSurface, UiThread, UiThreadConfig};
 
@@ -185,6 +186,11 @@ fn init_diagnostics() -> Result<(), ImeError> {
 /// would be dropped; the spec therefore waits in a slot the start-up flushes once the
 /// thread is up, which is still before the first `Show` can arrive.
 ///
+/// The `[ui.animation]` section travels the same way: its five keys are assembled into
+/// the [`MotionConfig`] the start-up builds the window with. The spring and the
+/// durations parameterize the surface, so they are read once per window and a reload
+/// cannot re-tune a living one — the change takes effect when fcitx5 rebuilds the addon.
+///
 /// The `auto` scheme has no follower in v1 (portal theming is outside this card), so it
 /// resolves to the dark palette, which is also the built-in default.
 ///
@@ -222,6 +228,7 @@ fn load_config() -> Result<(), ImeError> {
         scale: 1.0,
     };
     *lock_pending_theme() = Some(spec);
+    *lock_pending_motion() = Some(MotionConfig::from_animation(config.ui.animation));
     Ok(())
 }
 
@@ -249,6 +256,23 @@ fn flush_pending_theme() {
     }
 }
 
+/// The motion settings read by [`load_config`], waiting for the UI thread to exist.
+///
+/// Unlike the theme, the motion settings are not a command: they parameterize the
+/// surface the start-up is about to build, so they travel into the factory closure and
+/// are consumed exactly once, when the window is created. A start-up that runs without
+/// a config step — no configuration directory, or a load in a test — builds the window
+/// on the built-in defaults.
+static PENDING_MOTION: Mutex<Option<MotionConfig>> = Mutex::new(None);
+
+/// Borrows the pending-motion slot, recovering the contents of a poisoned lock.
+fn lock_pending_motion() -> MutexGuard<'static, Option<MotionConfig>> {
+    match PENDING_MOTION.lock() {
+        Ok(slot) => slot,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 /// Starts the UI thread, the pre-created window and the font warm-up.
 ///
 /// The step takes the backend the platform probe constructed. Without one there is no
@@ -268,7 +292,11 @@ fn start_ui_startup() -> Result<(), ImeError> {
     let Some(backend) = crate::platform::take_backend() else {
         return Ok(());
     };
-    set_ui_startup(spawn_ui_startup(backend)?);
+    // The motion settings were read two steps ago and have been waiting for this thread:
+    // they parameterize the window the factory below is about to build, so they are
+    // consumed here, once, and a later reload cannot re-tune the living window.
+    let motion = lock_pending_motion().take().unwrap_or_default();
+    set_ui_startup(spawn_ui_startup(backend, motion)?);
     // The theme was read two steps ago and has been waiting for this thread; flush it
     // before the first `Show` can arrive so the window never draws the built-in palette
     // first. The drain starts here too, because the queue it consumes appears with the
@@ -574,19 +602,28 @@ impl UiStartup {
 /// the flag there rather than in the waiter is what makes a start-up that misses the
 /// deadline still count: the thread that built the window is the one that knows it exists.
 ///
+/// # Parameters
+///
+/// * `backend` -- the display backend the probe handed over.
+/// * `motion` -- the motion settings `[ui.animation]` assembled, which the window is
+///   built with. They are read once, here; a reload rebuilds the window instead.
+///
 /// # Errors
 ///
 /// Returns [`ImeError::UiChannelClosed`] when the thread cannot be created. The UI channel
 /// never opens in that case, which is the same reduced state as a window that failed to
 /// appear: text still commits, the window is simply absent.
-fn spawn_ui_startup(backend: Box<dyn SurfaceBackend>) -> Result<UiStartup, ImeError> {
+fn spawn_ui_startup(
+    backend: Box<dyn SurfaceBackend>,
+    motion: MotionConfig,
+) -> Result<UiStartup, ImeError> {
     let (ready_tx, ready) = channel();
     let config = UiThreadConfig {
         thread_name: UI_THREAD_NAME,
         ..UiThreadConfig::default()
     };
     let thread = UiThread::spawn(config, move |_context| {
-        let surface = CandidateSurface::new(backend)?;
+        let surface = CandidateSurface::with_motion(backend, motion)?;
         // The probe has run by now and cached its answer; this is where its degraded
         // cases become a recorded diagnostic instead of a silently odd-looking window.
         diagnostics::report_font_probe_status();

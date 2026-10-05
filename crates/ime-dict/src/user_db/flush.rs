@@ -39,6 +39,7 @@
 use std::sync::{Condvar, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use std::time::Instant;
 
 use super::*;
 
@@ -415,6 +416,37 @@ impl Inner {
             relaxed,
         }
     }
+
+    /// Swaps the batching window in place, as [`UserDb::set_flush_window`] describes.
+    pub(super) fn set_flush_window(&self, batch: usize, interval_ms: u64) {
+        self.batch.store(batch.max(1), Ordering::Relaxed);
+        self.interval_ms.store(interval_ms, Ordering::Relaxed);
+    }
+}
+
+/// The batching-window setter the host's configuration step reaches the store through.
+impl UserDb {
+    /// Applies the batching window a configuration names, without reinstalling anything.
+    ///
+    /// The window is the record path's own trigger: a flush becomes due once `batch`
+    /// distinct keys are pending or `interval_ms` of typing has passed, whichever first.
+    /// Both live in the same atomics the slow-disk relaxation writes, so this is two
+    /// lock-free stores and a reconfiguration that races a record cannot wedge either
+    /// side -- the record in flight keeps the window it loaded, the next one sees the new
+    /// policy. `batch` below one is raised to one, since a zero batch would report a
+    /// flush due before any record existed.
+    ///
+    /// This is the parameter channel the host layer maps the `data.durability` spelling
+    /// onto: the store never sees the configuration, only the window it names. The one
+    /// window this call does not own is the relaxation a measured slow disk applies, which
+    /// may widen what was set here; the next application of the configuration restores it.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn set_flush_window(&self, batch: usize, interval_ms: u64) {
+        self.inner.set_flush_window(batch, interval_ms);
+    }
 }
 
 /// The flush thread's mailbox: a one-slot request channel with merged semantics.
@@ -606,5 +638,60 @@ fn serve(mailbox: &Arc<Mailbox>, inner: &Weak<Inner>) {
         if !flushed {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the batching window the record path flushes with.
+    //!
+    //! The fixtures live in [`super::super::tests`], which is where the store's own test
+    //! infrastructure is; the assertions here are the ones that need this module's private
+    //! seams -- `wait_for_flush` and the pending counters -- to tell "not yet" from "never".
+
+    use super::super::tests::{TestClock, open_in, temp_dir};
+    use super::*;
+
+    #[test]
+    fn test_set_flush_window_zero_window_flushes_every_record() {
+        // The window `data.durability = "immediate"` is mapped to: one record and no
+        // milliseconds, so nothing accumulates past the commit that is being recorded.
+        let dir = temp_dir("flush-window-immediate");
+        let db = open_in(&dir, TestClock::default());
+        db.record("zuo'tian", 0);
+        assert_eq!(
+            db.record_count().expect("counting"),
+            0,
+            "the shipped window holds a single record back"
+        );
+
+        db.set_flush_window(1, 0);
+        db.record("jin'tian", 0);
+        db.wait_for_flush();
+        assert_eq!(
+            db.record_count().expect("counting"),
+            2,
+            "the zero window held nothing back, the record it inherited included"
+        );
+        assert_eq!(db.pending_len(), 0, "the delta map was drained");
+    }
+
+    #[test]
+    fn test_set_flush_window_restores_the_shipped_window() {
+        // The setter is how a reload re-applies the configuration in both directions: a
+        // window narrowed to zero is widened back to the shipped one, which batches again.
+        let dir = temp_dir("flush-window-eventual");
+        let db = open_in(&dir, TestClock::default());
+        db.set_flush_window(1, 0);
+        db.set_flush_window(COMMIT_BATCH, COMMIT_INTERVAL_MS);
+
+        db.record("zuo'tian", 0);
+        db.wait_for_flush();
+        assert_eq!(
+            db.record_count().expect("counting"),
+            0,
+            "the shipped window holds the record back again"
+        );
+        assert_eq!(db.pending_len(), 1, "the record stays pending");
     }
 }

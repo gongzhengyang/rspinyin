@@ -778,3 +778,24 @@ fn test_late_takeover_retry_without_the_late_fact_never_fires() {
         "a ready window without a missed evaluation retries nothing"
     );
 }
+
+#[test]
+fn test_pending_motion_defaults_and_round_trips_through_the_slot() {
+    // No config step means the built-in motion; a config step leaves exactly one
+    // assembled value, which the start-up consumes once.
+    *lock_pending_motion() = None;
+    assert_eq!(
+        lock_pending_motion().take().unwrap_or_default(),
+        MotionConfig::default()
+    );
+    let configured = MotionConfig::from_animation(ime_config::AnimationConfig {
+        enabled: false,
+        omega0: 40.0,
+        zeta: 1.0,
+        appear_ms: 0,
+        disappear_ms: 200,
+    });
+    *lock_pending_motion() = Some(configured);
+    assert_eq!(lock_pending_motion().take(), Some(configured));
+    assert!(lock_pending_motion().take().is_none(), "consumed once");
+}

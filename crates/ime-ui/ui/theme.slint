@@ -84,10 +84,15 @@ export global Theme {
     // 3.2 `text.*`
     out property <color> text-primary: dark ? #F2F2F7 : #1C1C1E;
     out property <color> text-secondary: dark ? rgba(242,242,247,0.62) : rgba(28,28,30,0.60);
+    // The read-only lock's tint: the lock marker of the status strip and the `lock-color`
+    // the status clusters show while input is read-only. The annotation text this token's
+    // name recalls draws from `text-primary` at a folded element alpha instead.
     out property <color> text-annotation: dark ? rgba(242,242,247,0.48) : rgba(28,28,30,0.45);
     out property <color> text-separator: dark ? rgba(242,242,247,0.40) : rgba(28,28,30,0.35);
 
-    // 3.2 `accent.on`: text drawn on top of a solid accent fill. Reserved.
+    // 3.2 `accent.on`: text drawn on top of a solid accent fill. Reserved: no surface
+    // draws it yet. Enable it when the first solid-accent panel lands; until then the
+    // deferral is carried by `DEFERRED_TOKENS` in `scripts/check-ui-spec.sh`.
     out property <color> accent-on: #FFFFFF;
 
     // 3.2 `state.*`
@@ -129,11 +134,10 @@ export global Theme {
     // many rings as its table holds -- the counts are `CandidateMetrics.shadow-band-count`
     // and `shadow-inner-band-count` -- and paints ring `band` with the entry at that index.
     //
-    // The height of each ramp is a token of its own in `CandidateMetrics`:
-    // `shadow-band-opacity` is L3's peak and `shadow-inner-opacity` L2's, and each is the
-    // alpha the last entry below is built from. Nothing on the drawing path reads those two
-    // tokens -- the ramp reaches the rasterizer as these colours -- so the pair is a number
-    // written in two files, and `src/theme/tests.rs` is what holds the two copies together.
+    // Each ramp's height is the alpha its last entry is built from, and that entry is the
+    // only place the number lives: the ramp reaches the rasterizer as these colours, so a
+    // separate peak scalar would be a number nothing reads. `src/theme/slint_palette.rs`
+    // holds both tables to the falloff 3.1.2 describes.
     //
     // Each table is one line because `scripts/check-ui-spec.sh` reads this global one
     // declaration per line; a wrapped declaration is a gate error, not a style choice.
@@ -151,8 +155,8 @@ export global Theme {
     // ramp reads the same on a light desktop and a dark one: the layer that has to stay
     // legible on both is the inner one, and that one does scale with its token.
     //
-    // The 0.18 is the same number `CandidateMetrics.shadow-band-opacity` carries: it is the
-    // ramp's peak, and the entry below that hugs the panel is where it lands.
+    // The 0.18 is the ramp's peak, and the entry below that hugs the panel is where it
+    // lands.
     out property <[color]> shadow-outer-bands: [shadow-outer.with-alpha(0.0028125), shadow-outer.with-alpha(0.01125), shadow-outer.with-alpha(0.0253125), shadow-outer.with-alpha(0.045), shadow-outer.with-alpha(0.0703125), shadow-outer.with-alpha(0.10125), shadow-outer.with-alpha(0.1378125), shadow-outer.with-alpha(0.18)];
 
     // L2, the tight inner shadow: two bands of 1dp rather than one of 2dp, because a
@@ -162,9 +166,8 @@ export global Theme {
     // of drawing a line on it. Both fractions are of the token's alpha, which is what
     // keeps the layer lighter in the light scheme than in the dark one.
     //
-    // The three quarters is the same number `CandidateMetrics.shadow-inner-opacity`
-    // carries: it is the weight of the band against the panel, and it is the last entry
-    // below.
+    // The three quarters is the weight of the band against the panel, and it is the last
+    // entry below.
     out property <[color]> shadow-inner-bands: [shadow-inner.with-alpha(0.35 * (dark ? 0.35 : 0.08)), shadow-inner.with-alpha(0.75 * (dark ? 0.35 : 0.08))];
 
     // 3.2 `status.dot.*`

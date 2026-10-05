@@ -53,6 +53,9 @@ mod cursor;
 mod translate;
 
 pub use self::blur::BlurHandle;
+// The cursor state's names have no production reader outside the module; only the
+// mock backend and the platform tests assert on them.
+#[cfg(test)]
 pub(crate) use self::cursor::{CursorState, PointerShape};
 pub(crate) use self::translate::{Decoded, classify_event, effective_alpha, select_argb_visual};
 // The event translator's scale-step and alpha constants have no production reader in

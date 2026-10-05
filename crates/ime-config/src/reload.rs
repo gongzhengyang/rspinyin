@@ -89,46 +89,64 @@ pub const DEFAULT_CONFIG_TOML: &str = r##"# rspinyin configuration.
 # Every key is optional: an absent key keeps its built-in default, which is the value
 # written here. The file is read at startup and again whenever the host asks the addon
 # to reload. A file that cannot be read or parsed never stops the input method.
+#
+# Every key's comment also ends with how a change to it reaches the running plugin:
+#
+#   Takes effect on reload -- the host's configuration reload applies it
+#   Takes effect at the next fcitx5 restart -- read once, at start-up
+#   Not wired yet -- accepted by this build, but nothing reads it
 
 # Format version. Only 2 is understood; a file written by an older build is migrated
-# once, with the original kept beside it.
+# once, with the original kept beside it. Read on every load and every reload: it
+# selects the migration, never a behaviour.
 schema_version = 2
 
 [engine]
 # "chinese" replaces ASCII punctuation with its Chinese mark; "english" leaves it to
-# the application.
+# the application. Not wired yet: the punctuation switch is runtime state, and this
+# build starts it at the shipped value without reading the document.
 punct_mode = "chinese"
-# Widen the committed text of ASCII characters.
+# Widen the committed text of ASCII characters. Not wired yet: the full-width switch
+# is runtime state, and this build starts it at the shipped value without reading the
+# document.
 full_width = false
 # Commit a leading uppercase letter instead of decoding it, so typing English needs no
-# mode switch.
+# mode switch. Takes effect on reload.
 auto_english_on_uppercase = true
 # Leave the keys to the application while the caret is inside a URL or an email.
+# Takes effect on reload.
 passthrough_url = true
-# Hard limit on the length of the raw input, 1..=64.
+# Hard limit on the length of the raw input, 1..=64. Takes effect on reload, and it
+# applies to the next character pushed, never to the input already on screen.
 max_raw_len = 64
 # "full" verifies the whole dictionary when it is loaded, "header" only its header.
+# Read once, when the dictionary is mapped. Takes effect at the next fcitx5 restart.
 verify_dict_on_load = "full"
 # Expand initial-letter abbreviations, so that `nh` reaches `你好`. Off by default: an
-# abbreviation is ambiguous by nature.
+# abbreviation is ambiguous by nature. Not wired yet.
 abbrev = false
 
 [ui]
 # Show the composing text in the application's preedit area instead of the window.
+# Takes effect on reload.
 client_preedit = false
-# Candidates per row, 3..=9.
+# Candidates per row, 3..=9. Takes effect on reload.
 max_per_row = 5
-# Show the word annotation beside each candidate.
+# Show the word annotation beside each candidate. Takes effect on reload.
 show_annotation = true
-# Widest candidate window, 220..=1200 dp; corner radius, 8..=20 dp.
+# Widest candidate window, 220..=1200 dp. Takes effect on reload.
 max_width_dp = 720
+# Corner radius, 8..=20 dp. The window look is built once, at the user-interface
+# addon's start-up. Takes effect at the next fcitx5 restart.
 corner_radius_dp = 12
-# Background opacity, 0..=255. The default is 0.85.
+# Background opacity, 0..=255. The default is 0.85. Takes effect at the next fcitx5
+# restart.
 base_alpha = 217
 
 [ui.animation]
 # Animate the window with a spring: angular frequency in rad/s, 4.0..=80.0, and the
-# damping ratio, 0.3..=2.0. The durations are 0..=600 ms.
+# damping ratio, 0.3..=2.0. The durations are 0..=600 ms. The whole section is read
+# when the window is built. Takes effect at the next fcitx5 restart.
 enabled = true
 omega0 = 26.0
 zeta = 0.85
@@ -136,59 +154,70 @@ appear_ms = 110
 disappear_ms = 90
 
 [theme]
-# "auto" follows the desktop's colour scheme; "light" and "dark" pin it.
+# "auto" follows the desktop's colour scheme; "light" and "dark" pin it. Read by the
+# user-interface addon once, at start-up. Takes effect at the next fcitx5 restart.
 scheme = "auto"
-# Accent colour, written as #RRGGBB.
+# Accent colour, written as #RRGGBB. Takes effect at the next fcitx5 restart.
 accent = "#4C9AFF"
 
 [keys]
 # What the "0" key does once the candidate list reaches ten entries: "passthrough"
-# sends the digit to the application, "flip" turns the page.
+# sends the digit to the application, "flip" turns the page. Takes effect on reload.
 digit_zero = "passthrough"
-# Commit the raw input on Enter instead of the highlighted candidate.
+# Commit the raw input on Enter instead of the highlighted candidate. Takes effect on
+# reload.
 enter_commit_raw = false
 # Keys that page the candidate list, at most six, and keys that move the highlight.
-# "home" jumps to the first page and "end" to the last.
+# "home" jumps to the first page and "end" to the last. Takes effect on reload.
 flip_keys = ["minus", "equal", "up", "down", "home", "end"]
 highlight_keys = ["tab", "shift_tab"]
 
 [scheme]
 # The layout the keystrokes follow: "full" is plain pinyin, and "xiaohe", "ziranma",
-# "microsoft", "sogou" and "ziguang" are the double-pinyin layouts.
+# "microsoft", "sogou" and "ziguang" are the double-pinyin layouts. Takes effect on
+# reload: a new layout answers the next composition and never re-reads one in progress.
 scheme = "full"
-# Name the active layout in the candidate window's header.
+# Name the active layout in the candidate window's header. Takes effect on reload.
 show_hint = true
 # Still read a full-pinyin syllable typed while a double-pinyin layout is active.
+# Takes effect on reload.
 keep_full_pinyin = true
 
 [phrases]
 # Let the phrase table take part in a decode. With it off the dictionary answers alone.
+# The table is read once, at start-up. Takes effect at the next fcitx5 restart.
 enabled = true
 # The phrase document to read. Empty means the default location under the user's
-# configuration directory.
+# configuration directory. Takes effect at the next fcitx5 restart.
 file = ""
-# How many entries the table may hold, 1..=50000.
+# How many entries the table may hold, 1..=50000. Takes effect at the next fcitx5
+# restart.
 max_entries = 5000
 
 [data]
-# "eventual" batches user-frequency writes; "immediate" flushes each one.
+# "eventual" batches user-frequency writes; "immediate" flushes each one. The batch
+# window is the store's construction-time policy. Takes effect at the next fcitx5
+# restart.
 durability = "eventual"
 # Copy the user's learned words automatically. On by default: the store cannot be
-# rebuilt from anywhere else.
+# rebuilt from anywhere else. Takes effect at the next fcitx5 restart.
 backup_enabled = true
 # How many backup generations are kept, 1..=32. The oldest is removed once a new one
-# has landed.
+# has landed. Takes effect at the next fcitx5 restart.
 backup_keep = 3
 
 [diagnostics]
-# "error" | "warn" | "info" | "debug" | "trace".
+# "error" | "warn" | "info" | "debug" | "trace". Takes effect on reload.
 level = "info"
+# When the log file reaches this many MiB it rolls over, and this many rolled files
+# are kept. Takes effect on reload.
 log_rotation_mb = 8
 log_keep_files = 3
 # Accepted, and deliberately without effect on what is recorded: the plugin never
 # writes the characters you type to the log, whether this is false or true.
 log_input_content = false
-# Switch the diagnostic probes on.
+# Switch the diagnostic probes on. Read once, at start-up, with the configuration.
+# Takes effect at the next fcitx5 restart.
 probes = true
 "##;
 

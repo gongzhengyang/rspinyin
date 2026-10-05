@@ -41,7 +41,11 @@ use self::host::FcitxHost;
 /// engine routes for every input context and passes the id on each call, while the
 /// boundary the effect executor speaks is built for one context. Building it allocates
 /// nothing — it is an id and two references — so a keystroke pays no cost for the split.
-fn with_host<T>(ic_id: u64, call: impl FnOnce(&mut dyn Host) -> T) -> T {
+///
+/// `pub(super)` rather than private because the reload slot shares it: the host's
+/// `reloadConfig` request reaches `rspinyin_config_reload` in `lifecycle`, whose
+/// broadcast needs the same production boundary, built for the reserved no-context id.
+pub(super) fn with_host<T>(ic_id: u64, call: impl FnOnce(&mut dyn Host) -> T) -> T {
     let mut host = FcitxHost::new(ic_id);
     call(&mut EffectHost::new(ic_id, &mut host))
 }

@@ -22,7 +22,7 @@ use super::{Fixture, composing, frame_of, highlighted, kinds};
 fn composing_on(raw: &str) -> (Session, Fixture) {
     let fixture = Fixture::new();
     let cfg = SessionConfig::default();
-    let mut session = composing(&cfg, &fixture.env(), raw);
+    let session = composing(&cfg, &fixture.env(), raw);
     assert_eq!(session.state, SessionState::Composing);
     (session, fixture)
 }

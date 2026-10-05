@@ -101,9 +101,10 @@ const DISMISS_SCROLL_UP_EMPTY: u32 = 2;
 /// the rest of the return-channel seam, so the drain's round-trip tests encode with
 /// the same function production uses.
 pub fn event_wire(event: &UiEvent) -> Option<RspinyinEventWire> {
-    // Zeroed before the fields are set: the wire crosses FFI as a raw copy, and
-    // defined padding keeps that copy free of uninitialised bytes. Every field of
-    // the wire is an integer, so zero is a valid state for all of them.
+    // SAFETY: the wire crosses FFI as a raw copy, so it is zeroed first — defined
+    // padding keeps that copy free of uninitialised bytes. Every field of the wire
+    // is an integer, so zero is a valid state for all of them, and each field is
+    // written below before the wire leaves this function.
     let mut wire: RspinyinEventWire = unsafe { std::mem::zeroed() };
     match *event {
         UiEvent::Select {
@@ -170,6 +171,9 @@ fn anchor_wire(
     // The wire carries the screen as an `i32`; an id it cannot carry refuses the send
     // rather than wrapping into a negative one the reader would refuse anyway.
     let screen = i32::try_from(screen.value()).ok()?;
+    // SAFETY: `RspinyinEventWire` is a plain-data `#[repr(C)]` wire mirror, so an
+    // all-zero bit pattern is a valid value; every field is written below before the
+    // wire leaves this function.
     let mut wire: RspinyinEventWire = unsafe { std::mem::zeroed() };
     wire.kind = EVENT_KIND_ANCHOR;
     wire.anchor_x = rect.x;

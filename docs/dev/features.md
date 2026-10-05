@@ -1114,7 +1114,7 @@ pub enum ConfigError {
 
 > **不适用本规则的量**：字号（由上面的字阶约束，`font-size-header 14sp` / `font-size-cell 15sp` / `font-size-small 11sp`）、
 > 计数（`shadow-band-count`、`max-pages`、`min-per-row`、`max-per-row`、`max-per-row-limit`）、
-> 比例（`shadow-band-opacity`、`shadow-inner-opacity`）。脚本只对 `length` 类型的常量断言。
+> 比例类常量（阴影各层的峰值比例由 band 表自己承载，不再以具名常量暴露）。脚本只对 `length` 类型的常量断言。
 
 > **本清单的历史原因**：3.1.1 的尺寸表先于本规则定稿，两者在初稿中相互矛盾（8 个值不是 4 的倍数却不属于当时声明的两处例外），使得按 3.1.4 编写的断言脚本无法通过。v1.4 裁决为**保留规则、显式列例外**，而非把尺寸改成 4 的倍数——后者会让候选框整体变高变松，并减少单行可容纳的候选数。
 

@@ -44,18 +44,26 @@
 //!
 //! # The policy
 //!
-//! The level, the rolling size and the number of kept files are the documented defaults:
-//! `tracing` installs a global subscriber exactly once and offers no way to replace it, so
-//! the sink has to be opened before the `config` step reads the document that carries the
-//! `[diagnostics]` keys. The `probes` switch is the exception — it is a runtime switch on
-//! a structure that already exists — and the `config` step applies it.
+//! The sequence is two-phase, and it has to be: `tracing` installs a global subscriber
+//! exactly once and offers no way to replace it, so the sink has to be opened before the
+//! `config` step reads the document that carries the `[diagnostics]` keys. The subscriber
+//! is therefore installed first, with the documented defaults, and the config step
+//! re-aims the policy the installed sink applies — the level, the rotation size and the
+//! number of kept files — through [`DiagHandle::reconfigure`], which swaps the values the
+//! write path reads without taking a lock and without touching the subscriber. The
+//! `log_input_content` switch is deliberately absent from that re-aim: it is folded into
+//! the level floor at install time, and `DiagnosticsConfig::logs_input_characters`
+//! answers `false` whatever the document says, so there is nothing a reload could raise.
+//! The `probes` switch is the other runtime switch on a structure that already exists,
+//! and the `config` step applies it too.
 
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
+use ime_config::{DiagnosticsConfig, LogLevel};
 use ime_diag::crash::{self, CrashContext, CrashContextKey};
-use ime_diag::log::{DiagConfig, DiagHandle, init_logging};
+use ime_diag::log::{DiagConfig, DiagHandle, LevelFilter, init_logging};
 use ime_dict::paths::{self, BaseDirs, Paths};
 use ime_types::ImeError;
 
@@ -65,6 +73,17 @@ use super::report_step_failure;
 
 /// The handle the `diagnostics` step installed; taken by the unload.
 static DIAGNOSTICS: Mutex<Option<DiagHandle>> = Mutex::new(None);
+
+/// The handle a configuration load or reload re-aims the policy through.
+///
+/// Process-wide and first-install-wins, and deliberately never emptied: `tracing` keeps
+/// the subscriber it installed for the life of the process, and the subscriber holds the
+/// same redaction state and sink this handle points at, so a host that reloads the addon
+/// does not lose the ability to re-aim the policy even though the unload above released
+/// the handle this slot is a clone of. Empty only when the environment named no log
+/// directory and no subscriber was ever installed — in which case there is no policy to
+/// re-aim.
+static RECONFIGURABLE: OnceLock<DiagHandle> = OnceLock::new();
 
 /// Whether this step has already installed the process's subscriber.
 ///
@@ -220,13 +239,64 @@ pub(super) fn crash_context() -> CrashContext {
 ///
 /// A plain assignment rather than a first-install-wins slot: the only caller is the step
 /// above, and `init_logging` succeeds at most once per process, so there is no second
-/// handle for this to refuse.
+/// handle for this to refuse. The reconfiguration slot keeps its own clone for the life
+/// of the process — see [`RECONFIGURABLE`] for why it is never emptied.
 ///
 /// # Panics
 ///
 /// Never.
 fn install_diagnostics(handle: DiagHandle) {
+    // `set` cannot refuse here: this is the only installer, and it runs at most once per
+    // process because `init_logging` does.
+    let _ = RECONFIGURABLE.set(handle.clone());
     *lock(&DIAGNOSTICS) = Some(handle);
+}
+
+/// Re-aims the diagnostics policy the `[diagnostics]` keys name, without reinstalling the
+/// subscriber.
+///
+/// Called by the `config` step, both when the document is first read and on a reload that
+/// adopts a new one. The level, the rotation size and the kept-file count are an atomic
+/// swap on the installed sink — see [`DiagHandle::reconfigure`] — so the call never blocks
+/// a log write and never disturbs a session. With no subscriber installed — the
+/// environment named no log directory — there is no policy to re-aim and this is a no-op.
+///
+/// `log_input_content` is deliberately not read here: it is folded into the level floor at
+/// install time and cannot turn the recording of characters on in any case.
+///
+/// # Panics
+///
+/// Never.
+pub(super) fn apply_diagnostics_config(config: &DiagnosticsConfig) {
+    let Some(handle) = RECONFIGURABLE.get() else {
+        // No subscriber was ever installed, so there is nothing to re-aim: the crash
+        // channel's stderr half carries the diagnostics, and it has no level to move.
+        return;
+    };
+    handle.reconfigure(
+        level_filter(config.level),
+        u64::from(config.log_rotation_mb),
+        usize::from(config.log_keep_files),
+    );
+}
+
+/// The `tracing` filter the `diagnostics.level` spelling names.
+///
+/// The configuration's spellings match `tracing`'s levels one for one; the mapping lives
+/// here because this is the only crate that sees both vocabularies — `ime-config` does not
+/// depend on `tracing`, and `ime-diag` does not depend on `ime-config`.
+///
+/// # Panics
+///
+/// Never.
+fn level_filter(level: LogLevel) -> LevelFilter {
+    match level {
+        LogLevel::Error => LevelFilter::ERROR,
+        LogLevel::Warn => LevelFilter::WARN,
+        LogLevel::Info => LevelFilter::INFO,
+        LogLevel::Debug => LevelFilter::DEBUG,
+        LogLevel::Trace => LevelFilter::TRACE,
+    }
 }
 
 /// Releases the diagnostics handle: the last thing the unload does.
@@ -251,4 +321,25 @@ pub(super) fn close_diagnostics() {
 #[cfg(test)]
 pub(super) fn is_installed() -> bool {
     lock(&DIAGNOSTICS).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the mapping the configuration step applies to the installed policy.
+    //!
+    //! The behaviour behind the mapping — that a reconfigured level is in force and that
+    //! the degradations' floors hold — is pinned in `ime-diag`'s own tests, where the
+    //! subscriber's once-per-process rule does not bind; what is pinned here is that the
+    //! configuration's vocabulary reaches it unchanged.
+
+    use super::*;
+
+    #[test]
+    fn test_level_filter_covers_every_spelling_of_diagnostics_level() {
+        assert_eq!(level_filter(LogLevel::Error), LevelFilter::ERROR);
+        assert_eq!(level_filter(LogLevel::Warn), LevelFilter::WARN);
+        assert_eq!(level_filter(LogLevel::Info), LevelFilter::INFO);
+        assert_eq!(level_filter(LogLevel::Debug), LevelFilter::DEBUG);
+        assert_eq!(level_filter(LogLevel::Trace), LevelFilter::TRACE);
+    }
 }

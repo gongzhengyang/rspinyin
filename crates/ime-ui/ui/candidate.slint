@@ -111,19 +111,12 @@ export global CandidateMetrics {
     // the cost follows the panel's perimeter rather than its area because each band paints a
     // ring and not a filled rectangle.
     out property <int> shadow-band-count: 8;
-    // The peak of L3's falloff: the alpha of the band that hugs the panel. The bands outside
-    // it carry the square of their position in the ramp, which is the tail a Gaussian blur of
-    // a straight edge leaves behind, and the ramp itself is painted from
-    // `Theme.shadow-outer-bands` -- this file draws it but does not compute it: the falloff
-    // lives in the per-band colours, and one element opacity could not express their
-    // square-law ramp.
-    out property <float> shadow-band-opacity: 0.18;
-    // How many bands L2 is drawn as, and the share of `shadow-inner`'s own alpha the band
-    // against the panel carries. Two 1dp rings rather than one 2dp ring: a single thick ring
-    // has a visible inner boundary where it meets the panel, which is the outline the layer
-    // is meant to avoid. The bands themselves are `Theme.shadow-inner-bands`.
+    // How many bands L2 is drawn as. Two 1dp rings rather than one 2dp ring: a single
+    // thick ring has a visible inner boundary where it meets the panel, which is the
+    // outline the layer is meant to avoid. The bands themselves are
+    // `Theme.shadow-inner-bands`, and the weight of the band against the panel is spelled
+    // in that table's last entry.
     out property <int> shadow-inner-band-count: 2;
-    out property <float> shadow-inner-opacity: 0.75;
 
     // -- truncation and paging (3.1.3) --------------------------------------
     out property <length> max-text-width: 120px;

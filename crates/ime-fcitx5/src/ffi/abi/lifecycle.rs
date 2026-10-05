@@ -1,11 +1,14 @@
 //! The plugin's own life: the context the host is handed, the handshake that gates it,
-//! and the symbols that construct and destroy the addon.
+//! the symbols that construct and destroy the addon, and the reload slot the host's
+//! configuration reload action fires.
 //!
 //! Responsibility: own the registration sequence. [`rspinyin_plugin_init`] validates the
 //! ABI version, hands the callback table to the glue, and returns the opaque context the
 //! host passes back to every callback; [`fcitx_addon_factory_instance`] is the symbol
 //! Fcitx5 resolves after `dlopen`; [`on_addon_init`] and [`on_addon_destroy`] are the two
-//! vtable slots the addon's own lifetime runs through.
+//! vtable slots the addon's own lifetime runs through; [`rspinyin_config_reload`] is the
+//! one export the glue calls after load, when the host asks for a configuration reload
+//! (ADR-0011's append-only symbol path — no vtable slot, no version bump).
 //!
 //! Boundaries: this module never decodes, never renders and never touches the user
 //! interface. Everything it hands over is either a pointer the host owns or the address of
@@ -42,7 +45,7 @@ impl PluginContext {
 /// Process-wide plugin state; one plugin instance per process is the host's model.
 static PLUGIN_CONTEXT: PluginContext = PluginContext::new();
 
-/// The single symbol this crate exports to the C++ glue.
+/// One of the symbols this crate exports to the C++ glue.
 ///
 /// The glue calls it once while constructing the addon instance, before anything
 /// touches the vtable. It validates the ABI version, hands the table to the host
@@ -221,4 +224,49 @@ pub extern "C" fn on_addon_destroy(context: *mut c_void) {
     guard_ffi((), || {
         crate::addon::on_addon_destroy(context);
     });
+}
+
+/// The input-context id the reload's host boundary is built for.
+///
+/// `0` is the reserved "no input context" value, and a reload is the one callback that
+/// belongs to no context: it re-reads a document and tells every live session at once.
+/// The effects a reload produces are window commands, which carry no input-context
+/// identity of their own, so the id is never resolved against a context; a per-context
+/// call arriving on this path would be a defect above this layer, and a boundary built
+/// for id 0 refuses to resolve it rather than sending it to a wrong one.
+const RELOAD_CONTEXT: u64 = 0;
+
+/// Re-reads the configuration and hands the result to every live session.
+///
+/// The production trigger the `config-watch` step records: the glue's `reloadConfig`
+/// override forwards the host's reload request here — the glue links this export by
+/// name, the way it links [`rspinyin_plugin_init`] — and this entry is the caller
+/// [`on_config_reload`] was written for. The sequence is the reload handler's own:
+/// re-read the document, report what it found, adopt the routing table it projects;
+/// the broadcast through [`session_host::reload`](crate::session_host::reload) is what
+/// makes the adoption reach the sessions that are already alive. A composition in
+/// progress survives all of it (`AGENTS.md` prohibition 23).
+///
+/// # Returns
+///
+/// Whether the sequence ran to completion: the document was re-read — a missing store
+/// or an unparsable one is reported on the diagnostic channel, and the values in force,
+/// possibly the built-in defaults, are what the broadcast hands on — and a live session
+/// host, if one is installed, was told the values now in force. `false` means the entry
+/// panicked and the guard answered its fallback; every lesser degradation still answers
+/// `true`, because the reload itself happened.
+///
+/// # Panics
+///
+/// Never: the body runs under the panic guard, and a panic becomes the `false`
+/// fallback.
+#[unsafe(no_mangle)]
+pub extern "C" fn rspinyin_config_reload() -> bool {
+    guard_ffi(false, || {
+        let routing = crate::addon::on_config_reload();
+        super::engine::with_host(RELOAD_CONTEXT, |host| {
+            crate::session_host::reload(routing, host);
+        });
+        true
+    })
 }

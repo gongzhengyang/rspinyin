@@ -59,14 +59,13 @@
 //! than to a body, so the pinned list in this module's tests fails until the new name is
 //! recorded there.
 //!
-//! # What is still missing
+//! # The reload path
 //!
-//! One gap, and it is not a step: the host's `reloadConfig()` callback slot. The
-//! subscription the `config-watch` step records is the handler the host would call, and
-//! this build's ABI carries no slot to reach it, so a configuration the user edits is
-//! re-read only through [`on_config_reload`] — which is complete and tested, and waits for a
-//! caller. The step reports that gap as `lifecycle/pending` rather than leaving it to be
-//! discovered.
+//! The host's `reloadConfig()` callback reaches the router through the
+//! `rspinyin_config_reload` export (ADR-0011's register), which re-reads the document
+//! and re-projects the routing table — the chain [`on_config_reload`] owns. The
+//! `config-watch` step's `lifecycle/pending` line is what a host that never calls the
+//! callback sees instead: the edit takes effect at the next restart.
 
 use std::ffi::c_void;
 use std::sync::{Mutex, MutexGuard};
@@ -150,8 +149,16 @@ fn transport_probe() -> Result<(), ImeError> {
 /// Deliberately a diagnostic rather than a silent success: a plugin that quietly runs
 /// without part of its wiring is far harder to explain than one that names the piece it is
 /// missing. The code is stable, so the gap is greppable in a log.
+///
+/// The line also states what the gap costs the user today: until the reload trigger is
+/// wired, a configuration the user edits reaches the plugin only at the next fcitx5
+/// restart. Every pending gap this crate reports is one a restart works around, so the
+/// guidance rides on this one line rather than on each caller.
 fn pending_step(step: &str, awaiting: &str) {
-    emit_diagnostic(&format!("lifecycle/pending: {step} awaits {awaiting}"));
+    emit_diagnostic(&format!(
+        "lifecycle/pending: {step} awaits {awaiting}; \
+         a configuration edit takes effect at the next fcitx5 restart"
+    ));
 }
 
 /// Reports a step that failed but handled the failure itself.

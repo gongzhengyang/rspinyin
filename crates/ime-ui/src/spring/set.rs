@@ -24,8 +24,11 @@ use super::{
 ///
 /// A single value rather than four out-parameters, because every field is consumed
 /// by the same caller in the same breath: the renderer sets its properties from
-/// `rect`, `opacity`, `scale` and `page_offset_dp`, commits `highlight.damage`, and
-/// uses `animating` to decide the next `poll` timeout.
+/// `rect`, `opacity`, `scale` and `page_offset_dp`, and uses `animating` to decide
+/// the next `poll` timeout. The damage a frame leaves is not part of the motion:
+/// the renderer's own region -- what Slint reports it actually drew, recorded in
+/// `crate::renderer`'s `record_damage` -- is the ground truth the copy and the
+/// compositor report are built from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameMotion {
     /// The highlight box and the region it moved through.
@@ -63,7 +66,7 @@ impl AnimationSet {
         let page = SpringParams::PAGE_SLIDE;
         Self {
             highlight: HighlightAnim::new(config.spring, HighlightRect::ZERO),
-            appear: AppearAnim::hidden(),
+            appear: AppearAnim::with_scale_spring(config.scale_spring),
             page_slide: Spring1D::new(page.omega0, page.zeta, page.mass, 0.0),
             press: PressSpring::new(),
             config,
@@ -129,6 +132,15 @@ impl AnimationSet {
         if !enabled {
             self.snap_all();
         }
+    }
+
+    /// Whether the set runs motions at all.
+    ///
+    /// This is `[ui.animation]`'s `enabled` as the set was built with it, or as
+    /// [`Self::set_enabled`] last left it; the adapter reads it so the colour fades
+    /// stay on the same switch as the springs.
+    pub fn is_enabled(&self) -> bool {
+        self.config.enabled
     }
 
     /// Moves the highlight to `rect`, keeping the velocity of a box already in flight.
@@ -262,7 +274,10 @@ mod tests {
         // the caller drop the timer entirely rather than leave it at zero.
         let idle = set.step(FRAME_S, 1.0);
         assert!(!idle.animating);
-        assert_eq!(idle.highlight.damage, None);
+        assert!(
+            idle.highlight.settled,
+            "a resting highlight leaves the step nothing to advance"
+        );
         assert_eq!(idle.page_offset_dp, 0.0);
     }
 
@@ -385,17 +400,20 @@ mod tests {
     }
 
     #[test]
-    fn test_animation_set_highlight_step_damages_only_the_path() {
+    fn test_animation_set_highlight_step_reports_rect_and_settled_only() {
         let mut set = AnimationSet::new(MotionConfig::default());
         set.set_highlight_visible(true);
         set.retarget_highlight(cell(0.0, 1.0));
         let motion = run_to_rest(&mut set);
         assert_eq!(motion.highlight.rect, cell(0.0, 1.0));
         assert!(motion.highlight.settled);
-        // The frame after the last moving one has nothing left to do, which is what
-        // lets the caller drop its frame timer rather than leave it armed at zero.
+        // The step carries no damage of its own: what a frame changed is the renderer's
+        // region (`crate::renderer`'s `record_damage`), so the set's report ends at the
+        // rectangle and the rest condition. The frame after the last moving one has
+        // nothing left to do, which is what lets the caller drop its frame timer rather
+        // than leave it armed at zero.
         let idle = set.step(FRAME_S, 1.0);
-        assert_eq!(idle.highlight.damage, None);
+        assert!(idle.highlight.settled);
         assert!(!idle.animating);
     }
 

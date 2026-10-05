@@ -33,7 +33,6 @@
 //! the process lifetime.
 
 use ime_types::PlatformError;
-use ime_types::surface::SurfaceBackend as _;
 use x11rb::connection::Connection as _;
 use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt as _, Window};
 use x11rb::rust_connection::RustConnection;
@@ -172,6 +171,8 @@ mod tests {
     #[test]
     #[ignore = "needs a live X server; the lab job runs it with DISPLAY set"]
     fn test_x11_backend_installs_the_arrow_cursor_when_mapped() {
+        use ime_types::surface::SurfaceBackend as _;
+
         let mut backend = super::super::X11Backend::connect(320, 80, 1.0, None)
             .expect("a live X server reachable through DISPLAY");
         assert_eq!(backend.cursor.current(), None);

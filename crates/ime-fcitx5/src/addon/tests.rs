@@ -414,6 +414,52 @@ fn test_on_config_reload_without_a_store_keeps_the_table_in_force() {
 }
 
 #[test]
+fn test_rspinyin_config_reload_adopts_the_edited_document() {
+    // The exported slot is the reload's production caller: the same edit the handler
+    // adopts in the test above, driven through the entry the glue's `reloadConfig`
+    // override calls, and observed on the table in force afterwards.
+    let dir = scratch_dir("export-config-reload");
+    install_config_store(config_store(&dir, ROUTING_DOCUMENT));
+    init_key_bindings().expect("the step never fails");
+    let before = routing_config();
+
+    fs::write(dir.join("config.toml"), EDITED_DOCUMENT).expect("editing the document");
+    assert!(
+        crate::ffi::abi::rspinyin_config_reload(),
+        "the slot answers that the reload ran"
+    );
+
+    let adopted = routing_config();
+    assert_eq!(
+        adopted.keys.flip_keys,
+        FlipSet::EQUAL,
+        "the new list is in force"
+    );
+    assert_eq!(adopted.keys.digit_zero, DigitZero::Passthrough);
+    assert!(!adopted.keys.enter_commit_raw);
+    assert_ne!(adopted, before, "the edit replaced the table in force");
+}
+
+#[test]
+fn test_rspinyin_config_reload_keeps_the_configuration_when_the_file_cannot_be_parsed() {
+    // The slot inherits the handler's only law, whatever entry point a reload arrives
+    // through: a document that cannot be parsed never replaces one that can.
+    let dir = scratch_dir("export-config-reload-kept");
+    install_config_store(config_store(&dir, ROUTING_DOCUMENT));
+    init_key_bindings().expect("the step never fails");
+    let before = routing_config();
+
+    fs::write(dir.join("config.toml"), "this is not TOML at all\n").expect("breaking the file");
+    assert!(crate::ffi::abi::rspinyin_config_reload());
+
+    assert_eq!(
+        routing_config(),
+        before,
+        "the configuration in force is kept"
+    );
+}
+
+#[test]
 fn test_the_addon_loads_when_the_configuration_cannot_be_parsed() {
     // The load path, not the reload path: a document that is not TOML at all is what a
     // half-written file or a hand edit gone wrong looks like at startup. The loader

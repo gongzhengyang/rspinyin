@@ -297,10 +297,14 @@ pub struct RedactState {
     /// flight on other threads: the writers read the rank with one lock-free load,
     /// and a reconfiguration never takes the locks a log call holds.
     configured: AtomicU8,
-    /// The lowest verbosity the degradations of this process impose: the `warn` floor
-    /// of a stderr fallback and the `debug` floor of the input-content switch. A
-    /// reconfigured level never dips below it.
+    /// The level the process's own degradations impose, encoded as a [`verbosity`]
+    /// rank: the `warn` of a stderr fallback and the `debug` of the input-content
+    /// switch. Which way it binds is [`Self::stderr_capped`].
     floor: AtomicU8,
+    /// Whether the floor is a cap (`true`, the stderr fallback: the host's shared log
+    /// is never flooded past `warn`) or a floor (`false`, the input-content switch:
+    /// once the process owes detail, a quiet configuration does not take it back).
+    stderr_capped: bool,
     home: Option<PathBuf>,
     /// Number of marked sessions; zero short-circuits the lock.
     sensitive_count: AtomicUsize,
@@ -331,7 +335,6 @@ pub(crate) fn verbosity(level: LevelFilter) -> u8 {
         LevelFilter::INFO => 3,
         LevelFilter::DEBUG => 4,
         LevelFilter::TRACE => 5,
-        _ => 3,
     }
 }
 
@@ -350,19 +353,26 @@ pub(crate) fn level_of(rank: u8) -> LevelFilter {
 impl RedactState {
     /// Creates the state with the level filter to apply and the home directory to shorten, with
     /// no session marked sensitive. `home` may be `None` to leave paths as they are.
-    pub fn new(level: LevelFilter, floor: LevelFilter, home: Option<PathBuf>) -> Self {
+    pub fn new(
+        level: LevelFilter,
+        floor: LevelFilter,
+        stderr_capped: bool,
+        home: Option<PathBuf>,
+    ) -> Self {
         Self {
             configured: AtomicU8::new(verbosity(level)),
             floor: AtomicU8::new(verbosity(floor)),
+            stderr_capped,
             home,
             sensitive_count: AtomicUsize::new(0),
             sensitive: Mutex::new(BTreeSet::new()),
         }
     }
 
-    /// The level filter this state applies: the configured level, never below the
-    /// degradation floor `crate::log` decided on -- the `warn` of a stderr fallback and
-    /// the `debug` of the input-content switch.
+    /// The level filter this state applies: the configured level folded together with
+    /// the degradation `crate::log` decided on -- capped at `warn` on a stderr
+    /// fallback, raised to `debug` under the input-content switch -- and an explicit
+    /// `off`, which is absolute, over both.
     pub fn level(&self) -> LevelFilter {
         level_of(self.effective_rank())
     }
@@ -370,9 +380,18 @@ impl RedactState {
     /// The effective rank: whichever of the configured level and the degradation floor
     /// is the more verbose.
     pub(crate) fn effective_rank(&self) -> u8 {
-        self.configured
-            .load(Ordering::Acquire)
-            .max(self.floor.load(Ordering::Acquire))
+        let configured = self.configured.load(Ordering::Acquire);
+        if configured == verbosity(LevelFilter::OFF) {
+            // An explicit `off` is absolute: the degradations exist to shape a level
+            // the configuration asked for, never to talk over one that asked for none.
+            return configured;
+        }
+        let floor = self.floor.load(Ordering::Acquire);
+        if self.stderr_capped {
+            configured.min(floor)
+        } else {
+            configured.max(floor)
+        }
     }
 
     /// Re-aims the configured level. The floor is untouched: a degradation stays in

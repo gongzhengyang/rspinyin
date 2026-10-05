@@ -186,8 +186,6 @@ pub struct Adapter {
     /// Whether a theme has been applied. The first one lands at once -- there is
     /// no previous palette for it to glide away from.
     themed: bool,
-    /// Whether the window animates at all; see [`Adapter::set_motion_enabled`].
-    motion_enabled: bool,
     /// The page the component is drawing, one-based like the frame's, or zero before the
     /// first frame. A frame that shows a different page is a page turn.
     page: u8,
@@ -199,7 +197,17 @@ pub struct Adapter {
 }
 
 impl Adapter {
-    /// Creates the component against the Slint platform of the calling thread.
+    /// Creates the component with the built-in motion; see [`Self::with_motion`].
+    pub fn new() -> Result<Self, ImeError> {
+        Self::with_motion(MotionConfig::default())
+    }
+
+    /// Creates the component against the Slint platform of the calling thread, with the
+    /// motion settings `[ui.animation]` assembles.
+    ///
+    /// # Parameters
+    ///
+    /// * `motion` -- what `[ui.animation]` assembled; read once, here, never re-tuned.
     ///
     /// The platform has to be installed before this call. A component that cannot be built is
     /// reported here rather than at the first frame, because a window that will never appear
@@ -214,8 +222,10 @@ impl Adapter {
     /// # Panics
     ///
     /// This function does not panic.
-    pub fn new() -> Result<Self, ImeError> {
-        let window = CandidateWindow::new().map_err(|_| component_error())?;
+    pub fn with_motion(motion: MotionConfig) -> Result<Self, ImeError> {
+        let window = CandidateWindow::new().map_err(|_| ImeError::CompositorUnsupported {
+            detail: String::from(COMPONENT_FAILED_CODE),
+        })?;
         let items: Rc<VecModel<CandidateData>> = Rc::new(VecModel::default());
         window.set_items(items.clone().into());
         let before: Rc<VecModel<crate::ui_generated::PreeditRun>> = Rc::new(VecModel::default());
@@ -234,7 +244,7 @@ impl Adapter {
             after,
             arrow: None,
             measure: Measure::default(),
-            motion: AnimationSet::new(MotionConfig::default()),
+            motion: AnimationSet::new(motion),
             drawn_motion: None,
             theme_fade: BlendTransition::new(ThemeGlide {
                 accent: TRANSPARENT,
@@ -242,7 +252,6 @@ impl Adapter {
             }),
             drawn_fade: (TRANSPARENT, 0, [TRANSPARENT; 4]),
             themed: false,
-            motion_enabled: true,
             page: 0,
             scale: 1.0,
         })
@@ -286,7 +295,7 @@ impl Adapter {
             self.metrics,
             &mut self.measure,
         );
-        if !self.motion_enabled {
+        if !self.motion.is_enabled() {
             // The disabled path lands everything at once: a flag that flipped in
             // this frame started its marker fade inside the mapping, and the snap
             // is what makes the frame instantaneous and the screenshot exact.
@@ -376,7 +385,7 @@ impl Adapter {
     /// Never panics.
     pub fn apply_theme(&mut self, spec: &ThemeSpec, tokens: &ThemeTokens) {
         let glide = ThemeGlide::of(tokens);
-        let instant = !self.themed || !self.motion_enabled;
+        let instant = !self.themed || !self.motion.is_enabled();
         {
             let mut sink = WindowTheme {
                 window: &self.window,
@@ -681,7 +690,6 @@ impl Adapter {
     ///
     /// Never panics.
     pub fn set_motion_enabled(&mut self, enabled: bool) {
-        self.motion_enabled = enabled;
         self.motion.set_enabled(enabled);
         if !enabled {
             let glide = self.theme_fade.target();
@@ -781,13 +789,6 @@ impl Adapter {
     #[cfg(test)]
     pub(crate) fn window(&self) -> &CandidateWindow {
         &self.window
-    }
-}
-
-/// The error a component that cannot be created reports.
-fn component_error() -> ImeError {
-    ImeError::CompositorUnsupported {
-        detail: String::from(COMPONENT_FAILED_CODE),
     }
 }
 

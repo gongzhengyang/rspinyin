@@ -7,6 +7,13 @@
 //! overshooting window would visibly bounce past the screen edge it was placed
 //! against, which is the one place a spring is the wrong tool.
 //!
+//! The easing is where the configuration reaches in. The opacity fades keep the
+//! designed beziers, while the scale the window grows and shrinks by follows the step
+//! response of the spring `[ui.animation]` configures, evaluated over the fade's own
+//! window and clamped into the unit range. The clamp is the screen-edge argument
+//! again: a lightly damped spring may arrive early, but it may never carry the panel
+//! past the geometry it was placed at.
+//!
 //! Interruption is still supported, and is why these are objects rather than a pure
 //! function of elapsed time: starting a transition takes its `from` value from
 //! wherever the previous one had got to. A `Show` that lands during a disappear
@@ -15,7 +22,7 @@
 
 use ime_types::Rgba8;
 
-use super::clamp_step;
+use super::{SpringParams, clamp_step};
 
 /// The appear duration of 3.3.2, in seconds.
 pub const APPEAR_S: f32 = 0.110;
@@ -120,6 +127,135 @@ impl CubicBezier {
     }
 }
 
+/// The curve a one-shot transition follows from its start to its end.
+///
+/// A curve receives the transition's normalized progress and answers the eased
+/// fraction of the way between the endpoints. The two shapes are the fixed
+/// [`CubicBezier`] curves the design quotes and the step response of the spring the
+/// configuration tunes, which is how `[ui.animation]`'s `omega0` and `zeta` reach the
+/// scale half of the appear and disappear motion.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Easing {
+    /// A fixed `cubic-bezier` curve.
+    Bezier(CubicBezier),
+    /// The clamped step response of a damped spring.
+    Spring(SpringEase),
+}
+
+impl From<CubicBezier> for Easing {
+    fn from(curve: CubicBezier) -> Self {
+        Self::Bezier(curve)
+    }
+}
+
+impl Easing {
+    /// The curve's value at normalized progress `t`.
+    pub fn eval(&self, t: f32) -> f32 {
+        match self {
+            Self::Bezier(curve) => curve.eval(t),
+            Self::Spring(spring) => spring.eval(t),
+        }
+    }
+}
+
+/// The step response of a damped spring, as an easing curve.
+///
+/// The response runs at the spring's own speed across the fade window the transition
+/// gives it: `omega0` and `zeta` set how far the response gets inside that window, so
+/// a stiff spring arrives early and rests, while a slow one is cut short by the
+/// window's last frame, which lands on the end value. The response is clamped into
+/// `0.0..=1.0` on the way out -- an underdamped spring overshoots its end by nature,
+/// and the clamp is what turns that into "arrive and stay" instead of a window growing
+/// past the size it was placed at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpringEase {
+    /// The undamped frequency, in rad/s; the critically damped closed form reads it.
+    omega0: f32,
+    /// The underdamped envelope's decay rate `zeta * omega0`, in 1/s.
+    decay: f32,
+    /// The damped frequency `omega0 * sqrt(1 - zeta^2)`, in rad/s.
+    omega_d: f32,
+    /// The underdamped response's sine weight `zeta / sqrt(1 - zeta^2)`.
+    sine_weight: f32,
+    /// The two overdamped decay rates, in 1/s, the slower first; equal at critical
+    /// damping.
+    roots: (f32, f32),
+    /// Whether the spring is underdamped, the one case whose response can overshoot.
+    underdamped: bool,
+    /// The fade window the normalized progress maps onto, in seconds.
+    window_s: f32,
+}
+
+impl SpringEase {
+    /// The clamped step response of `params`, across a fade `window_s` long.
+    ///
+    /// The parameters arrive from [`SpringParams::new`], which has already replaced
+    /// anything the arithmetic cannot carry; an unusable window is answered with zero,
+    /// which [`Self::eval`] reads as "the fade is instant" rather than propagated.
+    pub fn over(params: SpringParams, window_s: f32) -> Self {
+        let zeta = params.zeta;
+        let root = 1.0 - zeta * zeta;
+        let underdamped = root > 0.0;
+        let spread = if underdamped {
+            0.0
+        } else {
+            (zeta * zeta - 1.0).sqrt()
+        };
+        Self {
+            omega0: params.omega0,
+            decay: zeta * params.omega0,
+            omega_d: if underdamped {
+                params.omega0 * root.sqrt()
+            } else {
+                0.0
+            },
+            sine_weight: if underdamped { zeta / root.sqrt() } else { 0.0 },
+            roots: (
+                -params.omega0 * (zeta - spread),
+                -params.omega0 * (zeta + spread),
+            ),
+            underdamped,
+            window_s: if window_s.is_finite() && window_s > 0.0 {
+                window_s
+            } else {
+                0.0
+            },
+        }
+    }
+
+    /// The response `t` of the way through the fade window, clamped into `0.0..=1.0`.
+    ///
+    /// Progress outside the unit range, or not a number at all, is clamped exactly as
+    /// the bezier's is: the endpoints are the only values a caller can act on. An
+    /// instant window answers its end value whatever the progress is.
+    pub fn eval(&self, t: f32) -> f32 {
+        if self.window_s <= 0.0 {
+            return 1.0;
+        }
+        let t = if t.is_finite() {
+            t.clamp(0.0, 1.0)
+        } else if t > 0.0 {
+            1.0
+        } else {
+            0.0
+        } * self.window_s;
+        let response = if self.underdamped {
+            let (sine, cosine) = (self.omega_d * t).sin_cos();
+            1.0 - (-self.decay * t).exp() * (cosine + self.sine_weight * sine)
+        } else {
+            let (slow, fast) = self.roots;
+            let rise = if fast == slow {
+                // Critical damping folds the two-root form onto its limit.
+                (1.0 + self.omega0 * t) * (-self.omega0 * t).exp()
+            } else {
+                (fast * (slow * t).exp() - slow * (fast * t).exp()) / (fast - slow)
+            };
+            1.0 - rise
+        };
+        response.clamp(0.0, 1.0)
+    }
+}
+
 /// A transition between two values, driven by the caller's clock.
 ///
 /// The value is always a normalized quantity -- an opacity, or a scale factor close
@@ -131,7 +267,7 @@ pub struct TimedTransition {
     value: f32,
     elapsed_s: f32,
     duration_s: f32,
-    easing: CubicBezier,
+    easing: Easing,
     settled: bool,
 }
 
@@ -145,7 +281,7 @@ impl TimedTransition {
             value: initial,
             elapsed_s: 0.0,
             duration_s: 0.0,
-            easing: CubicBezier::EASE_IN_OUT,
+            easing: Easing::Bezier(CubicBezier::EASE_IN_OUT),
             settled: true,
         }
     }
@@ -156,7 +292,7 @@ impl TimedTransition {
     /// that is what makes an interrupted fade continue from where it is rather than
     /// jump. A duration of zero or less completes immediately, which is the path
     /// `[ui.animation] enabled = false` and the screenshot tests take.
-    pub fn start(&mut self, to: f32, duration_s: f32, easing: CubicBezier) {
+    pub fn start(&mut self, to: f32, duration_s: f32, easing: impl Into<Easing>) {
         let to = unit(to);
         self.from = self.value;
         self.to = to;
@@ -166,7 +302,7 @@ impl TimedTransition {
         } else {
             0.0
         };
-        self.easing = easing;
+        self.easing = easing.into();
         self.settled = self.duration_s <= 0.0 || self.from == to;
         if self.settled {
             self.value = to;
@@ -480,42 +616,66 @@ impl MarkerFades {
 
 /// The appear and disappear motion: opacity, plus the scale the window grows from.
 ///
-/// Both properties run on the same clock and the same curve, so they are driven
-/// together here rather than kept as two independent transitions by every caller.
+/// Both properties run on the same clock. The opacity keeps the designed bezier; the
+/// scale follows the spring `[ui.animation]` configures, which is why a construction
+/// that names a spring exists beside the default one.
 #[derive(Clone, Copy, Debug)]
 pub struct AppearAnim {
     opacity: TimedTransition,
     scale: TimedTransition,
+    /// The spring the scale's fades follow, from `[ui.animation]` by way of
+    /// `MotionConfig`.
+    scale_spring: SpringParams,
 }
 
 impl AppearAnim {
     /// A window that is not on screen: fully transparent, at its smallest.
+    ///
+    /// The scale fade follows the built-in [`SpringParams::SCALE`] spring; the
+    /// constructor that takes the configuration's spring is [`Self::with_scale_spring`].
     pub fn hidden() -> Self {
-        Self {
-            opacity: TimedTransition::new(0.0),
-            scale: TimedTransition::new(APPEAR_SCALE_FROM),
-        }
+        Self::with_scale_spring(SpringParams::SCALE)
     }
 
     /// A window that is fully on screen.
     pub fn visible() -> Self {
+        let mut anim = Self::hidden();
+        anim.opacity = TimedTransition::new(1.0);
+        anim.scale = TimedTransition::new(1.0);
+        anim
+    }
+
+    /// A window that is not on screen, whose scale fades follow `scale_spring`.
+    ///
+    /// `[ui.animation]`'s `omega0` and `zeta` assemble the spring; the opacity fades
+    /// keep the designed curves, so the spring is the one part of the appear and
+    /// disappear motion the configuration reaches.
+    pub fn with_scale_spring(scale_spring: SpringParams) -> Self {
         Self {
-            opacity: TimedTransition::new(1.0),
-            scale: TimedTransition::new(1.0),
+            opacity: TimedTransition::new(0.0),
+            scale: TimedTransition::new(APPEAR_SCALE_FROM),
+            scale_spring,
         }
     }
 
     /// Starts the appear motion, continuing from the current opacity and scale.
     pub fn appear(&mut self, duration_s: f32) {
         self.opacity.start(1.0, duration_s, CubicBezier::APPEAR);
-        self.scale.start(1.0, duration_s, CubicBezier::APPEAR);
+        self.scale.start(
+            1.0,
+            duration_s,
+            Easing::Spring(SpringEase::over(self.scale_spring, duration_s)),
+        );
     }
 
     /// Starts the disappear motion, continuing from the current opacity and scale.
     pub fn disappear(&mut self, duration_s: f32) {
         self.opacity.start(0.0, duration_s, CubicBezier::DISAPPEAR);
-        self.scale
-            .start(DISAPPEAR_SCALE_TO, duration_s, CubicBezier::DISAPPEAR);
+        self.scale.start(
+            DISAPPEAR_SCALE_TO,
+            duration_s,
+            Easing::Spring(SpringEase::over(self.scale_spring, duration_s)),
+        );
     }
 
     /// Advances both properties by `dt` and reports whether both have finished.

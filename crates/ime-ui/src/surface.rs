@@ -54,6 +54,7 @@ use crate::interaction::PointerRouter;
 use crate::layout::{self, Metrics};
 use crate::renderer::FontStatus;
 use crate::slint_platform::RspinyinPlatform;
+use crate::spring::MotionConfig;
 use crate::theme::{BlurNegotiation, BlurSurface, ThemeResolution, request_blur};
 use crate::ui_thread::{SurfaceUpdate, UiSurface};
 
@@ -157,7 +158,8 @@ pub struct CandidateSurface {
 const FRAME_INTERVAL: Duration = Duration::from_micros(6_944);
 
 impl CandidateSurface {
-    /// Builds the surface on the thread that will run the UI loop.
+    /// Builds the surface on the thread that will run the UI loop, with the default
+    /// motion. The configuration-driven constructor is [`Self::with_motion`].
     ///
     /// The Slint platform is installed here and the component is created against it, so a
     /// window that cannot exist fails at construction rather than at the first frame. The
@@ -182,9 +184,41 @@ impl CandidateSurface {
     ///
     /// This function does not panic.
     pub fn new(backend: Box<dyn SurfaceBackend>) -> Result<Self, ImeError> {
+        Self::with_motion(backend, MotionConfig::default())
+    }
+
+    /// Builds the surface on the thread that will run the UI loop, with the motion
+    /// settings the configuration assembles.
+    ///
+    /// Identical to [`Self::new`] except that the window's motions are parameterized by
+    /// `motion` -- `[ui.animation]`'s switch, spring and durations. The settings are read
+    /// once, here: a reload rebuilds the window rather than re-tuning a living one.
+    ///
+    /// # Parameters
+    ///
+    /// * `backend` -- the display backend the window is drawn into. Its geometry is the
+    ///   surface's size and scale factor.
+    /// * `motion` -- the motion settings `[ui.animation]` assembles after validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImeError::CompositorUnsupported`] when the thread already owns a Slint
+    /// platform (`ui/slint/conflict`) or the component cannot be bound to it
+    /// (`ui/slint/component`), and [`ImeError::ConfigInvalid`] when `ui/candidate.slint` no
+    /// longer declares the metrics block the layout computes with. Every one of them means the
+    /// same thing to the host: there is no self-drawn candidate window, so its own user
+    /// interface has to take over.
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic.
+    pub fn with_motion(
+        backend: Box<dyn SurfaceBackend>,
+        motion: MotionConfig,
+    ) -> Result<Self, ImeError> {
         let platform = RspinyinPlatform::new(backend);
         platform.install()?;
-        let mut adapter = Adapter::new()?;
+        let mut adapter = Adapter::with_motion(motion)?;
         // The family is probed once, here, and written before the first frame: the probe
         // rasterises a small frame per candidate family and caches its answer process-wide,
         // so a second surface pays nothing. An empty name -- no CJK family on this machine

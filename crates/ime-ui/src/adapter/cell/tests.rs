@@ -325,10 +325,12 @@ fn test_character_em_places_every_character_in_one_of_four_ordered_tiers() {
         1.0,
         "anything outside ASCII rounds up to the em"
     );
-    assert!(
-        NARROW_ASCII_EM < ASCII_EM && ASCII_EM < WIDE_ASCII_EM && WIDE_ASCII_EM < WIDE_EM,
-        "the tiers are ordered narrow, ordinary, wide, outside ASCII"
-    );
+    const {
+        assert!(
+            NARROW_ASCII_EM < ASCII_EM && ASCII_EM < WIDE_ASCII_EM && WIDE_ASCII_EM < WIDE_EM,
+            "the tiers are ordered narrow, ordinary, wide, outside ASCII"
+        );
+    }
 }
 
 #[test]

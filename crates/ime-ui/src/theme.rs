@@ -27,11 +27,9 @@
 //!
 //! The shadow layers of §3.1.2 are the one exception, and it is a deliberate one: the
 //! bands they are drawn as are a falloff rather than a token, no Rust code reads them,
-//! and their only copy is the one `ui/theme.slint` computes. The tests in
-//! `slint_palette.rs` hold that copy to the falloff the specification describes, and the
-//! tests in `tests.rs` hold its height -- the two peaks `CandidateMetrics` declares in
-//! `ui/candidate.slint` -- to the same table, because nothing on the drawing path reads a
-//! peak: the ramp reaches the rasterizer as the per-band colours themselves.
+//! and their only copy is the one `ui/theme.slint` computes, whose tests hold it to the
+//! falloff -- and to each table's peak -- that 3.1.2 describes. Nothing on the drawing
+//! path reads a peak: the ramp reaches the rasterizer as the per-band colours themselves.
 //!
 //! # Determinism
 //!
@@ -240,7 +238,9 @@ pub struct ThemeTokens {
     pub text_primary: Rgba8,
     /// 3.2 `text.secondary`: the status strip.
     pub text_secondary: Rgba8,
-    /// 3.2 `text.annotation`: the reading hint and the candidate number.
+    /// 3.2 `text.annotation`: the read-only lock's tint (the status strip's lock
+    /// marker, the `lock-color` bindings). Its former annotation-text role draws from
+    /// `text_primary` at a folded element alpha.
     pub text_annotation: Rgba8,
     /// 3.2 `text.separator`: the `'` between syllables.
     pub text_separator: Rgba8,

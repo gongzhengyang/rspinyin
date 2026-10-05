@@ -243,7 +243,7 @@ install *args:
 uninstall *args:
     bash packaging/uninstall.sh {{args}}
 
-# Self-tests of the eight audit scripts: each one injects a violation, asserts a
+# Self-tests of the audit scripts: each one injects a violation, asserts a
 # non-zero exit, removes it and asserts a zero exit.
 check-self-tests:
     #!/usr/bin/env bash
@@ -255,9 +255,11 @@ check-self-tests:
     bash scripts/runtime-socket-check.sh --self-test
     bash scripts/check-slint-leak.sh --self-test
     bash scripts/check-ui-spec.sh --self-test
+    bash scripts/check-metrics-readers.sh --self-test
     bash scripts/idle-cpu-check.sh --self-test
     bash scripts/check-dict-sources.sh --self-test
     bash scripts/gen-licenses.sh --self-test
+    bash scripts/check-readme-keys.sh --self-test
 
 # Benchmarks, then the budget gate over what they measured. The gate reads the criterion
 # output this recipe just produced and fails on a case that is past its threshold, so a

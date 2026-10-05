@@ -6,6 +6,8 @@
 //! asserts on the frame counts the durations the design quotes come out to.
 
 use super::*;
+use crate::spring::{AnimationSet, HighlightRect, MotionConfig};
+use ime_types::PageDir;
 
 const FRAME_S: f32 = 1.0 / 144.0;
 
@@ -401,4 +403,185 @@ fn test_blend_transition_of_equal_endpoints_stays_put_and_the_steps_are_exact() 
         previous = value;
     }
     assert_eq!(previous, light, "step 256 is the exact end");
+}
+
+#[test]
+fn test_spring_ease_stays_within_the_unit_range_and_answers_its_endpoints() {
+    let ease = SpringEase::over(SpringParams::new(40.0, 0.4, 1.0), 0.2);
+    assert_eq!(ease.eval(0.0), 0.0, "the response starts at rest");
+    for step in 0..=100 {
+        let value = ease.eval(step as f32 / 100.0);
+        assert!(
+            (0.0..=1.0).contains(&value),
+            "the response left the unit range at {step}"
+        );
+    }
+    // The degenerate progress values take the same clamps the bezier's take.
+    assert_eq!(ease.eval(f32::NAN), 0.0);
+    assert_eq!(ease.eval(-1.0), 0.0);
+    assert_eq!(
+        ease.eval(2.0),
+        ease.eval(1.0),
+        "progress past the window pins"
+    );
+    // An instant window is the direct-show path: whatever the progress, the end.
+    assert_eq!(SpringEase::over(SpringParams::SCALE, 0.0).eval(0.5), 1.0);
+}
+
+#[test]
+fn test_spring_ease_frequency_sets_how_far_the_response_reaches() {
+    // Critically damped responses are monotone, so "further along" is unambiguous:
+    // the stiffer spring has travelled more of the way at the same slice of the
+    // window, and a slow spring is still rising when the window closes on it.
+    let slow = SpringEase::over(SpringParams::new(12.0, 1.0, 1.0), 0.11);
+    let fast = SpringEase::over(SpringParams::new(60.0, 1.0, 1.0), 0.11);
+    assert!(fast.eval(0.5) > slow.eval(0.5));
+    assert!(slow.eval(1.0) < 1.0, "the window cuts a slow spring short");
+    assert!(fast.eval(1.0) > slow.eval(1.0));
+}
+
+#[test]
+fn test_spring_ease_of_an_underdamped_spring_never_passes_its_end() {
+    // Zeta 0.3 overshoots by more than a third of the step, so the clamp is the only
+    // thing between the user's spring and a window growing past its placed size.
+    let ease = SpringEase::over(SpringParams::new(60.0, 0.3, 1.0), 0.15);
+    let mut touched = false;
+    for step in 0..=300 {
+        let value = ease.eval(step as f32 / 300.0);
+        assert!(value <= 1.0, "the clamp failed at {step}");
+        touched |= value == 1.0;
+    }
+    assert!(
+        touched,
+        "a light spring must reach the clamp for the bound to mean anything"
+    );
+}
+
+#[test]
+fn test_spring_ease_of_a_heavy_spring_creeps_monotonically() {
+    for zeta in [1.0f32, 1.7] {
+        let ease = SpringEase::over(SpringParams::new(30.0, zeta, 1.0), 0.2);
+        let mut previous = 0.0f32;
+        for step in 0..=100 {
+            let value = ease.eval(step as f32 / 100.0);
+            assert!(
+                value >= previous,
+                "an overdamped response never backs up at {step}"
+            );
+            previous = value;
+        }
+        assert!(previous < 1.0, "a heavy spring is cut short by its window");
+    }
+}
+
+#[test]
+fn test_appear_anim_scale_follows_the_configured_spring_and_opacity_does_not() {
+    let mut stiff = AppearAnim::with_scale_spring(SpringParams::new(60.0, 1.0, 1.0));
+    let mut soft = AppearAnim::with_scale_spring(SpringParams::new(12.0, 1.0, 1.0));
+    stiff.appear(APPEAR_S);
+    soft.appear(APPEAR_S);
+    for _ in 0..8 {
+        stiff.step(FRAME_S);
+        soft.step(FRAME_S);
+    }
+    let (stiff_scale, soft_scale) = (stiff.scale(), soft.scale());
+    assert!(
+        stiff_scale > soft_scale && soft_scale > APPEAR_SCALE_FROM,
+        "the stiffer spring must be further into the grow, got {stiff_scale} vs {soft_scale}"
+    );
+    assert_eq!(
+        stiff.opacity(),
+        soft.opacity(),
+        "the spring is the scale's alone: the opacity keeps the designed curve"
+    );
+    let mut frames = 0u32;
+    while !(stiff.step(FRAME_S) && soft.step(FRAME_S)) {
+        frames += 1;
+        assert!(frames < 1_000, "the appear motion must finish");
+        assert!(
+            stiff.scale() <= 1.0 && soft.scale() <= 1.0,
+            "the configured spring never grows the window past its full size"
+        );
+    }
+    assert_eq!(stiff.scale(), 1.0, "both land on the full size");
+    assert_eq!(soft.scale(), 1.0);
+    assert_eq!(stiff.opacity(), 1.0);
+}
+
+#[test]
+fn test_appear_anim_disappear_shrinks_on_the_configured_spring() {
+    let mut anim = AppearAnim::visible();
+    anim.disappear(DISAPPEAR_S);
+    for _ in 0..4 {
+        anim.step(FRAME_S);
+    }
+    let (mid_scale, mid_opacity) = (anim.scale(), anim.opacity());
+    assert!(
+        mid_scale > DISAPPEAR_SCALE_TO && mid_scale < 1.0,
+        "the shrink is part way down its spring, got {mid_scale}"
+    );
+    assert!(
+        mid_opacity > 0.0 && mid_opacity < 1.0,
+        "the opacity is on its own designed curve, got {mid_opacity}"
+    );
+    while !anim.step(FRAME_S) {
+        assert!(anim.opacity() > 0.0);
+    }
+    assert_eq!(anim.scale(), DISAPPEAR_SCALE_TO, "the shrink lands exact");
+    assert_eq!(anim.opacity(), 0.0);
+}
+
+#[test]
+fn test_motion_config_of_zero_durations_lands_the_window_at_once() {
+    let config = MotionConfig::from_animation(ime_config::AnimationConfig {
+        enabled: true,
+        omega0: 26.0,
+        zeta: 0.85,
+        appear_ms: 0,
+        disappear_ms: 0,
+    });
+    let mut set = AnimationSet::new(config);
+    set.appear();
+    assert_eq!(set.opacity(), 1.0, "a zero appear window is a direct show");
+    assert_eq!(set.scale(), 1.0);
+    let motion = set.step(FRAME_S, 1.0);
+    assert!(!motion.animating, "and nothing is left in flight");
+    set.disappear();
+    assert_eq!(
+        set.opacity(),
+        0.0,
+        "a zero disappear window is a direct hide"
+    );
+    assert!(!set.is_animating());
+}
+
+#[test]
+fn test_motion_config_disabled_lands_every_motion_at_once() {
+    let config = MotionConfig::from_animation(ime_config::AnimationConfig {
+        enabled: false,
+        omega0: 26.0,
+        zeta: 0.85,
+        appear_ms: 110,
+        disappear_ms: 90,
+    });
+    let mut set = AnimationSet::new(config);
+    let rect = HighlightRect::new(176.0, 30.0, 88.0, 30.0);
+    set.set_highlight_visible(true);
+    set.retarget_highlight(rect);
+    set.appear();
+    set.turn_page(PageDir::Next);
+    assert!(
+        !set.is_animating(),
+        "the switch is off: nothing is in flight"
+    );
+    assert_eq!(set.opacity(), 1.0);
+    assert_eq!(set.page_offset_dp(), 0.0, "the page content is home");
+    assert_eq!(
+        set.highlight().rect(),
+        rect,
+        "the box is already on its cell"
+    );
+    let motion = set.step(FRAME_S, 1.0);
+    assert!(!motion.animating, "a step arms no deadline either");
+    assert_eq!(set.scale(), 1.0, "the window draws its end state at once");
 }

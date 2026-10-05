@@ -26,11 +26,6 @@ fn text_width(text: &str, font_size: f32) -> f32 {
         .sum()
 }
 
-/// The width the head ellipsis occupies at `font_size`.
-fn marker_width(font_size: f32) -> f32 {
-    super::ellipsis_width(font_size)
-}
-
 /// A preedit whose spans are `pieces`, in order, with a caret span at `caret`.
 ///
 /// The spans tile the text exactly and the caret span is inserted in its sorted position,

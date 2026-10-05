@@ -26,8 +26,18 @@ use std::ops::RangeInclusive;
 
 use ime_types::{CONFIG_SCHEMA_VERSION, ConfigError, ImeError};
 
-use crate::keymap::{BINDING_CONFLICT_CODE, project_keys};
+#[cfg(test)]
+use crate::keymap::BINDING_CONFLICT_CODE;
 use crate::scheme::SchemeConfig;
+
+mod data;
+mod repair;
+
+pub use self::data::{DataConfig, DiagnosticsConfig};
+
+#[cfg(test)]
+use self::repair::both_lists_can_route;
+use self::repair::{repair_bindings, repair_cross_list_conflicts};
 
 /// The largest number of keys a configuration document may hold.
 ///
@@ -356,18 +366,28 @@ pub struct EngineConfig {
     pub abbrev: bool,
 }
 
-/// The `[ui.animation]` section: the spring the candidate window moves on.
+/// The `[ui.animation]` section: how the candidate window fades in and out.
+///
+/// The section is read once, when the UI thread builds the window: a reload collects
+/// new values, but the spring and the durations of a living window are not re-tuned,
+/// so a change takes effect when fcitx5 builds the addon again.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AnimationConfig {
-    /// `enabled`: whether the window animates at all.
+    /// `enabled`: whether the window animates at all. With it off every motion lands
+    /// on its end state on the first frame.
     pub enabled: bool,
-    /// `omega0`: the undamped angular frequency, in rad/s.
+    /// `omega0`: the undamped angular frequency, in rad/s, of the spring that carries
+    /// the window's scale through the appear and disappear fades. The highlight, page
+    /// and resize springs keep the design's constants and are not configurable.
     pub omega0: f32,
-    /// `zeta`: the damping ratio.
+    /// `zeta`: the damping ratio of that spring. Below `1.0` the scale arrives early
+    /// and is clamped, so the window never grows past the size it was placed at.
     pub zeta: f32,
-    /// `appear_ms`: the appear duration, in milliseconds.
+    /// `appear_ms`: how long the appear fade is given, in milliseconds. `0` shows the
+    /// window directly.
     pub appear_ms: u16,
-    /// `disappear_ms`: the disappear duration, in milliseconds.
+    /// `disappear_ms`: how long the exit fade is given, in milliseconds. `0` hides it
+    /// directly.
     pub disappear_ms: u16,
 }
 
@@ -436,77 +456,6 @@ pub struct PhraseConfig {
     /// Zero is refused rather than accepted, because a table that may hold nothing is a
     /// disabled table and `enabled` is the key that says so.
     pub max_entries: u32,
-}
-
-/// The `[data]` section.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DataConfig {
-    /// `durability`: how user-frequency writes reach the disk. Defaults to
-    /// [`Durability::Eventual`], the variant [`Durability`] marks as its default.
-    pub durability: Durability,
-    /// `backup_enabled`: whether the user's learned words are copied automatically.
-    ///
-    /// On by default: the store cannot be rebuilt from anywhere else, and the user it
-    /// costs everything is exactly the one who never thought about backups. With the key
-    /// off no generation is written, and the ones already on disk are left alone.
-    pub backup_enabled: bool,
-    /// `backup_keep`: how many backup generations are kept, `1..=MAX_BACKUP_KEEP`.
-    ///
-    /// The rotation removes the oldest generations past this count once a new one has
-    /// landed, so zero would remove the copy that was just written. Such a value is
-    /// reported and replaced by [`Config::repaired`].
-    pub backup_keep: u8,
-}
-
-impl Default for DataConfig {
-    /// The shipped defaults: eventual writes, backups on, [`DEFAULT_BACKUP_KEEP`]
-    /// generations kept.
-    ///
-    /// Written out rather than derived, because two of the three keys are not
-    /// zero-valued: a derived default would turn the copies off and ask for no
-    /// generations at all.
-    fn default() -> Self {
-        Self {
-            durability: Durability::Eventual,
-            backup_enabled: true,
-            backup_keep: DEFAULT_BACKUP_KEEP,
-        }
-    }
-}
-
-/// The `[diagnostics]` section.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DiagnosticsConfig {
-    /// `level`: the verbosity of the log.
-    pub level: LogLevel,
-    /// `log_rotation_mb`: the size a log file reaches before it is rolled.
-    pub log_rotation_mb: u32,
-    /// `log_keep_files`: how many rolled log files are kept.
-    pub log_keep_files: u8,
-    /// `log_input_content`: accepted so that the user can see and control the
-    /// setting, and deliberately without effect on what is recorded. The plugin never
-    /// writes the characters a user types to the log; turning this on extends the
-    /// diagnostics to input lengths and syllable counts only.
-    pub log_input_content: bool,
-    /// `probes`: whether the diagnostic probes are switched on.
-    pub probes: bool,
-}
-
-impl DiagnosticsConfig {
-    /// Whether the characters a user types may be written to the log.
-    ///
-    /// # Returns
-    ///
-    /// Always `false`, whatever `log_input_content` says. This is the single place
-    /// that answers the question, so the promise holds by construction rather than by
-    /// every call site remembering it.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub const fn logs_input_characters(&self) -> bool {
-        false
-    }
 }
 
 /// The whole configuration, after the defaults, the user's document and validation
@@ -800,106 +749,6 @@ impl Config {
         repair_cross_list_conflicts(&mut self.keys, &mut warnings);
         (self, warnings.entries)
     }
-}
-
-/// Drops from `keys.flip_keys` every key `keys.highlight_keys` already claims, reporting
-/// each one.
-///
-/// The two lists are separate settings but one keymap: a key cannot page the candidate list
-/// and move the highlight at the same time. The overlap used to be accepted silently, and
-/// the routing table then settled it by evaluation order -- a decision the user never saw.
-/// Settling it here, in the direction the router already applies, makes the configuration
-/// and the router agree by construction, and the repair is idempotent: what it produces has
-/// no overlap left to report.
-///
-/// Only a key both lists can act on is a conflict. A name one of the two lists cannot route
-/// is the projection's diagnostic rather than this one's, and reporting it here would
-/// describe a clash that never existed.
-fn repair_cross_list_conflicts(keys: &mut KeysConfig, warnings: &mut Warnings) {
-    let claimed = keys.highlight_keys.clone();
-    let mut shared: Vec<KeyName> = Vec::new();
-    for name in &keys.flip_keys {
-        if claimed.contains(name) && !shared.contains(name) && both_lists_can_route(*name, keys) {
-            shared.push(*name);
-        }
-    }
-    if shared.is_empty() {
-        return;
-    }
-    keys.flip_keys.retain(|name| !shared.contains(name));
-    for name in shared {
-        warnings.report_ime_error(cross_list_conflict(name));
-    }
-}
-
-/// Whether `keys.flip_keys` and `keys.highlight_keys` can both act on `name`.
-///
-/// Asked of the projection rather than restated here: which names a list can carry is that
-/// module's table, and a second copy of it in this one would be a second answer, free to
-/// drift from the one the router reads. The name is bound in one list at a time, because
-/// binding it in both would make the projection settle the very conflict this asks about.
-///
-/// # Panics
-///
-/// Never: the two probes read a list of one name each and write a flag set.
-fn both_lists_can_route(name: KeyName, keys: &KeysConfig) -> bool {
-    let page = KeysConfig {
-        flip_keys: vec![name],
-        highlight_keys: Vec::new(),
-        ..keys.clone()
-    };
-    let highlight = KeysConfig {
-        flip_keys: Vec::new(),
-        highlight_keys: vec![name],
-        ..keys.clone()
-    };
-    !project_keys(&page).0.flip_keys.is_empty()
-        && !project_keys(&highlight).0.highlight_keys.is_empty()
-}
-
-/// The diagnostic for a key both binding lists claim.
-///
-/// The code is the projection's own: the two layers answer one question -- which list owns
-/// a key both of them named -- and a second code for it would make a diagnostic and a test
-/// match on two spellings of one condition. The reason names the list that gives way, so
-/// the rendered message says which line of the document to edit.
-///
-/// # Panics
-///
-/// Never.
-fn cross_list_conflict(name: KeyName) -> ImeError {
-    ImeError::ConfigInvalid {
-        key: String::from(BINDING_CONFLICT_CODE),
-        reason: format!(
-            "{KEY_FLIP_KEYS} names \"{}\", which {KEY_HIGHLIGHT_KEYS} also claims; \
-             the highlight binding is kept",
-            name.as_str()
-        ),
-    }
-}
-
-/// Drops the repeated entries of one key-binding list and then any entry past
-/// [`MAX_KEY_BINDINGS`], reporting each one.
-///
-/// The first position of a repeated key is the one that survives, so a list the user
-/// edited by hand keeps the order they gave it. The length bound is the number of keys a
-/// list can route, which is what makes it a capacity rather than a number: an entry past
-/// it could never have done anything, and dropping it is the honest answer to a list longer
-/// than the keymap it describes.
-fn repair_bindings(names: &mut Vec<KeyName>, key: &str, warnings: &mut Warnings) {
-    let mut unique: Vec<KeyName> = Vec::with_capacity(names.len());
-    for name in names.iter().copied() {
-        if unique.contains(&name) {
-            warnings.report(key, format!("repeated key binding: {}", name.as_str()));
-        } else {
-            unique.push(name);
-        }
-    }
-    if unique.len() > MAX_KEY_BINDINGS {
-        warnings.report_limit(key, MAX_KEY_BINDINGS);
-        unique.truncate(MAX_KEY_BINDINGS);
-    }
-    *names = unique;
 }
 
 #[cfg(test)]

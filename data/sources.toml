@@ -34,7 +34,9 @@ url = "https://github.com/mozillazg/pinyin-data"
 license = "MIT"
 spdx = "MIT"
 retrieved = "2026-09-29"
-sha256 = "ec888380a88f317e8ae6f90e8fc2d26207e258c1aa3f9f3b4cb4b34732063f6c"
+# The committed copy is the normalized derivative the build consumes; the upstream
+# download hashed to ec888380a88f317e8ae6f90e8fc2d26207e258c1aa3f9f3b4cb4b34732063f6c.
+sha256 = "27c1b14ae76cc8815c48c3265c616e556187393bc0ca8fa58fa87d5e33326972"
 permissive = true
 
 [[source]]
@@ -56,7 +58,9 @@ url = "https://github.com/fxsjy/jieba"
 license = "MIT"
 spdx = "MIT"
 retrieved = "2026-09-29"
-sha256 = "5784e097f4363940321ababfbd9851ae6955e98245029d28c89b833a3654c596"
+# The committed copy is the normalized derivative the build consumes; the upstream
+# download hashed to 5784e097f4363940321ababfbd9851ae6955e98245029d28c89b833a3654c596.
+sha256 = "34b684d996bdd06d3a33da7a8023667d5c2dc0fb77672dbe0a58c6cbd0db910b"
 permissive = true
 
 [[source]]
