@@ -59,7 +59,9 @@ pub mod transition;
 
 pub use self::highlight::{HighlightAnim, HighlightRect, HighlightStep, union_rects};
 pub use self::set::{AnimationSet, FrameMotion};
-pub use self::transition::{AppearAnim, CubicBezier, TimedTransition};
+pub use self::transition::{
+    AppearAnim, Blend, BlendTransition, CROSSFADE_S, CubicBezier, TRANSPARENT, TimedTransition,
+};
 
 use ime_types::PageDir;
 

@@ -13,6 +13,8 @@
 //! therefore continues from the current opacity instead of dropping to zero first,
 //! which is the behaviour the window state machine requires.
 
+use ime_types::Rgba8;
+
 use super::clamp_step;
 
 /// The appear duration of 3.3.2, in seconds.
@@ -224,6 +226,259 @@ impl TimedTransition {
     }
 }
 
+/// Fully transparent black: the resting colour of a marker nothing has themed yet.
+pub const TRANSPARENT: Rgba8 = Rgba8 {
+    r: 0,
+    g: 0,
+    b: 0,
+    a: 0,
+};
+
+/// One 8-bit channel of a deterministic blend, `t` in `0..=256`.
+///
+/// The arithmetic is integer end to end: `from` plus the channel delta carried `t`
+/// 256ths of the way, with the `+ 128` before the shift as the round-half step.
+/// Integer division floors, which keeps the result monotone in `t` and inside the
+/// two endpoints either way, and a given pair of endpoints and a given `t` always
+/// produce the same byte.
+const fn blend_channel(from: u8, to: u8, t: u16) -> u8 {
+    let delta = to as i32 - from as i32;
+    let carried = (delta * (t as i32) + 128) >> 8;
+    let value = from as i32 + carried;
+    // `clamp` is not const-callable yet, so the bounds are the two comparisons it
+    // would have made.
+    if value < 0 {
+        0
+    } else if value > 255 {
+        255
+    } else {
+        value as u8
+    }
+}
+
+/// A value that can be carried from one endpoint to another in 256 deterministic
+/// steps.
+///
+/// The step count is what keeps a blend exact at both ends and reproducible frame
+/// for frame: the value is a function of the endpoints and an integer alone,
+/// never of the rounding a floating-point pipeline would apply on the way.
+pub trait Blend: Copy {
+    /// The value `t` 256ths of the way from `from` to `to`. `t` of `0` and `256`
+    /// return `from` and `to` unchanged.
+    fn blend(from: Self, to: Self, t: u16) -> Self;
+}
+
+impl Blend for u8 {
+    fn blend(from: Self, to: Self, t: u16) -> Self {
+        blend_channel(from, to, t)
+    }
+}
+
+impl Blend for Rgba8 {
+    fn blend(from: Self, to: Self, t: u16) -> Self {
+        Rgba8 {
+            r: blend_channel(from.r, to.r, t),
+            g: blend_channel(from.g, to.g, t),
+            b: blend_channel(from.b, to.b, t),
+            a: blend_channel(from.a, to.a, t),
+        }
+    }
+}
+
+/// A one-shot transition between two blendable values.
+///
+/// [`TimedTransition`] underneath carries the eased progress from `0.0` to `1.0`
+/// and the endpoints are blended in integer arithmetic, so the value a frame
+/// paints is a function of the two endpoints and the elapsed time alone. Starting
+/// a new transition takes its `from` from wherever the previous one had got to,
+/// which is what makes an interrupted fade continue instead of jump -- the same
+/// contract the scalar transitions and the window's springs follow.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlendTransition<C: Blend> {
+    /// The eased progress from `0.0` to `1.0`, on the shared one-shot clock.
+    clock: TimedTransition,
+    /// The value the transition continues from.
+    from: C,
+    /// The value the transition is heading for.
+    to: C,
+}
+
+impl<C: Blend + PartialEq> BlendTransition<C> {
+    /// Creates a transition at rest on `initial`.
+    pub fn new(initial: C) -> Self {
+        Self {
+            clock: TimedTransition::new(0.0),
+            from: initial,
+            to: initial,
+        }
+    }
+
+    /// Starts a transition to `to`, continuing from the current value.
+    ///
+    /// A duration of zero or less lands on `to` at once, which is the path
+    /// `[ui.animation] enabled = false` and a first theme application take.
+    pub fn start(&mut self, to: C, duration_s: f32, easing: CubicBezier) {
+        if to == self.value() {
+            // Equal endpoints are nothing to travel to: settle the clock at once
+            // rather than spend the duration redrawing the same bytes every frame.
+            self.from = to;
+            self.to = to;
+            self.clock.start(1.0, 0.0, easing);
+            return;
+        }
+        self.from = self.value();
+        self.to = to;
+        self.clock.snap_to(0.0);
+        self.clock.start(1.0, duration_s, easing);
+    }
+
+    /// Advances by `dt` and reports whether the transition has finished.
+    pub fn step(&mut self, dt: f32) -> bool {
+        self.clock.step(dt)
+    }
+
+    /// The current value: the endpoints carried the eased progress of the way.
+    pub fn value(&self) -> C {
+        // `TimedTransition` keeps its value inside `0.0..=1.0`, so the quantized
+        // step is inside `0..=256` and the blend is exact at both ends.
+        let t = (self.clock.value() * 256.0).round() as u16;
+        C::blend(self.from, self.to, t)
+    }
+
+    /// Whether the transition has finished.
+    pub fn is_settled(&self) -> bool {
+        self.clock.is_settled()
+    }
+
+    /// The value this transition is heading for.
+    pub fn target(&self) -> C {
+        self.to
+    }
+
+    /// Jumps to `value` and stops.
+    pub fn snap_to(&mut self, value: C) {
+        self.from = value;
+        self.to = value;
+        self.clock.snap_to(1.0);
+    }
+}
+
+impl Default for BlendTransition<Rgba8> {
+    fn default() -> Self {
+        Self::new(TRANSPARENT)
+    }
+}
+
+/// The four markers of the header's status cluster, in the order it draws them.
+///
+/// Each marker sits between two colours of 3.2: the mode dot between
+/// `status.dot.active` and `status.dot.idle`, the two secondary markers between
+/// the active token and the idle one, and the lock between `text.annotation` and
+/// nothing at all. Which side of the pair is drawn belongs to the frame's flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusMarker {
+    /// The mode dot, driven by the strip's Chinese bit.
+    Mode,
+    /// The full-width marker, driven by the full-width bit.
+    FullWidth,
+    /// The Chinese-punctuation marker, driven by the punctuation bit.
+    Punctuation,
+    /// The read-only lock, driven by the read-only bit.
+    Lock,
+}
+
+impl StatusMarker {
+    /// The markers in the order the cluster draws them.
+    pub const ALL: [Self; 4] = [Self::Mode, Self::FullWidth, Self::Punctuation, Self::Lock];
+}
+
+/// The colours each marker sits between, of the theme in force (3.2).
+///
+/// Copied out of a resolved [`crate::theme::ThemeTokens`] when one is applied, so
+/// a theme switch re-targets the fades without the frame path knowing the palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StatusTokens {
+    /// The colour a marker draws while its state is on.
+    pub active: Rgba8,
+    /// The colour a marker rests at while its state is off.
+    pub idle: Rgba8,
+    /// The read-only lock's colour.
+    pub lock: Rgba8,
+}
+
+impl StatusTokens {
+    /// The status tokens of a resolved theme.
+    pub fn of(tokens: &crate::theme::ThemeTokens) -> Self {
+        Self {
+            active: tokens.status_dot_active,
+            idle: tokens.status_dot_idle,
+            lock: tokens.text_annotation,
+        }
+    }
+}
+
+impl Default for StatusTokens {
+    fn default() -> Self {
+        Self {
+            active: TRANSPARENT,
+            idle: TRANSPARENT,
+            lock: TRANSPARENT,
+        }
+    }
+}
+
+/// The status strip's crossfade: one colour transition per marker.
+///
+/// One transition per marker rather than one shared clock, because the markers
+/// flip independently and an interrupted fade continues from the colour it had
+/// reached, which is a per-marker property. The colours blend in integer steps,
+/// so a fade that settled and one that was snapped draw the same bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarkerFades([BlendTransition<Rgba8>; 4]);
+
+impl Default for MarkerFades {
+    fn default() -> Self {
+        Self([BlendTransition::new(TRANSPARENT); 4])
+    }
+}
+
+impl MarkerFades {
+    /// Starts, or with `fade` off lands, the marker's fade toward `to`.
+    ///
+    /// The landing form is the `[ui.animation] enabled = false` path and a first
+    /// theme application: both need a frame that does not depend on how many
+    /// frames came before it.
+    pub(crate) fn set(&mut self, marker: StatusMarker, to: Rgba8, fade: bool) {
+        let slot = &mut self.0[marker as usize];
+        let duration_s = if fade { CROSSFADE_S } else { 0.0 };
+        slot.start(to, duration_s, CubicBezier::EASE_IN_OUT);
+    }
+
+    /// Advances every marker by `dt` and reports whether all have finished.
+    ///
+    /// A plain loop rather than `all`: every marker has to take the step, so the
+    /// short-circuit `all` would offer is the wrong semantics.
+    pub(crate) fn step(&mut self, dt: f32) -> bool {
+        let mut settled = true;
+        for marker in &mut self.0 {
+            settled &= marker.step(dt);
+        }
+        settled
+    }
+
+    /// The four colours this frame paints, in [`StatusMarker`] order.
+    pub(crate) fn values(&self) -> [Rgba8; 4] {
+        let [mode, full_width, punctuation, lock] = &self.0;
+        [
+            mode.value(),
+            full_width.value(),
+            punctuation.value(),
+            lock.value(),
+        ]
+    }
+
+}
+
 /// The appear and disappear motion: opacity, plus the scale the window grows from.
 ///
 /// Both properties run on the same clock and the same curve, so they are driven
@@ -345,256 +600,4 @@ fn finite_or_zero(value: f32) -> f32 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const FRAME_S: f32 = 1.0 / 144.0;
-
-    /// Steps a transition until it settles, with a ceiling so a stuck one fails the
-    /// test rather than hanging it.
-    fn run(transition: &mut TimedTransition) -> u32 {
-        let mut frames = 0u32;
-        while !transition.step(FRAME_S) {
-            frames += 1;
-            assert!(frames < 1_000, "the transition must finish");
-        }
-        frames + 1
-    }
-
-    #[test]
-    fn test_cubic_bezier_endpoints_are_exact() {
-        for curve in [
-            CubicBezier::APPEAR,
-            CubicBezier::DISAPPEAR,
-            CubicBezier::EASE_IN_OUT,
-        ] {
-            assert_eq!(curve.eval(0.0), 0.0);
-            assert_eq!(curve.eval(1.0), 1.0);
-        }
-    }
-
-    #[test]
-    fn test_cubic_bezier_stays_within_unit_range_and_is_monotone() {
-        for curve in [
-            CubicBezier::APPEAR,
-            CubicBezier::DISAPPEAR,
-            CubicBezier::EASE_IN_OUT,
-        ] {
-            let mut previous = 0.0f32;
-            for step in 0..=100 {
-                let value = curve.eval(step as f32 / 100.0);
-                assert!(
-                    (0.0..=1.0).contains(&value),
-                    "the curve left the unit range at {step}"
-                );
-                assert!(
-                    value >= previous,
-                    "the curve went backwards at {step}: {value} < {previous}"
-                );
-                previous = value;
-            }
-        }
-    }
-
-    #[test]
-    fn test_appear_curve_is_ahead_of_linear_and_disappear_is_behind() {
-        // The appear curve is a fast-out: it is nearly finished at the midpoint.
-        assert!(CubicBezier::APPEAR.eval(0.5) > 0.9);
-        // The disappear curve is an ease-in: it has barely started at the midpoint.
-        assert!(CubicBezier::DISAPPEAR.eval(0.5) < 0.5);
-    }
-
-    #[test]
-    fn test_ease_in_out_is_symmetric_about_the_midpoint() {
-        let curve = CubicBezier::EASE_IN_OUT;
-        assert!((curve.eval(0.5) - 0.5).abs() < 1.0e-4);
-        for step in 1..50 {
-            let t = step as f32 / 100.0;
-            let sum = curve.eval(t) + curve.eval(1.0 - t);
-            assert!(
-                (sum - 1.0).abs() < 1.0e-3,
-                "the curve is not symmetric at {t}: {sum}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_cubic_bezier_of_degenerate_progress_is_finite() {
-        let curve = CubicBezier::EASE_IN_OUT;
-        assert_eq!(curve.eval(f32::NAN), 0.0);
-        assert_eq!(curve.eval(-5.0), 0.0);
-        assert_eq!(curve.eval(5.0), 1.0);
-        assert_eq!(curve.eval(f32::INFINITY), 1.0);
-        // Control points outside the unit range are pulled back in, so the curve
-        // stays a function of x.
-        let repaired = CubicBezier::new(-1.0, 0.0, 4.0, 1.0);
-        assert_eq!((repaired.x1, repaired.x2), (0.0, 1.0));
-        assert!(repaired.eval(0.5).is_finite());
-        let poisoned = CubicBezier::new(f32::NAN, f32::NAN, f32::NAN, f32::NAN);
-        assert!(poisoned.eval(0.5).is_finite());
-    }
-
-    #[test]
-    fn test_timed_transition_finishes_in_the_configured_time() {
-        let mut transition = TimedTransition::new(0.0);
-        transition.start(1.0, CROSSFADE_S, CubicBezier::EASE_IN_OUT);
-        assert!(!transition.is_settled());
-        let frames = run(&mut transition);
-        // 120ms at 144Hz is 17.28 frames, so the eighteenth frame completes it.
-        assert_eq!(frames, 18);
-        assert_eq!(transition.value(), 1.0);
-        assert!(transition.is_settled());
-    }
-
-    #[test]
-    fn test_timed_transition_of_zero_duration_snaps() {
-        let mut transition = TimedTransition::new(0.0);
-        transition.start(1.0, 0.0, CubicBezier::APPEAR);
-        assert!(transition.is_settled());
-        assert_eq!(transition.value(), 1.0);
-        // A negative or unusable duration is treated as zero rather than reversed.
-        transition.start(0.0, -1.0, CubicBezier::APPEAR);
-        assert!(transition.is_settled());
-        assert_eq!(transition.value(), 0.0);
-        transition.start(1.0, f32::NAN, CubicBezier::APPEAR);
-        assert!(transition.is_settled());
-    }
-
-    #[test]
-    fn test_timed_transition_of_degenerate_delta_stays_finite() {
-        let mut transition = TimedTransition::new(0.0);
-        transition.start(1.0, CROSSFADE_S, CubicBezier::EASE_IN_OUT);
-        transition.step(FRAME_S);
-        let value = transition.value();
-        assert!(!transition.step(0.0), "a zero delta carries no time");
-        assert_eq!(transition.value(), value);
-        assert!(!transition.step(-FRAME_S));
-        assert_eq!(transition.value(), value);
-        assert!(!transition.step(f32::NAN));
-        assert_eq!(transition.value(), value);
-        // A stalled frame is clamped, so it advances by one stable step and no more.
-        let mut stalled = transition;
-        let mut reference = transition;
-        stalled.step(30.0);
-        reference.step(1.0 / 60.0);
-        assert_eq!(stalled.value(), reference.value());
-        assert!(transition.value().is_finite());
-    }
-
-    #[test]
-    fn test_appear_anim_reaches_full_opacity_and_scale() {
-        let mut anim = AppearAnim::hidden();
-        assert_eq!(anim.opacity(), 0.0);
-        assert_eq!(anim.scale(), APPEAR_SCALE_FROM);
-        anim.appear(APPEAR_S);
-        let mut frames = 0u32;
-        while !anim.step(FRAME_S) {
-            frames += 1;
-            assert!(frames < 1_000, "the appear motion must finish");
-        }
-        // 110ms at 144Hz is 15.84 frames.
-        assert_eq!(frames + 1, 16);
-        assert_eq!(anim.opacity(), 1.0);
-        assert_eq!(anim.scale(), 1.0);
-    }
-
-    #[test]
-    fn test_appear_anim_disappear_reaches_transparent_and_shrunk() {
-        let mut anim = AppearAnim::visible();
-        anim.disappear(DISAPPEAR_S);
-        let mut frames = 0u32;
-        while !anim.step(FRAME_S) {
-            frames += 1;
-            assert!(frames < 1_000, "the disappear motion must finish");
-        }
-        // 90ms at 144Hz is 12.96 frames.
-        assert_eq!(frames + 1, 13);
-        assert_eq!(anim.opacity(), 0.0);
-        assert_eq!(anim.scale(), DISAPPEAR_SCALE_TO);
-    }
-
-    #[test]
-    fn test_appear_anim_interrupted_disappear_continues_from_current_opacity() {
-        let mut anim = AppearAnim::visible();
-        anim.disappear(DISAPPEAR_S);
-        for _ in 0..6 {
-            anim.step(FRAME_S);
-        }
-        let mid = anim.opacity();
-        assert!(
-            mid > 0.0 && mid < 1.0,
-            "the window is part way through fading out, got {mid}"
-        );
-        // A Show arrives during the disappear: the state machine requires the fade to
-        // continue from where it is rather than drop to zero and rise again.
-        anim.appear(APPEAR_S);
-        assert_eq!(anim.opacity(), mid, "no jump on the reversal");
-        assert!(!anim.is_settled());
-        anim.step(FRAME_S);
-        assert!(
-            anim.opacity() > mid,
-            "the window must now be fading back in, got {}",
-            anim.opacity()
-        );
-    }
-
-    #[test]
-    fn test_appear_anim_snap_hidden_and_visible_reach_the_end_states() {
-        let mut anim = AppearAnim::hidden();
-        anim.appear(APPEAR_S);
-        anim.step(FRAME_S);
-        anim.snap_visible();
-        assert_eq!(anim.opacity(), 1.0);
-        assert_eq!(anim.scale(), 1.0);
-        assert!(anim.is_settled());
-        anim.snap_hidden();
-        assert_eq!(anim.opacity(), 0.0);
-        assert_eq!(anim.scale(), APPEAR_SCALE_FROM);
-        assert!(anim.is_settled());
-        // `snap_to_end` follows the direction the motion was already heading in.
-        anim.appear(APPEAR_S);
-        anim.step(FRAME_S);
-        anim.snap_to_end();
-        assert_eq!(anim.opacity(), 1.0);
-        assert!(anim.is_settled());
-    }
-
-    #[test]
-    fn test_status_crossfade_completes_in_the_configured_time() {
-        // 3.3.2's status-icon switch is an opacity crossfade on the shared
-        // `ease-in-out` curve; the same shape serves the theme crossfade.
-        let mut icon = TimedTransition::new(0.0);
-        icon.start(1.0, CROSSFADE_S, CubicBezier::EASE_IN_OUT);
-        let mut frames = 0u32;
-        while !icon.step(FRAME_S) {
-            frames += 1;
-            assert!(frames < 1_000, "the crossfade must finish");
-        }
-        assert_eq!(frames + 1, 18, "120ms at 144Hz");
-        assert_eq!(icon.value(), 1.0);
-        // Halfway through it is exactly halfway across, which is what `ease-in-out`
-        // buys and what keeps the two icons equally weighted mid-switch.
-        let mut halfway = TimedTransition::new(0.0);
-        halfway.start(1.0, CROSSFADE_S, CubicBezier::EASE_IN_OUT);
-        for _ in 0..9 {
-            halfway.step(FRAME_S);
-        }
-        assert!((halfway.value() - 0.5).abs() < 0.05);
-    }
-
-    #[test]
-    fn test_theme_crossfade_uses_the_ease_in_out_curve() {
-        // 3.3.2 gives the theme crossfade the same 120ms `ease-in-out` treatment, so
-        // a colour change and a status-icon change stay in step.
-        let mut theme = TimedTransition::new(0.0);
-        theme.start(1.0, CROSSFADE_S, CubicBezier::EASE_IN_OUT);
-        let mut icon = TimedTransition::new(0.0);
-        icon.start(1.0, CROSSFADE_S, CubicBezier::EASE_IN_OUT);
-        for _ in 0..18 {
-            theme.step(FRAME_S);
-            icon.step(FRAME_S);
-        }
-        assert_eq!(theme.value(), icon.value());
-        assert!(theme.is_settled());
-    }
-}
+mod tests;

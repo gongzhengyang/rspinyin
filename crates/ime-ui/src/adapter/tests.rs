@@ -21,6 +21,7 @@ use crate::slint_platform::RspinyinPlatform;
 use crate::theme::{BlurNegotiation, ThemeResolution};
 use crate::ui_generated::{PreeditRun, Theme};
 
+mod crossfade;
 mod header;
 mod motion;
 mod pixels;
@@ -447,7 +448,7 @@ fn test_draw_state_chinese_is_the_strip_bit_not_a_label_inference() {
         chinese: false,
         ..StatusStrip::default()
     };
-    state.update(&notice, container_cap(&notice, &metrics), &metrics);
+    state.update(&notice, container_cap(&notice, metrics), metrics);
     assert!(
         !state.chinese,
         "a notice label in an English frame must not light the mode dot"
@@ -459,7 +460,7 @@ fn test_draw_state_chinese_is_the_strip_bit_not_a_label_inference() {
         chinese: true,
         ..StatusStrip::default()
     };
-    state.update(&chinese, container_cap(&chinese, &metrics), &metrics);
+    state.update(&chinese, container_cap(&chinese, metrics), metrics);
     assert!(
         state.chinese,
         "the engine's mode bit is drawn as written, notice or not"
@@ -482,18 +483,18 @@ fn test_draw_state_status_delta_flags_a_chinese_bit_change() {
         chinese: true,
         ..StatusStrip::default()
     };
-    state.update(&first, container_cap(&first, &metrics), &metrics);
+    state.update(&first, container_cap(&first, metrics), metrics);
 
     let mut english = frame_with(2, "ni'hao", 1);
     english.status = StatusStrip {
         chinese: false,
         ..StatusStrip::default()
     };
-    let flipped = state.update(&english, container_cap(&english, &metrics), &metrics);
+    let flipped = state.update(&english, container_cap(&english, metrics), metrics);
     assert!(flipped.status, "a mode-bit flip is a visible change");
     assert!(!state.chinese);
 
-    let replay = state.update(&english, container_cap(&english, &metrics), &metrics);
+    let replay = state.update(&english, container_cap(&english, metrics), metrics);
     assert!(
         replay.is_empty(),
         "a frame that changes nothing writes nothing"

@@ -16,6 +16,10 @@ use crate::adapter::tests::{anchor, frame_with};
 use crate::channel::ChannelConfig;
 use crate::renderer::mock::{MockState, MockSurface, on_own_thread};
 
+/// The acrylic negotiation over the mock backend: the three compositor answers and
+/// what each one paints and records, the request's timing, and the region updates.
+mod blur;
+
 /// The surface the tests draw into, in logical pixels at a scale of 1.0.
 const SURFACE_WIDTH_DP: u32 = 320;
 const SURFACE_HEIGHT_DP: u32 = 160;

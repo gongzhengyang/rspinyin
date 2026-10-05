@@ -50,10 +50,13 @@
 //! `plan` holds the frame arithmetic, `pixels` the byte order, `source` the server side and
 //! the read loop, `encode` the PNG, and `error` the refusals.
 
-// The channel is exercised by the tests below and is not yet reachable from `xtask`'s
-// subcommand tree, which lives in `xtask/src/main.rs` and in `xtask/src/testd/mod.rs` -- two
-// files this module does not own. Until that wiring lands, every item here is reported as
-// dead code in a non-test build, and the attribute goes away with those lines.
+// The channel is reachable from the subcommand tree through `xtask capture`
+// (`capture_cli.rs`, this module's sibling), which names `capture`, `CaptureRequest`,
+// `CaptureTarget` and `CapturedImage`. What stays under the allowance is the case-author
+// API those four do not need -- `snapshot_path`, the metadata keywords, the plan limits --
+// which this module's own tests exercise and a future suite runner will name. In a binary
+// crate an item nothing names is reported as dead code however public it is, so the
+// allowance narrows as those callers land.
 //
 // `unused_imports` is covered by the same reasoning: the `pub use` lines below are this
 // module's surface, and a `pub use` in a *binary* crate is reported as unused whenever

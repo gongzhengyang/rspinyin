@@ -33,11 +33,16 @@
 //! they are the router's, which is what makes them adapter inputs rather than fields of
 //! the snapshot.
 
-use ime_types::{Candidate, StatusStrip, UiFrame};
+use ime_types::{Candidate, Rgba8, StatusStrip, UiFrame};
 
 use super::cell::{CellGeometry, CellState, Measure, PointerState, replace, write_text};
 use super::preedit::{PREEDIT_MAX_CHARS, PreeditLayout};
 use crate::layout::{self, GridLayout, Metrics};
+use crate::spring::{
+    TRANSPARENT,
+    transition::{MarkerFades, StatusMarker, StatusTokens},
+};
+use crate::theme::ThemeTokens;
 
 /// The window's drawable state, as the component's properties hold it.
 ///
@@ -84,6 +89,17 @@ pub struct DrawState {
     /// the label: the label slot carries the mode's own text *or* a degradation notice, so
     /// its content answers nothing about the mode.
     pub chinese: bool,
+    /// The three status-cluster tokens of the theme in force; see [`StatusTokens`].
+    ///
+    /// An adapter input like [`DrawState::pointer`]: a theme reaches it through
+    /// [`DrawState::set_status_tokens`], not through a frame.
+    pub status_tokens: StatusTokens,
+    /// The four markers' colour transitions; see [`MarkerFades`].
+    ///
+    /// The adapter advances them per frame and writes the colours they produce
+    /// into the component, which is what makes a mode toggle and a theme switch
+    /// crossfade over 3.3.2's 120ms instead of hard-switching.
+    pub markers: MarkerFades,
     /// Whether the preedit sits at the input cap, which the header answers with the
     /// "已达上限" hint.
     pub input_full: bool,
@@ -337,12 +353,81 @@ impl DrawState {
         changed
     }
 
+    /// Re-targets the status markers at the tokens of a theme.
+    ///
+    /// Called by the adapter when a theme is applied: the flags stay whatever the
+    /// frames say, and the two colours each marker sits between take the new
+    /// palette's values. With `fade` set the markers glide on the shared 120ms
+    /// crossfade, each continuing from wherever an interrupted one had got to;
+    /// without it they land at once, which is the disabled-motion path and the
+    /// deterministic path a screenshot takes.
+    ///
+    /// # Parameters
+    ///
+    /// * `tokens` -- the resolution to take the status tokens from.
+    /// * `fade` -- whether the re-target glides or lands at once.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn set_status_tokens(&mut self, tokens: &ThemeTokens, fade: bool) {
+        self.status_tokens = StatusTokens::of(tokens);
+        for marker in StatusMarker::ALL {
+            let target = self.marker_target(marker);
+            self.markers.set(marker, target, fade);
+        }
+    }
+
+    /// Lands every marker on the colour its state calls for, at once.
+    ///
+    /// The `[ui.animation] enabled = false` path and the shutdown path: the frame
+    /// must not depend on how many frames came before it, and an unmapped window
+    /// must not keep a fade running.
+    pub(crate) fn snap_markers(&mut self) {
+        for marker in StatusMarker::ALL {
+            let target = self.marker_target(marker);
+            self.markers.set(marker, target, false);
+        }
+    }
+
+    /// The colour `marker` draws in the state now standing.
+    ///
+    /// The mapping 3.1.1 fixes, one branch per marker: a marker that is on paints
+    /// the active token, one that is off paints the idle token, and the lock,
+    /// which has no "off" colour of its own, paints nothing at all.
+    fn marker_target(&self, marker: StatusMarker) -> Rgba8 {
+        let tokens = self.status_tokens;
+        match marker {
+            StatusMarker::Mode if self.chinese => tokens.active,
+            StatusMarker::FullWidth if self.full_width => tokens.active,
+            StatusMarker::Punctuation if self.punctuation_full => tokens.active,
+            StatusMarker::Lock if self.readonly => tokens.lock,
+            StatusMarker::Mode | StatusMarker::FullWidth | StatusMarker::Punctuation => tokens.idle,
+            StatusMarker::Lock => TRANSPARENT,
+        }
+    }
+
+    /// Starts the marker's crossfade toward the colour the state now calls for.
+    ///
+    /// Before any theme has been applied the tokens are transparent, so a target
+    /// equals the colour in rest and the fade settles as a no-op: a flag that
+    /// flips in a window nobody has themed yet moves nothing.
+    fn retarget(&mut self, marker: StatusMarker) {
+        let target = self.marker_target(marker);
+        self.markers.set(marker, target, true);
+    }
+
     /// Writes the status strip's flags into this state.
     ///
     /// The strip carries a mode label, five booleans and a script. The header draws the
     /// label as text and four of the booleans as markers; `chinese` drives the mode dot,
     /// `readonly` the lock, and the two secondary markers the full-width and punctuation
-    /// bits.
+    /// bits. A flag that flips starts its marker's crossfade toward the colour the new
+    /// state calls for, so a mode toggle is a glide and not a hard switch.
     ///
     /// `has_user_dict_hit` is the fourth boolean and is deliberately not drawn: 3.1.1
     /// gives the cluster four fixed slots and names them mode, full-width, punctuation and
@@ -365,9 +450,24 @@ impl DrawState {
     /// Never panics.
     fn write_status(&mut self, status: &StatusStrip) -> bool {
         let mut changed = replace(&mut self.full_width, status.full_width);
-        changed |= replace(&mut self.punctuation_full, status.punctuation_full);
-        changed |= replace(&mut self.readonly, status.readonly);
-        changed |= replace(&mut self.chinese, status.chinese);
+        if changed {
+            self.retarget(StatusMarker::FullWidth);
+        }
+        let punctuation = replace(&mut self.punctuation_full, status.punctuation_full);
+        if punctuation {
+            self.retarget(StatusMarker::Punctuation);
+        }
+        changed |= punctuation;
+        let readonly = replace(&mut self.readonly, status.readonly);
+        if readonly {
+            self.retarget(StatusMarker::Lock);
+        }
+        changed |= readonly;
+        let chinese = replace(&mut self.chinese, status.chinese);
+        if chinese {
+            self.retarget(StatusMarker::Mode);
+        }
+        changed |= chinese;
         changed
     }
 

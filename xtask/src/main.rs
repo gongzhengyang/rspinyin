@@ -134,6 +134,17 @@ enum Command {
     /// Not boxed: the argument struct is a path, a list of identifiers and a module code,
     /// far smaller than the boxed variants above.
     TestdSuite(testd::suite::SuiteArgs),
+    /// Read the frame mirror an armed test session published, assert on it, and
+    /// optionally keep a private copy of the snapshot.
+    ///
+    /// Boxed for the same reason as `Dictc`: the argument struct is much larger than
+    /// the other variants and the enum is built once at startup.
+    TestMirror(Box<testd::mirror_cli::MirrorArgs>),
+    /// Capture a window's pixels from the X server and write them as a PNG.
+    ///
+    /// Not boxed: the argument struct is a display name, a window id, a scale and a
+    /// path, far smaller than the boxed variants above.
+    Capture(testd::capture_cli::CaptureArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -185,5 +196,7 @@ fn main() -> anyhow::Result<()> {
         Command::TestdClient(args) => testd::commit_readback::run(*args),
         Command::TestdEngine(args) => testd::engine::run(*args),
         Command::TestdSuite(args) => testd::suite::run(args),
+        Command::TestMirror(args) => testd::mirror_cli::run(*args),
+        Command::Capture(args) => testd::capture_cli::run(args),
     }
 }

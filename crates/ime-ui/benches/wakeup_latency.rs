@@ -185,9 +185,9 @@ impl Probe {
     fn deliver_pointer(&self, connection: &Wakeup) {
         let expected = self.deliveries.fetch_add(1, Ordering::Relaxed) + 1;
         self.stamp_post();
-        connection
-            .wake()
-            .expect("the connection descriptor accepts a wake");
+        // A failed wake means the descriptor is gone; `await_observation` is where
+        // that surfaces, with a message naming the delivery that never arrived.
+        let _ = connection.wake();
         self.await_observation(expected);
     }
 
@@ -494,7 +494,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // backend reports instead of through the shared counter. The pre-run is the
     // acceptance measurement; criterion's sampler adds its own block afterwards.
     let pointer_probe = Arc::new(Probe::new());
-    let connection = Wakeup::new().expect("an eventfd can be created");
+    let connection = Wakeup::new()?;
     let poster_fd = connection.clone();
     let surface = PointerSurface {
         probe: Arc::clone(&pointer_probe),

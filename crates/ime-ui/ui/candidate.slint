@@ -236,6 +236,16 @@ export component StatusCluster inherits Rectangle {
     in property <bool> full-width: false;
     in property <bool> punctuation-full: false;
     in property <bool> readonly: false;
+    // The colours the four markers draw, as interpolable inputs. The defaults are
+    // the flag-driven token bindings the cluster has always used, so the component
+    // draws correctly before the adapter has written anything; once it does, the
+    // colours arrive per frame from the marker crossfades (3.3.2) and a mode
+    // toggle or a theme switch glides instead of hard-switching. The flags stay:
+    // they carry the defaults and remain the facts the cluster is told.
+    in property <color> mode-dot-color: root.chinese ? Theme.status-dot-active : Theme.status-dot-idle;
+    in property <color> full-width-color: root.full-width ? Theme.status-dot-active : Theme.status-dot-idle;
+    in property <color> punctuation-color: root.punctuation-full ? Theme.status-dot-active : Theme.status-dot-idle;
+    in property <color> lock-color: root.readonly ? Theme.text-annotation : transparent;
     // Whether the two secondary markers are drawn. A header whose preedit has almost no room
     // left keeps the mode and the lock and drops the other two: those two are what the user
     // has to know, the others are what he occasionally wants to. Dropping them takes 48dp
@@ -271,7 +281,7 @@ export component StatusCluster inherits Rectangle {
             width: CandidateMetrics.header-icon-size;
             height: CandidateMetrics.header-icon-size;
             border-radius: self.width / 2;
-            background: root.chinese ? Theme.status-dot-active : Theme.status-dot-idle;
+            background: root.mode-dot-color;
         }
 
         // Full-width marker: the same disc, ringed only while full-width punctuation is on.
@@ -281,7 +291,7 @@ export component StatusCluster inherits Rectangle {
             height: CandidateMetrics.header-icon-size;
             border-radius: self.width / 2;
             border-width: 2px;
-            border-color: root.full-width ? Theme.status-dot-active : Theme.status-dot-idle;
+            border-color: root.full-width-color;
             background: transparent;
         }
 
@@ -292,7 +302,7 @@ export component StatusCluster inherits Rectangle {
             height: CandidateMetrics.header-icon-size;
             border-radius: self.width / 2;
             border-width: 2px;
-            border-color: root.punctuation-full ? Theme.status-dot-active : Theme.status-dot-idle;
+            border-color: root.punctuation-color;
             background: transparent;
         }
 
@@ -310,7 +320,7 @@ export component StatusCluster inherits Rectangle {
             height: CandidateMetrics.header-icon-size;
             border-radius: 4px;
             border-width: 1px;
-            border-color: root.readonly ? Theme.text-annotation : transparent;
+            border-color: root.lock-color;
             background: transparent;
         }
     }
@@ -370,9 +380,16 @@ export component Header inherits Rectangle {
     in property <bool> readonly: false;
     // The mode bit behind the cluster's first marker (`StatusStrip::chinese`,
     // ADR-0005). It travels beside the flags rather than being read off `mode-label`:
-    // that slot carries the mode's own text or a degradation notice, so nothing about
+    // that slot carries the mode's own text *or* a degradation notice, so nothing about
     // the mode can be inferred from it.
     in property <bool> chinese: false;
+    // The cluster's marker colours, as the window passes them through (3.3.2's
+    // crossfades). The defaults are the flag-driven bindings, so the strip draws
+    // correctly before anything has been written from the fades.
+    in property <color> mode-dot-color: root.chinese ? Theme.status-dot-active : Theme.status-dot-idle;
+    in property <color> full-width-color: root.full-width ? Theme.status-dot-active : Theme.status-dot-idle;
+    in property <color> punctuation-color: root.punctuation-full ? Theme.status-dot-active : Theme.status-dot-idle;
+    in property <color> lock-color: root.readonly ? Theme.text-annotation : transparent;
     // Whether the cluster's two secondary markers are drawn; see `StatusCluster`. The
     // adapter decides it from the room the preedit has left, and the cluster's width and the
     // preedit's budget are the two halves of that one decision.
@@ -504,6 +521,10 @@ export component Header inherits Rectangle {
             full-width: root.full-width;
             punctuation-full: root.punctuation-full;
             readonly: root.readonly;
+            mode-dot-color: root.mode-dot-color;
+            full-width-color: root.full-width-color;
+            punctuation-color: root.punctuation-color;
+            lock-color: root.lock-color;
             show-secondary: root.show-secondary-status;
         }
     }
@@ -534,6 +555,14 @@ export component CandidateWindow inherits Window {
     // The mode bit the cluster's dot draws (`StatusStrip::chinese`, ADR-0005), passed
     // through to the header untouched: the window derives nothing from it.
     in property <bool> chinese: false;
+    // The status cluster's marker colours (3.3.2). The adapter writes these per frame
+    // while a marker or theme crossfade runs and lands the exact tokens when it
+    // settles; the defaults are the flag-driven bindings, which is also what an
+    // unthemed window draws.
+    in property <color> mode-dot-color: root.chinese ? Theme.status-dot-active : Theme.status-dot-idle;
+    in property <color> full-width-color: root.full-width ? Theme.status-dot-active : Theme.status-dot-idle;
+    in property <color> punctuation-color: root.punctuation-full ? Theme.status-dot-active : Theme.status-dot-idle;
+    in property <color> lock-color: root.readonly ? Theme.text-annotation : transparent;
     // The page's candidates, in the model the grid draws from.
     in property <[CandidateData]> items: [];
     // Whether a candidate's annotation is drawn beside it. The adapter writes it from every
@@ -756,6 +785,10 @@ export component CandidateWindow inherits Window {
                 punctuation-full: root.punctuation-full;
                 readonly: root.readonly;
                 chinese: root.chinese;
+                mode-dot-color: root.mode-dot-color;
+                full-width-color: root.full-width-color;
+                punctuation-color: root.punctuation-color;
+                lock-color: root.lock-color;
             }
 
             Rectangle {

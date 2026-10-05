@@ -48,8 +48,10 @@ use super::{
     pack_rgb24, physical_size, x11_rectangles,
 };
 
+mod blur;
 mod translate;
 
+pub use self::blur::BlurHandle;
 pub(crate) use self::translate::{Decoded, classify_event, effective_alpha, select_argb_visual};
 // The event translator's scale-step and alpha constants have no production reader in
 // this module; only the platform tests assert on them.
@@ -151,6 +153,9 @@ pub struct X11Backend {
     /// Last position requested, so a repeated move costs nothing.
     position: (i32, i32),
     input_region: Vec<RectI>,
+    /// The blur-behind state: the interned KDE atom when this window manager takes
+    /// the request, and the slot a capability handle writes into.
+    blur: blur::BlurChannel,
     composited: bool,
     shape_available: bool,
     protocol_errors: u32,
@@ -202,6 +207,10 @@ impl X11Backend {
             .map_err(unavailable)?
             .is_some();
         let composited = selection_owner(&conn, atoms.cm)? != 0;
+        // Blur support is a fact about the window manager, read once here and never
+        // re-negotiated; a compositor without blur is the supported degradation, not
+        // a reason to refuse the window.
+        let blur = blur::BlurChannel::open(&conn, root);
 
         let window = conn.generate_id().map_err(unavailable)?;
         let gc = conn.generate_id().map_err(unavailable)?;
@@ -265,6 +274,7 @@ impl X11Backend {
             scale,
             position: (0, 0),
             input_region: Vec::new(),
+            blur,
             composited,
             shape_available,
             protocol_errors: 0,
@@ -302,6 +312,19 @@ impl X11Backend {
     /// Never panics.
     pub fn effective_base_alpha(&self, requested: u8) -> u8 {
         effective_alpha(requested, self.depth == ARGB_DEPTH, self.composited)
+    }
+
+    /// The blur capability to hand to the surface that draws into this window.
+    ///
+    /// The capability shares a request slot with the backend: a request made on it is
+    /// answered immediately, from the detection made at construction -- so a window
+    /// manager that will not answer cannot stall the caller -- and the region it names
+    /// is written to the window on the next event poll. [`BlurSurface`] on the backend
+    /// itself is the synchronous path, for a caller that still holds the backend.
+    ///
+    /// [`BlurSurface`]: crate::theme::BlurSurface
+    pub fn blur_handle(&self) -> BlurHandle {
+        self.blur.handle()
     }
 
     /// Moves the window to a position in screen physical pixels.
@@ -552,6 +575,10 @@ impl SurfaceBackend for X11Backend {
     }
 
     fn poll_events(&mut self, out: &mut Vec<SurfaceEvent>) -> Result<(), PlatformError> {
+        // A blur request a capability handle has taken since the last poll goes out
+        // here, on the connection this poll is already driving: one queued property
+        // write, never a round trip.
+        self.blur.drain(&self.conn, self.window)?;
         // A scale change can arrive from the surface itself, synthesized from the anchor
         // the host sent: X11 has no scale event source of its own, so this is the only
         // way the ratio the placement runs at reaches the window. Adopting before the

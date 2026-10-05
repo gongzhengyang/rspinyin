@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use ime_types::{FrameToken, PixelBufferMut, PlatformError, RectI, SurfaceBackend, SurfaceEvent};
 
 use super::raster::BYTES_PER_PIXEL;
+use crate::theme::BlurSurface;
 
 /// Everything a test can observe about a [`MockSurface`].
 #[derive(Default)]
@@ -31,6 +32,15 @@ pub(crate) struct MockState {
     pub(crate) pending: Vec<SurfaceEvent>,
     /// How many of the next `acquire_buffer` calls fail with `NoFreeBuffer`.
     pub(crate) starve: usize,
+    /// Whether the mock's compositor takes a blur request; `false` refuses one.
+    ///
+    /// Read at request time rather than at construction, so a test can flip it while
+    /// the surface is running.
+    pub(crate) blur_available: bool,
+    /// Every blur request the surface made, in order, each the region it named.
+    ///
+    /// Refused attempts are recorded too: the refusal is itself what a test asserts.
+    pub(crate) blur_requests: Vec<Vec<RectI>>,
 }
 
 impl MockState {
@@ -81,6 +91,18 @@ impl MockSurface {
             scale,
         };
         (surface, state)
+    }
+
+    /// The compositor-blur capability a test hands to the surface.
+    ///
+    /// Like the observation state, the capability is a handle over shared data: the
+    /// mock itself is moved into the platform and cannot be reached afterwards, so a
+    /// blur request can only reach the test through the same `Arc` the pixels travel
+    /// on. Whether the mock's compositor accepts is [`MockState::blur_available`].
+    pub(crate) fn blur_handle(&self) -> MockBlur {
+        MockBlur {
+            state: Arc::clone(&self.state),
+        }
     }
 
     /// Adopts a physical size, reallocating both buffers.
@@ -248,6 +270,30 @@ impl SurfaceBackend for MockSurface {
 
     fn backend_id(&self) -> &'static str {
         "mock"
+    }
+}
+
+/// The blur capability of a [`MockSurface`]: a recorder behind the shared state.
+///
+/// # Concurrency
+///
+/// `Send` and `Sync` through the shared mutex. A request holds the lock only to push
+/// the region and read the acceptance flag, and never waits on anything else, so it
+/// cannot deadlock against a test that only locks to observe.
+pub(crate) struct MockBlur {
+    state: Arc<Mutex<MockState>>,
+}
+
+impl BlurSurface for MockBlur {
+    fn request_blur(&mut self, region: &[RectI]) -> Result<(), PlatformError> {
+        let mut state = self.state.lock().map_err(|_| PlatformError::Unavailable)?;
+        let accepted = state.blur_available;
+        state.blur_requests.push(region.to_vec());
+        if accepted {
+            Ok(())
+        } else {
+            Err(PlatformError::Unavailable)
+        }
     }
 }
 

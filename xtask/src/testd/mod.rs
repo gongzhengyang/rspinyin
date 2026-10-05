@@ -27,10 +27,14 @@
 //!
 //! [`keys`] holds the keysym, modifier and character tables, [`coords`] the coordinate
 //! conversion, [`x11`] the connection and the protocol, and [`input`] the injection policy.
+//! [`mirror_cli`] and [`capture_cli`] are the command-line surfaces of the frame snapshot
+//! and the screenshot channels: `xtask test-mirror` reads what an armed session published,
+//! `xtask capture` reads a window's pixels back from the server.
 
 pub mod attribution;
 pub mod budget_gate;
 pub mod capture;
+pub mod capture_cli;
 pub mod commit_readback;
 pub mod coords;
 pub mod dict_inject;
@@ -45,6 +49,7 @@ pub mod input;
 pub mod keys;
 pub mod logs;
 pub mod memory;
+pub mod mirror_cli;
 pub mod purity;
 pub mod review;
 pub mod sandbox;
@@ -324,7 +329,9 @@ fn report(injector: &X11Injector) {
 }
 
 /// Parses a window id in decimal, or hexadecimal with a `0x` prefix.
-fn parse_window(text: &str) -> Result<Window, String> {
+///
+/// Shared with [`capture_cli`], whose `--window` accepts the same two spellings.
+pub(crate) fn parse_window(text: &str) -> Result<Window, String> {
     let trimmed = text.trim();
     let (digits, radix) = match trimmed
         .strip_prefix("0x")

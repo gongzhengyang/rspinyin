@@ -68,18 +68,6 @@
 //! holds the wire shape and the conversions to and from the contract types, and `error`
 //! holds the refusals.
 
-// The channel is exercised by the tests below and is not yet reachable from `xtask`'s
-// subcommand tree, which lives in `xtask/src/main.rs` and in `xtask/src/testd/mod.rs` -- two
-// files this module does not own. Until that wiring lands, every item here is reported as
-// dead code in a non-test build, and the attribute goes away with those lines.
-//
-// `unused_imports` is covered by the same reasoning and for the same reason: the `pub use`
-// lines below are this module's surface, and a `pub use` in a *binary* crate is "unused"
-// whenever nothing in the crate names it -- which is the case precisely because the reader
-// (`FrameWatch`) has no caller until the plugin publishes frames through `test-mirror`
-// (ADR-0007's territory) and the screenshot channel reads them back.
-#![allow(dead_code, unused_imports)]
-
 mod error;
 mod mirror;
 mod schema;

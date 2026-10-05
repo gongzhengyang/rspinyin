@@ -284,8 +284,7 @@ const NUMBER_LABEL_OPACITY: f32 = 0.55;
 #[cfg(test)]
 const ANNOTATION_OPACITY: f32 = 0.50;
 
-/// The fraction 3.2 fixes for the dark palette's `text.separator` (the light column
-/// ships 0.35); `rgba()` truncates both into the bytes the palettes store.
+/// The fraction 3.2 fixes for the dark palette's `text.separator`; light ships 0.35.
 #[cfg(test)]
 const SEPARATOR_FRACTION_DARK: f32 = 0.40;
 

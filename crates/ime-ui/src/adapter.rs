@@ -35,12 +35,15 @@
 use std::rc::Rc;
 
 use ime_types::ui::OverlayFrame;
-use ime_types::{ImeError, Placement, ThemeSpec, UiFrame};
-use slint::{ComponentHandle as _, SharedString, VecModel};
+use ime_types::{ImeError, Placement, Rgba8, ThemeSpec, UiFrame};
+use slint::{Color, ComponentHandle as _, SharedString, VecModel};
 
 use crate::layout::{self, Metrics};
-use crate::spring::{AnimationSet, FrameMotion, MotionConfig};
-use crate::theme::{self, ThemeSink, ThemeTokens};
+use crate::spring::{
+    AnimationSet, Blend, BlendTransition, CROSSFADE_S, CubicBezier, FrameMotion, MotionConfig,
+    TRANSPARENT,
+};
+use crate::theme::{ThemeSink, ThemeTokens};
 use crate::ui_generated::{CandidateData, CandidateWindow};
 
 use self::write::WindowTheme;
@@ -78,6 +81,44 @@ pub const COMPONENT_FAILED_CODE: &str = "ui/slint/component";
 
 /// Recorded when the window cannot be mapped or unmapped.
 pub const SURFACE_FAILED_CODE: &str = "ui/slint/surface";
+
+/// The two theme properties a crossfade can carry, as one blendable value.
+///
+/// The accent and the base alpha are the pair a resolved theme writes into the
+/// component's global; a theme switch glides them together on one clock, so the
+/// accent-derived tokens and the acrylic base move as one motion instead of two.
+/// The scheme flag itself is not interpolable and is written directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ThemeGlide {
+    /// 3.2 `accent.default`, opaque.
+    accent: Rgba8,
+    /// The base alpha the contrast gate approved, `0..=255`.
+    base_alpha: u8,
+}
+
+impl ThemeGlide {
+    /// The glide endpoints of a resolved theme.
+    fn of(tokens: &ThemeTokens) -> Self {
+        Self {
+            accent: tokens.accent,
+            base_alpha: tokens.base_alpha,
+        }
+    }
+}
+
+impl Blend for ThemeGlide {
+    fn blend(from: Self, to: Self, t: u16) -> Self {
+        Self {
+            accent: Rgba8::blend(from.accent, to.accent, t),
+            base_alpha: u8::blend(from.base_alpha, to.base_alpha, t),
+        }
+    }
+}
+
+/// A token colour as the component's colour type.
+fn color_of(colour: Rgba8) -> Color {
+    Color::from_argb_u8(colour.a, colour.r, colour.g, colour.b)
+}
 
 /// The candidate window's binding to one frame.
 ///
@@ -135,6 +176,18 @@ pub struct Adapter {
     /// while nothing is in flight, and a property write per wake-up would be work the idle
     /// budget does not have.
     drawn_motion: Option<FrameMotion>,
+    /// The theme crossfade: the accent and the base alpha gliding toward the last
+    /// applied theme, on 3.3.2's 120ms.
+    theme_fade: BlendTransition<ThemeGlide>,
+    /// The fade frame last written into the component: the global's accent and
+    /// alpha, and the cluster's four marker colours. A fade frame equal to this
+    /// one is not written, which is what keeps a settled window write-free.
+    drawn_fade: (Rgba8, u8, [Rgba8; 4]),
+    /// Whether a theme has been applied. The first one lands at once -- there is
+    /// no previous palette for it to glide away from.
+    themed: bool,
+    /// Whether the window animates at all; see [`Adapter::set_motion_enabled`].
+    motion_enabled: bool,
     /// The page the component is drawing, one-based like the frame's, or zero before the
     /// first frame. A frame that shows a different page is a page turn.
     page: u8,
@@ -183,6 +236,13 @@ impl Adapter {
             measure: Measure::default(),
             motion: AnimationSet::new(MotionConfig::default()),
             drawn_motion: None,
+            theme_fade: BlendTransition::new(ThemeGlide {
+                accent: TRANSPARENT,
+                base_alpha: 0,
+            }),
+            drawn_fade: (TRANSPARENT, 0, [TRANSPARENT; 4]),
+            themed: false,
+            motion_enabled: true,
             page: 0,
             scale: 1.0,
         })
@@ -226,6 +286,12 @@ impl Adapter {
             self.metrics,
             &mut self.measure,
         );
+        if !self.motion_enabled {
+            // The disabled path lands everything at once: a flag that flipped in
+            // this frame started its marker fade inside the mapping, and the snap
+            // is what makes the frame instantaneous and the screenshot exact.
+            self.state.snap_markers();
+        }
         if !delta.is_empty() {
             self.write(&delta);
             self.request_repaint();
@@ -277,12 +343,20 @@ impl Adapter {
         true
     }
 
-    /// Writes a resolved theme into the component.
+    /// Writes a resolved theme into the component, as a crossfade.
     ///
-    /// Three properties of the theme global are written and nothing else: every other token
-    /// derives from them, so a theme switch -- including the dark-to-light one -- is a
-    /// property update rather than a rebuild, and cannot flash. The container radius is the
-    /// one value that lives outside the global, because the component owns its geometry.
+    /// The scheme flag lands at once: it is not interpolable, and it gates the
+    /// panel, the grid and every dark-conditional token, so half a scheme would
+    /// be a window in no scheme at all. Everything that *can* blend then glides
+    /// over 3.3.2's 120ms: the global's accent and base alpha move on the theme
+    /// fade, and the status cluster's markers re-target at the new tokens and
+    /// crossfade with it. A first application, and a window with the motion
+    /// switched off, land everything at once instead -- there is no previous
+    /// palette to glide away from, and a screenshot needs a frame that does not
+    /// depend on how many frames came before it.
+    ///
+    /// The container radius is the one value that lives outside the global,
+    /// because the component owns its geometry.
     ///
     /// # Parameters
     ///
@@ -298,10 +372,27 @@ impl Adapter {
     ///
     /// Never panics.
     pub fn apply_theme(&mut self, spec: &ThemeSpec, tokens: &ThemeTokens) {
-        let mut sink = WindowTheme {
-            window: &self.window,
-        };
-        theme::apply(&mut sink, tokens);
+        let glide = ThemeGlide::of(tokens);
+        let instant = !self.themed || !self.motion_enabled;
+        {
+            let mut sink = WindowTheme {
+                window: &self.window,
+            };
+            sink.set_dark(tokens.dark);
+            if instant {
+                sink.set_accent(glide.accent);
+                sink.set_base_alpha(f32::from(glide.base_alpha) / 255.0);
+            }
+        }
+        if instant {
+            self.theme_fade.snap_to(glide);
+            self.state.set_status_tokens(tokens, false);
+        } else {
+            self.theme_fade
+                .start(glide, CROSSFADE_S, CubicBezier::EASE_IN_OUT);
+            self.state.set_status_tokens(tokens, true);
+        }
+        self.themed = true;
         self.window
             .set_container_radius(f32::from(spec.corner_radius_dp));
     }
@@ -425,15 +516,15 @@ impl Adapter {
         Ok(())
     }
 
-    /// Advances the window's motion by `dt` and writes the frame it produced.
+    /// Advances the window's motion and colour fades by `dt` and writes the frame
+    /// they produced.
     ///
     /// The delta comes from the UI thread's clock, which is the only place an instant is read:
     /// a session's first call passes zero, and a late frame passes a delta large enough that
     /// the integrator clamps it, so a stalled compositor slows the motion down rather than
-    /// making it jump.
-    ///
-    /// A step whose result is the one already on screen writes nothing, so a window at rest
-    /// costs no property write per wake-up.
+    /// making it jump. The fades -- the theme's accent and alpha, and the status markers' --
+    /// advance on the same delta, and a fade frame equal to the one already written costs
+    /// nothing, so a window at rest still writes no property at all.
     ///
     /// A staged unmap ([`Self::set_visible`]) completes here: the first step after the exit
     /// fade has settled performs the real unmap. Running it here rather than where the Hide
@@ -462,6 +553,7 @@ impl Adapter {
     /// Never panics.
     pub fn advance(&mut self, dt: f32) -> Result<bool, ImeError> {
         let motion = self.motion.step(dt, self.scale);
+        let fading = self.step_fades(dt);
         // The visibility of the box is not part of `FrameMotion`, so it is checked against the
         // component's own value rather than against the previous frame. A box that hid without
         // moving -- the page emptied while the highlight was already at rest on a cell -- would
@@ -473,11 +565,46 @@ impl Adapter {
             self.drawn_motion = Some(motion);
             self.request_repaint();
         }
-        if !motion.animating && self.pending_hide {
+        if !motion.animating && !fading && self.pending_hide {
             self.unmap_now()?;
             return Ok(false);
         }
-        Ok(motion.animating)
+        Ok(motion.animating || fading)
+    }
+
+    /// Advances the theme crossfade and the markers' fades by `dt`.
+    ///
+    /// Whatever the step changed is written once -- the global's accent and base
+    /// alpha, and the cluster's four marker colours -- and compared against the
+    /// frame already written, so a fade that settled costs one final write and no
+    /// wake-up after it.
+    fn step_fades(&mut self, dt: f32) -> bool {
+        self.theme_fade.step(dt);
+        let markers = self.state.markers.step(dt);
+        let glide = self.theme_fade.value();
+        let colors = self.state.markers.values();
+        let frame = (glide.accent, glide.base_alpha, colors);
+        if frame != self.drawn_fade {
+            self.write_fade(glide, colors);
+            self.drawn_fade = frame;
+        }
+        !self.theme_fade.is_settled() || !markers
+    }
+
+    /// Writes one fade frame: the global's accent and alpha, and the cluster's
+    /// four marker colours. Followed by an explicit repaint, for the same reason
+    /// every other write path here asks for one.
+    fn write_fade(&self, glide: ThemeGlide, colors: [Rgba8; 4]) {
+        let mut sink = WindowTheme {
+            window: &self.window,
+        };
+        sink.set_accent(glide.accent);
+        sink.set_base_alpha(f32::from(glide.base_alpha) / 255.0);
+        self.window.set_mode_dot_color(color_of(colors[0]));
+        self.window.set_full_width_color(color_of(colors[1]));
+        self.window.set_punctuation_color(color_of(colors[2]));
+        self.window.set_lock_color(color_of(colors[3]));
+        self.request_repaint();
     }
 
     /// Unmaps the window now, ending a staged fade at whatever opacity it reached.
@@ -504,6 +631,12 @@ impl Adapter {
         self.window.hide().map_err(|_| surface_error())?;
         self.visible = false;
         self.motion.reset_window_fade();
+        // The colour fades have no frame to run on once the window is unmapped, so
+        // they land on their end values here rather than keeping a deadline armed
+        // over a window nobody can see.
+        let glide = self.theme_fade.target();
+        self.theme_fade.snap_to(glide);
+        self.state.snap_markers();
         Ok(())
     }
 
@@ -523,7 +656,9 @@ impl Adapter {
     /// `[ui.animation] enabled = false` arrives here: every motion jumps to its end state,
     /// which is the low-end-device path and the path a visual regression screenshot needs,
     /// where a frame must not depend on how many frames came before it. Switching it off
-    /// mid-flight lands everything at once, and switching it back on restarts nothing.
+    /// mid-flight lands everything at once -- the crossfades with the springs -- and
+    /// switching it back on restarts nothing. While the switch is off a theme change lands
+    /// directly too, which is what keeps the disabled path deterministic.
     ///
     /// The spring's frequency and damping are fixed when the adapter is built; a
     /// configuration that changes them needs a new [`AnimationSet`], not this call.
@@ -540,7 +675,13 @@ impl Adapter {
     ///
     /// Never panics.
     pub fn set_motion_enabled(&mut self, enabled: bool) {
+        self.motion_enabled = enabled;
         self.motion.set_enabled(enabled);
+        if !enabled {
+            let glide = self.theme_fade.target();
+            self.theme_fade.snap_to(glide);
+            self.state.snap_markers();
+        }
     }
 
     /// Records where the panel was placed, which is what anchors the appear motion.

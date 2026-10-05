@@ -54,7 +54,7 @@ use crate::interaction::PointerRouter;
 use crate::layout::{self, Metrics};
 use crate::renderer::FontStatus;
 use crate::slint_platform::RspinyinPlatform;
-use crate::theme::{BlurNegotiation, ThemeResolution};
+use crate::theme::{BlurNegotiation, BlurSurface, ThemeResolution, request_blur};
 use crate::ui_thread::{SurfaceUpdate, UiSurface};
 
 /// The candidate window, as the UI thread's event loop sees it.
@@ -106,6 +106,25 @@ pub struct CandidateSurface {
     region_failures: u64,
     /// The diagnostic codes of the last theme resolution.
     theme_codes: [Option<&'static str>; 2],
+    /// The backend's compositor-blur capability, when the platform probe found one.
+    ///
+    /// The box is owned rather than borrowed because the backend itself lives behind
+    /// the platform's `RefCell` and has no second mutable handle to lend; a surface
+    /// built without one negotiates every acrylic request as refused, which is the
+    /// behaviour a backend that cannot ask its compositor has always had.
+    blur: Option<Box<dyn BlurSurface>>,
+    /// The compositor's answer to the one blur request, once it has been made.
+    ///
+    /// The request is one-shot: it is made when the window is first mapped and
+    /// placed, and every later theme resolution reuses the answer. A placement
+    /// change updates the region the request named, never the answer itself.
+    blur_answer: Option<BlurNegotiation>,
+    /// The rectangle the accepted blur request named, so a placement that has not
+    /// moved the panel does not send it again.
+    blur_named: Option<RectI>,
+    /// A theme request whose blur negotiation had to wait for a placement, kept
+    /// until the window is mapped and then re-resolved.
+    theme_staged: Option<ThemeSpec>,
     /// What the font probe found when this surface was built.
     ///
     /// Retained rather than dropped: the probe runs once per process, and this is the
@@ -200,10 +219,38 @@ impl CandidateSurface {
             region: None,
             region_failures: 0,
             theme_codes: [None; 2],
+            blur: None,
+            blur_answer: None,
+            blur_named: None,
+            theme_staged: None,
             font_status,
             last_frame: None,
             adopted_scale: surface_scale,
         })
+    }
+
+    /// Attaches the compositor-blur capability the platform probe found.
+    ///
+    /// The probe decides at start-up whether the display backend can ask its
+    /// compositor to blur what is behind the window -- on X11, that KWin is running --
+    /// and hands the answer in here. Consuming and returning `self` keeps the
+    /// construction a single expression, so a caller with no capability to attach
+    /// simply omits the call.
+    ///
+    /// # Parameters
+    ///
+    /// * `blur` -- the backend's capability, behind [`BlurSurface`].
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible: it returns no `Result`.
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic.
+    pub fn with_blur_capability(mut self, blur: Box<dyn BlurSurface>) -> Self {
+        self.blur = Some(blur);
+        self
     }
 
     /// Applies one state change.
@@ -255,6 +302,8 @@ impl CandidateSurface {
                 self.adopt_anchor_scale(scale)?;
                 self.adapter.set_visible(true)?;
                 self.place();
+                self.resolve_staged_theme();
+                self.update_blur_region();
                 Ok(())
             }
             SurfaceUpdate::Hide { .. } => self.adapter.set_visible(false),
@@ -436,6 +485,8 @@ impl CandidateSurface {
         self.frame = Some(frame);
         self.adopt_anchor_scale(scale)?;
         self.place();
+        self.resolve_staged_theme();
+        self.update_blur_region();
         Ok(())
     }
 
@@ -484,20 +535,114 @@ impl CandidateSurface {
 
     /// Resolves a theme request and writes it into the component.
     ///
-    /// The blur round trip belongs to the backend capability
-    /// [`crate::theme::BlurSurface`], which the platform object does not expose here, so a
-    /// request for acrylic resolves as refused: the base is painted opaque and
-    /// `ui/theme/blur-unavailable` is reported through [`Self::theme_diagnostics`]. Passing
-    /// the compositor's answer through is what makes the translucent tier reachable.
+    /// The blur round trip runs for real when it can. An acrylic request that arrives
+    /// while the window has a placed container asks the backend's [`BlurSurface`]
+    /// capability once, and the answer -- applied, refused, or there being no way to
+    /// ask -- is what [`ThemeResolution::resolve`] degrades from. A request that
+    /// arrives before any placement waits in [`Self::theme_staged`] until the
+    /// placement gives the negotiation its chance, because the round trip belongs
+    /// after the map and before the first frame, and it names a container rectangle
+    /// that does not exist yet.
+    ///
+    /// With the palette as shipped, every translucent tier still resolves through the
+    /// contrast gate to an opaque base -- the frozen separator pairs do not clear the
+    /// contrast floor over a 0.85 fill -- so an *applied* blur is recorded as
+    /// `ui/theme/contrast-fallback` rather than drawn. That is the gate working as
+    /// designed; correcting the palette is a product decision of its own.
     fn apply_theme(&mut self, spec: &ThemeSpec) {
-        let negotiation = if spec.acrylic {
-            BlurNegotiation::Refused
-        } else {
-            BlurNegotiation::Disabled
-        };
+        let asked = self.negotiate_blur(spec);
+        self.theme_staged = asked.is_none().then(|| spec.clone());
+        let negotiation = asked.unwrap_or(BlurNegotiation::Disabled);
         let resolution = ThemeResolution::resolve(spec, negotiation);
         self.adapter.apply_theme(spec, &resolution.tokens);
         self.theme_codes = resolution.diagnostic_codes();
+    }
+
+    /// The blur answer `spec` resolves with, making the one request when it can.
+    ///
+    /// `None` is the one state that defers instead of deciding: the user's acrylic
+    /// flag is on, no answer exists yet, and the window has no container rectangle to
+    /// name. Every other path answers once and for all -- the user's own switch, the
+    /// cached answer of the request that was made, or a fresh request against the
+    /// capability, which a surface without one answers as refused. The request runs
+    /// against the panel's last placement, so a theme arriving between shows asks
+    /// against the rectangle the window will map back to.
+    fn negotiate_blur(&mut self, spec: &ThemeSpec) -> Option<BlurNegotiation> {
+        if !spec.acrylic {
+            return Some(BlurNegotiation::Disabled);
+        }
+        if let Some(answer) = self.blur_answer {
+            return Some(answer);
+        }
+        let region = self.inset_container()?;
+        let answer = match self.blur.as_deref_mut() {
+            Some(blur) => request_blur(blur, &[region]),
+            None => BlurNegotiation::Refused,
+        };
+        self.blur_answer = Some(answer);
+        if answer == BlurNegotiation::Applied {
+            self.blur_named = Some(region);
+        }
+        Some(answer)
+    }
+
+    /// Re-resolves a theme whose blur request had to wait for a placement.
+    ///
+    /// A deferred theme resolved with the disabled placeholder -- nothing had refused
+    /// anything yet, so nothing was reported -- and waited here. Running it through
+    /// [`Self::apply_theme`] again makes the request now that the placement exists, so
+    /// the answer the user's compositor gave is what the frame is coloured with.
+    fn resolve_staged_theme(&mut self) {
+        if self.blur_answer.is_some() {
+            // Asked already: whatever was staged resolved against that answer.
+            self.theme_staged = None;
+            return;
+        }
+        let Some(spec) = self.theme_staged.take() else {
+            return;
+        };
+        self.apply_theme(&spec);
+    }
+
+    /// Names the panel's new rectangle to the compositor after a placement changed it.
+    ///
+    /// The negotiation is one-shot, but the region it named is not: the panel moves
+    /// with the caret, and blur left at the old rectangle would sharpen an edge the
+    /// window no longer has. Only an applied request is maintained -- a refused one
+    /// has nothing behind the window to keep in step -- and an unchanged rectangle is
+    /// dropped, because the placement runs on every frame.
+    fn update_blur_region(&mut self) {
+        if self.blur_answer != Some(BlurNegotiation::Applied) {
+            return;
+        }
+        let Some(region) = self.inset_container() else {
+            return;
+        };
+        if self.blur_named == Some(region) {
+            return;
+        }
+        if let Some(blur) = self.blur.as_deref_mut() {
+            if request_blur(blur, &[region]) == BlurNegotiation::Applied {
+                self.blur_named = Some(region);
+            }
+        }
+    }
+
+    /// The container rectangle a blur request names: the placed panel inset by one
+    /// physical pixel on every side.
+    ///
+    /// The blur must stay inside the container's rounded corners -- a region reaching
+    /// the corner the radius cuts away would show raw desktop noise at the edge -- and
+    /// a panel too small to inset has no rectangle to name, which reads as the hidden
+    /// case the negotiation defers on.
+    fn inset_container(&self) -> Option<RectI> {
+        let region = self.region?;
+        (region.w > 2 && region.h > 2).then_some(RectI {
+            x: region.x + 1,
+            y: region.y + 1,
+            w: region.w - 2,
+            h: region.h - 2,
+        })
     }
 }
 
