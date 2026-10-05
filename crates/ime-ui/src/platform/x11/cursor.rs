@@ -33,6 +33,7 @@
 //! the process lifetime.
 
 use ime_types::PlatformError;
+use ime_types::surface::SurfaceBackend as _;
 use x11rb::connection::Connection as _;
 use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt as _, Window};
 use x11rb::rust_connection::RustConnection;

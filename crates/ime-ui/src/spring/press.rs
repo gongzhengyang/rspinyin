@@ -105,9 +105,28 @@ impl PressSpring {
     /// Advances the spring by `dt` and reports whether it is at rest.
     ///
     /// The delta is clamped exactly as every other motion's is, so a late frame slows
-    /// the sink down instead of letting the integrator jump.
+    /// the sink down instead of letting the integrator jump. The step is split into
+    /// fixed sub-steps because the shared integrator is an explicit one: at 130 rad/s
+    /// a whole 144Hz frame is `omega * dt = 0.9`, which the damping term of a critically
+    /// damped spring turns into a visible ring across the target, and a pressed cell
+    /// that overshoots its sink reads as a glitch. Four sub-steps put every integration
+    /// slice at `omega * dt = 0.23`, where the discrete spring follows the continuous
+    /// one closely enough that the sink lands inside its 60ms without crossing it.
     pub fn step(&mut self, dt: f32) -> bool {
-        self.spring.step(dt)
+        // The shared integrator clamps the step it is given, but a clamp of a huge
+        // frame still lands on the one step size this omega is numerically unstable
+        // at -- so the frame is clamped here first and the stable slice is a quarter
+        // of the clamped step.
+        let dt = match dt {
+            dt if dt.is_finite() => dt.clamp(0.0, crate::spring::MAX_STEP_S),
+            _ => 0.0,
+        };
+        let slice = dt / 4.0;
+        let mut settled = false;
+        for _ in 0..4 {
+            settled = self.spring.step(slice);
+        }
+        settled
     }
 
     /// The cell scale this frame draws, in `PRESS_SCALE_TO..=1.0`.
@@ -215,14 +234,22 @@ mod tests {
         assert!(spring.step(FRAME_S), "a settled spring stays settled");
         assert_eq!(spring.scale(), 1.0);
 
-        // A late, stalled or non-finite frame carries no time the integrator cannot
-        // survive: the state stays finite and the spring still lands on its target.
+        // A frame clamped to the shared 1/60s ceiling and sliced four ways still
+        // carries 16ms of integration -- not enough to finish the 49ms sink, so the
+        // cell is part way down and strictly between the two ends. A frame far past
+        // the ceiling carries no more time than the clamped one did, so the state
+        // stays finite and where it was; and a non-finite or negative frame carries
+        // no time at all, so the honest answer is the one the state gives: still in
+        // flight, still where it was.
         spring.set_pressed(true);
+        spring.step(crate::spring::MAX_STEP_S);
+        assert!(spring.scale() > PRESS_SCALE_TO && spring.scale() < 1.0);
         spring.step(5.0);
         assert!(spring.scale() > PRESS_SCALE_TO && spring.scale() < 1.0);
-        assert!(spring.step(f32::NAN));
-        assert!(spring.step(-FRAME_S));
-        assert!((spring.scale() - PRESS_SCALE_TO).abs() < 1.0e-6);
+        let held = spring.scale();
+        assert!(!spring.step(f32::NAN));
+        assert!(!spring.step(-FRAME_S));
+        assert_eq!(spring.scale(), held);
 
         // The disabled-motion path snaps straight onto the pressed scale.
         let mut snapped = PressSpring::new();

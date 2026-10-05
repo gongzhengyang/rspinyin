@@ -16,7 +16,10 @@
 
 use ime_types::{Preedit, PreeditSpan, SpanKind};
 
-use super::{ELLIPSIS, Measure, character_em, layout_preedit};
+use super::{
+    ELLIPSIS, MIN_PREEDIT_WIDTH_DP, Measure, SECONDARY_STATUS_WIDTH_DP, character_em,
+    layout_preedit,
+};
 
 /// The font size every row is laid out at, in logical pixels.
 const FONT_SIZE: f32 = 10.0;
@@ -118,46 +121,50 @@ const GOLDEN: [Golden; 20] = [
         truncated: true, caret_visible: true, head_cut_run: None,
     },
     // 5. A cut that kept no character of the run it landed in: the mark rides the whole
-    //    run beside the cut.
+    //    run beside the cut. `nihao` is 23dp, `12345678` is 48dp at the digits' wide
+    //    0.60em, and the 11dp left of a 59dp budget pay the mark without reaching the
+    //    narrowest character of `nihao`.
     Golden {
         pieces: &[
-            (SpanKind::Passthrough, "abcd"),
-            (SpanKind::Passthrough, "efghijkl"),
+            (SpanKind::Passthrough, "nihao"),
+            (SpanKind::Passthrough, "12345678"),
         ],
-        caret: 12, available: 52.0,
-        before: &["…efghijkl"], after: &[],
+        caret: 13, available: 59.0,
+        before: &["…12345678"], after: &[],
         truncated: true, caret_visible: true, head_cut_run: Some(0),
     },
-    // 6. A mid-run cut against 48dp: the mark plus the seven tail characters the 38dp
-    //    remaining pay for.
+    // 6. A mid-run cut against 48dp: the mark plus the nine tail characters the 38dp
+    //    remaining pay for -- the tail keeps `d e` because it picks up the narrow
+    //    `f i j l` on the way.
     Golden {
         pieces: &[(SpanKind::Passthrough, "abcdefghijkl")],
         caret: 12, available: 48.0,
-        before: &["…fghijkl"], after: &[],
+        before: &["…defghijkl"], after: &[],
         truncated: true, caret_visible: true, head_cut_run: Some(0),
     },
     // 7. The caret sitting exactly on the cut: no run is left of it, so the mark rides the
-    //    after list's first run.
+    //    after list's first run. Digits price at the wide 0.60em, so 48dp less the mark
+    //    keeps the six tail characters and the cut lands on the caret.
     Golden {
-        pieces: &[(SpanKind::Passthrough, "abcdefghij")],
-        caret: 3, available: 48.0,
-        before: &[], after: &["…defghij"],
+        pieces: &[(SpanKind::Passthrough, "0123456789")],
+        caret: 4, available: 48.0,
+        before: &[], after: &["…456789"],
         truncated: true, caret_visible: true, head_cut_run: Some(0),
     },
     // 8. The caret left of the cut: the one thing that cannot be drawn is the caret, and
     //    the marked tail is drawn as the after list.
     Golden {
-        pieces: &[(SpanKind::Passthrough, "abcdefghij")],
+        pieces: &[(SpanKind::Passthrough, "0123456789")],
         caret: 1, available: 48.0,
-        before: &[], after: &["…defghij"],
+        before: &[], after: &["…456789"],
         truncated: true, caret_visible: false, head_cut_run: Some(0),
     },
     // 9. The caret right of the cut: the fragment left of it carries the mark, the tail
     //    behind the caret stays plain.
     Golden {
-        pieces: &[(SpanKind::Passthrough, "abcdefghij")],
+        pieces: &[(SpanKind::Passthrough, "0123456789")],
         caret: 5, available: 48.0,
-        before: &["…de"], after: &["fghij"],
+        before: &["…4"], after: &["56789"],
         truncated: true, caret_visible: true, head_cut_run: Some(0),
     },
     // 10. Full-width punctuation against 50dp: the mark rides the comma run it opens, and
@@ -194,15 +201,16 @@ const GOLDEN: [Golden; 20] = [
         before: &["…βγδε"], after: &[],
         truncated: true, caret_visible: true, head_cut_run: Some(0),
     },
-    // 13. Wide ASCII against 48dp: `W@%` characters price at six tenths of an em, so the
-    //     cut keeps `%@%` where a half-em table would have kept five.
+    // 13. Wide ASCII against 48dp: `W @ %` characters price at six tenths of an em, so
+    //     the 23dp the mark leaves keep the last three of them where a half-em table
+    //     would have kept five.
     Golden {
         pieces: &[
             (SpanKind::Passthrough, "W@%W@%"),
             (SpanKind::Passthrough, "123"),
         ],
         caret: 9, available: 48.0,
-        before: &["…%@%", "123"], after: &[],
+        before: &["…W@%", "123"], after: &[],
         truncated: true, caret_visible: true, head_cut_run: Some(0),
     },
     // 14. Narrow ASCII against 48dp: twenty `i` at three tenths of an em keep twelve of
@@ -272,15 +280,15 @@ const GOLDEN: [Golden; 20] = [
         before: &["v2", "日", "v3"], after: &[],
         truncated: false, caret_visible: true, head_cut_run: None,
     },
-    // 20. A cut that swallows the caret and keeps one character: the drawn line is that
-    //     character alone, marked.
+    // 20. A cut that swallows the caret and keeps one character: the drawn line opens
+    //     with that character alone, marked, and the kept tail follows it.
     Golden {
         pieces: &[
-            (SpanKind::Passthrough, "abcdef"),
-            (SpanKind::Passthrough, "ghijkl"),
+            (SpanKind::Passthrough, "012345678"),
+            (SpanKind::Passthrough, "12345"),
         ],
-        caret: 9, available: 48.0,
-        before: &[], after: &["…l"],
+        caret: 4, available: 48.0,
+        before: &[], after: &["…8", "12345"],
         truncated: true, caret_visible: false, head_cut_run: Some(0),
     },
 ];
@@ -342,11 +350,17 @@ fn test_layout_preedit_golden_set_draws_the_expected_mixed_script_runs() {
                     .sum::<f32>()
             })
             .sum();
-        assert!(
-            width <= row.available + 1.0e-3,
-            "row {}: drew {width}dp against a {}dp budget",
-            index + 1,
+        // A narrow header hands the secondary markers' room back, so the budget the
+        // line is cut to is the returned one, not the raw width the caller gave.
+        let budget = if row.available >= MIN_PREEDIT_WIDTH_DP {
             row.available
+        } else {
+            row.available + SECONDARY_STATUS_WIDTH_DP
+        };
+        assert!(
+            width <= budget + 1.0e-3,
+            "row {}: drew {width}dp against a {budget}dp budget",
+            index + 1
         );
         let body = drawn.strip_prefix(ELLIPSIS).unwrap_or(&drawn);
         assert!(

@@ -286,6 +286,49 @@ fn rows() -> Vec<Row> {
             composing: Verdict::Passed,
             idle: Verdict::Passed,
         },
+        // The page jumps: the shipped configuration binds both ends, and they page like
+        // any other page key -- kept while a composition offers pages, passed while idle.
+        Row {
+            label: "Home",
+            sym: KEY_HOME,
+            state: 0,
+            keys: None,
+            action: Some(KeyAction::PageFirst),
+            // The composing fixture sits on the first page already, so the jump has
+            // nowhere to go and the key travels on -- the boundary is the paging
+            // rule every page key answers to.
+            composing: Verdict::Passed,
+            idle: Verdict::Passed,
+        },
+        Row {
+            label: "End",
+            sym: KEY_END,
+            state: 0,
+            keys: None,
+            action: Some(KeyAction::PageLast),
+            composing: Verdict::Kept,
+            idle: Verdict::Passed,
+        },
+        // The user-word chord: `Ctrl+Delete` forgets the highlighted word. A chord is
+        // its whole modifier set, so the bare Delete stays the application's.
+        Row {
+            label: "Delete with Ctrl held",
+            sym: KEY_DELETE,
+            state: CTRL,
+            keys: None,
+            action: Some(KeyAction::ForgetHighlighted),
+            composing: Verdict::Kept,
+            idle: Verdict::Passed,
+        },
+        Row {
+            label: "Delete with no modifier",
+            sym: KEY_DELETE,
+            state: 0,
+            keys: None,
+            action: Some(KeyAction::Ignore),
+            composing: Verdict::Passed,
+            idle: Verdict::Passed,
+        },
         // The highlight keys.
         Row {
             label: "Tab",
@@ -1019,13 +1062,14 @@ const PAGEABLE: [(&str, u32, FlipSet, KeyAction); 6] = [
 
 /// The actions the routing table can reach.
 ///
-/// The frozen enum carries nineteen variants; five of them are named by no key. Four were
-/// appended by the script, forget, pin and phrase work; the fifth is the language switch,
-/// whose chord the host owns — the plugin that took the key could only have swallowed it,
-/// because Fcitx5's headers expose no state for the engine to switch. The list is written
-/// out rather than derived, because a variant that gained a key without anyone adding a
-/// row here is exactly the drift the coverage case exists to catch.
-const ROUTABLE_ACTIONS: [&str; 14] = [
+/// The frozen enum carries twenty-one variants; four of them are named by no key. The
+/// script switch ships unbound by decision, the pin set has no UI yet and the phrase
+/// chord belongs to the phrase-manager work; the language switch is the host's own
+/// hotkey, whose key the plugin could only have swallowed, because Fcitx5's headers
+/// expose no state for the engine to switch. The list is written out rather than
+/// derived, because a variant that gained a key without anyone adding a row here is
+/// exactly the drift the coverage case exists to catch.
+const ROUTABLE_ACTIONS: [&str; 17] = [
     "input-char",
     "backspace",
     "commit-highlighted",
@@ -1033,6 +1077,9 @@ const ROUTABLE_ACTIONS: [&str; 14] = [
     "select-index",
     "page-next",
     "page-prev",
+    "page-first",
+    "page-last",
+    "forget-highlighted",
     "move-highlight",
     "move-caret",
     "toggle-full-width",
@@ -1067,6 +1114,8 @@ fn action_name(action: KeyAction) -> &'static str {
         KeyAction::ForgetHighlighted => "forget-highlighted",
         KeyAction::PinHighlighted => "pin-highlighted",
         KeyAction::AddPhrase => "add-phrase",
+        KeyAction::PageFirst => "page-first",
+        KeyAction::PageLast => "page-last",
     }
 }
 

@@ -7,6 +7,8 @@
 use super::PointerState;
 use super::motion::{FRAME_S, settle};
 use super::{Adapter, frame_with, with_adapter};
+use slint::Model as _;
+
 use crate::spring::PRESS_SCALE_TO;
 
 /// Whether the model row at `position` draws the pressed state.
@@ -161,7 +163,7 @@ fn test_adapter_press_is_cancelled_by_a_page_turn_and_rebounds() {
 
 #[test]
 fn test_adapter_press_with_motion_disabled_lands_on_the_first_frame() {
-    let (first, second, pressed) = with_adapter(|adapter| {
+    let (first, second, scale, pressed) = with_adapter(|adapter| {
         assert!(adapter.apply_frame(&frame_with(1, "ni'hao", 9)));
         settle(adapter);
         adapter.set_motion_enabled(false);
@@ -181,9 +183,8 @@ fn test_adapter_press_with_motion_disabled_lands_on_the_first_frame() {
     );
     assert!(!second, "and stays idle on the frames after it");
     assert!(
-        (pressed.0 - PRESS_SCALE_TO).abs() < 1.0e-6,
-        "the pressed cell draws its pressed scale at once, got {}",
-        pressed.0
+        (scale - PRESS_SCALE_TO).abs() < 1.0e-6,
+        "the pressed cell draws its pressed scale at once, got {scale}"
     );
-    assert_eq!(pressed.1, Some(true), "the Active flag is drawn as pressed");
+    assert_eq!(pressed, Some(true), "the Active flag is drawn as pressed");
 }

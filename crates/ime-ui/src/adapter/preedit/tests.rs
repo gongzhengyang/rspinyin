@@ -417,15 +417,17 @@ fn test_secondary_status_width_matches_the_cluster_the_component_draws() {
 #[test]
 fn test_layout_preedit_bakes_the_head_ellipsis_into_the_leftmost_drawn_run() {
     let font_size = 10.0;
-    // `abcdefghijkl` is 60dp against a 48dp budget: the mark is paid for first and the
-    // 38dp it leaves keep the last seven characters. The mark is baked into the run's own
-    // text, so a redrawn frame writes nothing at all.
+    // `abcdefghijkl` is 52dp against a 48dp budget -- `f i j l` price at the narrow
+    // 0.30em, the rest at 0.50em -- so the mark is paid for first and the 38dp it
+    // leaves keep the last nine characters (37dp, the tail's own narrow letters
+    // included). The mark is baked into the run's own text, so a redrawn frame writes
+    // nothing at all.
     let preedit = preedit_of(&[(SpanKind::Passthrough, "abcdefghijkl")], 12);
     let mut layout = PreeditLayout::default();
     let mut measure = super::Measure::default();
 
     assert!(layout.update(&preedit, 48.0, font_size, &mut measure));
-    assert_eq!(texts(&layout.before), ["…fghijkl"]);
+    assert_eq!(texts(&layout.before), ["…defghijkl"]);
     assert!(layout.after.is_empty());
     assert!(layout.truncated);
     assert_eq!(layout.head_cut_run, Some(0));
@@ -442,23 +444,24 @@ fn test_layout_preedit_bakes_the_head_ellipsis_into_the_leftmost_drawn_run() {
 #[test]
 fn test_layout_preedit_marks_a_whole_run_when_the_cut_lands_on_a_boundary() {
     let font_size = 10.0;
-    // `abcd` (20dp) then `efghijkl` (40dp) against 52dp: `efghijkl` is kept whole and the
-    // 12dp remainder pays for the mark but not for a character of `abcd` -- five a
-    // character -- so the mark rides the whole run beside the cut instead.
+    // `nihao` (23dp) then `12345678` (48dp: digits price at the wide 0.60em) against
+    // 59dp: `12345678` is kept whole and the 11dp remainder pays for the mark but not
+    // for a character of `nihao` -- three a narrow character -- so the mark rides the
+    // whole run beside the cut instead.
     let preedit = preedit_of(
         &[
-            (SpanKind::Passthrough, "abcd"),
-            (SpanKind::Passthrough, "efghijkl"),
+            (SpanKind::Passthrough, "nihao"),
+            (SpanKind::Passthrough, "12345678"),
         ],
-        12,
+        13,
     );
-    let layout = layout_preedit(&preedit, 52.0, font_size, &mut super::Measure::default());
+    let layout = layout_preedit(&preedit, 59.0, font_size, &mut super::Measure::default());
 
-    assert_eq!(texts(&layout.before), ["…efghijkl"]);
+    assert_eq!(texts(&layout.before), ["…12345678"]);
     assert!(layout.after.is_empty());
     assert!(layout.truncated);
     assert_eq!(layout.head_cut_run, Some(0));
-    assert!(runs_width(&layout.before, font_size) <= 52.0);
+    assert!(runs_width(&layout.before, font_size) <= 59.0);
 }
 
 #[test]
@@ -496,17 +499,18 @@ fn test_layout_preedit_leaves_the_cut_unmarked_when_the_remainder_cannot_pay_for
 #[test]
 fn test_layout_preedit_marks_the_after_list_when_the_caret_sits_on_the_cut() {
     let font_size = 10.0;
-    // `abcdefghij` is 50dp against 48dp: the mark is paid first and 38dp keep the seven
-    // tail characters. The caret sits exactly on the cut, so no run is left of it and the
-    // mark rides the after list's first run instead.
-    let preedit = preedit_of(&[(SpanKind::Passthrough, "abcdefghij")], 3);
+    // `0123456789` is 60dp (digits at the wide 0.60em) against 48dp: the mark is paid
+    // first and the 38dp it leaves keep the six tail characters. The caret sits exactly
+    // on the cut, so no run is left of it and the mark rides the after list's first run
+    // instead.
+    let preedit = preedit_of(&[(SpanKind::Passthrough, "0123456789")], 4);
     let layout = layout_preedit(&preedit, 48.0, font_size, &mut super::Measure::default());
 
     assert!(
         layout.before.is_empty(),
         "the cut starts where the caret is"
     );
-    assert_eq!(texts(&layout.after), ["…defghij"]);
+    assert_eq!(texts(&layout.after), ["…456789"]);
     assert!(
         layout.caret_visible,
         "a caret on the cut is still on screen"
@@ -519,22 +523,22 @@ fn test_layout_preedit_marks_the_surviving_tail_when_the_cut_drops_the_caret() {
     let font_size = 10.0;
     // The same cut as a caret on it, only with the caret left of the cut: the caret is the
     // one thing that cannot be drawn, and the marked tail is drawn as the after list.
-    let preedit = preedit_of(&[(SpanKind::Passthrough, "abcdefghij")], 1);
+    let preedit = preedit_of(&[(SpanKind::Passthrough, "0123456789")], 1);
     let layout = layout_preedit(&preedit, 48.0, font_size, &mut super::Measure::default());
 
     assert!(!layout.caret_visible);
     assert!(layout.before.is_empty());
-    assert_eq!(texts(&layout.after), ["…defghij"]);
+    assert_eq!(texts(&layout.after), ["…456789"]);
     assert_eq!(layout.head_cut_run, Some(0));
 }
 
 #[test]
 fn test_layout_preedit_keeps_the_cut_run_kind_when_the_mark_is_baked() {
     let font_size = 10.0;
-    // `nihao` (25dp) then `12345678` (40dp) against 55dp: the passthrough is kept whole,
-    // the mark is paid, and the 5dp that remain keep exactly the syllable's last
-    // character. The fragment is still a syllable run -- the mark changes what the run
-    // opens with, not what it is.
+    // `nihao` (23dp: `i` is narrow) then `12345678` (48dp: digits price at the wide
+    // 0.60em) against 65dp: the passthrough is kept whole, the mark is paid, and the
+    // 7dp that remain keep exactly the syllable's last character. The fragment is
+    // still a syllable run -- the mark changes what the run opens with, not what it is.
     let preedit = preedit_of(
         &[
             (SpanKind::Syllable, "nihao"),
@@ -542,7 +546,7 @@ fn test_layout_preedit_keeps_the_cut_run_kind_when_the_mark_is_baked() {
         ],
         13,
     );
-    let layout = layout_preedit(&preedit, 55.0, font_size, &mut super::Measure::default());
+    let layout = layout_preedit(&preedit, 65.0, font_size, &mut super::Measure::default());
 
     assert_eq!(texts(&layout.before), ["…o", "12345678"]);
     assert_eq!(
@@ -551,7 +555,7 @@ fn test_layout_preedit_keeps_the_cut_run_kind_when_the_mark_is_baked() {
         "the cut run keeps the kind it was cut from"
     );
     assert_eq!(layout.head_cut_run, Some(0));
-    assert!(runs_width(&layout.before, font_size) <= 55.0);
+    assert!(runs_width(&layout.before, font_size) <= 65.0);
 }
 
 #[test]

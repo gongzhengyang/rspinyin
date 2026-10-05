@@ -93,8 +93,11 @@ fn test_draw_state_long_preedit_keeps_the_newest_characters() {
     let state = mapped(&frame);
     let drawn = drawn(&state);
     assert!(state.preedit.truncated, "the head was cut");
+    // The head cut bakes its ellipsis into the leftmost run (3.1.3), so the tail
+    // property holds for the text after the mark.
+    let visible = drawn.strip_prefix('…').unwrap_or(&drawn);
     assert!(
-        text.ends_with(&drawn),
+        text.ends_with(visible),
         "the tail of the input is what stays visible: {drawn:?}"
     );
     assert!(

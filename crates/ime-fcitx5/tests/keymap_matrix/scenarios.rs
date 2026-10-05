@@ -22,6 +22,8 @@
 //! | `SC-KEY-12` cheat sheet | hold `Shift` 300 ms, release | `test_scenario_12_long_press_shift_offers_the_cheat_sheet_and_keeps_the_mode` |
 //! | `SC-KEY-13` focus loss | `n i h a o` and the focus goes | `test_scenario_13_focus_loss_delivers_no_text_and_hides_the_window` |
 //! | `SC-KEY-14` no focus steal | the walks above, throughout | `test_scenario_14_focus_window_id_never_changes` |
+//! | `SC-KEY-15` page jump | `n i h a o End Home Home` | `test_scenario_15_page_jumps_reach_the_ends_and_honor_the_boundaries` |
+//! | `SC-KEY-16` forget word | `n i h a o Ctrl+Delete`, then idle presses | `test_scenario_16_ctrl_delete_forgets_the_highlighted_word` |
 //!
 //! # Determinism
 //!
@@ -46,9 +48,10 @@ use rspinyin::engine::{
 };
 
 use crate::support::{
-    CTRL, FOCUS_WINDOW_ID, Fixture, IC, KEY_1, KEY_3, KEY_A, KEY_BACKSPACE, KEY_COMMA, KEY_E,
-    KEY_EQUAL, KEY_ESCAPE, KEY_H, KEY_I, KEY_LEFT, KEY_N, KEY_O, KEY_PERIOD, KEY_RETURN,
-    KEY_SHIFT_L, KEY_SPACE, KEY_TAB, RecordingHost, SHIFT, Situation, press,
+    CTRL, FOCUS_WINDOW_ID, Fixture, IC, KEY_1, KEY_3, KEY_A, KEY_BACKSPACE, KEY_COMMA, KEY_DELETE,
+    KEY_E, KEY_END, KEY_EQUAL, KEY_ESCAPE, KEY_H, KEY_HOME, KEY_I, KEY_LEFT, KEY_N, KEY_O,
+    KEY_PERIOD, KEY_RETURN, KEY_SHIFT_L, KEY_SPACE, KEY_TAB, RecordingHost, SHIFT, Situation,
+    press,
 };
 
 // ── The shared strokes ───────────────────────────────────────────────────────────
@@ -738,5 +741,112 @@ fn test_scenario_14_focus_window_id_never_changes() {
         host.commits.iter().all(|text| !text.is_empty()),
         "every commit of the walk carried text: {:?}",
         host.commits
+    );
+}
+
+/// `SC-KEY-15`: the page-jump path. `End` lands on the last page, `Home` comes back
+/// to the first, and a second `Home` on the first page has nowhere to go, so the key
+/// travels on — the same boundary rule every page key answers to.
+#[test]
+fn test_scenario_15_page_jumps_reach_the_ends_and_honor_the_boundaries() {
+    let fixture = Fixture::default();
+    let mut host = RecordingHost::default();
+    let mut router = fixture.router(KeyBindings::default());
+
+    type_nihao(&mut router, &mut host);
+    assert!(
+        host.newest_page.map_or(0, |page| page.total) >= 2,
+        "the fixture offers more than one page to jump across"
+    );
+
+    assert!(
+        router.key_event(IC, &press(KEY_END, 0), &mut host),
+        "the shipped configuration binds End to the last page"
+    );
+    let frame = host
+        .newest_frame
+        .as_ref()
+        .expect("the jumped frame is on record");
+    assert_eq!(
+        frame.page.current, frame.page.total,
+        "End lands on the last page"
+    );
+
+    assert!(
+        router.key_event(IC, &press(KEY_HOME, 0), &mut host),
+        "Home is bound as well"
+    );
+    let frame = host
+        .newest_frame
+        .as_ref()
+        .expect("the returned frame is on record");
+    assert_eq!(frame.page.current, 1, "Home comes back to the first page");
+
+    assert!(
+        !router.key_event(IC, &press(KEY_HOME, 0), &mut host),
+        "Home on the first page has nowhere to go and travels on"
+    );
+    let frame = host.newest_frame.as_ref().expect("the frame is unchanged");
+    assert_eq!(
+        frame.page.current, 1,
+        "and the page on show is still the first"
+    );
+}
+
+/// `SC-KEY-16`: the user-word chord. `Ctrl+Delete` drops the highlighted word from
+/// the learned frequencies and from the page on show; the bare `Delete` keeps
+/// belonging to the application.
+#[test]
+fn test_scenario_16_ctrl_delete_forgets_the_highlighted_word() {
+    let fixture = Fixture::default();
+    let mut host = RecordingHost::default();
+    let mut router = fixture.router(KeyBindings::default());
+
+    type_nihao(&mut router, &mut host);
+    let frame = host
+        .newest_frame
+        .as_ref()
+        .expect("the typed frame is on record");
+    let forgotten = frame.candidates[frame.highlight.unwrap_or(0) as usize]
+        .text
+        .clone();
+    let before: Vec<String> = frame.candidates.iter().map(|c| c.text.clone()).collect();
+    assert!(!before.is_empty(), "the fixture offers a word to forget");
+
+    assert!(
+        router.key_event(IC, &press(KEY_DELETE, CTRL), &mut host),
+        "the chord is the plugin's while a composition holds a highlighted word"
+    );
+    // The page may not shrink -- a full page refills from the candidates behind it --
+    // but the word the highlight named is gone from the page on show, and the
+    // composition survives the forget.
+    let after: Vec<String> = host
+        .newest_frame
+        .as_ref()
+        .expect("the forget re-sent the frame")
+        .candidates
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
+    assert!(
+        !after.contains(&forgotten),
+        "the highlighted word {forgotten:?} left the page on show, got {after:?}"
+    );
+    assert_eq!(
+        host.newest_frame.as_ref().map(|f| f.preedit.text.as_str()),
+        Some("ni'hao"),
+        "the composition survives the forget"
+    );
+
+    // Cancel the composition; the chord has nothing to act on without one and
+    // travels on with the bare key.
+    assert!(router.key_event(IC, &press(KEY_ESCAPE, 0), &mut host));
+    assert!(
+        !router.key_event(IC, &press(KEY_DELETE, CTRL), &mut host),
+        "a session with no composition has no word to forget"
+    );
+    assert!(
+        !router.key_event(IC, &press(KEY_DELETE, 0), &mut host),
+        "the bare Delete was never the plugin's"
     );
 }
