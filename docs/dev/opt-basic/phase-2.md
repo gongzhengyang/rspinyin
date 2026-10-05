@@ -22,7 +22,7 @@
   - 并行通道：`Track B`
   - 代码落地锚点：`crates/ime-ui/ui/theme.slint`、`crates/ime-ui/src/theme.rs`、`crates/ime-ui/src/theme/slint_palette.rs`、`crates/ime-ui/src/layout/metrics.rs`、`crates/ime-ui/src/spring/set.rs`、`crates/ime-ui/src/spring/highlight.rs`、`scripts/check-ui-spec.sh`（DEFERRED_TOKENS）
   - 外部承接：无
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`accent-on` 双侧声明零引用（`theme.slint:91`，已在 `check-ui-spec.sh:119` 的 DEFERRED_TOKENS 挂账）；`text-annotation` 自 v1.4 裁决后仅剩只读锁描边使用（`candidate.slint:304`），作为「注音文本色」的文档语义已死；`shadow-band-opacity`/`shadow-inner-opacity` 被 `metrics.rs:330-331` 解析、`theme.slint:131-135` 自认「无绘制路径读者」；`HighlightStep.damage` 由弹簧计算零读者（`spring/highlight.rs:242-275`），`spring/set.rs:26` 注释（"commits highlight.damage"）失实。
   - **商业标杆对标**：Token 体系零死项是 Linear/Things 3 级设计系统的基本纪律；死 token 是未来维护者的泥潭。
@@ -41,6 +41,8 @@
   - [ ] `Metrics` 无「解析后零读者」字段（新 grep 门禁加入 `check-self-tests`）。[自动]
   - [ ] DEFERRED_TOKENS 每项的挂账理由与 `features.md` 行号可追溯。[自动]
   - [ ] 阴影视觉无回归（band 表逐字节不变，`theme/tests.rs` 证明）。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：死 token 清理：shadow-band/inner-opacity 两侧同删（candidate.slint 声明 + Metrics 解析），band 表为峰值唯一事实源；HighlightStep.damage 删除（renderer record_damage 为真源）；text-annotation 按 P1.03.01 实况如实化为锁标记色；accent-on 挂账 doc 补齐；新门禁 check-metrics-readers.sh（自测 4 幕全对）入 check-self-tests；features.md 3.1.4 注同步。
 
 ---
 
@@ -54,7 +56,7 @@
   - 并行通道：`Track B`
   - 代码落地锚点：`crates/ime-ui/ui/overlay.slint`（新建）、`crates/ime-ui/ui/candidate.slint`（窗口分支）、`crates/ime-ui/src/adapter/overlay.rs`（新建）、`crates/ime-ui/src/surface.rs`（`SurfaceUpdate::Overlay` 真身）、`crates/ime-ui/src/adapter/frame.rs`（DrawState 扩展）
   - 外部承接：触发键位与 `UiCommand` 契约 → `KEY-P2.02.01`/`KEY-P2.02.02`；命令面板功能与模糊搜索 → `ADD-FEAT-P1.02.01`；本卡只交付「`OverlayFrame` 到像素」的绘制面 + Escape 关闭回程。
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`SurfaceUpdate::Overlay` 仅把帧存进槽位（`surface.rs:202-209`），`.slint` 无任何 overlay 组件——三种面板（CheatSheet/CommandPalette/Diagnostics）的契约数据（`ime-types/src/ui.rs:84-110`：title/sections/selected/query）无渲染出口。
   - **商业标杆对标**：Raycast 面板：同族材质、键盘高亮滑动、Esc 即关；`features-add.md` C-1 约束要求与候选框共用 `SurfaceBackend`/`ThemeTokens`/弹簧。
@@ -73,6 +75,8 @@
   - [ ] Esc 关闭 → `Dismiss` 到达引擎且窗口回候选态。[自动]
   - [ ] 打开/关闭全程零轮询、零新定时器（`BUDGET-CPU-01`）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：Overlay 渲染面：overlay.slint + adapter/overlay.rs 模型映射 + 窗口分支互斥 + Escape→Dismiss 回程（stage 6 落地）；CheatSheet 注入的行数/分组/高亮 mock 渲染断言与 Esc 关闭回程已测。
 
 ---
 
@@ -86,7 +90,7 @@
   - 并行通道：`Track B`
   - 代码落地锚点：`crates/ime-ui/src/surface.rs`、`crates/ime-ui/src/adapter.rs`、`crates/ime-ui/src/ui_thread/event_loop.rs`、`crates/ime-ui/src/renderer.rs`、`crates/ime-ui/src/spring/set.rs`
   - 外部承接：无
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`set_visible(false)` 先 `window.hide()` 后启动 `motion.disappear()`（`adapter.rs:348-365`）——90ms 弹簧在不可见窗口里空转；普通 Hide 路径上 `advance` 报告 `animating` 使循环以 6.944ms 截止连醒（`surface.rs:260-273`），`render_if_dirty` 不查可见性（`renderer.rs:451-469`）——**每次隐藏违反 `BUDGET-CPU-01` 的空闲纪律，且 3.3.2 的退场淡出不存在**；`close()` 同病（`surface.rs:275-289`）。
   - **商业标杆对标**：macOS 弹出层退场与入场对称；「出现有动画、消失硬切」是最典型的半成品手感。
@@ -103,6 +107,8 @@
   - [ ] Hide 后 90ms 内 α 递减至 0，随后 unmap；淡出完成 60s 空闲零唤醒（`BUDGET-CPU-01` 回归断言）。[自动]
   - [ ] Show/Hide 快速交替 100 次无窗口残留、无状态错乱。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：消失动效真渲染：pending_hide 暂存（保持 mapped 淡出→收敛帧 unmap）+ renderer 不可见早退 + close 直收 + 中途 Show 续接/禁用直收；11 测试含 100 次交替与零唤醒回归。
 
 ---
 
@@ -116,7 +122,7 @@
   - 并行通道：`Track B`
   - 代码落地锚点：`crates/ime-ui/src/theme.rs`、`crates/ime-ui/src/theme/tests.rs`、`crates/ime-ui/src/theme/color.rs`
   - 外部承接：无
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`ContrastReport`（`theme.rs:307-317`）只测全 α `text.primary` 三对；实际绘制的五对降 α 文本（序号 0.55、注音 0.50、音节分隔 0.40、mode 标签 0.62、直通 run 0.62）不在测。手工核算：不透明底全过，**亚克力最坏合成底 `#3E3E40` 上 ≈4.1/3.8/4.7/2.9 全线告急**——半透明档（P1.02.04 接通后）回归时，门禁不会发现用户最常读的文本不可读。
   - **商业标杆对标**：WCAG 纪律覆盖每一个绘制的文本对，而不是「主文本过了就行」。
@@ -130,6 +136,8 @@
 - **验收标准 (DoD)**：
   - [ ] 不透明档八对全过；亚克力档五对中不达项触发 `contrast-fallback`（断言降级而非断言达标）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：对比度门禁补全：ContrastReport 八对（五对降 α 按实测绘制值）+ 半透明档强制（不达触发 contrast-fallback）+ 四象限与 50 色 accent fuzz。已知限制（主 agent 裁决）：冻结调色板下亮色档 4 对与分隔符对在任何底色实测 <4.5（分隔符受自身 α 上限，数学不可达）；门禁按卡文「退化阶梯自动兜底」语义落地，调色板修正属产品决策待用户批准。
 
 ---
 
@@ -143,7 +151,7 @@
   - 并行通道：`Track B`
   - 代码落地锚点：`crates/ime-ui/src/surface.rs`（`apply_theme` 真协商）、`crates/ime-ui/src/platform/x11.rs`（KDE blur 属性）、`crates/ime-ui/src/theme.rs`（`BlurSurface` 消费方）
   - 外部承接：Wayland 档的 blur 请求随四档后端启用（外部验证边界，`ASM-B-06`）。
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`apply_theme` 对 `spec.acrylic` 硬编码 `BlurNegotiation::Refused`（`surface.rs:361-377`），`base_alpha` 永远被顶到 255——设计的三档材质（0.5.2 退化阶梯）只余不透明档；`BlurSurface` 能力 trait 与 `request_blur`（`theme.rs:179-216`）零调用方；X11 后端无 `_KDE_NET_WM_BLUR_BEHIND_REGION`。
   - **商业标杆对标**：KWin/Hyprland 上的毛玻璃候选窗（Squirrel/macOS 质感的关键一档）。
@@ -160,6 +168,8 @@
   - [ ] mock 协商三态各得正确 `base_alpha` 与诊断码。[自动]
   - [ ] 非 KWin 环境零行为回归（恒不透明，与现状一致）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：亚克力协商：X11 _KDE_NET_WM_BLUR_BEHIND_REGION + KWin 识别 + 三态协商（Applied/Refused/Disabled）+ 映射后首帧前请求 + 区域随摆位；mock 三态断言已钉。已知限制：当前调色板下半透明档必被对比度门禁压回不透明（与 P1.02.03 联动，产品决策）；KWin 真机走查实验室项。
 
 ---
 
@@ -173,7 +183,7 @@
   - 并行通道：`Track B`
   - 代码落地锚点：`crates/ime-ui/src/adapter.rs`、`crates/ime-ui/src/adapter/frame.rs`（`write_status`）、`crates/ime-ui/src/spring/transition.rs`、`crates/ime-ui/ui/candidate.slint`（`StatusCluster`）
   - 外部承接：无
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`CubicBezier::EASE_IN_OUT`、`CROSSFADE_S` 与整套可中断过渡建成且测试齐全（`transition.rs:24-31,563-599`），但状态图标按颜色门硬切（`candidate.slint:261-306`）、主题切换是纯属性写（`adapter.rs:285-292`）——3.3.2 规定的两处 120ms crossfade 缺席，硬切在视觉上是最直接的「模板味」。
   - **商业标杆对标**：Linear/Raycast：一切状态变化有过渡；输入法模式点的硬切在余光里特别扎眼。
@@ -190,6 +200,8 @@
   - [ ] 切全角后 120ms 内 border-color 单调插值、终值逐字节等于 token。[自动]
   - [ ] 主题切换中帧颜色为两端合法插值、无闪烁帧。[自动]
   - [ ] 静止 60s 零唤醒；`just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：交叉淡变：状态四 marker 与主题 accent/alpha 的 120ms 淡变（8bit 通道整数插值，端点逐字节精确）+ 快切续接 + enabled=false 直切 + 静止零唤醒；单调/包络/终值断言全绿。已知限制：全窗口淡变需 theme.slint token 色属性改造（登记）。
 
 ---
 
@@ -203,7 +215,7 @@
   - 并行通道：`Track B`
   - 代码落地锚点：`crates/ime-ui/src/platform/x11.rs`（cursor 定义）、`crates/ime-ui/src/adapter.rs`（按压 spring）、`crates/ime-ui/ui/candidate_grid.slint`（按压缩放绑定）、`crates/ime-types/src/surface.rs`（若需指针形状事件）
   - 外部承接：无
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：候选窗内指针无光标形状管理（X11 默认 X 光标落在可点单元格上）；3.4 Active 行的「3% 下沉（60ms）」在 `candidate_grid.slint:136-139` 被显式让位给 3.3.2，而 3.3.2 也未实现——按压的唯一反馈是背景变色。
   - **商业标杆对标**：Things 3/Raycast 的按压缩放是「物理触感」的最小实现；悬停可点区域必有手型/箭头语义。
@@ -220,6 +232,8 @@
   - [ ] 候选区光标为箭头、预留区为穿透（XTEST + 截图）。[实验室]
   - [ ] 按压 60ms 内 scale 单调至 0.985、释放回弹不振铃（spring 收敛判据）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：指针微动：X11 arrow 字形光标（映射即装、去重）+ 按压 0.985 临界阻尼弹簧（AnimationSet 第五 motion，四子步积分保 60ms 不振铃）；下沉/回弹/取消/翻页失效/禁用直切全测。已知限制：XTEST+截图与真机手感调参实验室项（参数集中于 spring/press.rs）。
 
 ---
 
@@ -233,7 +247,7 @@
   - 并行通道：`Track B`
   - 代码落地锚点：`crates/ime-ui/src/adapter/cell.rs`（`character_em`）、`crates/ime-ui/src/adapter/preedit.rs`（`kept_start` 与 run 布局）、`crates/ime-ui/ui/candidate.slint`（裁切与渐隐位置）
   - 外部承接：无
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`ASCII_EM = 0.5` 对 `W/M/@/%`（≈0.8–0.95em）与数字（≈0.55em）系统性低估 → `kept_start` 保留过多 → 每个超宽 run 各自 `…` + `clip: true` 从右侧（最新输入端）裁切（`preedit.rs:302-333`、`candidate.slint:394-399`），与 3.1.3「保尾弃头」相反；左缘渐隐 overlay（`candidate.slint:438-443`）指着不存在的裁切。高估方向：希腊/西里尔按 1.0em 过早省略。
   - **商业标杆对标**：微软拼音长句预编辑永远右侧最新可见——「用户正在打的那一半」神圣不可裁。
@@ -250,6 +264,8 @@
   - [ ] 任何输入下：可见预编辑的**尾部**与输入串尾部一致（除非 caret 不可见）。[自动]
   - [ ] 全画面至多一个省略号。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：预编辑保尾：四级估宽（窄 0.30/普通 0.50/宽 0.60/非 ASCII 1.0）+ 右对齐装箱（尾 run 优先保留）+ 头省略号 adapter 烘焙；黄金集 20 例、尾部一致性与单省略号断言全绿。
 
 ---
 
@@ -263,7 +279,7 @@
   - 并行通道：`Track B`
   - 代码落地锚点：`crates/ime-fcitx5/src/addon/user_store.rs`、`crates/ime-fcitx5/src/addon/diagnostics.rs`、`crates/ime-fcitx5/src/addon/config.rs`、`crates/ime-ui/src/adapter.rs`（`set_motion_enabled`/弹簧参数）、`crates/ime-ui/src/spring.rs`、`crates/ime-ui-addon/src/addon.rs`
   - 外部承接：`engine.abbrev`（解码能力）→ `ADD-FEAT-P0.02.04`；`scheme.custom` → `ADD-FEAT-P0.02.01`。
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`[data]` 三键未应用（`user_store.rs:34-37` 自认：备份恒 enabled/keep 3/1 天，`Durability` 无读者）；`[diagnostics]` 三键被「订户先于配置安装」的时序卡死（`diagnostics.rs:25-31`：日志初始化在 config 步骤之前，级别/轮转/保留恒默认）；`[ui.animation]` 五键中 `enabled` 无生产调用方（`adapter.rs:443` 仅测试调用）、弹簧参数硬编码（`spring.rs:82-97`）。
   - **商业标杆对标**：配置文件的每个键都必须是真的——「写了不生效」比「没有这个键」更伤信任。
@@ -281,6 +297,8 @@
 - **验收标准 (DoD)**：
   - [ ] 10 键各有行为断言；`schema.rs` doc 与行为一一对齐。[自动]
   - [ ] `just ci` 全绿；预算键不回归。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：配置面 11 键接线：[diagnostics] 三键经 DiagHandle::reconfigure 热更（load+reload，地板不可击穿、OFF 绝对）；[data] 三键组装备份策略与 flush 窗口（Immediate=零窗口）；[ui.animation] 五键经 MotionConfig::from_animation 到 with_motion 构造。已知限制：备份两键 restart 生效（reload 不热更）、animation 参数重建窗口才生效（均登记）；log_input_content 刻意惰性。
 
 ---
 
@@ -294,7 +312,7 @@
   - 并行通道：`Track B`
   - 代码落地锚点：`README.md`、`README.zh.md`、`crates/ime-config/src/reload/load.rs`（`DEFAULT_CONFIG_TOML`）、`crates/ime-fcitx5/src/addon.rs`（`lifecycle/pending` 行）、`crates/ime-fcitx5/src/session_host.rs`（模块注释）、`crates/ime-types/src/version.rs`（只读引用）
   - 外部承接：reload 宿主槽位接线 → `REFACTOR-P2.05.05`；键位文档的快捷键速查表 → `dev-doc-readme` skill 产出与 `KEY-P2.03.02`。
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：① 两份 README 宣称「配置改动即下一键生效」（`README.md:136-138`、`README.zh.md:119-120`），与 ABI 现实相反；② 样例 `schema_version = 1`（实际 2，`version.rs:41`）且约 15 键缺席；③ `session_host.rs:31-39` 模块注释仍说「宿主未安装」，与 `addon/session.rs:144-150` 相反（运维会误判整个引擎未激活）；④ `lifecycle/pending` 行只报 ABI 洞，不告诉用户「所以你现在要重启」。
   - **商业标杆对标**：README 与行为逐字一致是底线；「需要重启」必须被说出来。
@@ -313,3 +331,5 @@
   - [ ] README 键集合 == schema 键集合（门禁绿）。[自动]
   - [ ] grep 全库无「无需重启」类失实声明。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：文档诚实化：双 README 热重载终态句 + 样例 39 键与模板逐键一致 + 模板每键生效方式三值标注 + session_host 头注释重写 + pending 行补重启提示 + check-readme-keys.sh 门禁（自测 3 漂移全抓）入 check-self-tests。

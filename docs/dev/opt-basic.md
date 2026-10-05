@@ -256,7 +256,7 @@
   - 关键路径：`CP: 是`
   - 并行通道：`Track A`
   - 代码落地锚点：`crates/ime-fcitx5/src/ffi/abi/engine/host.rs`、`crates/ime-fcitx5/src/ffi/cpp/engine_glue.cpp`、`crates/ime-ui-addon/src/ffi/cpp/ui_glue.cpp`、`crates/ime-ui-addon/src/ffi/abi.rs`、`crates/ime-ui-addon/src/addon.rs`、`crates/ime-types/src/ui.rs`（只读）、`docs/dev/adr/0011-frame-transport.md`（新建）、`xtask/src/testd/uiframe/mirror.rs`（发布侧接线）
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`ffi/abi/engine/host.rs:129-134` 的 `post()` 是带注释的空操作——每个 `UiCommand` 落地即丢弃并记 `ui/not-ready`；同进程内另一条 cdylib（`librspinyin_ui.so`）拥有完整的渲染管线却收不到任何命令。两库不共享静态（ADR-0003/0004，`ASM-B-01`），fcitx5 的 `dlopen` 使 `dlsym(RTLD_DEFAULT)` 不可依赖（`ASM-B-09`）。
   - **商业标杆对标**：macOS 输入法的候选窗由独立进程经 Mach 端口供帧——帧通道是输入法的「第一条生产线」；本项目管线的每一环（契约、队列、渲染、损害合并）都已建成且测试充分，唯独缺这根线。
@@ -337,6 +337,8 @@
   - [ ] wire 往返单测全绿（含 Overlay 三层结构的往返）；`cargo nextest run -p ime-fcitx5 -p ime-ui-addon` 全绿。[自动]
   - [ ] 预算：`post` 路径 criterion 基线落档并**同步向 `budgets.json` 登记 `post_ui` 阈值键**（沿用 opt-perf.md 已登记的 `PENDING_KEYS` 机制，禁止单卡私设阈值旁路 0.5.3 唯一事实源），断言经 `xtask budget --check` 判定。[性能]
   - [ ] `just ci` 全绿（含 check-host 与全部审计脚本）。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：跨 addon 帧通道：wire 镜像 + 符号握手 + sink 落 UiThread（ffi/abi/engine/transport.rs、ime-ui-addon/ffi/transport/、ADR-0011）；wire 全字段往返与 Overlay 三层结构测试全绿。已知限制：真机 XTEST E2E（输入 ni 候选窗显示）与 post_ui 预算真机采样为实验室项。
 
 ---
 
@@ -349,7 +351,7 @@
   - 关键路径：`CP: 是`
   - 并行通道：`Track A`
   - 代码落地锚点：`crates/ime-ui/src/ui_thread.rs`、`crates/ime-ui/src/channel/event.rs`、`crates/ime-ui-addon/src/addon.rs`、`crates/ime-fcitx5/src/ffi/abi/engine/transport.rs`、`crates/ime-fcitx5/src/session_host.rs`、`crates/ime-fcitx5/src/engine/router.rs`
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`UiEventQueue` 与 `UiThread::poll_event`（`ui_thread.rs:244`）无生产消费方；`session_host.rs:452-454` 已有 `router.ui_event` 处理链但无 FFI 入口；点击候选在队列里堆积后溢出计数。
   - **商业标杆对标**：搜狗/Rime 鼠标点选即上屏；回程通道同时是覆盖层导航（Esc、面板高亮移动）的前提。
@@ -386,6 +388,8 @@
   - [ ] 排空线程空闲 60s 零唤醒（`BUDGET-CPU-01`）。[自动]
   - [ ] stale-revision 点击被拒且计数（单测）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：事件回程：排空线程 + event_outlet（ime-ui-addon/src/ffi/transport/event_outlet.rs）+ rspinyin_event_ingest；stale revision 拒绝与顺序投递已测。已知限制：E2E 点选上屏实验室项；空闲零唤醒以收敛后零 deadline 断言背书。
 
 ---
 
@@ -398,7 +402,7 @@
   - 关键路径：`CP: 是`
   - 并行通道：`Track A`
   - 代码落地锚点：`crates/ime-ui-addon/src/ui_impl/cursor_rects.rs`、`crates/ime-ui-addon/src/cursor/resolver.rs`、`crates/ime-fcitx5/src/ffi/abi/engine/transport.rs`（`RspinyinEventWire` 增 `Anchor` kind）、`crates/ime-fcitx5/src/engine/router.rs`、`crates/ime-fcitx5/src/ffi/cpp/engine_glue.cpp`
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：解析梯（`cursor/resolver.rs`：归一化 → 前端绝对矩形 → 窗口几何 → 兜底）与 8 槽环形存储（`ui_impl/cursor_rects.rs:52-88`）全部建成、全部测试覆盖、零生产调用方；`KeyRouter::set_anchor`（`router.rs:511-515`）同样闲置，每上下文锚点恒为首屏原点（`router.rs:136-140`）。
   - **商业标杆对标**：一切现代 IME 的候选窗贴 caret ≤ 6dp；本项目的摆位、翻转、命中表全部以锚点为输入（`geometry.rs`），锚点错了其余全错。
@@ -413,6 +417,8 @@
   - [ ] E2E：候选窗水平中心与 caret 中心偏差 ≤ 2 物理像素、垂直 caret 下 ≤ 6dp。[实验室]
   - [ ] `KeyRouter::set_anchor` 生产调用方 ≥ 1；默认原点锚点仅存于「从未收到 rect」的上下文。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：锚点上行：RspinyinEventWire Anchor kind + on_cursor_rect→解析梯→ingest→router.set_anchor；解析梯既有 mock 表回归。已知限制：E2E 锚点偏差 ≤2px 实验室项。
 
 ---
 
@@ -425,7 +431,7 @@
   - 关键路径：`CP: 是`
   - 并行通道：`Track A`
   - 代码落地锚点：`crates/ime-types/src/ui.rs`（ADR-0005 追加）、`docs/dev/adr/0005-incremental-contract-extension.md`（补记）、`crates/ime-core/src/state/machine.rs`、`crates/ime-ui/src/surface/input.rs`、`crates/ime-ui/src/adapter/cell.rs`、`crates/ime-ui/src/adapter.rs`
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`UiFrame` 无高亮字段（`ime-types/src/ui.rs:120-136`）；`build_frame`（`machine.rs:602-620`）丢弃 `self.paging.highlight`；视图侧 `PointerState::default()` 钉 `Some(0)`（`cell.rs:156-166`）、`sync_pointer` 回抄旧值（`surface/input.rs:119-129`）、`highlight_position()` 读同一字段（`adapter.rs:666-671`）。方向键在引擎里移动高亮，窗口的环与四弹簧只在初始时刻飞向第一格，此后永不再动——**焦点环对 Space 提交目标说谎**，这是可信度缺陷而不仅是动效缺陷。
   - **商业标杆对标**：macOS/微软拼音的键盘高亮是「提交目标」的唯一视觉承诺，任何时刻与回车/空格的实际提交一致。
@@ -457,6 +463,8 @@
   - [ ] 连续 Tab × n / ↑↓ 后，环所在格 == Space 将提交的候选（E2E + 单测双断言）。[自动/实验室]
   - [ ] `UiFrame` 消费方（adapter、镜像 schema）全部编译期适配，`just ci` 全绿。[自动]
   - [ ] 无新增分配：`build_frame` 仍零分配（`alloc_budget` 门禁不回归）。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：高亮随帧：UiFrame.highlight（ADR-0005 增量）+ wire 两字段 + 视图 sync_pointer 以帧为准；表驱动测试钉「环所在格==Space 提交目标」；build_frame 仍零分配。
 
 ---
 
@@ -469,7 +477,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track B`
   - 代码落地锚点：`crates/ime-ui-addon/src/addon.rs`（`load_config` 桩）、`crates/ime-ui-addon/src/addon/tests.rs`、`crates/ime-config/src/lib.rs`（消费侧只读）
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`ime-ui-addon/src/addon.rs:176-184` 的 `load_config` 是 `pending_step("config", "the configuration loader")` 桩；窗口永远画 `theme.slint` 的默认暗色盘；`ime-ui` 里建成的整套主题机制（`ThemeResolution::resolve` 对比度门禁、退化阶梯、`slint_palette` 字节级对齐）没有数据源。四键（scheme/accent/base_alpha/corner_radius_dp）在 `schema.rs` 有完整定义、校验、文档，无一被读。
   - **商业标杆对标**：搜狗/macOS：换主题即时生效、跟随系统深浅色、用户强调色贯穿选中环与状态点。
@@ -503,6 +511,8 @@
   - [ ] 四键各有「配置 → 组件属性」单元测试。[自动]
   - [ ] 主题命令 latest-wins：连续两帧主题只有新者生效（复用 `channel/command.rs` 既有测试型）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：主题通道：load_config 真身 + ThemeSpec 投影 + PENDING_THEME 槽位首帧前生效；四键「配置→组件属性」单测与 latest-wins 语义已测。已知限制：theme.scheme=auto v1 解析为暗色（登记）；README [theme]/[ui] 段随 P1.05.01 对齐。
 
 ---
 
@@ -515,7 +525,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track A`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine/router/modes.rs`、`crates/ime-fcitx5/src/addon/session.rs`、`crates/ime-dict/src/paths.rs`、`crates/ime-ui/src/surface.rs`、`crates/ime-ui/src/renderer/probe.rs`、`crates/ime-ui-addon/src/addon.rs`、`crates/ime-types/src/decode.rs`（消费 degraded，只读）
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：① `is_readonly_mode()`（`paths.rs:297`）零生产调用方，锁标记永不亮（DEF-11）；② 词典缺失的既诺 UX「候选窗告知不可用」（`recover.rs:100-103`）未建，`degraded` 标志（`decode.rs:260-268`）无消费者（DEF-16）；③ `ui/font/missing-cjk` 在唯一调用点被丢弃（`surface.rs:144-155`）（DEF-17）；④ 五类诊断码产出了没人落地的值（`theme_codes`、starvation、select-timeout、abbrev-truncated）（DEF-18）；⑤ 接管只有 80ms 一次机会（DEF-41）；⑥ `script` 死字段按「登记延后」处置（DEF-12）。
   - **商业标杆对标**：搜狗在词库损坏时弹明确提示；macOS 在缺字体时回退系统字体并告警。可诊断性是本项目自己的 0.1 第 7 条产品承诺。
@@ -544,6 +554,8 @@
   - [ ] 挪走 `base.dict` 启动 → 「词典不可用，仅直通输入」可见。[实验室]
   - [ ] 五类诊断码各有落地断言（grep 门禁化：每码 ≥ 1 生产调用方，进 `check-self-tests`）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：状态诚实化：Modes 冻结 notice 表 + StatusStrip.chinese 直绑（ADR-0005）+ 五类诊断码生产调用方 + 字体/主题诊断落地 + 迟到接管重试；四类降级注入单测。已知限制：只读目录/挪走词典的真机走查实验室项。
 
 ---
 
@@ -556,7 +568,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track A`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine.rs`（`CHORDS` 表）、`crates/ime-fcitx5/src/engine/router/modes.rs`、`crates/ime-fcitx5/src/ffi/abi/engine/host.rs`、`crates/ime-fcitx5/src/ffi/cpp/engine_glue.cpp`、`crates/ime-core/src/passthrough/punctuation.rs`、`crates/ime-core/src/state/transitions.rs`、`crates/ime-config/src/schema.rs`（消费侧只读）
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：① `ToggleLang` 被认领但 `is_enabled` 恒 true / `set_enabled` 空体（`host.rs:116-127`）——切换永远「成功」且无变化（DEF-14）；② `is_full_width`/`is_punct_full` 翻转后除图标无任何读者，提交路径无标点输出（DEF-13）；③ 空闲态切换零反馈（DEF-15）；④ `engine.punct_mode` 等 4 键有配置无行为（DEF-33 部分）。
   - **商业标杆对标**：微软拼音：Shift+Space 切全角后下一个逗号就是全角逗号——开关改变输出，才配叫开关。
@@ -576,6 +588,8 @@
   - [ ] 全角开 + 输入 `nihao,` → 提交「你好，」（E2E）。[实验室]
   - [ ] Ctrl+Space 在插件路由中不再被认领（表审计断言）。[自动]
   - [ ] 4 配置键各有行为断言；`just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：模式位闭环：CHORDS 移除 ToggleLang（features.md 3.5 已回写）+ Modes::transform_output 提交变换 + Effect::ModeFlash 空闲反馈（ADR-0005）+ classify 输入接入（大写直提交/URL 透传/标点表行，RoutingConfig 投影）。已知限制：组合态「标点携带候选」未做（会话机级特性，后续卡）；Host 无 surrounding-text 访问器，URL 规则降级为击键内证据。
 
 ---
 
@@ -588,7 +602,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track A`
   - 代码落地锚点：`crates/ime-fcitx5/src/addon/diagnostics.rs`、`crates/ime-ui-addon/src/addon/diagnostics.rs`（若与引擎侧共用步骤形状）、`crates/ime-fcitx5/src/ffi/mod.rs`、`crates/ime-ui-addon/src/ffi/mod.rs`、`crates/ime-diag/src/crash/record.rs`、`crates/ime-diag/src/probe/snapshot.rs`
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：取证 API 层（`panic.rs:61`、`crash/signal.rs:247`、`crash.rs:94,121,138,308`）建成且自测充分，但两个 addon 的装配序列一行未调；`guard_ffi` 只写 stderr（`ffi/mod.rs:113-131`/`121-131`）且绕过节流（DEF-09）；`record.rs` 无总量上限（DEF-36）。mmap 截断 → SIGSEGV 这个项目自己点名的场景（`crash/signal.rs:19-24`）今日不留任何取证。
   - **商业标杆对标**：Chrome/Flutter 的 minidump + 最近事件环形日志；商业 IME 崩溃后用户能拿到可交的材料。
@@ -608,6 +622,8 @@
   - [ ] 33 次连续 panic 注入 → 目录恒 32 份。[自动]
   - [ ] `emit_diagnostic` 节流断言：同码 100 次只产 1 行 + 计数行。[自动]
   - [ ] `just ci` 全绿（`check-unsafe` 不新增白名单条目——本卡零 unsafe）。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：崩溃取证接线：两 addon diagnostics 步骤装配崩溃目录/panic hook/signal handler/上下文 provider + guard_ffi 节流化 + record 32 份上限；SIGSEGV 注入、33 次修剪、节流断言全绿。
 
 ---
 
@@ -620,7 +636,7 @@
   - 关键路径：`CP: 是`
   - 并行通道：`Track A`
   - 代码落地锚点：`crates/ime-fcitx5/src/ffi/abi/engine.rs`（两个空桩）、`crates/ime-fcitx5/src/ffi/cpp/engine_glue.cpp`、`crates/ime-fcitx5/src/engine/router.rs`、`crates/ime-fcitx5/src/privacy_impl.rs`
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`on_focus_in`/`on_focus_out` 是注释自嘲的空桩（`ffi/abi/engine.rs:100-112`：「losing focus is the project's highest-severity defect」）；`SessionEvent::FocusLost` 全链（`transitions.rs:433-448`：Hide + 清预编辑）无生产者；上下文表只在 `deactivate` 回收，宿主销毁上下文（vtable 无 destroyed 槽）即泄漏整会话 + 隐私映射。
   - **商业标杆对标**：任何 IME 切窗即收候选框；残留组合是「最高严重度缺陷」（项目自己的 0.4 规则 5 家族）。
@@ -637,6 +653,8 @@
   - [ ] E2E：输入 `ni` 后切窗 → 候选窗消失、目标应用无残留预编辑。[实验室]
   - [ ] 焦点风暴 1000 次 in/out → 上下文表 ≤ 活跃数 + 4。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：焦点生命周期：on_focus_in/out 真身 + FocusLost 链（Hide+清预编辑）+ 连续 focus_out 惰性回收 + privacy 表同步；焦点风暴断言已钉。已知限制：切窗 E2E 实验室项。
 
 ---
 
@@ -649,7 +667,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track C`
   - 代码落地锚点：`crates/ime-types/src/surface.rs`（ADR-0005 追加）、`crates/ime-ui/src/slint_platform.rs`、`crates/ime-ui/src/surface.rs`、`crates/ime-ui/src/platform/x11.rs`、`crates/ime-ui/src/platform/wayland/backend.rs`（同型，虽不在构建内保持编译）、`crates/ime-ui/src/ui_thread/event_loop.rs`（无改动预期，验证）
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`CandidateSurface::event_fd` 恒 `None`（`surface.rs:234-236`）；循环因此只等 eventfd（`event_loop.rs:104-122`）；`X11Backend::connection_fd`（`x11.rs:270-272`）建成但被「冻结契约无此方法 + 平台层存 `Box<dyn SurfaceBackend>`（`slint_platform.rs:75`）」双重锁死。指针事件只在宿主线程下一次发帖时才被处理——用户停顿后的点击可能迟到数秒（代码自注于 `surface.rs:221-233`）。
   - **商业标杆对标**：Raycast/Things 3：指针反馈永远 ≤ 一帧；输入法候选窗的点击选择更是主路径。
@@ -667,6 +685,8 @@
   - [ ] 空闲窗口上 XTEST 注入点击 → 提交延迟 P99 ≤ 16ms。[实验室]
   - [ ] 空闲 60s：poll 集含两 fd、零假醒（`BUDGET-CPU-01` 回归）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：指针即时性：SurfaceBackend::connection_fd（ADR-0005）+ 平台透传 + 连接 fd 进 poll 集；pointer_to_pixel 基线与空闲零假醒断言。已知限制：XTEST P99 ≤16ms 实验室项。
 
 ---
 
@@ -679,7 +699,7 @@
   - 关键路径：`CP: 否`（真机 2x 屏为实验室项，不阻塞 CP）
   - 并行通道：`Track C`
   - 代码落地锚点：`crates/ime-ui-addon/src/platform/probe.rs`、`crates/ime-ui/src/platform/x11.rs`、`crates/ime-ui/src/surface.rs`（scale 采纳点）、`crates/ime-ui/src/renderer.rs`（`SurfaceEvent::Scale` 既有消费链）、`crates/ime-ui/src/geometry.rs`（口径文档）
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：预创建表面钉死 1.0（`probe.rs:36,239-247`）；X11 `classify_event` 永不产 `Scale`（`x11.rs:547-599`）；而锚点 scale 是客户端真实值，摆位与命中表按它算（`geometry.rs:214-215` 的显式假设）——>1× 会话窗口半尺寸且交互区错位。X11 无每窗 scale 概念，但**本项目摆位链已经以 anchor.scale 为唯一事实源**，缺的只是「表面按它重定标」。
   - **商业标杆对标**：`features.md` 0.1 第 3 条明示「高分屏像素对齐」；ASM-09 规定单文件驱动 1x/2x。
@@ -696,6 +716,8 @@
   - [ ] mock scale=2：窗口物理尺寸 = 逻辑 ×2，点击命中格与绘制格一致。[自动]
   - [ ] scale 往返无 scratch 泄漏（`SHRINK_AFTER_FRAMES` 行为不回归）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：HiDPI 贯通：锚点 scale 驱动的合成 Scale 采纳链（surface.rs adopt_anchor_scale + apply_size 口径 + 交互区跟随）已在先前波次落地，本轮补齐 DoD 的 shrink 往返测试（scale 1.0→3.0→1.0 后 SHRINK_AFTER_FRAMES 归还峰值且全量重绘）。已知限制：2x 真机截图实验室项；精确 2.0→1.0 往返因 STRIDE/ROW slack 恰不触发收缩（阈值权衡，登记）。
 
 ---
 
@@ -708,7 +730,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track A`
   - 代码落地锚点：`crates/ime-fcitx5/src/addon.rs`（`on_addon_destroy`）、`crates/ime-fcitx5/src/engine/router/phrases.rs`、`crates/ime-fcitx5/src/engine/router/phrases/deferred.rs`、`crates/ime-fcitx5/src/session_host.rs`
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`on_addon_destroy`（`addon.rs:210-231`）的收口清单缺短语写手；`session_host::shutdown` drop 即弃（`session_host.rs:501-506`），`PhraseWriter::Drop` 刻意不 join（`deferred.rs:384-399`）——outbox 64 槽内的用户短语在卸载时静默丢失，违反写手自己的契约（`deferred.rs:32-39`）。
   - **商业标杆对标**：用户自造词是资产；搜狗/Rime 退出时持久化一切待写项。
@@ -722,6 +744,8 @@
   - [ ] 卸载后 phrase TSV 含卸载前最后一刻加入的行。[自动]
   - [ ] 卸载总时长 ≤ 250ms（卡死注入下仍成立）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：卸载完整性：session_host::shutdown 前置 PhraseWriter drain + phrase/shutdown-timeout；积压落盘/卡死超时/零积压三态注入已钉。
 
 ---
 
@@ -734,7 +758,7 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track B`
   - 代码落地锚点：`crates/ime-ui/src/renderer/tests.rs`（新探针测试）、`crates/ime-ui/ui/theme.slint`、`crates/ime-ui/ui/candidate.slint`、`crates/ime-ui/src/adapter.rs`、`crates/ime-ui/src/layout/metrics.rs`、`crates/ime-ui/src/adapter/tests.rs`、`docs/dev/features.md` 3.3.2（回写）
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：五处注释与一处门禁把「元素 opacity 被忽略 / 绑定即不画」当成平台事实（DEF-20 清单）；`adapter/tests.rs:480-496` 的实测注释以 `ink()` 计数（非零 α 像素数）为证据——该度量对 α 变化天然不敏感，0.04% 差异恰是噪底，**度量误读**；同文件 `:452` 的 disabled 用例（dim=0.32 子树照常绘制）反而是「绑定不画」论的反例。后果：`window-opacity` 每帧被写、绑定到无（DEF-21），appear 淡入缺失。
   - **商业标杆对标**：工程决策建立在像素证据上；淡入+缩放复合出现是 macOS 弹层的标准手感。
@@ -752,6 +776,8 @@
   - [ ] 探针测试全绿且注释与代码互证。[自动]
   - [ ] appear 动效含淡入分量（中帧 α ∈ (0,1)）。[自动]
   - [ ] `just ci` 全绿；`check-ui-spec.sh` 白名单与新绑定一致。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：渲染器事实校准：像素探针三组证明 opacity 合成 α 真实生效（推翻旧账「被忽略」结论）+ 五处注释与 binds_opacity 门禁按事实修正 + appear 淡入经 window-opacity 接线；features.md 3.3.2 由本卡结论约束（探针测试即为权威记录）。
 
 ---
 
@@ -764,7 +790,7 @@
   - 关键路径：`CP: 是`（CP 末端的验收手段）
   - 并行通道：`Track C`
   - 代码落地锚点：`xtask/src/testd/mod.rs`、`xtask/src/main.rs`（子命令注册）、`xtask/src/testd/uiframe.rs`、`xtask/src/testd/capture.rs`、`crates/ime-fcitx5/src/addon/probes.rs`（发布钩子）
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`uiframe`（帧镜像）与 `capture`（像素采集）两通道建成、测试齐全，但 `#![allow(dead_code)]` 注记明言「未接入子命令树」（`uiframe.rs:70-80`、`capture.rs:58-63`）——E2E 验收长期只能靠 mock 推断，真渲染缺陷（如本次 `check-host` 抓到的）依赖偶然。
   - **商业标杆对标**：UI 自动化验收是商业客户端标配；本项目已有完整设计（ADR-0007 领地），只差接线。
@@ -779,6 +805,8 @@
   - [ ] `xtask test-mirror` 能在真机会话中读到与注入输入一致的候选帧。[实验室]
   - [ ] 无镜像目录时插件行为逐字节不变（回归断言）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：E2E 接线：xtask test-mirror/capture 子命令挂载（main.rs）+ FrameWatch/capture 闭环；插件侧发布已于帧通道波次落地（test-mirror feature + RSPINYIN_TEST_MIRROR_DIR 门控），无镜像零行为已测。已知限制：真机镜像断言实验室项（justfile e2e-mirror recipe 备好）。
 
 ---
 

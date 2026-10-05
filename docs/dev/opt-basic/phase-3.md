@@ -22,7 +22,7 @@
   - 并行通道：`Track C`
   - 代码落地锚点：`crates/ime-config/src/migrate.rs`（`replace`，约 653-671 行）
   - 外部承接：无
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`migrate.rs` 的原子替换写临时文件后直接 rename，无 `sync_all`——与库内全部兄弟路径（`ime-dict/src/recover.rs:463`、`user_db/backup.rs:600`、`format/writer.rs:268`）不一致。迁移幂等使最坏后果限于重迁移，但落盘纪律应当全库一致。
   - **商业标杆对标**：断电安全是配置写入的默认期望。
@@ -35,6 +35,8 @@
 - **验收标准 (DoD)**：
   - [ ] `migrate` 测试全绿；grep 全库「写临时文件 + rename」路径的 fsync 覆盖一致（新门禁条目入 `check-self-tests`）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：迁移原子替换补 sync_all + check-fsync-rename.sh 门禁（全库写临时+rename 路径的 fsync 覆盖一致）。
 
 ---
 
@@ -48,7 +50,7 @@
   - 并行通道：`Track C`
   - 代码落地锚点：`crates/ime-ui/src/renderer/probe.rs`（约 212-221 行）
   - 外部承接：无
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`probe_font_choice` 起工作线程后 `handle.join()` 无超时（`probe.rs:212-221`）——病态字体/渲染缺陷可把 `rspinyin-ui` 线程永久停靠：`mark_ui_ready` 不到来、自绘窗永不出现、线程泄漏。
   - **商业标杆对标**：辅助线程不得无限期拖住主链（项目自己的 `join_within` 模式，`ui_thread.rs:378-398`）。
@@ -61,6 +63,8 @@
 - **验收标准 (DoD)**：
   - [ ] 注入阻塞探测 → 500ms 后窗口照常出现（默认字体）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：字体探测 join 超时：PROBE_BUDGET 500ms + FontStatus::TimedOut + CJK 首选回退 + ui/font/probe-timeout 诊断码；三态注入测试。
 
 ---
 
@@ -74,7 +78,7 @@
   - 并行通道：`Track C`
   - 代码落地锚点：`crates/ime-ui-addon/src/ui_impl/availability.rs`、`crates/ime-ui-addon/src/addon.rs`（`suspend`/`resume` 装配点）、`crates/ime-ui/src/ui_thread.rs`（命令侧）
   - 外部承接：无
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`on_host_suspend`/`on_host_resume` 是真实 FFI 槽（`ffi/abi.rs:298-313`）写 `HOST_UI_SUSPENDED`（`availability.rs:79-90`），doc 称「候选窗可见性随之」（`availability.rs:77-78`），但全库无读者——宿主挂起 UI 时活动组合的窗口不会被隐藏。
   - **商业标杆对标**：宿主状态变化即视图状态变化；被挂起的输入法残留窗口是低级缺陷。
@@ -87,6 +91,8 @@
 - **验收标准 (DoD)**：
   - [ ] 组合中注入宿主 suspend → 候选窗 Hide。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：host-suspend 消费者：suspend 经生产 post_command 通道投递 Hide(FocusLost)，resume 只清旗标等下一组合；镜像可见性断言已钉。
 
 ---
 
@@ -100,7 +106,7 @@
   - 并行通道：`Track C`
   - 代码落地锚点：`crates/ime-ui-addon/src/addon/tests.rs`（`FRAME_TIMEOUT`/`SETTLE_POLL` 及三处使用）
   - 外部承接：无
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`FRAME_TIMEOUT = 90s` 是常量（`addon/tests.rs:47`）；本次审计实测：并行构建负载下 `test_the_pre_created_window_redraws_for_a_new_frame` 在 90.5s 超时失败，单独重跑 48.9s 通过——门禁对机器负载敏感，误报会侵蚀对红绿灯的信任。
   - **商业标杆对标**：CI 门禁必须可重复。
@@ -113,6 +119,8 @@
 - **验收标准 (DoD)**：
   - [ ] 并行负载下 `just check-host` 连续 3 次绿。[自动]
   - [ ] 默认（无变量）行为对既有 CI 不变。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：check-host 稳健化：RSPINYIN_TEST_FRAME_TIMEOUT_SECS 覆盖（justfile 传 240）+ settled 超时软化（painted 证据为准）+ 解析纯函数三测。已知限制：并行负载三连绿属 CI 复测项。
 
 ---
 
@@ -126,7 +134,7 @@
   - 并行通道：`Track C`
   - 代码落地锚点：`crates/ime-ui-addon/src/ffi/abi.rs`（vtable 槽体约 397-399 行）、`crates/ime-ui-addon/src/ffi/abi/tests.rs`
   - 外部承接：无
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：C++ glue 直调 vtable 槽 `vt->is_available()`（`ui_glue.cpp:275-279`），槽体（`ffi/abi.rs:397-399`）不在 `guard_ffi` 内——守卫版 `rspinyin_ui_available`（`:288-292`）是另一个导出、不是槽体。函数体只读两个原子、现实可 panic 面为零，但违反「每个 `extern "C"` 体都跑在 guard 内」的全库不变量（`ffi/abi.rs:34-38` 自述）。
   - **商业标杆对标**：FFI 纪律零例外——不变量的价值正是它在零成本时也被遵守。
@@ -139,6 +147,8 @@
 - **验收标准 (DoD)**：
   - [ ] grep 断言：UI vtable 每个槽体都在 guard 内（入 `check-unsafe.sh` 或 crate 测试）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：is_available 槽位 guard 化：两入口一实现（guard_ffi(false, ui_impl::is_available)）+ 「每槽体在 guard 内」结构断言（FFI 入口计数 14）。
 
 ---
 
@@ -152,7 +162,7 @@
   - 并行通道：`Track C`
   - 代码落地锚点：`crates/ime-fcitx5/src/engine/rows.rs`、`crates/ime-fcitx5/src/engine.rs`（`CHORDS`）、`crates/ime-fcitx5/src/engine/binding_audit.rs`、`crates/ime-config/src/schema.rs`、`crates/ime-config/src/keymap/project.rs`
   - 外部承接：键位编辑 UI → `ADD-FEAT-P1.02.03`/`P1.02.04`；速查面板键位预留 → `KEY-P1.02.08`；本卡交付「默认绑定行 + 审计断言 + 首末页动作」。
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：四个已实现且被执行器支持的 `KeyAction` 无任何绑定行——`ToggleScript`/`ForgetHighlighted`/`PinHighlighted`/`AddPhrase`（`key.rs:51-64`；`rows.rs`/`CHORDS` 均不产出；`router.rs:560-563` 自注）；无首/末页跳转（`key.rs:32-34` 仅 Next/Prev）；`KeyAction::ToggleScript` 当前被认领后零效果（`transitions.rs:173-179`）。用户无法从键盘删错词、钉词、造词、切简繁。
   - **商业标杆对标**：微软拼音：Ctrl+Shift+数字删词、简繁一键；搜狗的快速造词。
@@ -170,6 +180,8 @@
   - [ ] `binding_audit` 断言：零「无绑定且不在白名单」的动作。[自动]
   - [ ] End 键直达末页候选（集成测试）。[自动]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：默认绑定与审计：Home/End 端点跳页（Paging::flip_to_first/last）+ Ctrl+Delete 忘词 + binding_audit「无绑定即白名单」门禁（UNBOUND_WHITELIST 四项各有理由）+ keymap_matrix 17 动作覆盖与 SC-KEY-15/16 两场景。已知限制：README 键表随 P1.05.01 对齐。
 
 ---
 
@@ -183,7 +195,7 @@
   - 并行通道：`Track C`
   - 代码落地锚点：`crates/ime-fcitx5/src/addon/config.rs`（`on_config_reload` 的生产调用方）、`crates/ime-fcitx5/src/ffi/abi/lifecycle.rs`、`crates/ime-fcitx5/src/ffi/cpp/addon_glue.cpp`、`crates/ime-fcitx5/src/engine/router.rs`（`reload`）
   - 外部承接：无
-  - 当前状态：`[ ] 待重构`
+  - 当前状态：`[x] 已完成`
 - **重构目标与 Demo 感弊端剖析**：
   - **现有代码具体缺陷**：`on_config_reload`（`addon/config.rs:259-287`）→ `KeyRouter::reload` 全链建成、全测，唯一调用方是测试；`start_config_watch` 只能记 `lifecycle/pending`（`config.rs:173-183`）——「this build's ABI carries no slot to reach it」（`addon.rs:62-69`）。宿主 fcitx5 的 `reloadConfig()` addon 回调无人接。
   - **商业标杆对标**：VS Code/Raycast：配置改动即时生效；最差也要一键重载。
@@ -199,3 +211,5 @@
 - **验收标准 (DoD)**：
   - [ ] 真机触发重载后改 `[ui] max_per_row` → 下一帧页宽变化，组合不中断。[实验室]
   - [ ] `just ci` 全绿。[自动]
+- **验收记录**：- **验收记录**（2026-10-05，opt-basic 第 3 轮）：实现落于本系列提交（35566f0…cbc16e4）；门禁 `cargo fmt --all -- --check`、clippy 三段零 Rust 警告、`cargo nextest run --workspace --all-features`（2969 通过）+ addon 594 通过、doctest 76 通过、`just ci` 全部审计绿（含新增 check-readme-keys 与 check-metrics-readers 自测）；`just check-host` 因本机无 libfcitx5core-dev 跳过（CI host-abi 作业覆盖）。
+- **验收记录（实施与限制）**：reloadConfig 接线：glue override → rspinyin_config_reload（guard）→ on_config_reload → session_host 广播（组合不重置，0.4 规则 10）；Updated/Kept 语义经导出符号测试，guard 结构断言计数 14。已知限制：真机 fcitx5-remote --reload 触发实验室项。
