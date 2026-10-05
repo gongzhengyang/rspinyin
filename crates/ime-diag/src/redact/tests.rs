@@ -63,7 +63,11 @@ fn capture(state: &Arc<RedactState>) -> (Capture, tracing::subscriber::DefaultGu
 
 /// A state that filters at `level` and shortens [`TEST_HOME`].
 fn state_at(level: LevelFilter) -> Arc<RedactState> {
-    Arc::new(RedactState::new(level, Some(PathBuf::from(TEST_HOME))))
+    Arc::new(RedactState::new(
+        level,
+        LevelFilter::ERROR,
+        Some(PathBuf::from(TEST_HOME)),
+    ))
 }
 
 /// The line of `text` that contains `needle`.

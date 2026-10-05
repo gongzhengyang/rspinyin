@@ -11,6 +11,8 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use ime_types::{HideReason, UiCommand};
+
 use crate::addon::candidate_window_ready;
 
 use super::takeover::TAKEOVER_DECLINED;
@@ -74,10 +76,22 @@ pub fn is_host_ui_suspended() -> bool {
 
 /// Handles `UserInterface::suspend()`.
 ///
-/// The candidate window's visibility follows from this flag; hiding the surface itself
-/// belongs to the UI thread, which reads the flag through [`is_host_ui_suspended`].
+/// The suspension takes the window down as well: a `Hide` is posted through the same
+/// command channel every other hide travels, so the unmap happens on the UI thread
+/// with the frame state it owns -- the flag alone cannot unmap anything, because the
+/// thread that reads it is the one that owns the window. A resumed host does not bring
+/// the window back; the next composition's `Show` does, which is the same rule a focus
+/// loss follows.
 pub fn on_host_suspend() {
     HOST_UI_SUSPENDED.store(true, Ordering::Release);
+    // `FocusLost` is the reason whose consequences match: the composition stays where
+    // it was and nothing is cleared, which is what a suspended host should mean. The
+    // answer is dropped because a suspended host has no window to post to -- the flag
+    // above is the durable record of the suspension either way.
+    let _ = crate::addon::post_command(UiCommand::Hide {
+        revision: 0,
+        reason: HideReason::FocusLost,
+    });
 }
 
 /// Handles `UserInterface::resume()`.

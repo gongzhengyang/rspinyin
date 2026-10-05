@@ -32,7 +32,7 @@ use std::cmp;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use ime_types::ImeError;
@@ -122,6 +122,11 @@ impl DiagConfig {
 pub struct DiagHandle {
     state: Arc<RedactState>,
     log_path: Option<PathBuf>,
+    /// A clone of the sink the subscriber writes through, so
+    /// [`DiagHandle::reconfigure`] can reach the rolling policy without touching the
+    /// subscriber. `None` when the sink degraded to stderr, where a rolling policy has
+    /// nothing to apply to.
+    sink: Option<Sink>,
 }
 
 impl DiagHandle {
@@ -159,6 +164,39 @@ impl DiagHandle {
     /// stderr fallback.
     pub fn level(&self) -> LevelFilter {
         self.state.level()
+    }
+
+    /// Re-aims the policy the diagnostics layer applies, without reinstalling the
+    /// subscriber.
+    ///
+    /// `tracing` installs its global subscriber exactly once per process, but the
+    /// values the policy reads -- the level and the rolling limits -- need not be
+    /// frozen with it. This call swaps them in place: the level rank is one atomic
+    /// store the redaction layer reads with one lock-free load per event, and the
+    /// rolling limits are atomics the write path reads where it already holds the
+    /// file lock. No lock is taken to write a parameter, so a reconfiguration that
+    /// races a log call cannot wedge either side.
+    ///
+    /// The degradation floors survive a reconfiguration: a log that went to stderr
+    /// stays capped at `warn` and the input-content switch keeps the process at
+    /// `debug`, whatever this call asks for.
+    ///
+    /// # Arguments
+    ///
+    /// * `level` -- the lowest level that reaches a sink from now on. `OFF` means no
+    ///   diagnostics at all.
+    /// * `rotation_mb` -- the size at which the active file rolls over, in mebibytes;
+    ///   zero disables rolling.
+    /// * `keep_files` -- how many rolled files stay behind the active one.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn reconfigure(&self, level: LevelFilter, rotation_mb: u64, keep_files: usize) {
+        self.state.set_configured_level(level);
+        if let Some(Sink::File(writer)) = &self.sink {
+            writer.set_policy(rotation_mb.saturating_mul(MEBIBYTE), keep_files);
+        }
     }
 }
 
@@ -200,7 +238,7 @@ pub fn init_logging(cfg: &DiagConfig) -> Result<DiagHandle, ImeError> {
     }
 
     let prepared = Prepared::open(cfg);
-    let state = Arc::new(RedactState::new(prepared.level, home_dir()));
+    let state = Arc::new(RedactState::new(prepared.level, prepared.floor, home_dir()));
     let subscriber = build_subscriber(&prepared, Arc::clone(&state));
     if let Err(err) = tracing::subscriber::set_global_default(subscriber) {
         // Another library claimed the global subscriber first. Clearing the guard
@@ -217,6 +255,7 @@ pub fn init_logging(cfg: &DiagConfig) -> Result<DiagHandle, ImeError> {
     Ok(DiagHandle {
         state,
         log_path: prepared.log_path.clone(),
+        sink: Some(prepared.sink.clone()),
     })
 }
 
@@ -260,6 +299,9 @@ enum Notice {
 struct Prepared {
     sink: Sink,
     level: LevelFilter,
+    /// The verbosity floor the degradations impose, which a later reconfiguration of
+    /// the configured level must respect.
+    floor: LevelFilter,
     notices: Vec<Notice>,
     log_path: Option<PathBuf>,
 }
@@ -295,9 +337,18 @@ impl Prepared {
             Some(_) => effective_level(cfg),
             None => cmp::min(effective_level(cfg), LevelFilter::WARN),
         };
+        // The floor mirrors the two degradations: a log that went to stderr is capped
+        // at `warn` however talkative the configuration asks the process to be, and the
+        // input-content switch raises the whole process to `debug` for good.
+        let floor = match log_path {
+            Some(_) if !cfg.log_input_content => LevelFilter::ERROR,
+            Some(_) => LevelFilter::DEBUG,
+            None => LevelFilter::WARN,
+        };
         Self {
             sink,
             level,
+            floor,
             notices,
             log_path,
         }
@@ -388,6 +439,15 @@ impl RotatingWriter {
             inner: Arc::new(Mutex::new(file)),
         })
     }
+
+    /// Swaps the rolling policy in place.
+    ///
+    /// The limits are atomics on the shared file state, so this is two lock-free
+    /// stores: a log call that is mid-write keeps the limits it loaded, and the next
+    /// one sees the new policy.
+    fn set_policy(&self, max_bytes: u64, keep_files: usize) {
+        self.lock().set_policy(max_bytes, keep_files);
+    }
     /// Takes the file lock, recovering from poisoning.
     fn lock(&self) -> MutexGuard<'_, RotatingFile> {
         match self.inner.lock() {
@@ -423,8 +483,11 @@ struct RotatingFile {
     file_name: String,
     handle: File,
     written: u64,
-    max_bytes: u64,
-    keep_files: usize,
+    /// The size the active file rolls over at, in bytes; zero never rolls. Atomic so
+    /// a configuration reload can re-aim it while writes are in flight.
+    max_bytes: AtomicU64,
+    /// How many rolled files stay behind the active one. Atomic for the same reason.
+    keep_files: AtomicUsize,
 }
 
 impl RotatingFile {
@@ -440,8 +503,8 @@ impl RotatingFile {
             file_name: String::from(file_name),
             handle,
             written,
-            max_bytes,
-            keep_files,
+            max_bytes: AtomicU64::new(max_bytes),
+            keep_files: AtomicUsize::new(keep_files),
         })
     }
 
@@ -449,9 +512,16 @@ impl RotatingFile {
     fn should_roll(&self, incoming: usize) -> bool {
         // An empty file never rolls: a single line larger than the whole budget
         // would otherwise roll the file before every write and keep nothing.
-        self.max_bytes > 0
+        let max_bytes = self.max_bytes.load(Ordering::Acquire);
+        max_bytes > 0
             && self.written > 0
-            && self.written.saturating_add(incoming as u64) > self.max_bytes
+            && self.written.saturating_add(incoming as u64) > max_bytes
+    }
+
+    /// Swaps the rolling policy in place, as [`RotatingWriter::set_policy`] describes.
+    fn set_policy(&mut self, max_bytes: u64, keep_files: usize) {
+        self.max_bytes.store(max_bytes, Ordering::Release);
+        self.keep_files.store(keep_files, Ordering::Release);
     }
 
     /// Rolls the active file over to `.1`, shifting the history up, and opens a
@@ -462,13 +532,14 @@ impl RotatingFile {
     /// at `keep_files + 1` files.
     fn roll(&mut self) -> io::Result<()> {
         let current = self.dir.join(&self.file_name);
-        if self.keep_files == 0 {
+        let keep_files = self.keep_files.load(Ordering::Acquire);
+        if keep_files == 0 {
             // No history is kept, so the active file starts over where it is --
             // which also avoids unlinking a file this process still holds open.
             self.handle = open_private(&current, false)?;
         } else {
-            remove_if_exists(&self.history_path(self.keep_files))?;
-            for index in (1..self.keep_files).rev() {
+            remove_if_exists(&self.history_path(keep_files))?;
+            for index in (1..keep_files).rev() {
                 rename_if_exists(&self.history_path(index), &self.history_path(index + 1))?;
             }
             rename_if_exists(&current, &self.history_path(1))?;

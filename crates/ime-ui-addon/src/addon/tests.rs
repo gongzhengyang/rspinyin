@@ -398,6 +398,57 @@ fn test_ui_startup_with_a_backend_creates_the_window_and_destroy_releases_it() {
     );
 }
 
+/// Waits until the mock surface reports the visibility the caller expects.
+fn wait_for_visible(state: &Arc<Mutex<MockState>>, visible: bool) -> bool {
+    let deadline = Instant::now() + frame_timeout();
+    while Instant::now() < deadline {
+        if lock_state(state).visible == visible {
+            return true;
+        }
+        thread::sleep(SETTLE_POLL);
+    }
+    lock_state(state).visible == visible
+}
+
+#[test]
+fn test_host_suspend_hides_the_window_and_resume_waits_for_the_next_show() {
+    let state = install_mock_backend();
+    start_ui_startup().expect("the UI thread can be started");
+    assert!(wait_for_ready());
+    // The start-up deliberately stays in its slot: the suspend handler posts its hide
+    // through the same channel every command travels, which is the production path
+    // this test has to exercise.
+    assert!(post_command(UiCommand::Show {
+        revision: 1,
+        anchor: anchor(),
+    }));
+    assert!(
+        wait_for_visible(&state, true),
+        "the window maps for the show the test posted"
+    );
+
+    ui_impl::on_host_suspend();
+    assert!(
+        wait_for_visible(&state, false),
+        "a suspended host takes the window down"
+    );
+    assert!(
+        ui_impl::is_host_ui_suspended(),
+        "and the flag records the suspension"
+    );
+
+    // A resume does not bring the window back: the next composition's show does, the
+    // same rule a focus loss follows. Only the flag clears.
+    ui_impl::on_host_resume();
+    assert!(!ui_impl::is_host_ui_suspended());
+    assert!(
+        !lock_state(&state).visible,
+        "the resume itself must not reshow the window"
+    );
+
+    on_addon_destroy();
+}
+
 #[test]
 fn test_ui_startup_without_a_backend_starts_no_thread() {
     crate::platform::install(ProbeOutcome::Unsupported {

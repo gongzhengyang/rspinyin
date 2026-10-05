@@ -254,7 +254,7 @@ fn test_subscriber_writes_redacted_lines_to_the_log_file() {
     let cfg = DiagConfig::new(dir.clone());
     let prepared = Prepared::open(&cfg);
     assert!(matches!(prepared.sink, Sink::File(_)));
-    let state = Arc::new(RedactState::new(prepared.level, None));
+    let state = Arc::new(RedactState::new(prepared.level, prepared.floor, None));
     let subscriber = build_subscriber(&prepared, Arc::clone(&state));
     let _guard = tracing::subscriber::set_default(subscriber);
 
@@ -305,7 +305,7 @@ fn test_prepare_announces_the_input_content_switch_without_recording_characters(
         ..DiagConfig::new(dir.clone())
     };
     let prepared = Prepared::open(&cfg);
-    let state = Arc::new(RedactState::new(prepared.level, None));
+    let state = Arc::new(RedactState::new(prepared.level, prepared.floor, None));
     let subscriber = build_subscriber(&prepared, Arc::clone(&state));
     let _guard = tracing::subscriber::set_default(subscriber);
 
@@ -343,7 +343,7 @@ fn test_stderr_fallback_admits_only_warn_and_above() {
         ..DiagConfig::new(dir.clone())
     };
     let prepared = Prepared::open(&cfg);
-    let state = Arc::new(RedactState::new(prepared.level, None));
+    let state = Arc::new(RedactState::new(prepared.level, prepared.floor, None));
     let subscriber = build_subscriber(&prepared, Arc::clone(&state));
     let _guard = tracing::subscriber::set_default(subscriber);
 
@@ -368,7 +368,7 @@ fn test_zero_trace_scan_finds_no_input_content_in_the_log_or_the_crash_record() 
     let dir = scratch_dir("zero-trace");
     let cfg = DiagConfig::new(dir.clone());
     let prepared = Prepared::open(&cfg);
-    let state = Arc::new(RedactState::new(prepared.level, None));
+    let state = Arc::new(RedactState::new(prepared.level, prepared.floor, None));
     let subscriber = build_subscriber(&prepared, Arc::clone(&state));
     let _guard = tracing::subscriber::set_default(subscriber);
 

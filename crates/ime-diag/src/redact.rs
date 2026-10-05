@@ -47,12 +47,12 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tracing::field::{Field, Visit};
 use tracing::level_filters::LevelFilter;
-use tracing::{Event, Metadata, Subscriber};
+use tracing::{Event, Level, Metadata, Subscriber};
 use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::fmt::format::{FormatEvent, Writer};
 use tracing_subscriber::fmt::time::{FormatTime, SystemTime};
@@ -291,30 +291,94 @@ struct Observation {
 /// without taking the lock, because the check sits on the path of every event.
 #[derive(Debug)]
 pub struct RedactState {
-    level: LevelFilter,
+    /// The level the configuration last asked for, encoded as a [`verbosity`] rank.
+    ///
+    /// Atomic because the configuration can be re-applied while log calls are in
+    /// flight on other threads: the writers read the rank with one lock-free load,
+    /// and a reconfiguration never takes the locks a log call holds.
+    configured: AtomicU8,
+    /// The lowest verbosity the degradations of this process impose: the `warn` floor
+    /// of a stderr fallback and the `debug` floor of the input-content switch. A
+    /// reconfigured level never dips below it.
+    floor: AtomicU8,
     home: Option<PathBuf>,
     /// Number of marked sessions; zero short-circuits the lock.
     sensitive_count: AtomicUsize,
     sensitive: Mutex<BTreeSet<u64>>,
 }
 
+/// The verbosity rank of one event's level, on the same scale [`verbosity`] uses.
+pub(crate) fn verbosity_of_level(level: Level) -> u8 {
+    match level {
+        Level::ERROR => 1,
+        Level::WARN => 2,
+        Level::INFO => 3,
+        Level::DEBUG => 4,
+        Level::TRACE => 5,
+    }
+}
+
+/// Encodes a [`LevelFilter`] as one comparable byte of verbosity.
+///
+/// The ranks ascend with verbosity, so the effective level of a configuration and a
+/// degradation floor is the `max` of the two ranks -- an ordering `LevelFilter` itself
+/// does not offer as a total order.
+pub(crate) fn verbosity(level: LevelFilter) -> u8 {
+    match level {
+        LevelFilter::OFF => 0,
+        LevelFilter::ERROR => 1,
+        LevelFilter::WARN => 2,
+        LevelFilter::INFO => 3,
+        LevelFilter::DEBUG => 4,
+        LevelFilter::TRACE => 5,
+        _ => 3,
+    }
+}
+
+/// Decodes a [`verbosity`] rank back into the filter it names.
+pub(crate) fn level_of(rank: u8) -> LevelFilter {
+    match rank {
+        0 => LevelFilter::OFF,
+        1 => LevelFilter::ERROR,
+        2 => LevelFilter::WARN,
+        4 => LevelFilter::DEBUG,
+        5 => LevelFilter::TRACE,
+        _ => LevelFilter::INFO,
+    }
+}
+
 impl RedactState {
     /// Creates the state with the level filter to apply and the home directory to shorten, with
     /// no session marked sensitive. `home` may be `None` to leave paths as they are.
-    pub fn new(level: LevelFilter, home: Option<PathBuf>) -> Self {
+    pub fn new(level: LevelFilter, floor: LevelFilter, home: Option<PathBuf>) -> Self {
         Self {
-            level,
+            configured: AtomicU8::new(verbosity(level)),
+            floor: AtomicU8::new(verbosity(floor)),
             home,
             sensitive_count: AtomicUsize::new(0),
             sensitive: Mutex::new(BTreeSet::new()),
         }
     }
 
-    /// The level filter this state applies, after `crate::log` has folded in the
-    /// degradations it decided on: the `warn` floor of the stderr fallback and the `debug`
-    /// floor of the input-content switch.
+    /// The level filter this state applies: the configured level, never below the
+    /// degradation floor `crate::log` decided on -- the `warn` of a stderr fallback and
+    /// the `debug` of the input-content switch.
     pub fn level(&self) -> LevelFilter {
-        self.level
+        level_of(self.effective_rank())
+    }
+
+    /// The effective rank: whichever of the configured level and the degradation floor
+    /// is the more verbose.
+    pub(crate) fn effective_rank(&self) -> u8 {
+        self.configured
+            .load(Ordering::Acquire)
+            .max(self.floor.load(Ordering::Acquire))
+    }
+
+    /// Re-aims the configured level. The floor is untouched: a degradation stays in
+    /// force whatever the configuration asks for.
+    pub(crate) fn set_configured_level(&self, level: LevelFilter) {
+        self.configured.store(verbosity(level), Ordering::Release);
     }
 
     /// The home directory whose prefix is rewritten to `~`, or `None` when paths are left as
@@ -458,13 +522,18 @@ impl RedactLayer {
 
 impl<S: Subscriber> Layer<S> for RedactLayer {
     fn enabled(&self, metadata: &Metadata<'_>, _ctx: Context<'_, S>) -> bool {
-        metadata.level() <= &self.state.level
+        // The rank of the event names how verbose it is, so an event passes when it is
+        // no more verbose than the effective filter. The rank is one atomic load: a
+        // reconfiguration on another thread is visible here without a lock.
+        verbosity_of_level(*metadata.level()) <= self.state.effective_rank()
     }
 
     fn max_level_hint(&self) -> Option<LevelFilter> {
-        // Publishing the filter as a hint is what makes a `debug!` below the configured level
-        // cost a comparison in the macro rather than a call into the subscriber.
-        Some(self.state.level)
+        // Publishing the filter as a hint is what makes a `debug!` below the configured
+        // level cost a comparison in the macro rather than a call into the subscriber.
+        // A reconfigured level changes the hint on the next callsite re-evaluation,
+        // which `tracing` performs when the hint changes.
+        Some(self.state.level())
     }
 
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
