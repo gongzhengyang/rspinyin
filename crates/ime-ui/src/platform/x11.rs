@@ -226,28 +226,72 @@ impl X11Backend {
         // or the server rejects the window with `BadMatch`.
         conn.create_colormap(ColormapAlloc::NONE, colormap, root, visual)
             .map_err(unavailable)?;
-        conn.create_window(
-            depth,
-            window,
-            root,
-            0,
-            0,
-            width_px as u16,
-            height_px as u16,
-            0,
-            WindowClass::INPUT_OUTPUT,
-            visual,
-            &CreateWindowAux {
-                // A transparent background: the frame the caller writes replaces it, and
-                // on the ARGB path an all-zero pixel is invisible rather than black.
-                background_pixel: Some(0),
-                colormap: Some(colormap),
-                override_redirect: Some(1),
-                event_mask: Some(event_mask()),
-                ..Default::default()
-            },
-        )
-        .map_err(unavailable)?;
+
+        // `create_window` is an unchecked request: a server that refuses it reports the
+        // error asynchronously and the request silently does nothing, which is how a
+        // backend could answer "ready" while its window never existed — exactly what a
+        // server whose depth-32 entry lists visuals that cannot back an
+        // `INPUT_OUTPUT` window produces. The creation is therefore checked, and a
+        // refused ARGB window falls back to the root visual and depth: the documented
+        // no-alpha degradation (opaque background, `effective_base_alpha` at 255) instead
+        // of a session with no candidate window at all.
+        let argb = CreateWindowAux {
+            // A transparent background: the frame the caller writes replaces it, and
+            // on the ARGB path an all-zero pixel is invisible rather than black.
+            background_pixel: Some(0),
+            colormap: Some(colormap),
+            override_redirect: Some(1),
+            event_mask: Some(event_mask()),
+            ..Default::default()
+        };
+        let depth = {
+            let argb_cookie = conn
+                .create_window(
+                    depth,
+                    window,
+                    root,
+                    0,
+                    0,
+                    width_px as u16,
+                    height_px as u16,
+                    0,
+                    WindowClass::INPUT_OUTPUT,
+                    visual,
+                    &argb,
+                )
+                .map_err(unavailable)?;
+            match argb_cookie.check() {
+                Ok(()) => depth,
+                Err(_) => {
+                    conn.free_colormap(colormap).map_err(unavailable)?;
+                    conn.destroy_window(window).map_err(unavailable)?;
+                    // The root path: whatever depth the root uses, no colormap, and an
+                    // opaque background (the adapter paints its own base over it).
+                    let root_cookie = conn
+                        .create_window(
+                            screen.root_depth,
+                            window,
+                            root,
+                            0,
+                            0,
+                            width_px as u16,
+                            height_px as u16,
+                            0,
+                            WindowClass::INPUT_OUTPUT,
+                            screen.root_visual,
+                            &CreateWindowAux {
+                                background_pixel: Some(0),
+                                override_redirect: Some(1),
+                                event_mask: Some(event_mask()),
+                                ..Default::default()
+                            },
+                        )
+                        .map_err(unavailable)?;
+                    root_cookie.check().map_err(unavailable)?;
+                    screen.root_depth
+                }
+            }
+        };
         set_window_properties(&conn, window, &atoms)?;
         conn.create_gc(
             gc,

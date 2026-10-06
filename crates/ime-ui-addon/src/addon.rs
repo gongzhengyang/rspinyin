@@ -413,7 +413,19 @@ pub fn on_addon_destroy() {
     // are back on their `ui/not-ready` degradation instead of arriving at a thread that
     // is being torn down (ADR-0011).
     crate::ffi::transport::unregister_transport();
-    let stopped_cleanly = stop_ui();
+    // The startup slot is taken here rather than inside `stop_ui` so the thread's
+    // own error can be read while the handle still exists: a thread whose surface
+    // failed to start dies without a trace of its own, and this destroy summary is
+    // where that error finally reaches the log.
+    let stopped_cleanly = match take_ui_startup() {
+        Some(startup) => {
+            if let Some(error) = startup.thread.take_run_error() {
+                emit_diagnostic(&format!("ui/thread/run-failed: {error}"));
+            }
+            stop_ui_startup(startup)
+        }
+        None => true,
+    };
     clear_ui_ready();
     ui_impl::set_window_backend_available(false);
     // The late retry is a debt of the load being torn down; the next load arms its own.
@@ -695,13 +707,6 @@ fn set_ui_startup(startup: UiStartup) {
 /// Stops the background start-up if one is running.
 ///
 /// Returns whether it stopped inside the deadline; `true` when there was none.
-fn stop_ui() -> bool {
-    match take_ui_startup() {
-        Some(startup) => stop_ui_startup(startup),
-        None => true,
-    }
-}
-
 /// Takes the background start-up out of the slot.
 fn take_ui_startup() -> Option<UiStartup> {
     lock_ui_startup().take()

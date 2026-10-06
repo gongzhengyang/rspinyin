@@ -149,6 +149,7 @@ pub struct UiThread {
     events: Arc<UiEventQueue>,
     dead: Arc<AtomicBool>,
     panicked: Arc<AtomicBool>,
+    run_error: Arc<Mutex<Option<ImeError>>>,
     shutdown_timeouts: AtomicU64,
 }
 
@@ -186,6 +187,7 @@ impl UiThread {
         let events = Arc::new(UiEventQueue::new(&config.channels));
         let dead = Arc::new(AtomicBool::new(false));
         let panicked = Arc::new(AtomicBool::new(false));
+        let run_error: Arc<Mutex<Option<ImeError>>> = Arc::new(Mutex::new(None));
         let context = UiContext {
             waker: channels.wakeup().clone(),
         };
@@ -197,6 +199,7 @@ impl UiThread {
             events: Arc::clone(&events),
             dead: Arc::clone(&dead),
             panicked: Arc::clone(&panicked),
+            run_error: Arc::clone(&run_error),
             build: Some(build),
         };
         let mut builder = thread::Builder::new().name(name);
@@ -212,6 +215,7 @@ impl UiThread {
             events,
             dead,
             panicked,
+            run_error,
             shutdown_timeouts: AtomicU64::new(0),
         })
     }
@@ -320,6 +324,24 @@ impl UiThread {
             shutdown_timeouts: self.shutdown_timeouts.load(Ordering::Relaxed),
         }
     }
+
+    /// Takes the error the run fn returned, if it did.
+    ///
+    /// A thread whose surface failed to start dies without a diagnostic of its
+    /// own: this crate has no diagnostics sink, so the error outlives the thread
+    /// here and the addon that owns the sink reports it. `None` for a thread that
+    /// is still running, stopped cleanly, or died to a panic (the panic flag is
+    /// that thread's trace).
+    ///
+    /// # Panics
+    ///
+    /// Never: a poisoned lock yields `None` rather than propagating.
+    pub fn take_run_error(&self) -> Option<ImeError> {
+        match self.run_error.lock() {
+            Ok(mut slot) => slot.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        }
+    }
 }
 
 impl Drop for UiThread {
@@ -344,6 +366,11 @@ struct ThreadState<F> {
     events: Arc<UiEventQueue>,
     dead: Arc<AtomicBool>,
     panicked: Arc<AtomicBool>,
+    /// The error the run fn returned, if any. A thread whose surface failed to
+    /// start dies without drawing anything, which is invisible from the outside
+    /// unless the error outlives the thread: the owner reads it after the join
+    /// and reports it through the diagnostics sink it owns.
+    run_error: Arc<Mutex<Option<ImeError>>>,
     build: Option<F>,
 }
 
@@ -375,8 +402,17 @@ where
     F: FnOnce(UiContext) -> Result<Box<dyn UiSurface>, ImeError> + Send + 'static,
 {
     let outcome = panic::catch_unwind(AssertUnwindSafe(|| state.run(context)));
-    if outcome.is_err() {
-        state.panicked.store(true, Ordering::Release);
+    match outcome {
+        Ok(Err(error)) => {
+            // A surface that failed to start ends the thread without a drawing
+            // ever having existed; the error is the only trace, so it outlives
+            // the thread for the owner to report.
+            if let Ok(mut slot) = state.run_error.lock() {
+                *slot = Some(error);
+            }
+        }
+        Err(_) => state.panicked.store(true, Ordering::Release),
+        Ok(Ok(())) => {}
     }
     // Stored last, so that a `send` which observes it knows the loop is gone
     // rather than merely about to be.

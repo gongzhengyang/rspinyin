@@ -148,8 +148,10 @@ namespace {
 
 /// The addon name this library is registered under, which is what
 /// `UserInterfaceManager` matches against. It must equal the addon description's file
-/// name and the `Addon=` of the input method entry, both under `packaging/fcitx5/`.
-constexpr const char *kUiAddonName = "rspinyin";
+/// name (`rspinyin-ui.conf`) — the engine addon is `rspinyin.conf`, and reading this
+/// constant off the engine's name is why the takeover answered "not registered"
+/// forever: `addonNames(AddonCategory::UI)` contains the descriptor stems.
+constexpr const char *kUiAddonName = "rspinyin-ui";
 
 /// Candidate cap for a single panel update.
 ///
