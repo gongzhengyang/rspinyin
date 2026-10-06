@@ -26,7 +26,7 @@
   2. 断言自绘候选框可见，且 ClassicUI 的候选框**不出现**。
 - **通过标准**：`UserInterface::update` 只被派发给**当前活跃 UI**——只要活跃 UI 是 `rspinyin`，ClassicUI 就收不到更新、自然不绘制。**无需**修改或禁用 ClassicUI addon（ADR-0003 已推翻"注册 `UserInterface`"的原始假定：`UserInterfaceManager` **没有注册接口**，活跃 UI 由 `Category=UI` 的 addon 按 `available()`/`UIPriority` 选出）。
 
-- **执行记录**（2026-10-06，未通过）：部分通过：E2E 实证 classicui 候选窗在整个会话中保持 1x1 未绘制（update 只派发给活跃 UI 的语义成立），但自绘候选窗因 isolated defect ui-window-never-draws（握手修复后 UI 线程仍不产帧，trace.json 见 results/runs/…/rt/TC-RT-21/）不可见——失败隔离，待缺陷修复后复测
+- **验收记录**（2026-10-06，复测更新）：结构判据已达成——两处根因就地修复（①kUiAddonName 误用引擎 id rspinyin，应为 rspinyin-ui；②create_window 未检查请求在 Xvfb/Xwayland 的 BadMatch 被静默丢弃），修复后实测 ui/takeover/active: previous=classicui、候选窗 784x235 IsViewable（override_redirect=1，不夺焦）、classicui 全程未绘制；视觉判据仍未达成：回退（root-visual depth-24）路径窗口内容渲染黑屏——depth-24 像素路径为收窄后的下一缺陷，失败隔离保持，补丁与 trace 见证据包
 ### TC-RT-22 `available()` 的可用性判据（`REQ-RT-05`）
 
 - **基本属性**：`[x] 已通过` ｜ `REQ-RT-05` ｜ `rt` | 全状态防御与骨架屏 ｜ `P0` ｜ 可执行性：`[待实现: TASK-1.04.03]` ｜ `crates/ime-fcitx5/src/ui_impl/availability.rs`
