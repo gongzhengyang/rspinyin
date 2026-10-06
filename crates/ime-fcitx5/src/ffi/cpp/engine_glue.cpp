@@ -330,9 +330,9 @@ private:
     /// a context was destroyed — is a table slot the ADR-0011 symbol batch owns; the
     /// Rust side reclaims a context the host stopped focusing instead.
     void watchFocusEvents() {
-        auto &instance = manager_->instance();
-        focus_in_handler_ = instance.watchEvent(
-            fcitx::EventType::FocusIn, fcitx::EventWatcherPhase::Default,
+        auto *instance = manager_->instance();
+        focus_in_handler_ = instance->watchEvent(
+            fcitx::EventType::InputContextFocusIn, fcitx::EventWatcherPhase::Default,
             [](fcitx::Event &event) {
                 const RspinyinVtable *vt = rspinyin::vtable();
                 if (vt == nullptr || vt->on_focus_in == nullptr) {
@@ -343,8 +343,8 @@ private:
                 vt->on_focus_in(rspinyin::context(),
                                 rspinyin::ic_id(focus.inputContext()));
             });
-        focus_out_handler_ = instance.watchEvent(
-            fcitx::EventType::FocusOut, fcitx::EventWatcherPhase::Default,
+        focus_out_handler_ = instance->watchEvent(
+            fcitx::EventType::InputContextFocusOut, fcitx::EventWatcherPhase::Default,
             [](fcitx::Event &event) {
                 const RspinyinVtable *vt = rspinyin::vtable();
                 if (vt == nullptr || vt->on_focus_out == nullptr) {
@@ -365,8 +365,10 @@ private:
     /// The registered focus handlers, kept so that destroying the engine disconnects
     /// them with it: a handler outliving the instance it reads would run on a dangling
     /// bus.
-    std::unique_ptr<fcitx::HandlerEntry> focus_in_handler_;
-    std::unique_ptr<fcitx::HandlerEntry> focus_out_handler_;
+    // fcitx5 >= 5.1.19 renamed HandlerEntry to HandlerTableEntry; the table entry
+    // type is what connect() has returned since, so spell the current name.
+    std::unique_ptr<fcitx::HandlerTableEntry<fcitx::EventHandler>> focus_in_handler_;
+    std::unique_ptr<fcitx::HandlerTableEntry<fcitx::EventHandler>> focus_out_handler_;
 };
 
 // Compile-time proof that every pure virtual of the engine chain is implemented: an

@@ -1,0 +1,5 @@
+name = "engine-empty-input"
+[[steps]]
+action = "ignore"
+[steps.expect.degraded]
+code = "decode/empty-input"

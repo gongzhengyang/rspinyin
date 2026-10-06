@@ -1,0 +1,23 @@
+name = "engine-folds-a-leading-marker"
+[[dictionary.words]]
+key = "n"
+texts = ["嗯"]
+[[dictionary.words]]
+key = "ni"
+texts = ["你"]
+[[steps]]
+action = "input-char:'"
+[steps.expect.degraded]
+code = "decode/invalid-char"
+[[steps]]
+action = "input-char:n"
+[steps.expect.preedit]
+text = "n"
+caret = 1
+spans = 2
+[[steps]]
+action = "input-char:i"
+[steps.expect.candidates]
+first = "你"
+count = 1
+contains = []

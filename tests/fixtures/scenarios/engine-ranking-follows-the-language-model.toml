@@ -1,0 +1,45 @@
+name = "engine-ranking-follows-the-language-model"
+[[dictionary.words]]
+key = "xian"
+texts = ["先"]
+[[dictionary.words]]
+key = "xi"
+texts = ["西"]
+[[dictionary.words]]
+key = "an"
+texts = ["安"]
+[[dictionary.bigrams]]
+prev = "西"
+word = "安"
+score = -64
+[dictionary.unigrams]
+"先" = -2048
+"安" = -128
+"西" = -128
+[[steps]]
+action = "input-char:x"
+[steps.expect.candidates]
+first = "x"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:i"
+[steps.expect.candidates]
+first = "西"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "xia"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:n"
+[steps.expect.candidates]
+first = "西安"
+count = 3
+contains = [
+    "先",
+    "西",
+]

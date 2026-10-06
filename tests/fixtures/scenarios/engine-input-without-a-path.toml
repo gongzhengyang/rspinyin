@@ -1,0 +1,17 @@
+name = "engine-input-without-a-path"
+[[steps]]
+action = "input-char:z"
+[steps.expect.candidates]
+first = "z"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:z"
+[steps.expect.candidates]
+first = "zz"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:z"
+[steps.expect.degraded]
+code = "decode/no-path"

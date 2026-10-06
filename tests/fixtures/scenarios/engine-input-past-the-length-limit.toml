@@ -1,0 +1,389 @@
+name = "engine-input-past-the-length-limit"
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "a"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.degraded]
+code = "decode/too-long"

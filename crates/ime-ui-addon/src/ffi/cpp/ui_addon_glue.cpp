@@ -292,6 +292,8 @@ typedef int (*rspinyin_register_sinks_fn)(const void *);
 // resolves within this image at link time.
 extern "C" const void *rspinyin_ui_frame_sink();
 
+
+
 namespace {
 
 /// Looks an engine symbol up through probe `mechanism`.
@@ -338,62 +340,7 @@ void *find_engine_symbol(int mechanism, const char *name, void **handle_out) {
     }
 }
 
-/// Looks the engine's registration function up through probe `mechanism`.
-///
-/// Returns null when that mechanism finds nothing; see `find_engine_symbol`, which
-/// this is a spelling of for the frame handshake's own symbol.
-rspinyin_register_sinks_fn find_engine_register(int mechanism, void **handle_out) {
-    return reinterpret_cast<rspinyin_register_sinks_fn>(
-        find_engine_symbol(mechanism, "rspinyin_engine_register_ui_sinks", handle_out));
-}
-
 } // namespace
-
-/// Registers the frame sink with the engine addon (ADR-0011).
-///
-/// Returns the probe mechanism that fired: 1 `RTLD_DEFAULT`, 2 the sibling-path
-/// `RTLD_NOLOAD`, 3 the bare-soname `RTLD_NOLOAD`, 0 when no mechanism found a live
-/// engine. The Rust caller records the answer; a 0 is not retried until the next addon
-/// load.
-extern "C" std::uint32_t rspinyin_ui_transport_register() {
-    const void *sink = rspinyin_ui_frame_sink();
-    if (sink == nullptr) {
-        return 0;
-    }
-    for (int mechanism = 1; mechanism <= 3; ++mechanism) {
-        void *handle = nullptr;
-        rspinyin_register_sinks_fn register_sinks = find_engine_register(mechanism, &handle);
-        if (register_sinks == nullptr) {
-            continue;
-        }
-        if (register_sinks(sink) == 1) {
-            return static_cast<std::uint32_t>(mechanism);
-        }
-    }
-    return 0;
-}
-
-/// Clears the engine's sink slot on unload, by the same probes (ADR-0011).
-///
-/// Nothing is cached between the register and unregister calls on purpose: an engine
-/// that unloaded first must not leave this side holding a dangling function pointer,
-/// and a fresh probe costs one `dlsym` on a path that runs once per unload.
-extern "C" void rspinyin_ui_transport_unregister() {
-    for (int mechanism = 1; mechanism <= 3; ++mechanism) {
-        void *handle = nullptr;
-        rspinyin_register_sinks_fn register_sinks = find_engine_register(mechanism, &handle);
-        if (register_sinks == nullptr) {
-            continue;
-        }
-        void *clear = dlsym(handle != nullptr ? handle : RTLD_DEFAULT,
-                            "rspinyin_engine_clear_ui_sinks");
-        if (clear != nullptr) {
-            reinterpret_cast<void (*)()>(clear)();
-            return;
-        }
-    }
-}
-
 // ── Event return channel (ADR-0011) ─────────────────────────────────────────────
 //
 // The candidate window's events are produced on the drain thread, but the engine's

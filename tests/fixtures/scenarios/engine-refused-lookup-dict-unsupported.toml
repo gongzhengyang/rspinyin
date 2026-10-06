@@ -1,0 +1,37 @@
+name = "engine-refused-lookup-dict-unsupported"
+[[dictionary.words]]
+key = "ni"
+texts = ["你"]
+[[dictionary.words]]
+key = "hao"
+texts = ["好"]
+[dictionary.failures]
+"ni'hao" = "dict/unsupported"
+[[steps]]
+action = "input-char:n"
+[steps.expect.candidates]
+first = "n"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:i"
+[steps.expect.candidates]
+first = "你"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:h"
+[steps.expect.candidates]
+first = "nih"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.candidates]
+first = "niha"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:o"
+[steps.expect.degraded]
+code = "dict/unsupported"

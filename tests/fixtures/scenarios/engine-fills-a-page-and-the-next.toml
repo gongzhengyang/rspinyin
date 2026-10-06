@@ -1,0 +1,57 @@
+name = "engine-fills-a-page-and-the-next"
+[[dictionary.words]]
+key = "de"
+texts = [
+    "的",
+    "得",
+    "德",
+    "地",
+    "底",
+    "低",
+    "滴",
+    "敌",
+]
+[[dictionary.words]]
+key = "de'de"
+texts = [
+    "得到",
+    "得知",
+    "得意",
+    "得罪",
+    "得体",
+    "得手",
+    "得救",
+    "得逞",
+]
+[[steps]]
+action = "input-char:d"
+[steps.expect.candidates]
+first = "d"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:e"
+[steps.expect.candidates]
+first = "的"
+count = 8
+contains = ["敌"]
+[[steps]]
+action = "input-char:d"
+[steps.expect.candidates]
+first = "ded"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:e"
+[steps.expect.candidates]
+first = "得到"
+count = 16
+contains = [
+    "得逞",
+    "的敌",
+]
+[[steps]]
+action = "ignore"
+[steps.expect.page]
+current = 1
+total = 4

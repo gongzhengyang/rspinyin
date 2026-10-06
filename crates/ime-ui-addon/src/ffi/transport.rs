@@ -570,7 +570,7 @@ pub(crate) fn register_transport() -> bool {
     // SAFETY: the glue reads no memory this side owns, blocks on nothing, and answers
     // with a code naming the probe mechanism that fired. The pure-Rust build's stand-in
     // reads nothing at all, so the call site is the same on both configurations.
-    let mechanism = unsafe { rspinyin_ui_transport_register() };
+    let mechanism = rspinyin_ui_transport_register();
     match mechanism {
         1 => {
             emit_diagnostic("ui/transport/registered: probe=rtld-default");
@@ -601,52 +601,165 @@ pub(crate) fn register_transport() -> bool {
 ///
 /// Never.
 pub(crate) fn unregister_transport() {
-    // SAFETY: as `register_transport`.
-    unsafe {
-        rspinyin_ui_transport_unregister();
-    }
+    rspinyin_ui_transport_unregister();
     event_outlet::disarm();
 }
 
 #[cfg(fcitx5_host)]
-unsafe extern "C" {
-    /// Finds the engine library and registers the sink with it.
-    ///
-    /// Provided by `src/ffi/cpp/ui_addon_glue.cpp`. Answers 1-3 for the probe mechanism
-    /// that fired and 0 when none did.
-    ///
-    /// # Safety
-    ///
-    /// Called from the host thread; the callee blocks on nothing and owns nothing the
-    /// caller has to release.
-    fn rspinyin_ui_transport_register() -> u32;
+mod transport_probe {
+    //! The handshake's probe, spelled in Rust so the symbol the engine's own probe
+    //! looks for (`rspinyin_ui_transport_register`) is an exported `#[no_mangle]` of
+    //! this cdylib. The spelling it replaces lived in the C++ glue, whose globals a
+    //! cdylib link localises: the engine's `dlsym` could never see it, and the
+    //! handshake stayed down in both directions. The engine's twin
+    //! (`rspinyin_engine_register_ui_sinks`) is a Rust `#[no_mangle]` for the same
+    //! reason.
 
-    /// Clears the engine's sink slot. Provided by the same glue.
+    use std::ffi::{CStr, c_char, c_int, c_void};
+
+    // `dlopen`/`dlsym`/`dladdr` from libc; the crate is an FFI crate and already
+    // carries the dependency.
+    #[link(name = "dl")]
+    unsafe extern "C" {
+        unsafe fn dlopen(path: *const c_char, mode: c_int) -> *mut c_void;
+        unsafe fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        unsafe fn dladdr(addr: *const c_void, info: *mut DlInfo) -> c_int;
+    }
+
+    #[repr(C)]
+    struct DlInfo {
+        fname: *const c_char,
+        fbase: *mut c_void,
+        sname: *const c_char,
+        saddr: *mut c_void,
+    }
+
+    const RTLD_DEFAULT: *mut c_void = std::ptr::null_mut();
+    const RTLD_NOLOAD: c_int = 0x4;
+    const RTLD_LAZY: c_int = 0x1;
+
+    /// The engine's registration entry point, looked up by name.
+    type RegisterSinksFn = unsafe extern "C" fn(sink: *const c_void) -> bool;
+
+    fn find_engine_symbol(mechanism: c_int) -> Option<RegisterSinksFn> {
+        let name = c"rspinyin_engine_register_ui_sinks";
+        match mechanism {
+            1 => {
+                // SAFETY: name is a valid C string; the lookup reads loaded metadata only.
+                let raw = unsafe { dlsym(RTLD_DEFAULT, name.as_ptr()) };
+                (!raw.is_null())
+                    .then(|| unsafe { std::mem::transmute::<*mut c_void, RegisterSinksFn>(raw) })
+            }
+            2 => {
+                // SAFETY: the address is this library's own exported function, and
+                // DlInfo is a plain out-parameter the call fills. `super::`'s function
+                // is the exported symbol itself, so dladdr names this library's path.
+                let mut info = DlInfo {
+                    fname: std::ptr::null(),
+                    fbase: std::ptr::null_mut(),
+                    sname: std::ptr::null(),
+                    saddr: std::ptr::null_mut(),
+                };
+                // SAFETY: the address is this library's own exported function and
+                // DlInfo is a plain out-parameter the call fills.
+                if unsafe { dladdr(super::rspinyin_ui_frame_sink as *const c_void, &mut info) } == 0
+                    || info.fname.is_null()
+                {
+                    return None;
+                }
+                // SAFETY: fname points into the loader's own module metadata.
+                let own = unsafe { CStr::from_ptr(info.fname) }.to_string_lossy();
+                let sibling = match own.rsplit_once('/') {
+                    Some((dir, _)) => format!("{dir}/librspinyin.so"),
+                    None => "librspinyin.so".to_string(),
+                };
+                open_and_lookup(&sibling, name)
+            }
+            3 => open_and_lookup("librspinyin.so", name),
+            _ => None,
+        }
+    }
+
+    fn open_and_lookup(path: &str, name: &std::ffi::CStr) -> Option<RegisterSinksFn> {
+        let path_c = std::ffi::CString::new(path).ok()?;
+        // SAFETY: both strings are valid C strings; RTLD_NOLOAD neither loads nor
+        // unloads anything, it only reports an already-loaded handle.
+        let handle = unsafe { dlopen(path_c.as_ptr(), RTLD_NOLOAD | RTLD_LAZY) };
+        if handle.is_null() {
+            return None;
+        }
+        // SAFETY: the handle is a live module and the name is a valid C string.
+        let raw = unsafe { dlsym(handle, name.as_ptr()) };
+        (!raw.is_null())
+            .then(|| unsafe { std::mem::transmute::<*mut c_void, RegisterSinksFn>(raw) })
+    }
+
+    /// Registers the frame sink with the engine addon (ADR-0011).
     ///
-    /// # Safety
+    /// Returns the probe mechanism that fired: 1 `RTLD_DEFAULT`, 2 the sibling-path
+    /// `RTLD_NOLOAD`, 3 the bare-soname `RTLD_NOLOAD`, 0 when no mechanism found a
+    /// live engine. The engine's own probe looks this symbol up by name to drive the
+    /// other load order, which is why it is exported from the cdylib.
     ///
-    /// As `rspinyin_ui_transport_register`.
-    fn rspinyin_ui_transport_unregister();
+    /// # Panics
+    ///
+    /// Never: the probe reads loader metadata and the sink is a static.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rspinyin_ui_transport_register() -> u32 {
+        let sink = super::rspinyin_ui_frame_sink();
+        if sink.is_null() {
+            return 0;
+        }
+        for mechanism in 1..=3 {
+            if let Some(register_sinks) = find_engine_symbol(mechanism) {
+                // SAFETY: the pointer names a live engine's registration entry point;
+                // the sink is this addon's static.
+                if unsafe { register_sinks(sink.cast::<c_void>()) } {
+                    return mechanism as u32;
+                }
+            }
+        }
+        0
+    }
+
+    /// Clears the engine's sink slot on unload, by the same probes (ADR-0011).
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rspinyin_ui_transport_unregister() {
+        for mechanism in 1..=3 {
+            if find_engine_symbol(mechanism).is_some() {
+                let clear_name = c"rspinyin_engine_clear_ui_sinks";
+                // SAFETY: name is a valid C string; the lookup reads loaded metadata.
+                let raw = unsafe { dlsym(RTLD_DEFAULT, clear_name.as_ptr()) };
+                if raw.is_null() {
+                    continue;
+                }
+                type ClearFn = unsafe extern "C" fn();
+                // SAFETY: the engine exports the clear entry point with this shape.
+                unsafe { std::mem::transmute::<*mut c_void, ClearFn>(raw)() };
+                return;
+            }
+        }
+    }
 }
 
-/// Stand-in for the pure-Rust build, where no glue is linked.
+#[cfg(fcitx5_host)]
+use transport_probe::{rspinyin_ui_transport_register, rspinyin_ui_transport_unregister};
+
+/// Stand-in for the pure-Rust build, where no other addon exists to find.
 ///
-/// # Safety
-///
-/// Nothing is read or written; the caller has no obligations beyond the ones the real
-/// function carries.
+/// Answers zero — the handshake-unavailable code — without touching anything.
 #[cfg(not(fcitx5_host))]
-unsafe fn rspinyin_ui_transport_register() -> u32 {
+fn rspinyin_ui_transport_register() -> u32 {
     0
 }
 
-/// Stand-in for the pure-Rust build, where no glue is linked.
-///
-/// # Safety
-///
-/// Nothing is read or written.
+/// Stand-in for the pure-Rust build, where no other addon exists to clear.
 #[cfg(not(fcitx5_host))]
-unsafe fn rspinyin_ui_transport_unregister() {}
+fn rspinyin_ui_transport_unregister() {}
 
 #[cfg(test)]
 mod tests;

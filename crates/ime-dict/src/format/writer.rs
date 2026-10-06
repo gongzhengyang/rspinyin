@@ -248,7 +248,10 @@ impl DictWriter {
     ///
     /// The image goes to `<path>.tmp`, is flushed with `File::sync_all`, and is
     /// then renamed onto `path`. The destination is never opened for writing, so
-    /// a crash or a full disk leaves the previous file in place.
+    /// a crash or a full disk leaves the previous file in place. A failed write
+    /// removes the temporary file again: a full disk would otherwise leave a
+    /// partial image next to the destination that no later run has reason to
+    /// clean up.
     ///
     /// # Errors
     /// Returns [`DictError::Io`] when the parent directory cannot be created, the
@@ -263,12 +266,22 @@ impl DictWriter {
             fs::create_dir_all(parent)?;
         }
         let temp = temp_path(path);
-        let mut file = File::create(&temp)?;
-        file.write_all(&image)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&temp, path)?;
-        Ok(())
+        let written = (|| {
+            let mut file = File::create(&temp)?;
+            file.write_all(&image)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temp, path)?;
+            Ok(())
+        })();
+        if written.is_err() {
+            // The temporary can only exist past this point when the write or the
+            // flush failed; the rename either succeeded (no error) or never moved
+            // it. Removing it is best-effort: the original error is the one worth
+            // reporting.
+            let _ = fs::remove_file(&temp);
+        }
+        written
     }
 }
 
@@ -488,6 +501,27 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).expect("cleaning up");
+    }
+
+    // A destination that exists as a non-empty directory is the deterministic way to
+    // fail the final rename after the temporary file has been written in full; a
+    // failing write (ENOSPC) leaves the same residue, and this test pins the cleanup
+    // that must run on every error path once the temporary exists.
+    #[test]
+    fn test_finish_removes_the_temporary_file_when_the_write_fails() {
+        let dir = scratch_dir("failed-write");
+        let path = dir.join("base.dict");
+        fs::create_dir(&path).expect("the destination as a directory");
+        fs::write(path.join("occupied"), b"rename onto a directory must fail")
+            .expect("occupying the destination");
+
+        let writer = sample_writer();
+        let result = writer.finish(&path);
+        assert!(result.is_err(), "rename onto a non-empty directory fails");
+        assert!(
+            !temp_path(&path).exists(),
+            "a failed finish must not leave the temporary file behind"
+        );
     }
 
     #[test]

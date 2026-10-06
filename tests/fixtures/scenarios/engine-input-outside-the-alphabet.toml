@@ -1,0 +1,11 @@
+name = "engine-input-outside-the-alphabet"
+[[steps]]
+action = "input-char:n"
+[steps.expect.candidates]
+first = "n"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:3"
+[steps.expect.degraded]
+code = "decode/invalid-char"

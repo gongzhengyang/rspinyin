@@ -1,0 +1,40 @@
+name = "engine-typing-reaches-a-word"
+[[dictionary.words]]
+key = "ni"
+texts = ["你"]
+[[dictionary.words]]
+key = "hao"
+texts = ["好"]
+[[dictionary.words]]
+key = "ni'hao"
+texts = ["你好"]
+[[steps]]
+action = "input-char:n"
+[steps.expect.candidates]
+first = "n"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:i"
+[steps.expect.preedit]
+text = "ni"
+caret = 2
+spans = 2
+[[steps]]
+action = "input-char:h"
+[steps.expect.candidates]
+first = "nih"
+count = 1
+contains = []
+[[steps]]
+action = "input-char:a"
+[steps.expect.preedit]
+text = "ni'ha"
+caret = 5
+spans = 4
+[[steps]]
+action = "input-char:o"
+[steps.expect.candidates]
+first = "你好"
+count = 1
+contains = []
