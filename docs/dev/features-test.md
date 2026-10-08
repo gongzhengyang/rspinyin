@@ -1,6 +1,6 @@
 # rspinyin AI Agent + MCP 端到端自动化测试平台研发任务清单
 
-> 文档版本: v1.0 ｜ 系统形态: Desktop GUI（Linux 桌面输入法：Fcitx5 进程内插件 + 自绘候选框） ｜ 被测基线: Rust 2024 workspace（7 crates + xtask）、Fcitx5 5.1.7 C++/C ABI、cargo-nextest 0.9.143 ｜ 关联 ADR: [adr/0000-upstream-decisions.md](adr/0000-upstream-decisions.md)、[adr/0002-rust-exports-addon-factory.md](adr/0002-rust-exports-addon-factory.md)、[adr/0003-ui-role-separate-addon.md](adr/0003-ui-role-separate-addon.md) ｜ 最后同步 Commit: `ee0dbfb` ｜ 维护约定: 被测代码演进后必须回写能力追溯表、任务卡状态与 `tests.md` 的追踪矩阵
+> 文档版本: v2.0 ｜ 系统形态: Desktop GUI（Linux 桌面输入法：Fcitx5 进程内双 addon + 自绘候选框） ｜ 被测基线: Rust 2024 workspace（9 crates + xtask + alloc-count）、Fcitx5 5.1.19 C++/C ABI、cargo-nextest ｜ 关联 ADR: [adr/0000-upstream-decisions.md](adr/0000-upstream-decisions.md)、[adr/0002-rust-exports-addon-factory.md](adr/0002-rust-exports-addon-factory.md)、[adr/0003-ui-role-separate-addon.md](adr/0003-ui-role-separate-addon.md)、[adr/0004-ui-addon-crate-split.md](adr/0004-ui-addon-crate-split.md)、[adr/0010-test-only-allocation-counter.md](adr/0010-test-only-allocation-counter.md)、[adr/0011-frame-transport.md](adr/0011-frame-transport.md) ｜ 最后同步 Commit: `408d2c6` ｜ 逻辑自检: [已通过（第 2 轮收敛，Blocker 1 / Major 3 / Minor 5 ｜ 优化采纳 2 / 否决 2 / 登记 0）] ｜ 维护约定: 被测代码演进后必须回写能力追溯表、任务卡状态与 `tests.md` 的追踪矩阵
 
 本文档是 rspinyin 自动化测试**平台侧**的研发任务清单；用例侧见 [tests.md](tests.md) 与其分片。两份文档的事实来源是 [features.md](features.md) 的 0.5.2 能力矩阵、0.5.3 预算表与第 3 节交互规范。
 
@@ -12,32 +12,26 @@
 
 | 维度 | 实测结论 |
 |---|---|
-| 工程形态 | Cargo workspace，`members = ["crates/*", "xtask"]`，`exclude = ["fuzz"]`（fuzz 需 nightly）。7 个 crate：`ime-types` / `ime-core` / `ime-dict` / `ime-config` / `ime-ui` / `ime-fcitx5` / `ime-diag` |
-| 交付形态 | **两个 cdylib**（ADR-0003）：`librspinyin.so`（`Category=InputMethod`，引擎）+ `librspinyin-ui.so`（`Category=UI`，候选框）。二者**无 IPC**，数据经 Fcitx5 自身的 `InputContext`/`inputPanel()` 流转 |
-| 渲染架构 | 候选框为**完全自绘**（Slint 软件光栅 + `wl_shm`/MIT-SHM），**无 Webview、无 DOM、无系统控件** |
-| 现有测试资产 | **401 个 `#[test]`**：ime-types 44 / ime-core 112 / ime-dict 89 / ime-fcitx5 95 / **ime-ui 18** / xtask 43 / **ime-config 0** / **ime-diag 0**。criterion 基准 4 个（`ime-core/benches/{input,passthrough}.rs`、`ime-dict/benches/{dict,userdb}.rs`）。proptest 2 处。fuzz 目标 1 个（`fuzz/fuzz_targets/dag_build.rs`） |
-| 质量门禁 | `just check`（fmt/clippy/nextest/doctest）、`just ci`（+5 个审计脚本 + budget + versions）、`just bench`、`just fuzz`、`just check-self-tests`（脚本自测） |
-| 边界契约 | `ime-types` 为冻结契约（ADR-0001）；C ABI 为 `RspinyinVtable` + `RspinyinHandshake`（`crates/ime-fcitx5/src/ffi/abi/types.rs`） |
-| 隐私约束 | 零网络（0.4 规则 6 / `BUDGET-NET-01`）；日志脱敏（`ime-diag` 的 `RedactLayer`）；`ime-ui` 公共 API 不得导出 Slint 类型（0.4 规则 11 / `OB-4`） |
+| 工程形态 | Cargo workspace，`members = ["crates/*", "xtask"]`，`exclude = ["fuzz"]`（fuzz 需 nightly）。9 个 crate：`ime-types` / `ime-core` / `ime-dict` / `ime-config` / `ime-ui` / `ime-ui-addon` / `ime-fcitx5` / `ime-diag` / `alloc-count`（test-only，ADR-0010） |
+| 交付形态 | **两个 cdylib**（ADR-0003/0004）：`librspinyin.so`（`Category=InputMethod`，引擎）+ `librspinyin-ui.so`（`Category=UI`，候选框）。跨 addon 帧通道见 ADR-0011 |
+| 渲染架构 | 候选框为**完全自绘**（Slint 软件光栅 + `wl_shm`/MIT-SHM；`.slint` 源 4 个：`overlay`/`theme`/`candidate_grid`/`candidate`），**无 Webview、无 DOM、无系统控件** |
+| 现有测试资产 | **3,701 个 `#[test]`**：ime-types 58 / ime-core 556 / ime-dict 257 / ime-config 117 / ime-ui 696 / ime-ui-addon 125 / ime-fcitx5 475 / ime-diag 202 / alloc-count 6 / xtask 1,209。criterion 基准 9 个（`ime-core/benches/{decode,input,passthrough}.rs`、`ime-dict/benches/{dict,userdb}.rs`、`ime-fcitx5/benches/transport.rs`、`ime-ui/benches/{frame,histogram,wakeup_latency}.rs`）。proptest 多处。fuzz 目标 1 个（`fuzz/fuzz_targets/dag_build.rs`）。场景 TOML 18 个（`tests/fixtures/scenarios/`）+ `keymap_matrix` 矩阵测试 |
+| 测试平台 | **本平台已交付**：`xtask/src/testd/` 全模块（capture/input/keys/framerate/memory/uiframe/ui_metrics/mirror_cli/engine/suite/evidence/heal/guard/env_gate/sandbox/dict_inject/budget_gate/purity/attribution/review/commit_readback/logs/coords/x11）+ `xtask/testd/client/`（GTK3 `CommitProbe` 上屏读取客户端） |
+| 质量门禁 | `just check`（fmt/clippy/nextest/doctest）、`just ci`（+ 审计脚本族 + budget + versions + check-host）、`just audits`（14 项）、`just bench`、`just fuzz`、`just check-self-tests`、`just package`/`package-arch`/`check-size` |
+| 边界契约 | `ime-types` 为冻结契约（ADR-0001，增量扩展走 ADR-0005）；C ABI 为 `RspinyinVtable` + `RspinyinHandshake`（引擎与 UI addon 各一套，ADR-0011） |
+| 隐私约束 | 零网络（0.4 规则 6 / `BUDGET-NET-01`，运行期由 `runtime-socket-check.sh` 实证）；日志脱敏（`ime-diag` 的 `RedactLayer`）；`ime-ui` 公共 API 不得导出 Slint 类型（0.4 规则 11 / `OB-4`） |
 
 ### 0.2 实现进度与测试覆盖的真实边界（**决定本文档能测什么**）
 
-来源：`.dev-progress.json`（`ledger_revision = 3`，39 个任务）。
+来源：`.dev-progress.json`（`ledger_revision = 31`，**219 个任务全部 `COMPLETED`**——涵盖 features.md 103 卡、features-add 13 张 P0 卡、opt-basic 31 卡、本平台 20 卡及其余专项）。
 
-| 状态 | 数量 | 任务 |
-|---|---|---|
-| `COMPLETED` | 1 | 1.02.02 |
-| `READY_FOR_FINAL_GATE` | 13 | 1.01.01–03、1.02.01/03/06、1.03.01/02/04、1.04.01/02/05/06 |
-| `IN_PROGRESS` | 6 | 1.02.04/05、1.03.03/06、1.06.01、1.08.01 |
-| `PARTIAL` | 5 | 1.02.07、1.04.03/04、1.06.03、1.08.03 |
-| `PENDING` | 14 | **1.03.05、1.03.07、1.04.07、1.05.01–1.05.08、1.06.02、1.07.01、1.08.02** |
+**v2.0 同步后的三条硬事实**（本文档与 `tests.md` 的全部用例据此标注可执行性）：
 
-**三条硬事实**（本文档与 `tests.md` 的全部用例都必须据此标注可执行性）：
+1. **候选框 UI 已完整落地**：`crates/ime-ui/ui/` 有 4 个 `.slint`；`1.05.01–1.05.08` 全部 `COMPLETED`；ime-ui 696 个 `#[test]` + 3 个 criterion 基准。视觉/微交互/5 态/动效断言以 `MockBackend` + 内存表面探针执行；屏上窗口级观测受 isolated defect「depth-24 回退路径渲染黑屏」阻断处逐条如实标注（收窄中，`TC-RT-21` 失败隔离保持）。
+2. **`ime-config` 与 `ime-diag` 已全量实现**：配置（schema v2/迁移/热重载/键位/双拼/写回）117 测试；诊断（日志/脱敏/panic/崩溃取证/UiFrame 镜像/报告）202 测试。相关用例全部 `[可执行]`。
+3. **Wayland 四档后端已落地但本机不可验证**（features.md 0.5.5：WSLg 合成器为 Weston，无 layer-shell）。X11 档**可验证**且已实证（run-20261006-034915：双 addon 握手、候选窗 IsViewable、classicui 全程未绘制、20/20 轮首词上屏）。
 
-1. **候选框 UI 完全不存在**：`crates/ime-ui/src/` 只有 `lib.rs`（`pub mod platform;`）、`platform/mod.rs`（`pub mod x11;`）、`platform/x11.rs`。**`crates/ime-ui/ui/` 是空目录，零个 `.slint` 文件**。1.05.01–1.05.08 全部 `PENDING`。
-   ⇒ 一切"候选框视觉 / 微交互 / 5 态 / 动效 / 截图"类断言**今天无法执行**，只能锚定 features.md 第 3 节的**数值规范**与 `TASK-1.05.03` 定义的**`.slint` 常量名**（这些是冻结的真实名称，非臆造）。
-2. **两个 crate 是空壳**：`ime-config/src/lib.rs` 与 `ime-diag/src/lib.rs` **只有文档注释，零代码、零测试**（对应 1.03.06 / 1.08.01 为 `IN_PROGRESS`）。任何针对配置热重载与日志脱敏的用例必须标注 `[待实现]`。
-3. **Wayland 四档后端不存在**（1.04.07 `PENDING`），且**本机不可验证**（features.md 0.5.5：`wlr-protocols` 未安装、WSLg 合成器为 Weston）。X11 档**可验证**（1.04.06 已 `READY_FOR_FINAL_GATE`）。
+**平台交付对账**（2026-10-06 全量轮）：本表 25 项能力 → 20 张任务卡 → `xtask/src/testd/` 模块逐一对应；`CommitProbe` 客户端（`FEAT-TEST-P0.02.02`）与 18 个场景 TOML 随轮补齐；每卡 DoD 的达成情况与已知限制见各卡正文的"已知限制"与"环境"记录。
 
 ### 0.3 商业化差距摘要（本测试体系要自动化拦截的目标）
 
@@ -58,11 +52,11 @@
 | `action_interact` | **XTEST**（`x11rb::protocol::xtest`）注入指针事件到候选框坐标 | 真实可用；候选框坐标由 `X11Backend::geometry()` 与 `TASK-1.05.07` 的 `hit_map` 提供 |
 | `action_keyboard` | **XTEST** 注入键事件 + `xdotool key --clearmodifiers` 兜底 | 真实可用；焦点必须在被测客户端窗口上 |
 | `capture_viewport_screenshot` | **`XGetImage`**（`x11rb::protocol::xproto::get_image`）抓取候选窗口/全屏，导出 PNG | 真实可用；DPI 由 `X11Backend::geometry()` 的 scale 决定 |
-| `get_accessibility_tree` | **⚠️ 不存在**。候选框为自绘，**无 A11y 树** | **替代**：`runtime://ui_frame`（探针导出的 `UiFrame` JSON 快照）+ 被测客户端应用的 AT-SPI 文本读取（用于校验上屏结果）。**不得声称存在 A11y 树** |
-| `measure_animation_frame_rate` | 探针的帧计数器（`ProbeReport`）+ `X11Backend` 的 `commit` 调用序列 | 真实可用；X11 无 frame 回调，帧率由 UI 线程定时器驱动 |
-| `runtime://logs` | tail `$XDG_DATA_HOME/rspinyin/logs/rspinyin.log`（`0600`） | 真实可用（1.08.01 `IN_PROGRESS`，日志尚未落盘 → 标注 `[待实现]`） |
-| `runtime://style_computed` | **⚠️ 无 DOM/CSS** | **替代**：`UiFrame` 字段 + `.slint` `public constant`（`ShadowMargin`/`ContainerRadius`/`CellHeight` 等，来自 `TASK-1.05.03`）+ `X11Backend::geometry()`/`effective_base_alpha()` |
-| `runtime://memory_profile` | `/proc/<fcitx5-pid>/smaps_rollup` 与 `/status` 的 `VmRSS` | 真实可用 |
+| `get_accessibility_tree` | **⚠️ 不存在**。候选框为自绘，**无 A11y 树** | **替代**：`runtime://ui_frame`（`ime-diag/uiframe/mirror.rs` 镜像 + `xtask test-mirror` 读取，**已交付**）+ 被测客户端 `xtask/testd/client/`（GTK3 `CommitProbe`，上屏/preedit 以 JSON 行输出，**已交付**）。**不得声称存在 A11y 树** |
+| `measure_animation_frame_rate` | 探针的帧计数器（`ProbeReport`）+ `X11Backend` 的 `commit` 调用序列；`xtask/src/testd/framerate.rs` | 真实可用；X11 无 frame 回调，帧率由 UI 线程定时器驱动 |
+| `runtime://logs` | tail `$XDG_DATA_HOME/rspinyin/logs/rspinyin.log`（`0600`）；`xtask/src/testd/logs.rs` | **真实可用**（`ime-diag` 日志已落盘，且支持运行期热切换级别——`TC-RT-49`） |
+| `runtime://style_computed` | **⚠️ 无 DOM/CSS** | **替代**：`UiFrame` 字段 + `.slint` `public constant`（`ShadowMargin`/`ContainerRadius`/`CellHeight` 等）+ `X11Backend::geometry()`/`effective_base_alpha()`；常量回读由 `xtask/src/testd/ui_metrics/` 与 `scripts/check-metrics-readers.sh`、`check-ui-spec.sh` 机械化（**已交付**） |
+| `runtime://memory_profile` | `/proc/<fcitx5-pid>/smaps_rollup` 与 `/status` 的 `VmRSS`；`xtask/src/testd/memory.rs` | 真实可用 |
 
 ---
 
@@ -115,8 +109,9 @@
 | `GUARD-05` | 护栏 | 快照存盘规范：`RUN/<模块代码>/<TC-ID>/[step]_[state].png` + `assertions.json` + `index.md` + `results/index.json` | `FEAT-TEST-P0.05.04` |
 | `GUARD-06` | 护栏 | 环境能力门禁：按 features.md 0.5.5 判定用例可执行性，不可验证项**必须显式标注**而非跳过 | `FEAT-TEST-P0.05.05` |
 | `GUARD-07` | 护栏 | 性能测量纯净度：检测并行 agent 占用，拒绝在受污染机器上采信预算数值（`ASM-T-11`） | `FEAT-TEST-P0.05.06` |
+| `GUARD-08` | 护栏 | 追溯矩阵机械校验：解析矩阵 `REQ-*` 行与全部用例标题行的功能条目编号，断言双向满射；可执行性标签三态完备 | `FEAT-TEST-P1.05.07` |
 
-**双向一致性**：上表 **25 项能力** → **20 张任务卡**（`FEAT-TEST-P0.01.01` ~ `FEAT-TEST-P0.05.06`），每张卡回填其承接的能力编号，无孤儿能力、无无主任务。
+**双向一致性**：上表 **26 项能力** → **21 张任务卡**（`FEAT-TEST-P0.01.01` ~ `FEAT-TEST-P0.05.06` + `FEAT-TEST-P1.05.07`），每张卡回填其承接的能力编号，无孤儿能力、无无主任务。`GUARD-08` 为 v2.0 审计采纳项（`IMPR-01`），见文末附录 B。
 
 ### 2.1 编号规则与 DAG 校验
 
@@ -145,8 +140,8 @@ CP 总工期 = 14.0 人天（6 个任务）
 |---|---|---|---|---|
 | **Track A**（平台内核：MCP 通道与执行引擎） | 输入/观测/引擎直驱 | `P0.01.01–03`、`P0.02.01–06`、`P0.03.01–03` | 12 | 22.0 人天 |
 | **Track B**（断言与用例库） | 提示模板与视觉审查 | `P0.04.01–02` | 2 | 5.0 人天 |
-| **Track C**（CI·报告·基建） | 护栏与报告 | `P0.05.01–06` | 6 | 11.5 人天 |
-| **合计** | — | — | **20** | **38.5 人天** |
+| **Track C**（CI·报告·基建） | 护栏与报告 | `P0.05.01–06`、`P1.05.07` | 7 | 12.5 人天 |
+| **合计** | — | — | **21** | **39.5 人天** |
 
 **跨轨道阻塞校验**：Track B 依赖 Track A 的 `P0.02.01`（`UiFrame` 快照）与 `P0.01.02`（截图），存在硬依赖但 `P0.02.01` 在 CP 上、`P0.04.01` 也在 CP 上，故不构成额外时差。Track C 的 `P0.05.01`（环境隔离）无前置，可 W0 立即启动。
 
@@ -722,7 +717,7 @@ CP 总工期 = 14.0 人天（6 个任务）
 - **MCP 能力映射**：
   - Tools：`action_engine`
   - Resources：`runtime://budget`
-- **功能目标与架构说明**：**这是本平台最有价值、且今天就能全量执行的一层**。`ime-core` 被设计为纯函数（0.4 规则 4：不碰文件系统、时钟、环境变量），全部数据源经 `trait Lexicon`/`UserFreqSource`/`LanguageModel` 注入。因此可以在**无显示服务器、无 fcitx5、无词库文件**的条件下，用内存替身驱动完整解码链路并做确定性断言。401 个现有 `#[test]` 中的绝大多数属于这一层。
+- **功能目标与架构说明**：**这是本平台最有价值、且今天就能全量执行的一层**。`ime-core` 被设计为纯函数（0.4 规则 4：不碰文件系统、时钟、环境变量），全部数据源经 `trait Lexicon`/`UserFreqSource`/`LanguageModel` 注入。因此可以在**无显示服务器、无 fcitx5、无词库文件**的条件下，用内存替身驱动完整解码链路并做确定性断言。3,701 个现有 `#[test]` 中的绝大多数属于这一层。
 - **实现细节与防御策略**：
   - 核心接口骨架：
     ```rust
@@ -755,7 +750,7 @@ CP 总工期 = 14.0 人天（6 个任务）
   2. 写 `run_scenario` 与 `Divergence`（含"第几步、期望什么、实际什么"的可读 diff）。
   3. 写 TOML 场景加载器与 `tests/fixtures/scenarios/` 的骨架（每模块至少 1 个场景，后续由 `tests.md` 的用例填充）。
   4. 写重复运行断言（100 次全等）。
-  5. 与现有 401 个单测对照，把可数据化的用例迁移为场景（**不删原测试**，两者互补）。
+  5. 与现有 3,701 个单测对照，把可数据化的用例迁移为场景（**不删原测试**，两者互补）。
 - **验收标准 (DoD)**：
   - [ ] `run_scenario` 对 5 个已冻结错误码各有一条场景通过。[自动]
   - [ ] 同一场景重复 100 次，候选序列逐字节一致。[自动]
@@ -1165,7 +1160,7 @@ CP 总工期 = 14.0 人天（6 个任务）
     3. 自愈修改了 `Cargo.toml` / `Cargo.lock` / `justfile` / `clippy.toml` → 违规。
     4. 自愈删除了测试用例或把断言替换为无条件通过 → 违规（用断言计数与 `#[test]` 计数比对检出）。
   - **树哈希**：自愈前后对整个工作树取哈希（排除 `target/` 与 `RUN/`），逐文件比对得出 `touched` 列表。
-  - **`#[test]` 计数不下降**：从 401 这个基线出发，任何自愈都不得使计数下降。这是拦截"删测试让 CI 变绿"的直接手段。
+  - **`#[test]` 计数不下降**：从 3,701 这个基线出发（v1.0 时为 401，随 219 卡闭环自然增长；基线取当前全绿值的 `#[test]` 字面计数），任何自愈都不得使计数下降。这是拦截"删测试让 CI 变绿"的直接手段。
   - **容错机制**：`audit_heal_pass` 自身失败（树哈希不可用）→ 视为违规并中止（fail-closed，不 fail-open）。
 - **逐步落地实施步骤**：
   1. 写 `guard.rs` 的 `TreeHash`（排除 `target/`、`RUN/`、`.git/`）与 `audit_heal_pass`。
@@ -1390,16 +1385,76 @@ CP 总工期 = 14.0 人天（6 个任务）
   - **已知限制**：① 卡片落地步骤 4（接线到 `P0.03.03` 的 compare）未完成——落点在 `xtask/src/testd/budget_gate.rs` 与 `xtask/src/main.rs`；`purity.rs` 与 `baseline.rs` 都还带 `#![allow(dead_code)]`；② **并发计数的双份实现需要裁决**——`env.rs` 的模块文档声称 purity guard 读它的 `concurrent_agents`，但 `purity.rs` 实际自己扫 `/proc`，两份程序名清单目前逐字一致却无法互相断言；可用接缝是 `MachineFacts.concurrent_builds` 这个 pub 字段；③ 「无 `$HOME` 写权限时仍可运行」**不在本卡 DoD 中**（该条属 `FEAT-TEST-P0.05.01`），但性质成立且已被钉住：模块所有路径都由调用方传入的 root 派生，不读 `$HOME`/XDG/当前目录；④ 「把 RUSTFLAGS 记进 `meta.json`」同样不在本卡（那是 `xtask/src/budget/meta.rs` 的 `RunMeta`，且树内目前没有读取方）。
   - **环境**：Rust 1.98.0（workspace MSRV 1.85）、Linux 6.18.40.1-microsoft-standard-WSL2、cargo-nextest 0.9.143。
 
+### FEAT-TEST-P1.05.07 追溯矩阵与可执行性标签的机械校验
+
+- **基本属性**：
+  - 绑定平台能力：`GUARD-08`
+  - 任务状态：`[ ] 待开始`
+  - 优先级与复杂度：`P1` | 低 | 预估工时: 1.0 人天
+  - 依赖关系：无（只读解析 `docs/dev/`）
+  - 关键路径：`CP: 否`
+  - 并行通道：Track C CI·报告·基建
+  - 代码落地锚点 (Code Anchor)：`scripts/check-test-matrix.py`（新建）、`justfile`（`check-self-tests` 追加调用）
+- **MCP 能力映射**：
+  - Resources：无（纯静态解析）
+  - Prompts：无
+- **功能目标与架构说明**：v2.0 审计（`IMPR-01`）采纳项。把本次人工执行的双向校验沉淀为可复跑脚本：解析 `tests.md` 追溯矩阵的 `REQ-*` 行与全部用例标题行（Hub + 8 分片）的"对应功能条目编号"字段，断言**双向满射**（每行 ≥ 5 条绑定用例、无矩阵外 REQ、无重复 TC 标题）；同时断言 `可执行性：` 字段的三态完备（无 `[待实现]` 残留即为发布态）。v1.0 曾发生的 SEC-01/02 错绑（矩阵声称 `TC-SEC-01~10`，实际用例为 `TC-SEC-31~42`）与 DICT 行错位即此类缺陷——当时无机器防线。
+- **实现细节与防御策略**：
+  1. 解析器对矩阵行的 `承接用例 (TC)` 列做区间展开（`a`~`b`、单项、顿号列表），与标题行集合比对。
+  2. 用例标题行内的 REQ 引用取 `（`REQ-xx-nn`）` 与"深化"后缀两种形态。
+  3. 退出码语义与既有审计脚本一致（0 = 通过 / 非 0 = 失败并逐条列出）。
+  4. `#[test]` 基线计数（当前 3,701）由脚本实时统计并打印，不写死第二份真值（`GUARD-03` 的断言基线以此输出为准）。
+- **逐步落地实施步骤**：
+  1. 实现 `check-test-matrix.py`（解析 + 满射断言 + 三态断言）。
+  2. 接入 `just check-self-tests`（含自测：注入错绑样本 → 非零退出）。
+  3. `just audits` 编排追加（失败聚合与 `TC-INFRA-61` 语义一致）。
+- **验收标准 (DoD)**：
+  - [ ] 对当前文档全量通过（67 行 / 382 条 / 无重复标题）；
+  - [ ] 注入错绑、漏绑、重复标题样本各一 → 全部非零退出；
+  - [ ] `just check-self-tests` 全绿。
+
 ---
 
 ## 4. 交付与后续
 
-- **平台侧交付物**：本文档（20 个任务卡）+ `xtask/src/testd/` 的实现。任务卡可直接分配给工程师或 AI agent 执行。
-- **用例侧交付物**：[tests.md](tests.md) 与其分片（`docs/dev/tests/{core,dict,rt,ui,sec,diag,infra}.md`）。
+- **平台侧交付物（已交付，2026-10-06 全量轮对账）**：本文档（20 个任务卡全部 `[x] 已完成`）+ `xtask/src/testd/` 全模块实现 + `xtask/testd/client/`（`CommitProbe`）+ 18 个场景 TOML + `xtask/testd/` 的 `testd-suite` / `test-mirror` / `capture` 子命令。执行证据：`results/runs/run-20261006-034915/`（257 native / 2 healed / 1 timeout / 4 failed-isolated / 6 waived）。
+- **用例侧交付物**：[tests.md](tests.md) v2.0 与其分片（`docs/dev/tests/{core,dict,rt,ui,sec,diag,infra,cfg}.md`，67 个功能条目、382 条用例）。
 - **执行纪律**：
   1. 性能类断言必须在 `PurityReport::is_clean()` 为真时采集（`GUARD-07`）。
-  2. 不可执行的用例必须显式标注 `Blocked`/`Unverifiable`，**不得当作通过**（`GUARD-06`）。
+  2. 不可执行的用例必须显式标注 `Blocked`/`Unverifiable`，**不得当作通过**（`GUARD-06`；Wayland 档的 `Ⓦ 文档豁免` 记录是唯一合规形态）。
   3. 自愈只能改 `xtask/src/testd/` 与 `docs/dev/tests/`（`GUARD-03`）。
   4. 所有阈值来自 `docs/dev/budgets.json`，禁止第二份硬编码。
-- **与既有门禁的关系**：`just ci`（`check` + 五个审计脚本 + `check-budget` + `check-versions`）仍是"代码完成"的判定；本平台是"功能正确 + 视觉合格"的判定。二者互补，**不得互相替代**。
+- **与既有门禁的关系**：`just ci`（`check` + 审计脚本族 + `check-budget` + `check-versions` + `check-host`）仍是"代码完成"的判定；本平台是"功能正确 + 视觉合格"的判定。二者互补，**不得互相替代**。
+- **证据瞬态性声明**：`results/` 在 `.gitignore` 中（不入库）。验收记录引用的 `results/runs/run-20261006-034915/` 证据包为该轮运行的**瞬态工作产物**，现已不在工作树；记录中的结论以各用例正文的执行/验收记录文字为准，如需复核证据须重跑对应用例。`results/index.json` 仅登记尚存于盘的运行（当前 `run-20261001-082558`）。
+- **后续工作**（按优先级）：
+  1. depth-24 回退路径黑屏缺陷修复后，按 `tests/rt.md` 出口准则第 7 条复测屏上窗口级观测，替换"内存探针等价执行"标注。
+  2. `tests/cfg.md` 与各分片增量行的首轮全量执行（见 `tests.md` 4.4 续写顺序）。
+  3. 外部 Wayland 环境（Sway/Hyprland/KWin）就绪后消掉 `Ⓦ 文档豁免` 记录。
+  4. 8 小时长稳与多显示器热插拔在专用环境补测。
 
+---
+
+## 附录 A：系统架构逻辑自检与优化记录 (Logic Refinement Log)
+
+> 审查轮次: 第 2 轮（共 2 轮收敛，第 2 轮零 Blocker/Major） ｜ 覆盖范围: 本文档 21 张任务卡（`FEAT-TEST-P0.01.01` ~ `FEAT-TEST-P1.05.07`）+ [tests.md](tests.md) 追溯矩阵 67 行 / 382 条用例（Hub + 8 分片） ｜ 残余 Minor: 0 项 ｜ 完整日志（9 条发现逐条记录）与优化清单见 [tests.md](tests.md) 附录 A/B（同一审计运行，两文档共用一份台账）。
+
+**本文档侧的关键处置摘要**：
+
+| 严重度 | 数量 | 与本文档直接相关的条目 |
+|---|---|---|
+| Blocker | 1 | `#[test]` 基线 3,824 → 3,701（§0.1 与 `P0.03.01`/`P0.05.03` 两卡正文共 4 处）；基线改为由 `FEAT-TEST-P1.05.07` 实时统计 |
+| Major | 3 | ① `run-20261006-034915` 证据瞬态性在 §4 补声明；② tests.md v1.0 矩阵错绑（本轮逐行复核修复）；③ tests.md 双口径冲突（本轮统一） |
+| Minor | 5 | 维度列核减、深化标记、模板版本、`Ⓦ` 图例、转义伪影——全部就地修复 |
+
+**收敛声明**：第 2 轮机械复检（21 卡状态字段可解析、26 项能力→21 卡双向、锚点文件存在性抽查）零 Blocker/Major/新增 OPT-HIGH。
+
+## 附录 B：优化清单与处置 (Optimization Ledger)
+
+> 共 4 项 ｜ 采纳 2 ｜ 显式否决 2 ｜ 登记 0 ｜ OPT-HIGH 处置率 100%。完整四要素表见 [tests.md](tests.md) 附录 B。
+
+| 编号 | 处置 | 落点（本文档内的实际改动） |
+|---|---|---|
+| `IMPR-01` | **采纳** | 新增能力行 `GUARD-08` + 新增任务卡 `FEAT-TEST-P1.05.07`（追溯矩阵机械校验）+ §2.2 Track C 表 20→21 卡 / 38.5→39.5 人天 |
+| `IMPR-02` | **采纳（并入 IMPR-01）** | `FEAT-TEST-P1.05.07` 实现细节第 4 条：`#[test]` 基线实时统计，不写死第二份真值 |
+| `IMPR-03` | **显式否决** | §2.2 的 CP/工期推演段保留——"计划 vs 实际"的审计对照基线，删除丢失可比性 |
+| `IMPR-04` | **显式否决** | `RUN/index.md` + `results/index.json` 双索引保留——分别服务人工复核与机器消费（`dev-check` 契约），生成源单点无漂移面 |

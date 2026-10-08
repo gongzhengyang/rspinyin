@@ -1,8 +1,8 @@
 # rspinyin 端到端功能、微交互与商业化 UI 视觉测试用例套件
 
-> 文档版本: v1.0 ｜ 系统形态: Desktop GUI（Linux 桌面输入法：Fcitx5 进程内双 addon + 自绘候选框） ｜ 被测基线: Rust 2024 workspace、Fcitx5 5.1.7、`cargo-nextest 0.9.143` ｜ 关联 ADR: [adr/0000-upstream-decisions.md](adr/0000-upstream-decisions.md)、[adr/0002-rust-exports-addon-factory.md](adr/0002-rust-exports-addon-factory.md)、[adr/0003-ui-role-separate-addon.md](adr/0003-ui-role-separate-addon.md) ｜ 平台侧任务清单: [features-test.md](features-test.md) ｜ 最后同步 Commit: `ee0dbfb` ｜ 维护约定: 被测代码演进后必须回写追踪矩阵的 TC 列与维度列；用例状态变更须同步本文档与对应分片
+> 文档版本: v2.0 ｜ 系统形态: Desktop GUI（Linux 桌面输入法：Fcitx5 进程内双 addon + 自绘候选框） ｜ 被测基线: Rust 2024 workspace（9 crates + xtask + alloc-count）、Fcitx5 5.1.19、`cargo-nextest` ｜ 关联 ADR: [adr/0000-upstream-decisions.md](adr/0000-upstream-decisions.md)、[adr/0002-rust-exports-addon-factory.md](adr/0002-rust-exports-addon-factory.md)、[adr/0003-ui-role-separate-addon.md](adr/0003-ui-role-separate-addon.md)、[adr/0004-ui-addon-crate-split.md](adr/0004-ui-addon-crate-split.md)、[adr/0005-incremental-contract-extension.md](adr/0005-incremental-contract-extension.md)、[adr/0006-overlay-channel.md](adr/0006-overlay-channel.md)、[adr/0010-test-only-allocation-counter.md](adr/0010-test-only-allocation-counter.md)、[adr/0011-frame-transport.md](adr/0011-frame-transport.md) ｜ 平台侧任务清单: [features-test.md](features-test.md) ｜ 最后同步 Commit: `408d2c6` ｜ 逻辑自检: [已通过（第 2 轮收敛，Blocker 1 / Major 3 / Minor 5 ｜ 优化采纳 2 / 否决 2 / 登记 0）] ｜ 维护约定: 被测代码演进后必须回写追踪矩阵的 TC 列与维度列；用例状态变更须同步本文档与对应分片
 
-**Hub & Spoke**：本文档是 **Hub**，承载追踪矩阵、假设清单与 **P0 核心基线用例**。P1/P2 用例按模块分片保存于 [`./tests/`](tests/)：`core.md`、`dict.md`、`rt.md`、`ui.md`、`sec.md`、`diag.md`、`infra.md`。分片头部含 Living Header 并回链本文档的矩阵。
+**Hub & Spoke**：本文档是 **Hub**，承载追踪矩阵、假设清单与 **P0 核心基线用例**。P1/P2 用例按模块分片保存于 [`./tests/`](tests/)：`core.md`、`dict.md`、`rt.md`、`ui.md`、`sec.md`、`diag.md`、`infra.md`、`cfg.md`。分片头部含 Living Header 并回链本文档的矩阵。
 
 **证据存盘**：`<RUN>` = `results/runs/run-[YYYYMMDD-HHMMSS]/`。用例证据包为 `<RUN>/<模块代码>/<TC-ID>/`，命名规范与失败取证见 [features-test.md](features-test.md) 的 `FEAT-TEST-P0.05.04`。
 
@@ -12,19 +12,19 @@
 
 本套件按阶段零实测（见 [features-test.md](features-test.md) 0.2）分为三类，**每条用例都标注了类别**。判定由 `FEAT-TEST-P0.05.05` 的环境能力门禁机械执行。
 
-| 类别 | 含义 | 用例数（本版） |
+| 类别 | 含义 | 用例数（v2.0） |
 |---|---|---|
-| `[可执行]` | 代码已存在，本机可直接运行并判定 | 见矩阵的"可执行"列 |
-| `[待实现: TASK-x.yy.zz]` | 被测代码不存在，用例锚定冻结契约或 features.md 的数值规范；任务落地后即可执行 | 同上 |
-| `[不可验证]` | 代码存在但本机环境测不了（features.md 0.5.5），需外部环境 | 同上 |
+| `[可执行]` | 代码已存在，本机可直接运行并判定（整体判定口径；首标注口径为 381，差异见第 2 节） | **376** |
+| `[待实现: TASK-x.yy.zz]` | 被测代码不存在，用例锚定冻结契约或 features.md 的数值规范 | **0**（v1.0 时的 116 条已随 219 卡闭环全部转正） |
+| `[不可验证]` | 代码存在但本机环境测不了（features.md 0.5.5），需外部环境 | **1**（`TC-RT-14` 混合 DPI 多屏） |
 
-**三条硬事实**（决定本套件的可执行边界）：
+**v2.0 同步后的三条基线事实**：
 
-1. **候选框 UI 完全不存在**：`crates/ime-ui/ui/` 是空目录，零个 `.slint` 文件；`1.05.01–1.05.08` 全部 `PENDING`。所有视觉与微交互用例锚定 features.md 第 3 节的**数值规范**与 `TASK-1.05.03` 定义的 `.slint` `public constant` 名（这些是冻结的真实名称）。标注 `[待实现: TASK-1.05.0x]`。
-2. **`ime-config` 与 `ime-diag` 是空壳**：两个 crate 的 `src/lib.rs` 只有文档注释，零代码零测试（`1.03.06` / `1.08.01` 为 `IN_PROGRESS`）。相关用例标注 `[待实现]`。
-3. **Wayland 四档后端不存在且本机不可验证**：标注 `[待实现: TASK-1.04.07]` + `[不可验证]`。
+1. **候选框 UI 已完整落地**：`crates/ime-ui/ui/` 现有 4 个 `.slint`（`overlay` / `theme` / `candidate_grid` / `candidate`）；`1.05.01–1.05.08` 全部 `COMPLETED`。v1.0 中标注 `[待实现]` 的 40 条 UI 用例已在 run-20261006-034915 全量轮执行——像素级断言由内存表面探针等价执行；屏上窗口级观测受 isolated defect「depth-24 回退路径渲染黑屏」阻断处逐条如实标注（`TC-RT-21` 失败隔离保持，见其复测记录）。
+2. **`ime-config` 与 `ime-diag` 已全量实现**：`ime-config` 117 个 `#[test]`（schema/repair/migrate/reload/keymap/scheme/writeback），`ime-diag` 202 个（log/redact/panic/crash/uiframe/perms/probe/report）。v1.0 的"空壳"事实不再成立。
+3. **测试平台已交付**：`xtask/src/testd/` 全模块落地（XTEST 注入、XGetImage 截图、帧率/内存采样、`UiFrame` 镜像、场景引擎、沙盒、证据链、自愈、纯度门禁），20 张 `FEAT-TEST` 卡全部 `[x]`（见 [features-test.md](features-test.md)）。端到端实证：沙盒 fcitx5 会话 20/20 轮完成首词上屏（`nihao`+空格 → 你好）。
 
-**已有测试基线**（不得下降，由 `FEAT-TEST-P0.05.03` 守）：401 个 `#[test]` —— ime-types 44 / ime-core 112 / ime-dict 89 / ime-fcitx5 95 / ime-ui 18 / xtask 43 / ime-config 0 / ime-diag 0。
+**已有测试基线**（不得下降，由 `FEAT-TEST-P0.05.03` 守）：**3,701 个 `#[test]`**——ime-types 58 / ime-core 556 / ime-dict 257 / ime-config 117 / ime-ui 696 / ime-ui-addon 125 / ime-fcitx5 475 / ime-diag 202 / alloc-count 6 / xtask 1,209。criterion 基准 9 个（`ime-core/benches/{decode,input,passthrough}.rs`、`ime-dict/benches/{dict,userdb}.rs`、`ime-fcitx5/benches/transport.rs`、`ime-ui/benches/{frame,histogram,wakeup_latency}.rs`）。场景 TOML 18 个（`tests/fixtures/scenarios/`）。
 
 ---
 
@@ -34,99 +34,129 @@
 
 | 假设编号 | 关键内容 | 影响 |
 |---|---|---|
-| `ASM-T-01` | 被测对象是 fcitx5 进程内的**两个 addon**（ADR-0003），不是独立进程 | 全部 `[实验室]` 用例 |
-| `ASM-T-02` | 候选框完全自绘，**无 DOM / 无 A11y 树**；语义断言用 `UiFrame` 快照替代 | 视觉与交互用例 |
+| `ASM-T-01` | 被测对象是 fcitx5 进程内的**两个 addon**（ADR-0003/0004），不是独立进程 | 全部 `[实验室]` 用例 |
+| `ASM-T-02` | 候选框完全自绘，**无 DOM / 无 A11y 树**；语义断言用 `UiFrame` 镜像（`runtime://ui_frame`，`ime-diag/uiframe/`）替代 | 视觉与交互用例 |
 | `ASM-T-03` | 本机为 WSL2 + WSLg（`DISPLAY=:0`、Weston） | X11 可测，Wayland 不可测 |
 | `ASM-T-04` | 延迟预算：`key_to_present_p99=16ms`、`decode_p99=3ms`、`raster_p99=1.5ms`、`first_key_to_visible_p99=8ms`、`addon_load=120ms` | 延迟用例 |
 | `ASM-T-05` | 空闲：`idle=0.3%` 单核、`idle_redraw_count=0`、`idle_poll_timer_count=0` | 空闲占用用例 |
 | `ASM-T-06` | 内存：`ui_rss=18MB`、`plugin_rss=45MB`、`dict_mmap_rss=25MB`；体积：`so_stripped=12MB`、`base_dict=20MB` | 内存与体积用例 |
 | `ASM-T-07` | 开发词库 `base.tsv` = 5,871 行（显式编译用）；`base.dict` = 15.62MiB 全量（2026-10-01 起）；完整 40 万词库不在仓库 | 规模类断言用合成词库 |
-| `ASM-T-08` | 本机不可验证：Wayland 三档、真实亚克力、多显示器热插拔、8 小时长稳 | 标注而非跳过 |
+| `ASM-T-08` | 本机不可验证：Wayland 三档（T1–T3 层）、真实亚克力、多显示器热插拔、8 小时长稳 | 标注而非跳过（Wayland 用例带 `Ⓦ 文档豁免` 执行记录） |
+| `ASM-T-09` | 并发模型：两线程 + SPSC 队列 + `eventfd`，无异步运行时 | 并发与背压用例 |
 | `ASM-T-10` | `raw ≤ 64` 字节；候选 ≤ 45；单候选 ≤ 32 字符 | 边界用例 |
-| `ASM-T-11` | 基准仅在**空闲机器**上有效（实测教训：并行 agent 下 511ns vs 空闲 726ns，criterion 报告假回归） | 全部 `[性能]` 用例 |
+| `ASM-T-11` | 基准仅在**空闲机器**上有效（实测教训：并行 agent 下 511ns vs 空闲 726ns，criterion 报告假回归）；`testd purity` 已将此教训机器化 | 全部 `[性能]` 用例 |
+| `ASM-T-12` | 端到端驱动链已交付：`xtask testd`（XTEST + 沙盒 fcitx5）→ 被测客户端 `xtask/testd/client/`（GTK3 `CommitProbe`，上屏/preedit 以 JSON 行输出）→ 证据链 | 全部 `[实验室]` 用例 |
+| `ASM-T-13` | 增量域预算裁决（features-add `ASM-A-02`）：增量独占 ≤ 2.10ms；短语/模糊音/简拼/动效的开启态增量均受此约束 | 增量域性能用例 |
 
 ---
 
 ## 2. 功能-代码-用例覆盖追踪矩阵 (Traceability Matrix)
 
 **维度图例**：`①` 核心业务主通路 · `②` 边界与容错 · `③` 全状态防御矩阵 · `④` 商业化 5 态微交互与材质 · `⑤` 人机工学与全键盘流。
-**可执行性**：`✅` 本机可执行 · `⏳` 待实现（附任务 ID）· `🚫` 本机不可验证。
+**可执行性**：`✅` 本机可执行 · `⏳` 待实现（附任务 ID）· `🚫` 本机不可验证 · `Ⓦ` = 分片执行记录中的 `[W] 文档豁免`（用例可构造、判据需外部环境）。
 
 | 功能条目编号 | 功能清单条目 | 关联代码路径 | 承接平台任务 | 承接用例 (TC) | ① | ② | ③ | ④ | ⑤ | 可执行性 |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `REQ-CORE-01` | 拼音音节表与输入规范化 | `crates/ime-core/src/segment/syllable.rs` | `P0.03.01` | `TC-CORE-01`~`05` | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | `REQ-CORE-02` | 音节切分 DAG 与非法串保护 | `crates/ime-core/src/segment/dag.rs` | `P0.03.01`、`P0.03.02` | `TC-CORE-06`~`10` | ✅ | ✅ | ✅ | — | — | ✅ |
 | `REQ-CORE-03` | 输入缓冲与按音节删除语义 | `crates/ime-core/src/input/buffer.rs` | `P0.03.01` | `TC-CORE-11`~`15` | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| `REQ-CORE-04` | K-best Viterbi 解码与候选生成 | `crates/ime-core/src/viterbi/{decoder,kbest,lattice}.rs` | `P0.03.01`、`P0.03.03` | `TC-CORE-16`~`20` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-CORE-04` | K-best Viterbi 解码与候选生成 | `crates/ime-core/src/viterbi/{decoder,kbest,lattice}.rs` | `P0.03.01`、`P0.03.03` | `TC-CORE-16`~`20`（深化 `TC-CORE-47`） | ✅ | ✅ | ✅ | — | — | ✅ |
 | `REQ-CORE-05` | 语言模型评分与用户词频融合 | `crates/ime-core/src/lm/{score,ngram}.rs` | `P0.03.01`、`P0.03.03` | `TC-CORE-21`~`25` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-CORE-06` | 非拼音直通与临时英文模式 | `crates/ime-core/src/passthrough.rs` | `P0.03.01` | `TC-CORE-26`~`30` | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| `REQ-CORE-07` | Preedit 生成与切分高亮段 | `crates/ime-core/src/preedit.rs` | `P0.02.01` | `TC-CORE-31`~`35` | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ `TASK-1.02.05` |
-| `REQ-DICT-01` | 词库二进制格式 v1 读写 | `crates/ime-dict/src/format/{mod,reader,writer}.rs` | `P0.03.02` | `TC-DICT-01`~`05` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-CORE-06` | 非拼音直通与临时英文模式 | `crates/ime-core/src/passthrough.rs` | `P0.03.01` | `TC-CORE-26`~`30`（深化 `TC-CORE-49`/`50`） | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| `REQ-CORE-07` | Preedit 生成与切分高亮段 | `crates/ime-core/src/preedit.rs` | `P0.02.01` | `TC-CORE-31`~`35` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `REQ-CORE-08` | 自定义短语引擎（增量） | `crates/ime-core/src/phrase.rs`、`phrase/writer.rs` | `P0.03.01`、`P0.03.02` | `TC-CORE-51`~`55` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-CORE-09` | 模糊音匹配层（增量） | `crates/ime-core/src/fuzzy.rs` | `P0.03.01`、`P0.03.03` | `TC-CORE-56`~`60` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-CORE-10` | 简拼与首字母缩写展开（增量） | `crates/ime-core/src/viterbi/lattice/abbrev.rs` | `P0.03.01`、`P0.03.03` | `TC-CORE-61`~`65` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DICT-01` | 词库二进制格式 v1 读写 | `crates/ime-dict/src/format/{mod,reader,writer}.rs` | `P0.03.02` | `TC-DICT-01`~`05`（深化 `TC-DICT-36`~`38`） | ✅ | ✅ | ✅ | — | — | ✅ |
 | `REQ-DICT-02` | FST 索引与 mmap 只读加载 | `crates/ime-dict/src/{fst_index,mmap}.rs` | `P0.03.02` | `TC-DICT-06`~`10` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-DICT-03` | 条目表与字符串池零拷贝访问 | `crates/ime-dict/src/entry.rs` | `P0.03.02` | `TC-DICT-11`~`15` | ⏳ | ⏳ | ⏳ | — | — | ⏳ `TASK-1.03.03` |
-| `REQ-DICT-04` | 用户词频库与提交/降级策略 | `crates/ime-dict/src/user_db.rs`、`user_db/evict.rs` | `P0.03.01`、`P0.02.05` | `TC-DICT-16`~`20` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-DICT-05` | 词库/用户库损坏自愈与原子替换 | `crates/ime-dict/src/recover.rs` | `P0.03.02` | `TC-DICT-21`~`25` | ⏳ | ⏳ | ⏳ | — | — | ⏳ `TASK-1.03.05` |
-| `REQ-DICT-06` | dictc 词源白名单与编译 | `xtask/src/dictc.rs`、`dictc/{build,source}*` | `P0.03.02` | `TC-DICT-26`~`30` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-DICT-07` | 多音字词频定向多键展开（L3b） | `xtask/src/dictc/build.rs` | `P0.03.02` | `TC-DICT-31`~`35` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-RT-01` | Addon 生命周期与双 addon 注册 | `crates/ime-fcitx5/src/addon.rs` | `P0.02.06`、`P0.05.01` | `TC-RT-01`~`05` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-RT-02` | 按键路由与 `KeyAction` 翻译 | `crates/ime-fcitx5/src/engine.rs` | `P0.01.01`、`P0.02.02` | `TC-RT-06`~`10` | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| `REQ-RT-03` | 光标坐标解析与多屏缩放归一化 | `crates/ime-fcitx5/src/cursor/{resolver,sources}.rs`、`screen.rs` | `P0.02.06` | `TC-RT-11`~`15` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DICT-03` | 条目表与字符串池零拷贝访问 | `crates/ime-dict/src/entry.rs` | `P0.03.02` | `TC-DICT-26`~`30` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DICT-04` | 用户词频库与提交/降级策略 | `crates/ime-dict/src/user_db.rs`、`user_db/evict.rs` | `P0.03.01`、`P0.02.05` | `TC-DICT-11`~`15`（深化 `TC-DICT-39`~`42`） | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DICT-05` | 词库/用户库损坏自愈与原子替换 | `crates/ime-dict/src/recover.rs` | `P0.03.02` | `TC-DICT-31`~`35` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DICT-06` | dictc 词源白名单与编译 | `xtask/src/dictc.rs`、`dictc/{build,source}*` | `P0.03.02` | `TC-DICT-16`~`20`（深化 `TC-DICT-43`/`44`） | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DICT-07` | 多音字词频定向多键展开（L3b） | `xtask/src/dictc/build.rs` | `P0.03.02` | `TC-DICT-21`~`25` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DICT-08` | 简繁转换词表与运行时（增量） | `crates/ime-dict/src/script.rs`、`crates/ime-core/src/script.rs` | `P0.03.02` | `TC-DICT-46`~`49`、`56` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DICT-09` | 用户词条管理原语（增量） | `crates/ime-dict/src/user_db/{manage,export}.rs` | `P0.03.01`、`P0.05.01` | `TC-DICT-50`~`52`、`57`/`58` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DICT-10` | 用户数据自动备份与回滚（增量） | `crates/ime-dict/src/user_db/backup.rs` | `P0.05.01`、`P0.02.05` | `TC-DICT-53`~`55`、`59`/`60` | ✅ | — | ✅ | — | — | ✅ |
+| `REQ-RT-01` | Addon 生命周期与双 addon 注册 | `crates/ime-fcitx5/src/addon.rs` | `P0.02.06`、`P0.05.01` | `TC-RT-01`~`05`（深化 `TC-RT-35`） | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-RT-02` | 按键路由与 `KeyAction` 翻译 | `crates/ime-fcitx5/src/engine.rs` | `P0.01.01`、`P0.02.02` | `TC-RT-06`~`10`（深化 `TC-RT-26`~`31`） | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| `REQ-RT-03` | 光标坐标解析与多屏缩放归一化 | `crates/ime-fcitx5/src/cursor/{resolver,sources}.rs`、`screen.rs` | `P0.02.06` | `TC-RT-11`~`15`（深化 `TC-RT-32`） | ✅ | ✅ | ✅ | — | — | ✅（`TC-RT-14` 多屏子项 🚫） |
 | `REQ-RT-04` | C ABI 契约、握手与 panic 兜底 | `crates/ime-fcitx5/src/ffi/abi/{types,engine,lifecycle,ui}.rs` | `P0.03.01` | `TC-RT-16`~`20` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-RT-05` | `UserInterface` 面板接管与可用性降级 | `crates/ime-fcitx5/src/ui_impl/{panel,cursor_rects,takeover,availability}.rs` | `P0.02.01`、`P0.02.06` | `TC-RT-21`~`25` | ⏳ | ⏳ | ⏳ | ⏳ | — | ⏳ `TASK-1.04.03` |
-| `REQ-RT-06` | 会话状态机与翻页/选择语义 | `crates/ime-core/src/state/` | `P0.03.01` | `TC-RT-26`~`30` | ⏳ | ⏳ | ⏳ | — | ⏳ | ⏳ `TASK-1.03.07` |
-| `REQ-RT-07` | Wayland 四档窗口后端 | `crates/ime-ui/src/platform/wayland/` | `P0.02.06` | `TC-RT-31`~`35` | 🚫 | 🚫 | 🚫 | 🚫 | — | ⏳ `TASK-1.04.07` + 🚫 |
-| `REQ-UI-01` | X11 ARGB 透明窗口后端 | `crates/ime-ui/src/platform/x11.rs` | `P0.01.02`、`P0.02.04` | `TC-UI-01`~`05` | ✅ | ✅ | ✅ | ✅ | — | ✅ |
-| `REQ-UI-02` | 自定义 Slint Platform 与软件光栅 | `crates/ime-ui/src/slint_platform.rs`、`renderer.rs` | `P0.01.02`、`P0.02.04` | `TC-UI-06`~`10` | ⏳ | ⏳ | ⏳ | ⏳ | — | ⏳ `TASK-1.05.01` |
-| `REQ-UI-03` | UI 线程模型与命令队列（`eventfd` 唤醒） | `crates/ime-ui/src/{ui_thread,channel}.rs` | `P0.01.03`、`P0.02.05` | `TC-UI-11`~`15` | ⏳ | ⏳ | ⏳ | — | — | ⏳ `TASK-1.05.02` |
-| `REQ-UI-04` | 候选框骨架与布局约束 | `crates/ime-ui/ui/candidate.slint` | `P0.02.04`、`P0.04.01` | `TC-UI-16`~`20` | ⏳ | ⏳ | ⏳ | ⏳ | — | ⏳ `TASK-1.05.03` |
-| `REQ-UI-05` | 主题 Token、深浅色与亚克力 | `crates/ime-ui/ui/theme.slint`、`src/theme.rs` | `P0.02.04`、`P0.04.01` | `TC-UI-21`~`25` | ⏳ | ⏳ | ⏳ | ⏳ | — | ⏳ `TASK-1.05.04` |
-| `REQ-UI-06` | 候选网格、数字标签与五态 | `crates/ime-ui/ui/candidate_grid.slint`、`src/adapter.rs` | `P0.02.01`、`P0.04.01` | `TC-UI-26`~`30` | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ `TASK-1.05.05` |
-| `REQ-UI-07` | 鼠标交互：悬停、点击、滚轮 | `crates/ime-ui/src/interaction.rs` | `P0.01.01`、`P0.01.02` | `TC-UI-31`~`35` | ⏳ | ⏳ | ⏳ | ⏳ | — | ⏳ `TASK-1.05.06` |
-| `REQ-UI-08` | 屏幕避让与几何计算 | `crates/ime-ui/src/geometry.rs` | `P0.01.02`、`P0.02.04` | `TC-UI-36`~`40` | ⏳ | ⏳ | ⏳ | ⏳ | — | ⏳ `TASK-1.05.07` |
-| `REQ-UI-09` | 出现/消失/选中过渡动效（Spring） | `crates/ime-ui/src/spring.rs`、`ui/spring.slint` | `P0.01.03`、`P0.04.01` | `TC-UI-41`~`45` | ⏳ | ⏳ | ⏳ | ⏳ | — | ⏳ `TASK-1.05.08` |
-| `REQ-SEC-01` | 用户数据目录与文件权限基线 | `crates/ime-dict/src/paths.rs` | `P0.05.01` | `TC-SEC-01`~`05` | ⏳ | ⏳ | ⏳ | — | — | ⏳ `TASK-1.06.01` |
-| `REQ-SEC-02` | 敏感输入上下文检测与学习抑制 | `crates/ime-core/src/privacy.rs` | `P0.02.03` | `TC-SEC-06`~`10` | ⏳ | ⏳ | ⏳ | — | — | ⏳ `TASK-1.06.02` |
-| `REQ-SEC-03` | 零网络外联断言 | `scripts/check-no-network.sh` | `P0.03.03` | `TC-SEC-11`~`15` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-SEC-04` | 词源许可证白名单与 SHA256 | `scripts/check-dict-sources.sh`、`data/sources.toml` | `P0.03.02` | `TC-SEC-16`~`20` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-SEC-05` | Slint API 不泄漏（`OB-4`） | `scripts/check-slint-leak.sh` | `P0.03.03` | `TC-SEC-21`~`25` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-SEC-06` | 依赖单向性与分层 | `scripts/check-deps.sh` | `P0.03.03` | `TC-SEC-26`~`30` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-DIAG-01` | 结构化日志、滚动与字段脱敏 | `crates/ime-diag/src/{log,redact}.rs` | `P0.02.03` | `TC-DIAG-01`~`05` | ⏳ | ⏳ | ⏳ | — | — | ⏳ `TASK-1.08.01` |
-| `REQ-DIAG-02` | panic 钩子、崩溃回溯与 FFI 兜底 | `crates/ime-diag/src/{panic,crash}.rs` | `P0.02.03`、`P0.03.02` | `TC-DIAG-06`~`10` | ⏳ | ⏳ | ⏳ | — | — | ⏳ `TASK-1.08.02` |
-| `REQ-DIAG-03` | 帧耗时/解码延迟探针与预算看板 | `crates/ime-diag/src/probe.rs` | `P0.01.03`、`P0.03.03` | `TC-DIAG-11`~`15` | ⏳ | ⏳ | ⏳ | — | — | ⏳ `TASK-1.08.03` |
-| `REQ-INFRA-01` | 质量门禁与 CI 基线 | `justfile`、`.github/workflows/ci.yml` | `P0.03.03` | `TC-INFRA-01`~`05` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-INFRA-02` | 五个审计脚本的自测能力 | `just check-self-tests` | `P0.03.03` | `TC-INFRA-06`~`10` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-RT-05` | `UserInterface` 面板接管与可用性降级 | `crates/ime-fcitx5/src/ui_impl/{panel,cursor_rects,takeover,availability}.rs` | `P0.02.01`、`P0.02.06` | `TC-RT-21`~`25` | ✅ | ✅ | ✅ | ✅ | — | ✅（`TC-RT-21` 视觉判据未通过，见复测记录） |
+| `REQ-RT-06` | 会话状态机与翻页/选择语义 | `crates/ime-core/src/state/` | `P0.03.01` | `TC-CORE-36`~`40`（深化 `TC-CORE-41`） | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| `REQ-RT-07` | Wayland 四档窗口后端 | `crates/ime-ui/src/platform/wayland/` | `P0.02.06` | `TC-RT-36`~`40` | Ⓦ | Ⓦ | Ⓦ | Ⓦ | — | 🚫（代码已落地；本机无 layer-shell，`Ⓦ 文档豁免` 记录在案） |
+| `REQ-RT-08` | UI addon C ABI 与跨 addon 帧通道（增量） | `crates/ime-ui-addon/src/{ffi,addon,ui_impl,cursor}/`、ADR-0011 | `P0.02.01`、`P0.02.06` | `TC-RT-41`~`45` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-RT-09` | 行为诚实化：模式位/焦点/挂起/日志热切换（增量） | `crates/ime-core/src/state/effects.rs`、`crates/ime-fcitx5/src/{session_host,engine/context}.rs`、`crates/ime-diag/src/log.rs` | `P0.02.01`、`P0.02.03`、`P0.02.06` | `TC-RT-46`~`50` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-UI-01` | X11 ARGB 透明窗口后端 | `crates/ime-ui/src/platform/x11.rs`、`x11/` | `P0.01.02`、`P0.02.04` | `TC-UI-01`~`05`（深化 `TC-RT-34`） | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| `REQ-UI-02` | 自定义 Slint Platform 与软件光栅 | `crates/ime-ui/src/slint_platform.rs`、`renderer.rs` | `P0.01.02`、`P0.02.04` | `TC-UI-06`~`10` | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| `REQ-UI-03` | UI 线程模型与命令队列（`eventfd` 唤醒） | `crates/ime-ui/src/{ui_thread,channel}.rs` | `P0.01.03`、`P0.02.05` | `TC-UI-11`~`15` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-UI-04` | 候选框骨架与布局约束 | `crates/ime-ui/ui/candidate.slint`、`layout.rs` | `P0.02.04`、`P0.04.01` | `TC-UI-16`~`20` | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| `REQ-UI-05` | 主题 Token、深浅色与亚克力 | `crates/ime-ui/ui/theme.slint`、`src/theme.rs` | `P0.02.04`、`P0.04.01` | `TC-UI-21`~`25` | ✅ | ✅ | ✅ | ✅ | — | ✅（`TC-UI-24` 真实模糊子项 🚫） |
+| `REQ-UI-06` | 候选网格、数字标签与五态 | `crates/ime-ui/ui/candidate_grid.slint`、`src/adapter.rs` | `P0.02.01`、`P0.04.01` | `TC-UI-26`~`30` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `REQ-UI-07` | 鼠标交互：悬停、点击、滚轮 | `crates/ime-ui/src/interaction.rs` | `P0.01.01`、`P0.01.02` | `TC-UI-31`~`35` | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| `REQ-UI-08` | 屏幕避让与几何计算 | `crates/ime-ui/src/geometry.rs` | `P0.01.02`、`P0.02.04` | `TC-UI-36`~`40` | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| `REQ-UI-09` | 出现/消失/选中过渡动效（Spring） | `crates/ime-ui/src/spring.rs`、`spring/` | `P0.01.03`、`P0.04.01` | `TC-UI-41`~`45` | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| `REQ-UI-10` | 淡入淡出、crossfade 与亚克力协商（增量） | `crates/ime-ui/src/spring/transition.rs`、`adapter/frame.rs`、`platform/x11/blur.rs` | `P0.01.03`、`P0.02.04`、`P0.04.01` | `TC-UI-46`~`50` | ✅ | — | ✅ | ✅ | — | ✅（真实模糊子项 🚫） |
+| `REQ-UI-11` | 指针微动效与 preedit 尾部保护（增量） | `crates/ime-ui/src/spring/press.rs`、`adapter/preedit/`、`ui_thread.rs` | `P0.01.01`、`P0.01.03`、`P0.04.01` | `TC-UI-51`~`55` | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| `REQ-SEC-01` | 用户数据目录与文件权限基线 | `crates/ime-dict/src/paths.rs`、`paths/` | `P0.05.01` | `TC-SEC-31`~`35`（深化 `TC-INFRA-60`） | ✅ | — | ✅ | — | — | ✅ |
+| `REQ-SEC-02` | 敏感输入上下文检测与学习抑制 | `crates/ime-fcitx5/src/privacy_impl/`、`crates/ime-core/src/privacy.rs` | `P0.02.03` | `TC-SEC-36`~`42` | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| `REQ-SEC-03` | 零网络外联断言 | `scripts/check-no-network.sh`、`runtime-socket-check.sh` | `P0.03.03` | `TC-SEC-11`~`15` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-SEC-04` | 词源许可证白名单与 SHA256 | `scripts/check-dict-sources.sh`、`data/sources.toml` | `P0.03.02` | `TC-SEC-16`~`20`（深化 `TC-SEC-43`） | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-SEC-05` | Slint API 不泄漏（`OB-4`） | `scripts/check-slint-leak.sh` | `P0.03.03` | `TC-SEC-21`~`25`（深化 `TC-SEC-44`） | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-SEC-06` | 依赖单向性与分层 | `scripts/check-deps.sh` | `P0.03.03` | `TC-SEC-26`~`30`（深化 `TC-SEC-45`） | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DIAG-01` | 结构化日志、滚动与字段脱敏 | `crates/ime-diag/src/{log,redact}.rs` | `P0.02.03` | `TC-DIAG-01`~`05` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DIAG-02` | panic 钩子、崩溃回溯与 FFI 兜底 | `crates/ime-diag/src/{panic,crash}.rs` | `P0.02.03`、`P0.03.02` | `TC-DIAG-06`~`10` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DIAG-03` | 帧耗时/解码延迟探针与预算看板 | `crates/ime-diag/src/probe.rs` | `P0.01.03`、`P0.03.03` | `TC-DIAG-11`~`15` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DIAG-04` | `UiFrame` 镜像快照通道（新增） | `crates/ime-diag/src/uiframe/{schema,mirror,error}.rs` | `P0.02.01` | `TC-DIAG-16`~`20` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DIAG-05` | 崩溃取证黑匣子（新增） | `crates/ime-diag/src/crash/{record,signal,context}.rs` | `P0.02.03`、`P0.05.04` | `TC-DIAG-21`~`25` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-DIAG-06` | 诊断报告渲染与探针看板（新增） | `crates/ime-diag/src/report/`、`probe.rs`、`xtask/src/testd/budget_gate.rs` | `P0.03.03`、`P0.04.01` | `TC-DIAG-26`~`30` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-INFRA-01` | 质量门禁与 CI 基线 | `justfile`、`.github/workflows/ci.yml` | `P0.03.03` | `TC-INFRA-01`~`05`（深化 `TC-INFRA-59`） | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-INFRA-02` | 审计脚本的自测能力 | `just check-self-tests` | `P0.03.03` | `TC-INFRA-06`~`10` | ✅ | ✅ | ✅ | — | — | ✅ |
 | `REQ-INFRA-03` | `unsafe` 边界与 `SAFETY` 注释 | `scripts/check-unsafe.sh` | `P0.03.03` | `TC-INFRA-11`~`15` | ✅ | ✅ | ✅ | — | — | ✅ |
 | `REQ-INFRA-04` | 版本一致性（conf ↔ Cargo.toml） | `xtask/src/versions.rs` | `P0.02.06` | `TC-INFRA-16`~`20` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-INFRA-05` | Fcitx5 插件安装布局与打包 | `packaging/`、`xtask/src/install.rs` | `P0.05.01` | `TC-INFRA-21`~`25` | ⏳ | ⏳ | ⏳ | — | — | ⏳ `TASK-1.07.01` |
-| `REQ-INFRA-06` | 预算表与 `budgets.json` 一致性 | `xtask/src/budget.rs`、`budget/{schema,spec}.rs` | `P0.03.03` | `TC-INFRA-26`~`30` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-INFRA-05` | Fcitx5 插件安装布局与打包 | `packaging/`、`xtask/src/install/`（`TC-INFRA-31`~`45`） | `P0.05.01` | `TC-INFRA-31`~`45` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-INFRA-06` | 预算表与 `budgets.json` 一致性 | `xtask/src/budget.rs`、`budget/{schema,spec}.rs` | `P0.03.03` | `TC-INFRA-21`~`25` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-INFRA-07` | 场景化端到端驱动与证据链（新增） | `xtask/src/testd/{engine,suite,sandbox,evidence,heal,env_gate,memory,framerate}.rs`、`tests/fixtures/scenarios/` | `P0.03.01`、`P0.03.02`、`P0.05.01`、`P0.05.04`~`06` | `TC-INFRA-46`~`50` | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| `REQ-INFRA-08` | 审计脚本族扩展（新增） | `scripts/check-no-grab.sh` 等 7 个新脚本、`just audits` | `P0.03.03`、`P0.05.05` | `TC-INFRA-51`~`55`、`61` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-INFRA-09` | 打包、体积与基准纯净度门禁（新增） | `xtask/src/{package.rs,package/,soak.rs}`、`testd/purity.rs`、`packaging/{aur,debian,rpm}` | `P0.03.03`、`P0.05.01`、`P0.05.06` | `TC-INFRA-55`~`58`、`62` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-CFG-01` | 配置 schema v2、校验与修复（新增） | `crates/ime-config/src/schema.rs`、`schema/{data,repair}.rs` | `P0.03.01` | `TC-CFG-01`~`05` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-CFG-02` | 配置迁移（单向不可逆）（新增） | `crates/ime-config/src/migrate.rs`（`V1_TO_V2`） | `P0.03.01`、`P0.02.06` | `TC-CFG-06`~`10` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-CFG-03` | 配置热重载与会话保持（新增） | `crates/ime-config/src/reload.rs`、`reload/{load,store}.rs` | `P0.02.03`、`P0.02.06` | `TC-CFG-11`~`15` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-CFG-04` | 键位自定义、投影与速查表（新增） | `crates/ime-config/src/keymap.rs`、`keymap/project.rs`、`crates/ime-fcitx5/src/cheatsheet.rs`、`tests/keymap_matrix/` | `P0.01.01`、`P0.02.06` | `TC-CFG-16`~`20` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `REQ-CFG-05` | 双拼方案引擎与切换（新增） | `crates/ime-config/src/scheme.rs`、`crates/ime-core/src/shuangpin/` | `P0.03.01` | `TC-CFG-21`~`25` | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-CFG-06` | 配置写回与首启模板（新增） | `crates/ime-config/src/writeback.rs`、`reload.rs`（`DEFAULT_CONFIG_TOML`） | `P0.02.03`、`P0.05.04` | `TC-CFG-26`~`30` | ✅ | ✅ | ✅ | ✅ | — | ✅ |
 
-**双向一致性**：45 个功能条目 → **270 条用例**（基线 45 × 5 = **225** 条 + 深度用例 **45** 条）→ 全部回填至 `FEAT-TEST` 任务卡。**每个功能条目均 ≥ 5 条用例，无空缺**（校验脚本：解析本文档矩阵的 `REQ-*` 与全部用例标题行的 `对应功能条目编号` 字段，断言两者互为满射）。
+**双向一致性**：**67 个功能条目 → 382 条用例**（基线 67 × 5 = **335** 条 + 深化/扩展 **47** 条）→ 全部回填至 `FEAT-TEST` 任务卡。每个功能条目 **≥ 5** 条用例，无空缺。校验方式：解析本文档矩阵的 `REQ-*` 行与全部用例标题行的 `对应功能条目编号` 字段，断言两者互为满射（v2.0 同步时已机械复核：矩阵行数 67，用例标题行 382，每行 n ≥ 5）。
+
+**Ⓦ 文档豁免**：`REQ-RT-07` 的 5 条 Wayland 用例按 features.md 0.5.5 判定为本机不可验证档位，run-20261006-034915 为每条生成 `Ⓦ 文档豁免` 执行记录（env_gate 判定表 remedy 原文引用），**不算通过也不算失败**——待外部 Wayland 环境就绪后复测。
 
 **本版交付分布**（实测；`### TC-<模块>-<序号>` 是 4.2 的模板占位符，不计入）：
 
 | 交付位置 | 内容 | 用例数 | 可执行 | 待实现 | 不可验证 |
 |---|---|---|---|---|---|
-| 本文档（Hub） | P0 核心基线：`REQ-CORE-01`~`06`、`REQ-DICT-01`/`02`/`04`/`06`/`07`、`REQ-RT-01`~`04`、`REQ-UI-01`、`REQ-SEC-03`~`06`、`REQ-INFRA-01`~`04`/`06` | **125** | 120 | 4 | 1 |
-| [`tests/core.md`](tests/core.md) | `REQ-CORE-07`、`REQ-RT-06` + core 深度 | 20 | 8 | 12 | 0 |
-| [`tests/dict.md`](tests/dict.md) | `REQ-DICT-03`/`05` + 词库规模与畸形输入 | 20 | 10 | 10 | 0 |
-| [`tests/rt.md`](tests/rt.md) | `REQ-RT-05`、`REQ-RT-07` + 真实会话端到端 | 20 | 10 | 10 | 0 |
-| [`tests/ui.md`](tests/ui.md) | `REQ-UI-02`~`09` 全部视觉与微交互（**W3 的验收套件**） | 40 | 0 | 40 | 0 |
-| [`tests/sec.md`](tests/sec.md) | `REQ-SEC-01`/`02` 隐私与权限 | 15 | 2 | 13 | 0 |
-| [`tests/diag.md`](tests/diag.md) | `REQ-DIAG-01`~`03` 日志、崩溃、探针 | 15 | 0 | 15 | 0 |
-| [`tests/infra.md`](tests/infra.md) | `REQ-INFRA-05` 打包与安装可逆性 | 15 | 3 | 12 | 0 |
-| **合计** | — | **270** | **153** | **116** | **1** |
+| 本文档（Hub） | P0 核心基线：`REQ-CORE-01`~`06`、`REQ-DICT-01`/`02`/`04`/`06`/`07`、`REQ-RT-01`~`04`、`REQ-UI-01`、`REQ-SEC-03`~`06`、`REQ-INFRA-01`~`04`/`06` | **125** | 124 | 0 | 1 |
+| [`tests/core.md`](tests/core.md) | `REQ-CORE-07`~`10`、`REQ-RT-06` + core 深化 | 35 | 35 | 0 | 0 |
+| [`tests/dict.md`](tests/dict.md) | `REQ-DICT-03`/`05`/`08`~`10` + 词库规模与畸形输入 | 35 | 35 | 0 | 0 |
+| [`tests/rt.md`](tests/rt.md) | `REQ-RT-05`、`REQ-RT-07`、`REQ-RT-08`/`09` + 真实会话端到端 | 30 | 25 | 0 | 5（Wayland Ⓦ） |
+| [`tests/ui.md`](tests/ui.md) | `REQ-UI-02`~`11` 全部视觉与微交互 | 50 | 50 | 0 | 0（子项 🚫 见行注） |
+| [`tests/sec.md`](tests/sec.md) | `REQ-SEC-01`/`02` 隐私与权限 + 深化 | 15 | 15 | 0 | 0 |
+| [`tests/diag.md`](tests/diag.md) | `REQ-DIAG-01`~`06` 日志、崩溃、镜像、报告 | 30 | 30 | 0 | 0 |
+| [`tests/infra.md`](tests/infra.md) | `REQ-INFRA-05`/`07`~`09` + 打包、审计脚本族、E2E 驱动 | 32 | 32 | 0 | 0（8h 长稳子项 🚫） |
+| [`tests/cfg.md`](tests/cfg.md) | `REQ-CFG-01`~`06` 配置、迁移、热重载、键位、双拼、写回 | 30 | 30 | 0 | 0 |
+| **合计** | — | **382** | **376** | **0** | **6** |
 
 **可执行性分布**（每条用例的"基本属性"块均带**唯一**的 `可执行性：` 字段，由 `FEAT-TEST-P0.05.05` 的门禁机械判定；校验脚本断言"用例数 = 三类之和"）：
 
-| 类别 | 说明 | 用例数 |
+| 口径 | 说明 | 用例数 |
 |---|---|---|
-| `[可执行]` | 代码已存在，本机可直接运行判定 | **153** |
-| `[待实现: TASK-x.yy.zz]` | 被测代码不存在，用例锚定冻结契约或 features.md 数值规范 | **116** |
-| `[不可验证]` | 该用例**整体**无法在本机判定（需外部环境） | **1**（`TC-RT-14` 混合 DPI 多屏） |
+| `[可执行]`（首标注） | 代码已存在，本机可直接运行判定 | **381** |
+| `[不可验证]`（首标注） | 该用例**整体**无法在本机判定（需外部环境） | **1**（`TC-RT-14` 混合 DPI 多屏） |
+| `[待实现]`（首标注） | 被测代码不存在 | **0** |
 
-> **部分不可验证的用例**：另有若干用例的主标注是 `[可执行]` 或 `[待实现]`，但其**正文中显式声明了某个子项不可验证**（例如 `TC-RT-32` 的多应用矩阵、`TC-RT-35` 的 8 小时长稳、`TC-UI-24` 的真实亚克力、`TC-DICT-42` 的完整长稳）。这类子项**必须**在 `assertions.json` 中记为"本机不可验证"而非通过——门禁按 `FEAT-TEST-P0.05.05` 的三态判定逐项核对。
+> **整体判定口径**：`TC-RT-36`~`40`（Wayland 四档）的首标注是 `[可执行]` + `[不可验证]` 复合形态（用例可构造、判据需外部环境），按整体判定归入不可验证——即上表"交付分布"列的 376/6 口径；其 `Ⓦ 文档豁免` 执行记录是唯一合规形态。两种口径的差异**只有这 5 条**，其余 377 条两口径一致。
 
-> **当前可执行的 153 条是本套件的即时价值**：它们锚定的是已落地的 `ime-types` 冻结契约、`ime-core` 解码管线、`ime-dict` 格式与用户库、`ime-fcitx5` 的 ABI/引擎/光标/ui_impl、`ime-ui/src/platform/x11.rs` 与五个审计脚本。**116 条待实现用例**在 `features.md` 的对应任务落地后即可转为可执行，其中 `tests/ui.md` 的 40 条是 W3 的验收套件。
+> **复合标注的用例**：主标注 `[可执行]` 但正文中显式声明某**子项**不可验证的用例（如 `TC-UI-48` 的真实亚克力、`TC-UI-16` 的 2.0 缩放、`TC-RT-44` 的混合 DPI、`TC-INFRA-50` 的 8 小时长稳、`TC-DICT-42` 的完整长稳）必须按 `FEAT-TEST-P0.05.05` 的三态判定逐项核对，子项在 `assertions.json` 中记为"本机不可验证"而非通过。
+>
+> **唯一未通过用例**：`TC-RT-21`（候选窗接管的结构判据已达成、视觉判据受 depth-24 回退路径黑屏阻断，失败隔离保持，复测记录见用例正文）。这是当前套件中**唯一**的红灯，修复后按 `rt.md` 出口准则第 7 条复测。
 
 ---
 
@@ -871,7 +901,7 @@
 - **验收记录**（2026-10-06）：物理探针：--max-key-growth 5 使实际增幅 22.5% 超限，dictc 以退出码 1 拒绝并打印实测值/门槛值/处置参数；ASM-05 预算机器化守住；证据包 results/runs/run-20261006-034915/dict/TC-DICT-25/
 ### TC-RT-01 双 addon 均加载（ADR-0003 的落地断言）（`REQ-RT-01`）
 
-- **基本属性**：`[x] 已通过` ｜ `REQ-RT-01` ｜ `rt` | 核心业务闭环 ｜ `P0` ｜ `crates/ime-fcitx5/src/addon.rs`、`packaging/fcitx5/rspinyin.conf` ｜ 可执行性：`[待实现: TASK-1.04.03]`
+- **基本属性**：`[x] 已通过` ｜ `REQ-RT-01` ｜ `rt` | 核心业务闭环 ｜ `P0` ｜ `crates/ime-fcitx5/src/addon.rs`、`packaging/fcitx5/rspinyin.conf` ｜ 可执行性：`[可执行]`
 - **前置条件与沙盒状态**：`FEAT-TEST-P0.05.01` 的沙盒 + `restart_fcitx5`。
 - **操作步骤**：
   1. 启动 fcitx5 -> 触发存盘：`<RUN>/rt/TC-RT-01/assertions.json`
@@ -1249,31 +1279,31 @@
 - **验收记录**（2026-10-06）：check-slint-leak --self-test 通过（注入 slint 类型→非零退出）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-22/
 ### TC-SEC-23 许可归属徽章已上线（`REQ-SEC-05`，`OB-1`）
 
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-05` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ `README.md`、`README.zh.md` ｜ 可执行性：`[待实现: TASK-1.06.03]`
+- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-05` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ `README.md`、`README.zh.md` ｜ 可执行性：`[可执行]`
 - **前置条件与沙盒状态**：无。
 - **操作步骤**：
   1. 检查两份 README 是否含 Slint 归属徽章与 `https://slint.dev` 链接 -> 触发存盘：`<RUN>/sec/TC-SEC-23/assertions.json`
   2. 断言链接可达（HTTP 200）。
-- **通过标准**：`[待实现: TASK-1.06.03]`。输入法**既无"关于"对话框也无启动画面**，`OB-1` 的 `AboutSlint` 路径在 Phase 1 不可行，**必须**走"公开网页徽章"路径。
+- **通过标准**：`[可执行]`。输入法**既无"关于"对话框也无启动画面**，`OB-1` 的 `AboutSlint` 路径在 Phase 1 不可行，**必须**走"公开网页徽章"路径。
 
 - **验收记录**（2026-10-06）：README.md 与 README.zh.md 均含 Slint 归属徽章与 https://slint.dev 链接；实测 slint.dev 与 shields.io 徽章图均 HTTP 200（OB-1 公开网页路径）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-23/
 ### TC-SEC-24 `OB-3` 嵌入式排除声明存在（`REQ-SEC-05`）
 
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-05` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ `docs/dev/licenses.md` ｜ 可执行性：`[待实现: TASK-1.06.03]`
+- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-05` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ `docs/dev/licenses.md` ｜ 可执行性：`[可执行]`
 - **前置条件与沙盒状态**：无。
 - **操作步骤**：
   1. 检查 `licenses.md` 是否含显式段落说明"Royalty-free 授权不覆盖嵌入式/自助终端/车机场景" -> 触发存盘：`<RUN>/sec/TC-SEC-24/assertions.json`
-- **通过标准**：`[待实现: TASK-1.06.03]`；与 `features.md` 0.5.2 的"嵌入式部署 → 不支持"行一致。
+- **通过标准**：`[可执行]`；与 `features.md` 0.5.2 的"嵌入式部署 → 不支持"行一致。
 
 - **验收记录**（2026-10-06）：licenses.md 第 6 节存在显式嵌入式/自助终端排除声明（LicenseRef-Slint-Royalty-free-2.0 不覆盖嵌入式系统），与 features.md 0.5.2 的『嵌入式部署→不支持』一致；证据包 results/runs/run-20261006-034915/sec/TC-SEC-24/
 ### TC-SEC-25 许可原文摘录而非二手解读（`REQ-SEC-05`）
 
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-05` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ `docs/dev/licenses.md`、Slint 发行包内 `LICENSES/` ｜ 可执行性：`[待实现: TASK-1.06.03]`
+- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-05` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ `docs/dev/licenses.md`、Slint 发行包内 `LICENSES/` ｜ 可执行性：`[可执行]`
 - **前置条件与沙盒状态**：无。
 - **操作步骤**：
   1. 检查 `licenses.md` 是否含 `LicenseRef-Slint-Royalty-free-2.0.txt` 的原文摘录 -> 触发存盘：`<RUN>/sec/TC-SEC-25/assertions.json`
   2. 断言 `OB-1`~`OB-6` 六项逐条登记（条款依据 + 核对方式 + 复核结论）。
-- **通过标准**：`[待实现: TASK-1.06.03]`；**不得只引用二手解读**（ADR-0000 的免责声明已明确）。
+- **通过标准**：`[可执行]`；**不得只引用二手解读**（ADR-0000 的免责声明已明确）。
 
 - **验收记录**（2026-10-06）：licenses.md 第 5 节 OB-1~OB-6 六项逐条登记（条款原文引用+核对方式+复核结论），LICENSES/LicenseRef-Slint-Royalty-free-2.0.md 为 Slint 1.13.1 发行包内原文的逐字副本（--check 断言逐字一致），非二手解读；证据包 results/runs/run-20261006-034915/sec/TC-SEC-25/
 ### TC-SEC-26 依赖单向性（`REQ-SEC-06`，0.4 规则 1）
@@ -1574,19 +1604,20 @@
   2. 断言**失败**（当前实现会打印 "nothing to assert" 并**成功退出**——这正是"未测量的预算被当作已满足"的漏洞，须由 `FEAT-TEST-P0.03.03` 修复）。
 - **通过标准**：`Missing ≠ Pass`。
 
+- **验收记录**（2026-10-06）：just ci 退出 0 + 专项验证：未测量预算显示 '-' 而非 PASS（Missing ≠ Pass）；证据包 results/runs/run-20261006-034915/infra/TC-INFRA-25/
+
 ---
 
 ## 4. 续写指令
 
 本节是**跨会话续写分片用例的唯一入口**。
 
-- **验收记录**（2026-10-06）：just ci 退出 0 + 专项验证：未测量预算显示 '-' 而非 PASS（Missing ≠ Pass）；证据包 results/runs/run-20261006-034915/infra/TC-INFRA-25/
 ### 4.1 续写输入
 
 | 输入项 | 内容 |
 |---|---|
 | 主文档（Hub） | `./docs/dev/tests.md`（本文档） |
-| 目标分片路径 | `./docs/dev/tests/<模块代码>.md`：`core` / `dict` / `rt` / `ui` / `sec` / `diag` / `infra` |
+| 目标分片路径 | `./docs/dev/tests/<模块代码>.md`：`core` / `dict` / `rt` / `ui` / `sec` / `diag` / `infra` / `cfg` |
 | 功能条目来源 | 本文档第 2 节的追踪矩阵（`REQ-*` 行） |
 | 用例模板 | 本文档第 3 节的用例格式（基本属性 / 前置条件与沙盒状态 / 操作步骤与截图节点 / 通过标准） |
 | 证据规范 | [features-test.md](features-test.md) 的 `FEAT-TEST-P0.05.04` |
@@ -1598,7 +1629,7 @@
 # rspinyin 测试用例分片 · <模块名>
 
 > 分片版本: v1.0 ｜ 主文档: [../tests.md](../tests.md) ｜ 平台任务: [../features-test.md](../features-test.md) ｜
-> 被测基线: Rust 2024 workspace + Fcitx5 5.1.7 ｜ 关联 ADR: ../adr/ ｜ 最后同步 Commit: `<短哈希>` ｜
+> 被测基线: Rust 2024 workspace + Fcitx5 5.1.19 ｜ 关联 ADR: ../adr/ ｜ 最后同步 Commit: `<短哈希>` ｜
 > 维护约定: 新增用例必须回写主文档第 2 节矩阵的 TC 列与维度列；可执行性变更须同步 [features-test.md](../features-test.md) 的 `FEAT-TEST-P0.05.05` 判定表
 
 ## 0. 分片基线（引用主文档，不重复定义）
@@ -1627,18 +1658,20 @@
 
 | 顺序 | 分片 | 理由 |
 |---|---|---|
-| 1 | `tests/ui.md` | `REQ-UI-02`~`09` 全部 `PENDING`，这 45 条用例将直接成为 W3 的验收套件；**优先级最高** |
-| 2 | `tests/rt.md` | `REQ-RT-05`/`07` 依赖真实会话与 Wayland 环境，需先定环境 |
-| 3 | `tests/core.md`、`tests/dict.md` | `REQ-CORE-07`、`REQ-DICT-03`/`05` 的深化用例 |
-| 4 | `tests/sec.md`、`tests/diag.md`、`tests/infra.md` | 依赖 `ime-diag`/`ime-config` 空壳的落地 |
+| 1 | `tests/cfg.md` | 增量域最新（features-add 配置波与 opt-keymap），`REQ-CFG-01`~`06` 与 `REQ-CORE-08`~`10` 的回归未跑过全量轮 |
+| 2 | `tests/rt.md` | `TC-RT-21` 缺陷修复后的视觉判据复测；`REQ-RT-08`/`09` 增量行待跑 |
+| 3 | `tests/diag.md`、`tests/infra.md` | `REQ-DIAG-04`~`06`、`REQ-INFRA-07`~`09` 新增行的首轮执行 |
+| 4 | `tests/core.md`、`tests/dict.md` | 增量域（短语/模糊音/简拼/简繁/词条管理/备份）首轮执行 |
+| 5 | `tests/ui.md`、`tests/sec.md` | 增量行 `REQ-UI-10`/`11` 与 `REQ-SEC` 深化的首轮执行 |
 
 ### 4.5 启动续写的提示词模板
 
 ```
 阅读 docs/dev/tests.md 的第 2、3、4 节与 docs/dev/features-test.md 的 0.2、0.4、第 1 节，
-按 4.2 的分片结构续写 docs/dev/tests/ui.md，覆盖 REQ-UI-02 ~ REQ-UI-09 的全部 5 个维度。
-要求：用例锚定 features.md 3.1/3.2/3.3/3.4 的数值规范与 TASK-1.05.03 定义的 .slint public constant 名；
-每条标注 [待实现: TASK-1.05.0x]；阈值只引用 budgets.json 的键名；
+按 4.2 的分片结构续写 docs/dev/tests/<目标分片>.md，覆盖矩阵中归属该分片的 REQ 行的全部 5 个维度。
+要求：用例锚定真实代码路径与冻结契约（ime-types / budgets.json 键名）；
+每条标注可执行性（[可执行] / [不可验证] + 理由，待实现已清零）；
+阈值只引用 budgets.json 的键名；
 完成后回写主文档第 2 节矩阵的 TC 列与维度列。
 ```
 
@@ -1648,7 +1681,7 @@
 
 | 触发条件 | 必须回写的位置 |
 |---|---|
-| 新增用例 | 本文档矩阵的 TC 列与维度列 + 对应分片 |
+| 新增用例 | 本文档矩阵的 TC 列与维度列 + 对应分片；并运行 `scripts/check-test-matrix.py`（`FEAT-TEST-P1.05.07`，落地前以附录 A 的脚本逻辑人工复核） |
 | `features.md` 的任务状态变化 | 矩阵的"可执行性"列 + 相关用例的可执行性标注 |
 | `budgets.json` 阈值调整 | 全部引用该阈值的用例 + `features-test.md` 第 1 节 |
 | 新增功能条目 | 矩阵新增一行（含 5 个维度与可执行性） |
@@ -1657,11 +1690,44 @@
 
 ---
 
-**文档结束。** 本 Hub 覆盖 **45 个功能条目、270 条用例**（分布与可执行性见第 2 节末表），其中 P0 核心基线用例全量展开于第 3 节。分片用例按 4.2 的分片规范与 4.5 的续写指令产出，已交付 `tests/` 下的 7 个分片。
+## 附录 A：系统架构逻辑自检与优化记录 (Logic Refinement Log)
+
+> 审查轮次: 第 2 轮（共 2 轮收敛，第 2 轮零 Blocker/Major） ｜ 覆盖范围: `FEAT-TEST-P0.01.01` ~ `FEAT-TEST-P1.05.07`（21 张平台任务卡）+ 追溯矩阵 `REQ-CORE-01`~`REQ-CFG-06`（67 行）+ 全部用例标题 382 条（Hub 125 + 8 分片 257），与文档任务卡/用例总数相等 ｜ 残余 Minor: 0 项（5 项全部就地修复） ｜ 审查模式: fix（缺陷 + 优化两轮全跑）
+>
+> 形态勘察：任务卡编号 `FEAT-TEST-[P0-P1].[01-05].[序号]`，状态字段 `任务状态：` + `` `[x] 已完成` ``（20 张交付 + 1 张新增待开始）；用例状态字段为基本属性首槽 `` `[x] 已通过`/`[ ] 未通过` ``；追溯标识 `REQ-*`（67 行）/ `MCP-T/R/P-*`、`GUARD-01`~`08`（26 项能力）。性能可审对象定位：预算数值（budgets.json 11 键）、并发模型（ASM-T-09）、采集通道（capture/memory/framerate）、证据链（RUN 目录 + 双索引）、构建产物（so_stripped/base_dict）——全部进入第 3 轮优化审查。
+
+| 序号 | 轮次 | 审计维度 | 严重度 | 发现的逻辑隐患/断点（含具体触发场景） | 原地修复实施措施 | 涉及章节/任务卡 | 验证方式 |
+|---|---|---|---|---|---|---|---|
+| 1 | 1 | 文档自洽 / DoD 可证伪 | **Blocker** | `#[test]` 基线误写为 3,824（实数 3,701，逐 crate 求和 58+556+257+117+696+125+475+202+6+1209=3701）：`GUARD-03` 以该字面值为"删测试"报警基线，错误基线会使自愈护栏放行或误报 | 全部 5 处（tests.md §0/结语、features-test.md §0.1/两卡正文）改为 3,701；并规定基线由 `FEAT-TEST-P1.05.07` 脚本实时统计（IMPR-01 落点），字面值仅作快照 | tests.md §0/§5、features-test.md §0.1、`P0.03.01`、`P0.05.03` | 脚本求和复核 = 3,701 |
+| 2 | 1 | 三方一致 | Major | tests.md §0 表（381/0/1，首标注口径）与 §2 交付分布表（376/0/6，整体判定口径）同文并存无解释：下游 `audit_batch` 按不同口径核对会得出不同通过数 | §0 表改为整体口径 376/6 并注"首标注 381，差异见第 2 节"；§2 分布表后新增双口径说明段（差异仅 TC-RT-36~40 五条复合标注） | tests.md §0、§2 | 两表差值 = 5，且逐条可指认 |
+| 3 | 1 | 可观测性 / 诚实性 | Major | 约 250 条验收记录引用 `results/runs/run-20261006-034915/`，但 `results/` 在 `.gitignore`（不入库）且该目录已不在工作树——证据断链无任何声明，复核者会误判记录造假 | features-test.md §4 新增《证据瞬态性声明》：results 为瞬态产物、结论以用例正文记录为准、复核须重跑；tests.md §5 维护清单同步 | features-test.md §4、tests.md §5 | `git check-ignore results/` = 命中；声明与事实一致 |
+| 4 | 1 | 追溯矩阵完整性 | Major | v1.0 矩阵三处错绑：`REQ-SEC-01/02` 声称 `TC-SEC-01~10`（从未实体化，实际为 `TC-SEC-31~42`）；`REQ-DICT-04/06/07` 区间错位 5；`REQ-RT-07` 实际用例为 `TC-RT-36~40` 而非 `31~35`——下游按矩阵找用例会全部落空 | v2.0 重写矩阵时已按用例标题实测重绑（本次审计逐行复核 67 行全部命中）；错绑教训固化为 `IMPR-01` 机械校验卡 | tests.md §2（67 行） | 本轮脚本复核：rows<5 = 无、orphans = 无、dup = 无 |
+| 5 | 1 | 追溯矩阵完整性 | Minor | `REQ-RT-06` 承接用例写 `TC-CORE-36~41` 未标注第 6 条为深化用例，与全表"（深化 x）"记法不一致 | 改为 `TC-CORE-36~40`（深化 `TC-CORE-41`） | tests.md §2 | 目测 + 脚本 |
+| 6 | 1 | 三方一致 | Minor | 5 行维度列 ⑤（全键盘流）过度声明：`REQ-CORE-10`/`REQ-RT-08`/`REQ-CFG-05`/`REQ-INFRA-05` 的用例组无显式全键盘流断言（RT-09 已含键控切换故核减后仍如实） | 四处 ⑤ 改为 `—`（RT-09 维持 ✅，`TC-RT-46` 键控切换在案） | tests.md §2 | 逐行列出断言对照 |
+| 7 | 1 | 完整性 | Minor | §4.2 分片模板内 fcitx5 版本仍为 5.1.7，与 Living Header 的 5.1.19 冲突 | 模板更新为 5.1.19 | tests.md §4.2 | grep |
+| 8 | 1 | 完整性 | Minor | `Ⓦ` 记号首次出现在矩阵维度列但未进图例（分片用 `[W] 文档豁免`），两套记号并存 | 图例行补 `Ⓦ` = `[W] 文档豁免` 映射说明 | tests.md §2 图例 | grep |
+| 9 | 1 | 完整性 | Minor | 新增卡 `P1.05.07` 一处反引号被转义伪影污染（\` 字面序列） | 就地清理 | features-test.md §3 | grep |
+
+**收敛声明**：第 2 轮对全部被修改章节及关联面（§0/§2/§4/§5、21 张卡、8 分片头）重跑机械校验：382 用例 / 67 矩阵行 / 双向满射 / 无重复标题 / 标签三态完备 / 过期事实零命中——零 Blocker、零 Major、零新增 OPT-HIGH，收敛达成。
+
+## 附录 B：优化清单与处置 (Optimization Ledger)
+
+> 本轮共提出 4 项 ｜ 采纳 2 项（已落地：1 项新卡 + 1 项并入新卡实现细节）｜ 显式否决 2 项 ｜ 登记后续 0 项 ｜ 其中 OPT-HIGH 共 1 项，处置率 100%
+
+| 编号 | 类别 | 现状代价（含触发条件） | 优化方案 | 量化预期收益 | 实施代价 / 风险 | 处置 | 落点 |
+|---|---|---|---|---|---|---|---|
+| `IMPR-01` | 门禁机械化（复杂度降阶） | 矩阵↔用例双向校验依赖人工脚本一次性执行：v1.0 已实际发生 3 处错绑（SEC-01/02、DICT 行、RT-07）且无任何防线拦截，每次用例增删都要重演此风险 | 新增 `FEAT-TEST-P1.05.07`：`scripts/check-test-matrix.py` 满射校验 + 三态标签断言 + `#[test]` 基线实时统计，接入 `just check-self-tests` | 错绑/漏绑/重复标题类缺陷从"人工轮次才可能发现"降为"每次门禁必检"（检出时延从 O(轮次) 降为 O(提交)） | 低（纯静态解析，无业务耦合） | **采纳** | 新增卡 `FEAT-TEST-P1.05.07` + 能力行 `GUARD-08` + Track C 表更新（20→21 卡） |
+| `IMPR-02` | 基线防漂移（预算重估） | `GUARD-03` 的 `#[test]` 基线为字面值，随开发自然增长后每次都要人工改文档 | 并入 `IMPR-01`：脚本实时统计并打印基线，字面值降级为快照 | 消除一类"基线过期"文档漂移 | 无（同卡实现） | **采纳（合并落地）** | `FEAT-TEST-P1.05.07` 实现细节第 4 条 |
+| `IMPR-03` | 可删除性 | features-test.md §2.2 的 CP/工期/跨轨道推演段在平台交付后不再驱动任何行为 | 删除该段 | 减约 20 行 | — | **显式否决**：该段是"计划 vs 实际"的原始对照基线，删除即丢失审计可比性；维护成本为零（静态记录） | — |
+| `IMPR-04` | 数据归属（SSOT） | `RUN/index.md`（人工复核）与 `results/index.json`（机器消费）双索引并存 | 合并为单一索引 | 消除一处双写 | — | **显式否决**：两索引服务不同消费者（人/机），合并会使 `dev-check` 的机器链路或人工复核一方失能；双写由 `FEAT-TEST-P0.05.04` 的证据链单点生成，无漂移面 | — |
+
+---
+
+**文档结束。** 本 Hub 覆盖 **67 个功能条目、382 条用例**（分布与可执行性见第 2 节末表），其中 P0 核心基线用例全量展开于第 3 节。分片用例按 4.2 的分片规范与 4.5 的续写指令产出，已交付 `tests/` 下的 **8 个分片**（v2.0 新增 `cfg.md`）。
 
 **本套件的两条使用纪律**（违反即失效）：
 
-1. **不得把 `[待实现]` / `[不可验证]` 计为通过**——由 `FEAT-TEST-P0.05.05` 的环境能力门禁机械判定，`audit_batch` 会检出"把 `Blocked`/`Unverifiable` 记成 `pass`"的结果。
-2. **不得为迎合测试而放宽阈值**——`FEAT-TEST-P0.05.03` 的自愈安全红线会检测 `budgets.json`/`features.md`/`crates/` 的任何改动，并断言 `#[test]` 计数（基线 **401**）不下降。
+1. **不得把 `[不可验证]` 计为通过**——由 `FEAT-TEST-P0.05.05` 的环境能力门禁机械判定，`audit_batch` 会检出"把 `Blocked`/`Unverifiable` 记成 `pass`"的结果（Wayland 档的 `Ⓦ 文档豁免` 记录是唯一合规形态）。
+2. **不得为迎合测试而放宽阈值**——`FEAT-TEST-P0.05.03` 的自愈安全红线会检测 `budgets.json`/`features.md`/`crates/` 的任何改动，并断言 `#[test]` 计数（基线 **3,701**）不下降。
 
 - **验收记录**（2026-10-01）：`xtask testd-suite --module core` 全量判定通过，本用例随该轮判为 PASS，证据包 `results/runs/run-20261001-082558/core/TC-CORE-30/`；`cargo nextest run --workspace --all-features` 全绿（nextest 2797+443 项）。
