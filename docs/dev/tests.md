@@ -60,9 +60,9 @@
 | `REQ-CORE-01` | 拼音音节表与输入规范化 | `crates/ime-core/src/segment/syllable.rs` | `P0.03.01` | `TC-CORE-01`~`05` | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | `REQ-CORE-02` | 音节切分 DAG 与非法串保护 | `crates/ime-core/src/segment/dag.rs` | `P0.03.01`、`P0.03.02` | `TC-CORE-06`~`10` | ✅ | ✅ | ✅ | — | — | ✅ |
 | `REQ-CORE-03` | 输入缓冲与按音节删除语义 | `crates/ime-core/src/input/buffer.rs` | `P0.03.01` | `TC-CORE-11`~`15` | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| `REQ-CORE-04` | K-best Viterbi 解码与候选生成 | `crates/ime-core/src/viterbi/{decoder,kbest,lattice}.rs` | `P0.03.01`、`P0.03.03` | `TC-CORE-16`~`20`（深化 `TC-CORE-47`） | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-CORE-04` | K-best Viterbi 解码与候选生成 | `crates/ime-core/src/viterbi/{decoder,kbest,lattice}.rs` | `P0.03.01`、`P0.03.03` | `TC-CORE-16`~`20`（深化 `TC-CORE-42`~`47`） | ✅ | ✅ | ✅ | — | — | ✅ |
 | `REQ-CORE-05` | 语言模型评分与用户词频融合 | `crates/ime-core/src/lm/{score,ngram}.rs` | `P0.03.01`、`P0.03.03` | `TC-CORE-21`~`25` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-CORE-06` | 非拼音直通与临时英文模式 | `crates/ime-core/src/passthrough.rs` | `P0.03.01` | `TC-CORE-26`~`30`（深化 `TC-CORE-49`/`50`） | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| `REQ-CORE-06` | 非拼音直通与临时英文模式 | `crates/ime-core/src/passthrough.rs` | `P0.03.01` | `TC-CORE-26`~`30`（深化 `TC-CORE-48`~`50`） | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | `REQ-CORE-07` | Preedit 生成与切分高亮段 | `crates/ime-core/src/preedit.rs` | `P0.02.01` | `TC-CORE-31`~`35` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `REQ-CORE-08` | 自定义短语引擎（增量） | `crates/ime-core/src/phrase.rs`、`phrase/writer.rs` | `P0.03.01`、`P0.03.02` | `TC-CORE-51`~`55` | ✅ | ✅ | ✅ | — | — | ✅ |
 | `REQ-CORE-09` | 模糊音匹配层（增量） | `crates/ime-core/src/fuzzy.rs` | `P0.03.01`、`P0.03.03` | `TC-CORE-56`~`60` | ✅ | ✅ | ✅ | — | — | ✅ |
@@ -86,7 +86,7 @@
 | `REQ-RT-07` | Wayland 四档窗口后端 | `crates/ime-ui/src/platform/wayland/` | `P0.02.06` | `TC-RT-36`~`40` | Ⓦ | Ⓦ | Ⓦ | Ⓦ | — | 🚫（代码已落地；本机无 layer-shell，`Ⓦ 文档豁免` 记录在案） |
 | `REQ-RT-08` | UI addon C ABI 与跨 addon 帧通道（增量） | `crates/ime-ui-addon/src/{ffi,addon,ui_impl,cursor}/`、ADR-0011 | `P0.02.01`、`P0.02.06` | `TC-RT-41`~`45` | ✅ | ✅ | ✅ | — | — | ✅ |
 | `REQ-RT-09` | 行为诚实化：模式位/焦点/挂起/日志热切换（增量） | `crates/ime-core/src/state/effects.rs`、`crates/ime-fcitx5/src/{session_host,engine/context}.rs`、`crates/ime-diag/src/log.rs` | `P0.02.01`、`P0.02.03`、`P0.02.06` | `TC-RT-46`~`50` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-UI-01` | X11 ARGB 透明窗口后端 | `crates/ime-ui/src/platform/x11.rs`、`x11/` | `P0.01.02`、`P0.02.04` | `TC-UI-01`~`05`（深化 `TC-RT-34`） | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| `REQ-UI-01` | X11 ARGB 透明窗口后端 | `crates/ime-ui/src/platform/x11.rs`、`x11/` | `P0.01.02`、`P0.02.04` | `TC-UI-01`~`05`（深化 `TC-RT-33`/`34`） | ✅ | ✅ | ✅ | ✅ | — | ✅ |
 | `REQ-UI-02` | 自定义 Slint Platform 与软件光栅 | `crates/ime-ui/src/slint_platform.rs`、`renderer.rs` | `P0.01.02`、`P0.02.04` | `TC-UI-06`~`10` | ✅ | ✅ | ✅ | ✅ | — | ✅ |
 | `REQ-UI-03` | UI 线程模型与命令队列（`eventfd` 唤醒） | `crates/ime-ui/src/{ui_thread,channel}.rs` | `P0.01.03`、`P0.02.05` | `TC-UI-11`~`15` | ✅ | ✅ | ✅ | — | — | ✅ |
 | `REQ-UI-04` | 候选框骨架与布局约束 | `crates/ime-ui/ui/candidate.slint`、`layout.rs` | `P0.02.04`、`P0.04.01` | `TC-UI-16`~`20` | ✅ | ✅ | ✅ | ✅ | — | ✅ |
@@ -100,7 +100,7 @@
 | `REQ-SEC-01` | 用户数据目录与文件权限基线 | `crates/ime-dict/src/paths.rs`、`paths/` | `P0.05.01` | `TC-SEC-31`~`35`（深化 `TC-INFRA-60`） | ✅ | — | ✅ | — | — | ✅ |
 | `REQ-SEC-02` | 敏感输入上下文检测与学习抑制 | `crates/ime-fcitx5/src/privacy_impl/`、`crates/ime-core/src/privacy.rs` | `P0.02.03` | `TC-SEC-36`~`42` | ✅ | ✅ | ✅ | ✅ | — | ✅ |
 | `REQ-SEC-03` | 零网络外联断言 | `scripts/check-no-network.sh`、`runtime-socket-check.sh` | `P0.03.03` | `TC-SEC-11`~`15` | ✅ | ✅ | ✅ | — | — | ✅ |
-| `REQ-SEC-04` | 词源许可证白名单与 SHA256 | `scripts/check-dict-sources.sh`、`data/sources.toml` | `P0.03.02` | `TC-SEC-16`~`20`（深化 `TC-SEC-43`） | ✅ | ✅ | ✅ | — | — | ✅ |
+| `REQ-SEC-04` | 词源许可证白名单与 SHA256 | `scripts/check-dict-sources.sh`、`data/sources.toml` | `P0.03.02` | `TC-SEC-16`~`20`（深化 `TC-SEC-43`、`TC-DICT-45`） | ✅ | ✅ | ✅ | — | — | ✅ |
 | `REQ-SEC-05` | Slint API 不泄漏（`OB-4`） | `scripts/check-slint-leak.sh` | `P0.03.03` | `TC-SEC-21`~`25`（深化 `TC-SEC-44`） | ✅ | ✅ | ✅ | — | — | ✅ |
 | `REQ-SEC-06` | 依赖单向性与分层 | `scripts/check-deps.sh` | `P0.03.03` | `TC-SEC-26`~`30`（深化 `TC-SEC-45`） | ✅ | ✅ | ✅ | — | — | ✅ |
 | `REQ-DIAG-01` | 结构化日志、滚动与字段脱敏 | `crates/ime-diag/src/{log,redact}.rs` | `P0.02.03` | `TC-DIAG-01`~`05` | ✅ | ✅ | ✅ | — | — | ✅ |

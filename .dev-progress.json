@@ -1,8 +1,8 @@
 {
-  "total": 219,
+  "total": 220,
   "completed": 219,
   "is_workspace": true,
-  "ledger_revision": 31,
+  "ledger_revision": 33,
   "reconciled_at": "2026-10-05",
   "reconcile_basis": "Round 1 closed the 103 cards of the seven Hub documents and set ALL_COMPLETED. That was a false completion: opt-deploy/keymap/perf/ui are Hub & Spoke documents whose P1/P2 cards live in opt-<name>/phase-{2,3}.md, and the run only ever read the Hubs. This round scans the shards too (53 open cards) plus docs/dev/tests.md (30 cases still 未通过). The 103 round-1 cards stay COMPLETED and are not re-opened.",
   "wave_plan": "W0=1.01.01-03 | W1=1.02.01,1.03.01-03,1.04.01 | W2=1.02.02-07,1.03.04-07,1.04.02-05 | W3=1.04.06-07,1.05.01-08 | W4=1.06.01-03,1.07.01,1.08.01-03",
@@ -2356,6 +2356,16 @@
       "depends": "P0.01.01",
       "status": "COMPLETED",
       "note": "opt-basic round: discovered 2026-10-01 after closure (manifest landed mid-session, never scanned)"
+    },
+    {
+      "id": "TASK-220",
+      "task_id": "FEAT-TEST-P1.05.07",
+      "file": "./docs/dev/features-test.md",
+      "title": "追溯矩阵与可执行性标签的机械校验",
+      "wave": "G1",
+      "track": "C",
+      "status": "READY_FOR_FINAL_GATE",
+      "note": "merged: scripts/check-test-matrix.py (775 lines) + justfile (check-test-matrix recipe, audits dep, check-self-tests line); healed 8 orphan matrix bindings in tests.md the script caught; real audit PASS 67 rows / 382 cases, self-test PASS 3 injections"
     }
   ],
   "concurrency": 5,
@@ -2390,7 +2400,7 @@
       ]
     }
   },
-  "status": "ALL_COMPLETED",
+  "status": "IN_PROGRESS",
   "scope_decision_round_2": {
     "effective_manifest_set": [
       "docs/dev/features*.md and docs/dev/opt-*.md (the default globs; all 103 cards already closed in round 1)",
@@ -2410,5 +2420,6 @@
     "Wayland tiers remain unverifiable on this machine (WSLg is Weston) - permanent environment boundary, recorded in 0.5.5 and docs/dev/spikes/wayland-tiers.md"
   ],
   "reopen_note": "2026-10-01: opt-basic.md/phase-2/phase-3 (31 cards, REFACTOR-*) landed at 13:45 mid-run (5ce560a) but postdate the stage-1 scan; discovered by the follow-up session's manifest re-scan (14 open [ ] markers). Run reopened; waves R1-R7 assigned by the plan's own DAG (opt-basic.md 4.1/4.2).",
-  "wave_plan_optbasic": "R1 = no-dep cards {P0.02.01, P0.04.01, P0.04.03, P0.04.04, P1.03.03, P2.04.01} + main-agent P0.01.01 (spike/ADR-0011/wire); R2 = P0.03.01, P0.04.02, P2.04.02, P2.05.02, P2.05.03; R4 = channel consumers P0.01.03/04/05 after R3's P0.01.02; R5-R7 = P1/P2 dependents."
+  "wave_plan_optbasic": "R1 = no-dep cards {P0.02.01, P0.04.01, P0.04.03, P0.04.04, P1.03.03, P2.04.01} + main-agent P0.01.01 (spike/ADR-0011/wire); R2 = P0.03.01, P0.04.02, P2.04.02, P2.05.02, P2.05.03; R4 = channel consumers P0.01.03/04/05 after R3's P0.01.02; R5-R7 = P1/P2 dependents.",
+  "reopen_note_round3": "2026-10-08: reopened for the single orphan card FEAT-TEST-P1.05.07 (scripts/check-test-matrix.py + justfile check-self-tests/audits wiring); everything else stays COMPLETED."
 }

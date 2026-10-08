@@ -260,6 +260,13 @@ check-self-tests:
     bash scripts/check-dict-sources.sh --self-test
     bash scripts/gen-licenses.sh --self-test
     bash scripts/check-readme-keys.sh --self-test
+    python3 scripts/check-test-matrix.py --self-test
+
+# Mechanical audit of the test-suite documents: the section-2 matrix of tests.md
+# and every case heading (hub plus shards) must keep their bidirectional binding,
+# five primary cases per row, and release-clean executability labels (GUARD-08).
+check-test-matrix:
+    python3 scripts/check-test-matrix.py
 
 # Benchmarks, then the budget gate over what they measured. The gate reads the criterion
 # output this recipe just produced and fails on a case that is past its threshold, so a
@@ -292,10 +299,11 @@ bench-quick:
             ;;
     esac
 
-# Every architecture, licence, budget and self-test audit, in one list. `just ci` is
-# `check audits check-host`, so this is the only place the audit set is written down:
-# the CI workflow runs `just ci` and never names an audit of its own.
-audits: check-deps check-unsafe check-no-grab check-net check-slint check-ui check-dict check-licenses check-budget check-versions check-self-tests
+# Every architecture, licence, budget, test-suite-document and self-test audit, in
+# one list. `just ci` is `check audits check-host`, so this is the only place the
+# audit set is written down: the CI workflow runs `just ci` and never names an audit
+# of its own.
+audits: check-deps check-unsafe check-no-grab check-net check-slint check-ui check-dict check-licenses check-budget check-versions check-test-matrix check-self-tests
 
 # The full gate suite: the four commands of features.md 0.3, every architecture and
 # licence audit, and the host-ABI half. This is the single definition of "done", and
