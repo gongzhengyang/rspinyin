@@ -197,10 +197,10 @@ impl ClientStream for ProcessStream {
     }
 
     fn exit_status(&mut self) -> Option<String> {
-        if self.exit.is_none() {
-            if let Ok(Some(status)) = self.child.try_wait() {
-                self.exit = Some(status.to_string());
-            }
+        if self.exit.is_none()
+            && let Ok(Some(status)) = self.child.try_wait()
+        {
+            self.exit = Some(status.to_string());
         }
         self.exit.clone()
     }

@@ -83,12 +83,12 @@ impl MissCache {
     /// Stores `value` under `key`, replacing the least recently referenced slot once the
     /// cache is full.
     pub(super) fn insert(&mut self, key: &str, value: u32) {
-        if let Some(index) = self.index.get(key).copied() {
-            if let Some(slot) = self.slots.get_mut(index as usize) {
-                slot.value = value;
-                slot.referenced = true;
-                return;
-            }
+        if let Some(index) = self.index.get(key).copied()
+            && let Some(slot) = self.slots.get_mut(index as usize)
+        {
+            slot.value = value;
+            slot.referenced = true;
+            return;
         }
         let index = self.victim();
         let shared: Arc<str> = Arc::from(key);

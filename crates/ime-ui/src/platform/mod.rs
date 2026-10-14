@@ -153,6 +153,8 @@ pub(crate) fn repack_scratch(width_px: u32, height_px: u32) -> Vec<u8> {
 /// each pixel are written. Those three bytes are copied in memory order, which is the
 /// order a server expects from a client whose byte order is little-endian: the only order
 /// this project ships on.
+// `as_chunks` stabilized in Rust 1.88, while the workspace MSRV is 1.85.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 pub(crate) fn pack_rgb24(src: &[u8], dst: &mut [u8], width_px: u32, height_px: u32) {
     let src_stride = width_px as usize * BYTES_PER_PIXEL as usize;
     let dst_stride = packed_stride(width_px);

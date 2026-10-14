@@ -294,10 +294,10 @@ impl Set {
     pub fn architectures(&self) -> Vec<Architecture> {
         let mut found: Vec<Architecture> = Vec::new();
         for file in &self.files {
-            if let Some(arch) = file.arch() {
-                if !found.contains(&arch) {
-                    found.push(arch);
-                }
+            if let Some(arch) = file.arch()
+                && !found.contains(&arch)
+            {
+                found.push(arch);
             }
         }
         found.sort();

@@ -262,6 +262,7 @@ fn test_user_db_evicts_the_oldest_records() {
         db.record(key, 0);
     }
     db.final_commit().expect("flushing");
+    db.wait_for_flush();
     assert_eq!(db.record_count().expect("counting"), 10);
 
     let removed = db.evict_oldest(EVICT_FRACTION).expect("evicting");
@@ -540,6 +541,7 @@ fn test_user_db_eviction_forgets_the_evicted_counts() {
         db.record(key, 0);
     }
     db.final_commit().expect("flushing");
+    db.wait_for_flush();
     assert_eq!(db.committed_len(), Some(10), "the store is loaded");
 
     let removed = db.evict_oldest(EVICT_FRACTION).expect("evicting");

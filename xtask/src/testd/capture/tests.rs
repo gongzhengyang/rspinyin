@@ -733,6 +733,8 @@ fn test_normalize_scale_is_the_value_a_capture_records() {
     assert_eq!(normalize_scale(2.0).to_bits(), 2.0f32.to_bits());
 }
 
+// `as_chunks_mut` stabilized in Rust 1.88, while the workspace MSRV is 1.85.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 #[test]
 fn test_capture_pixel_chain_samples_the_colour_the_server_painted() {
     let scratch = Scratch::new("red-chain");

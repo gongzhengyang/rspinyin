@@ -655,10 +655,10 @@ impl CandidateSurface {
         if self.blur_named == Some(region) {
             return;
         }
-        if let Some(blur) = self.blur.as_deref_mut() {
-            if request_blur(blur, &[region]) == BlurNegotiation::Applied {
-                self.blur_named = Some(region);
-            }
+        if let Some(blur) = self.blur.as_deref_mut()
+            && request_blur(blur, &[region]) == BlurNegotiation::Applied
+        {
+            self.blur_named = Some(region);
         }
     }
 

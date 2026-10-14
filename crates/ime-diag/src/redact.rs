@@ -443,10 +443,10 @@ impl RedactState {
         event.record(&mut ObserveVisitor {
             observation: &mut observation,
         });
-        if observation.flagged {
-            if let Some(session) = observation.session {
-                self.mark_sensitive_session(session);
-            }
+        if observation.flagged
+            && let Some(session) = observation.session
+        {
+            self.mark_sensitive_session(session);
         }
         observation
     }

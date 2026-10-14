@@ -244,10 +244,10 @@ pub(crate) fn start() {
 
 /// Stops the drain thread, before the addon's teardown takes the outlet away.
 pub(crate) fn stop() {
-    if let Some(drain) = lock_drain().take() {
-        if !drain.stop(DRAIN_STOP_TIMEOUT) {
-            crate::ffi::emit_diagnostic(DRAIN_STOP_TIMEOUT_CODE);
-        }
+    if let Some(drain) = lock_drain().take()
+        && !drain.stop(DRAIN_STOP_TIMEOUT)
+    {
+        crate::ffi::emit_diagnostic(DRAIN_STOP_TIMEOUT_CODE);
     }
 }
 

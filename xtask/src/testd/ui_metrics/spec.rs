@@ -547,10 +547,11 @@ fn numbers(cell: &str, unit: &str) -> Vec<u16> {
         }
         let continues_a_word =
             start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
-        if !continues_a_word && start < at {
-            if let Ok(value) = cell[start..at].parse::<u16>() {
-                values.push(value);
-            }
+        if !continues_a_word
+            && start < at
+            && let Ok(value) = cell[start..at].parse::<u16>()
+        {
+            values.push(value);
         }
         from = at + unit.len();
     }

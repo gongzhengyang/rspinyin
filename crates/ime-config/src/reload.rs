@@ -492,14 +492,14 @@ impl Config {
             document_error(format!("a key holds a value of the wrong type: {error}"))
         })?;
 
-        if let Some(version) = partial.schema_version {
-            if version != i64::from(CONFIG_SCHEMA_VERSION) {
-                warnings.report(
-                    SCHEMA_VERSION_KEY,
-                    format!("unsupported schema version: {version}"),
-                );
-                return Ok((Self::default(), warnings.entries));
-            }
+        if let Some(version) = partial.schema_version
+            && version != i64::from(CONFIG_SCHEMA_VERSION)
+        {
+            warnings.report(
+                SCHEMA_VERSION_KEY,
+                format!("unsupported schema version: {version}"),
+            );
+            return Ok((Self::default(), warnings.entries));
         }
         if document
             .as_table()

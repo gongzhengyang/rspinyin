@@ -202,13 +202,13 @@ fn wait_for_frame(
 ///
 /// Never.
 fn verdict(frame: &UiFrame, want: &Expectations) -> Result<(), String> {
-    if let Some(wanted) = want.revision {
-        if frame.revision != wanted {
-            return Err(format!(
-                "the newest frame is revision {}, not {wanted}",
-                frame.revision
-            ));
-        }
+    if let Some(wanted) = want.revision
+        && frame.revision != wanted
+    {
+        return Err(format!(
+            "the newest frame is revision {}, not {wanted}",
+            frame.revision
+        ));
     }
     if want.empty && !frame.candidates.is_empty() {
         return Err(format!(
@@ -216,13 +216,13 @@ fn verdict(frame: &UiFrame, want: &Expectations) -> Result<(), String> {
             frame.candidates.len()
         ));
     }
-    if let Some(wanted) = want.candidates {
-        if frame.candidates.len() != wanted {
-            return Err(format!(
-                "the newest frame holds {} candidate(s), not {wanted}",
-                frame.candidates.len()
-            ));
-        }
+    if let Some(wanted) = want.candidates
+        && frame.candidates.len() != wanted
+    {
+        return Err(format!(
+            "the newest frame holds {} candidate(s), not {wanted}",
+            frame.candidates.len()
+        ));
     }
     Ok(())
 }

@@ -251,10 +251,10 @@ impl SurfaceBackend for MockSurface {
         // the same order the X11 backend adopts one in.
         let mut adopted = None;
         for event in out.iter() {
-            if let SurfaceEvent::Scale { factor } = *event {
-                if let Some(ratio) = self.adopt_scale(factor) {
-                    adopted = Some(ratio);
-                }
+            if let SurfaceEvent::Scale { factor } = *event
+                && let Some(ratio) = self.adopt_scale(factor)
+            {
+                adopted = Some(ratio);
             }
         }
         if let Some(ratio) = adopted {

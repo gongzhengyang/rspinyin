@@ -73,6 +73,8 @@ impl DictWriter {
     /// [`format::UNIGRAM_ENTRY_SIZE`]-byte records, or when the `WORDLIST`
     /// payload is not a whole number of `u32`s. A `BIGRAM` payload is rejected in
     /// version 1, whose `flags` contract states that the section is never emitted.
+    // `is_multiple_of` stabilized in Rust 1.87, while the workspace MSRV is 1.85.
+    #[allow(clippy::manual_is_multiple_of)]
     pub fn add_section(&mut self, kind: SectionKind, bytes: Vec<u8>) -> Result<(), DictError> {
         if kind == SectionKind::Bigram && !bytes.is_empty() {
             return Err(DictError::LengthOutOfRange {

@@ -141,11 +141,11 @@ impl Inner {
             let stamp = value.value().1;
             if (oldest.len() as u64) < rank {
                 oldest.push(stamp);
-            } else if let Some(worst) = oldest.peek() {
-                if stamp < *worst {
-                    oldest.pop();
-                    oldest.push(stamp);
-                }
+            } else if let Some(worst) = oldest.peek()
+                && stamp < *worst
+            {
+                oldest.pop();
+                oldest.push(stamp);
             }
         }
         if seen < rank {

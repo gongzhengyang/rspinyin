@@ -338,11 +338,11 @@ pub(crate) fn normalize_into(raw: &str, out: &mut String, dropped: &mut DroppedC
             _ => dropped.push(ch, at),
         }
     }
-    if let Some(at) = trailing_marker {
-        if out.ends_with('\'') {
-            out.pop();
-            dropped.push('\'', at);
-        }
+    if let Some(at) = trailing_marker
+        && out.ends_with('\'')
+    {
+        out.pop();
+        dropped.push('\'', at);
     }
 }
 

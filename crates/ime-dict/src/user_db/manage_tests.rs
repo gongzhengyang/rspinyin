@@ -3,6 +3,11 @@
 //! Every test owns its database in a directory of its own under the system temp directory
 //! and drives the clock through [`TestClock`], so nothing here depends on a real XDG
 //! directory, on the wall clock, or on the state left by another test.
+//!
+//! A test that records past a flush trigger has to call `wait_for_flush` before asserting
+//! what reached the file: `final_commit` only writes what the trigger has not yet handed
+//! to the store's flush thread, so what that thread holds can still be inside its own
+//! transaction when the commit returns.
 
 use super::tests::{KEYS, TestClock, db_path, open_in, temp_dir};
 use super::*;
@@ -30,6 +35,7 @@ fn test_forget_removes_the_record_and_reports_it() {
     let mut db = open_in(&dir, clock.clone());
     record_all(&db, &clock, &KEYS);
     db.final_commit().expect("flushing");
+    db.wait_for_flush();
     assert_eq!(db.record_count().expect("counting"), KEYS.len() as u64);
 
     assert_eq!(db.forget_with_outcome(KEYS[0]), ForgetOutcome::Removed);
@@ -81,6 +87,7 @@ fn test_forget_of_an_unknown_key_reports_not_found_and_changes_nothing() {
     let mut db = open_in(&dir, clock.clone());
     record_all(&db, &clock, &KEYS);
     db.final_commit().expect("flushing");
+    db.wait_for_flush();
 
     assert_eq!(
         db.forget_with_outcome("never-typed"),
@@ -197,6 +204,7 @@ fn test_list_words_pages_by_offset_and_limit() {
     let keys = ["w0", "w1", "w2", "w3", "w4"];
     record_all(&db, &clock, &keys);
     db.final_commit().expect("flushing");
+    db.wait_for_flush();
 
     let first = db.list_words(0, 2).expect("listing");
     assert_eq!(keys_of(&first), ["w4", "w3"], "most recently used first");
@@ -231,6 +239,7 @@ fn test_list_words_clamps_the_limit_to_the_page_ceiling() {
         db.record(key, 0);
     }
     db.final_commit().expect("flushing");
+    db.wait_for_flush();
 
     let page = db.list_words(0, u16::MAX).expect("listing");
     assert_eq!(
@@ -295,6 +304,7 @@ fn test_list_words_drops_a_forgotten_word_before_the_flush() {
     let mut db = open_in(&dir, clock.clone());
     record_all(&db, &clock, &["kept", "gone"]);
     db.final_commit().expect("flushing");
+    db.wait_for_flush();
 
     db.forget("gone");
     let rows = db.list_words(0, 10).expect("listing");
@@ -305,6 +315,7 @@ fn test_list_words_drops_a_forgotten_word_before_the_flush() {
     );
     assert_eq!(db.record_count().expect("counting"), 2);
     db.final_commit().expect("flushing the removal");
+    db.wait_for_flush();
     assert_eq!(keys_of(&db.list_words(0, 10).expect("listing")), ["kept"]);
     assert_eq!(db.record_count().expect("counting"), 1);
 }

@@ -187,6 +187,8 @@ fn bits_per_pixel(pixmap_formats: &[Format], depth: u8) -> u8 {
 /// # Panics
 ///
 /// Never: the walk is over whole pixels and a short frame only leaves a remainder unwritten.
+// `as_chunks_mut` stabilized in Rust 1.88, while the workspace MSRV is 1.85.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 pub fn to_rgba(frame: &mut [u8], format: PixelFormat) {
     let opaque = !format.has_alpha();
     for pixel in frame.chunks_exact_mut(4) {

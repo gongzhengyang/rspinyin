@@ -57,6 +57,8 @@ impl MockState {
     /// The check that a frame was *painted* rather than merely committed: the window is
     /// mostly transparent reserve, so a count of zero means the surface was handed a frame
     /// and drew none of it.
+    // `as_chunks` stabilized in Rust 1.88, while the workspace MSRV is 1.85.
+    #[allow(clippy::chunks_exact_to_as_chunks)]
     pub(crate) fn painted_pixels(&self) -> usize {
         self.pixels
             .chunks_exact(BYTES_PER_PIXEL as usize)

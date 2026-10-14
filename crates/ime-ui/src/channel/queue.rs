@@ -361,14 +361,14 @@ impl<T> CollapsingQueue<T> {
     /// This function does not panic.
     pub fn push(&self, value: T) {
         let staged = self.lock().take();
-        if let Some(previous) = staged {
-            if self.queue.try_push(previous).is_err() {
-                // The queue is still full. The contract keeps the newest value, so the
-                // staged one is what disappears and the one that gets counted.
-                *self.lock() = Some(value);
-                self.collapsed.fetch_add(1, Ordering::Relaxed);
-                return;
-            }
+        if let Some(previous) = staged
+            && self.queue.try_push(previous).is_err()
+        {
+            // The queue is still full. The contract keeps the newest value, so the
+            // staged one is what disappears and the one that gets counted.
+            *self.lock() = Some(value);
+            self.collapsed.fetch_add(1, Ordering::Relaxed);
+            return;
         }
         if let Err(value) = self.queue.try_push(value) {
             // Staging is not a drop: the value is still on its way, and the counter records

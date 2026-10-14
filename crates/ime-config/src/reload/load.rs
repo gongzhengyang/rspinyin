@@ -125,16 +125,15 @@ fn quarantine(path: &Path, unix_secs: u64, warnings: &mut Warnings) {
 /// so a configuration the user has -- including one this loader could not read -- is
 /// never replaced by the template.
 fn write_template(path: &Path, warnings: &mut Warnings) {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            if let Err(error) = fs::create_dir_all(parent) {
-                warnings.report(
-                    DOCUMENT_KEY,
-                    format!("cannot create the configuration directory: {error}"),
-                );
-                return;
-            }
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        warnings.report(
+            DOCUMENT_KEY,
+            format!("cannot create the configuration directory: {error}"),
+        );
+        return;
     }
     let written = match fs::OpenOptions::new()
         .write(true)

@@ -246,11 +246,12 @@ fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
 /// Returns [`ImeError::DictUnavailable`] when the directory cannot be created, or the file
 /// cannot be created or tightened.
 fn prepare_path(path: &Path) -> Result<(), ImeError> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|error| store_error(path, &error))?;
-            set_mode(parent, DIR_MODE).map_err(|error| store_error(path, &error))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent).map_err(|error| store_error(path, &error))?;
+        set_mode(parent, DIR_MODE).map_err(|error| store_error(path, &error))?;
     }
     if path.exists() {
         return set_mode(path, FILE_MODE).map_err(|error| store_error(path, &error));
@@ -283,15 +284,15 @@ fn stamp_schema(path: &Path, db: &Database) -> Result<(), ImeError> {
             .get(SCHEMA_KEY)
             .map_err(|error| store_error(path, &error))?
             .map(|guard| guard.value());
-        if let Some(version) = found {
-            if version != SCHEMA_VERSION {
-                return Err(ImeError::DictUnavailable {
-                    path: path.to_path_buf(),
-                    cause: DictError::FormatVersion {
-                        found: u16::try_from(version).unwrap_or(u16::MAX),
-                    },
-                });
-            }
+        if let Some(version) = found
+            && version != SCHEMA_VERSION
+        {
+            return Err(ImeError::DictUnavailable {
+                path: path.to_path_buf(),
+                cause: DictError::FormatVersion {
+                    found: u16::try_from(version).unwrap_or(u16::MAX),
+                },
+            });
         }
         meta.insert(SCHEMA_KEY, SCHEMA_VERSION)
             .map_err(|error| store_error(path, &error))?;

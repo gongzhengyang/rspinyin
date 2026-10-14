@@ -641,10 +641,10 @@ fn conf_value(conf: &str, section: &str, key: &str) -> Option<String> {
         if !in_section {
             continue;
         }
-        if let Some((name, value)) = line.split_once('=') {
-            if name.trim() == key {
-                return Some(value.trim().to_owned());
-            }
+        if let Some((name, value)) = line.split_once('=')
+            && name.trim() == key
+        {
+            return Some(value.trim().to_owned());
         }
     }
     None

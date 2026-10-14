@@ -426,6 +426,8 @@ fn section_field(
 /// Returns [`FixtureError::ImageUnreadable`] when the container has no `ENTRIES` section or
 /// a record of it does not decode, and [`FixtureError::OutOfImage`] when the section's bytes
 /// leave the image.
+// `as_chunks` stabilized in Rust 1.88, while the workspace MSRV is 1.85.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 fn max_record_end(image: &[u8]) -> Result<u64, FixtureError> {
     let entries = section_bytes(image, SectionKind::Entries)?;
     let mut end = 0u64;

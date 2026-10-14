@@ -461,6 +461,8 @@ fn mebibytes_to_bytes(mebibytes: f64) -> Option<u64> {
 ///
 /// The standard formatting machinery has no grouping flag and a decimal-grouping
 /// crate would be a dependency for ten lines, so the digits are grouped here.
+// `is_multiple_of` stabilized in Rust 1.87, while the workspace MSRV is 1.85.
+#[allow(clippy::manual_is_multiple_of)]
 fn grouped(value: u64) -> String {
     let digits = value.to_string();
     let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);

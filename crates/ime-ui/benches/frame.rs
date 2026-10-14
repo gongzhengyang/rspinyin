@@ -271,11 +271,11 @@ impl SurfaceBackend for TimedSurface {
         // Read before a buffer is handed out, so a starved frame costs the frame path exactly
         // what a backend with no free buffer costs it: nothing is stamped and no buffer is
         // touched.
-        if let Ok(mut seen) = self.observed.lock() {
-            if seen.starve > 0 {
-                seen.starve -= 1;
-                return Err(PlatformError::NoFreeBuffer);
-            }
+        if let Ok(mut seen) = self.observed.lock()
+            && seen.starve > 0
+        {
+            seen.starve -= 1;
+            return Err(PlatformError::NoFreeBuffer);
         }
         let back = self.back;
         let data = self

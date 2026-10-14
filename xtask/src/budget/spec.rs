@@ -90,10 +90,10 @@ pub fn parse_spec_table(spec: &str) -> Result<BTreeMap<String, SpecRow>> {
     for line in spec.lines() {
         let trimmed = line.trim();
         if !in_section {
-            if let Some(rest) = trimmed.strip_prefix("#### ") {
-                if rest.starts_with(SPEC_SECTION) {
-                    in_section = true;
-                }
+            if let Some(rest) = trimmed.strip_prefix("#### ")
+                && rest.starts_with(SPEC_SECTION)
+            {
+                in_section = true;
             }
             continue;
         }

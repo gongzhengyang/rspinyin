@@ -263,10 +263,10 @@ pub fn project_keys(keys: &KeysConfig) -> (KeyBindings, Vec<ImeError>) {
     // would quietly stop finding anything the moment one set gained a flag.
     let mut collisions = FlipSet::empty();
     for name in &keys.flip_keys {
-        if keys.highlight_keys.contains(name) {
-            if let Some(bit) = page_bit(*name) {
-                collisions |= bit;
-            }
+        if keys.highlight_keys.contains(name)
+            && let Some(bit) = page_bit(*name)
+        {
+            collisions |= bit;
         }
     }
     flip_keys.remove(collisions);

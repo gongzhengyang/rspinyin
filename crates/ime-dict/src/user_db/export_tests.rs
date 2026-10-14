@@ -38,6 +38,7 @@ fn test_export_tsv_writes_the_header_and_every_record() {
         db.record(key, 0);
     }
     db.final_commit().expect("flushing");
+    db.wait_for_flush();
 
     let document = document_of(&db);
     let lines: Vec<&str> = document.lines().collect();
@@ -78,6 +79,7 @@ fn test_export_round_trips_into_an_empty_store() {
     }
     source.record("ni'hao", 0);
     source.final_commit().expect("flushing");
+    source.wait_for_flush();
     let before = source.record_count().expect("counting");
     let expected: Vec<u32> = ["ni'hao", "shi'jie", "zhong'guo"]
         .iter()
@@ -113,6 +115,7 @@ fn test_export_to_file_writes_a_private_file_and_leaves_no_temporary() {
     clock.advance_ms(1_000);
     db.record("ni'hao", 0);
     db.final_commit().expect("flushing");
+    db.wait_for_flush();
 
     let path = dir.join("words.tsv");
     let rows = db.export_to_file(&path).expect("exporting to a file");
@@ -132,6 +135,7 @@ fn test_export_to_file_writes_a_private_file_and_leaves_no_temporary() {
     clock.advance_ms(1_000);
     db.record("shi'jie", 0);
     db.final_commit().expect("flushing");
+    db.wait_for_flush();
     assert_eq!(db.export_to_file(&path).expect("exporting again"), 2);
     let written = std::fs::read_to_string(&path).expect("reading the export");
     assert_eq!(written.matches('\n').count(), 5);

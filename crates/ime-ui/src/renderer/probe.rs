@@ -20,7 +20,7 @@
 //! thread's platform would either hand the probe the candidate window's surface or be
 //! refused, and either way the probe could not run before the window exists.
 //!
-//! The answer is due within [`PROBE_BUDGET`]. A probe that outlives it -- a pathological
+//! The answer is due within `PROBE_BUDGET`. A probe that outlives it -- a pathological
 //! font that wedges the shaper, a renderer that never finishes a frame -- is abandoned
 //! rather than allowed to park the thread that is building the candidate window: the
 //! window then draws with the first family of [`CJK_FAMILIES`], and the cached answer
@@ -147,7 +147,7 @@ impl FontChoice {
         }
     }
 
-    /// The answer of a probe that outlived [`PROBE_BUDGET`].
+    /// The answer of a probe that outlived `PROBE_BUDGET`.
     ///
     /// No family was measured, but the window still has to draw with one, and the first
     /// entry of [`CJK_FAMILIES`] -- the head of the existing fallback order -- is a better
@@ -175,7 +175,7 @@ pub enum FontStatus {
     NoFonts,
     /// The probe could not run, so nothing is known about the fonts.
     Unavailable,
-    /// The probe did not answer within [`PROBE_BUDGET`], so nothing was measured -- but
+    /// The probe did not answer within `PROBE_BUDGET`, so nothing was measured -- but
     /// the window still draws, with the first family of [`CJK_FAMILIES`], because the
     /// answer it adopted is a deadline's rather than a measurement's.
     TimedOut,
@@ -212,7 +212,7 @@ impl FontStatus {
 /// the family the window draws with is a measurement rather than a guess about which font
 /// the machine has. The probe rasterizes into a scratch of its own and drops it.
 ///
-/// The probe runs on a thread of its own and the call waits for it for [`PROBE_BUDGET`]:
+/// The probe runs on a thread of its own and the call waits for it for `PROBE_BUDGET`:
 /// a probe that answers in time leaves no thread behind, and one that outlives the budget
 /// is abandoned, leaving its join parked on a detached helper that disappears with the
 /// process. It never touches the candidate window's surface.

@@ -129,10 +129,10 @@ impl Inner {
     /// remembered, which is what keeps a store past its ceiling to one read transaction per
     /// distinct word per session.
     fn stored_value(&self, key: &str) -> u32 {
-        if let Some(mut cache) = lock_cache(&self.cache) {
-            if let Some(hit) = cache.get(key) {
-                return hit;
-            }
+        if let Some(mut cache) = lock_cache(&self.cache)
+            && let Some(hit) = cache.get(key)
+        {
+            return hit;
         }
         let held = self.stored_freq(key);
         if let Some(mut cache) = lock_cache(&self.cache) {

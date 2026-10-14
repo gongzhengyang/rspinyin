@@ -202,6 +202,8 @@ impl PixelScratch {
     /// rectangle needs. The backend contract promises a buffer of at least
     /// `width * height * 4` bytes, so a short one is a backend defect: there is no code for
     /// that case, and refusing to write is better than writing out of range.
+    // `as_chunks_mut` stabilized in Rust 1.88, while the workspace MSRV is 1.85.
+    #[allow(clippy::chunks_exact_to_as_chunks)]
     pub(super) fn blit_into(
         &self,
         dst: &mut [u8],

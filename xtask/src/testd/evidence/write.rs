@@ -285,13 +285,13 @@ pub fn refuse_legacy_layout(path: &Path) -> Result<(), EvidenceError> {
         if segment != RESULTS_DIR {
             continue;
         }
-        if let Some(flat) = segments.next() {
-            if LEGACY_SUBDIRS.contains(&flat) {
-                return Err(EvidenceError::LegacyLayout {
-                    path: path.to_path_buf(),
-                    found: flat.to_owned(),
-                });
-            }
+        if let Some(flat) = segments.next()
+            && LEGACY_SUBDIRS.contains(&flat)
+        {
+            return Err(EvidenceError::LegacyLayout {
+                path: path.to_path_buf(),
+                found: flat.to_owned(),
+            });
         }
         break;
     }
