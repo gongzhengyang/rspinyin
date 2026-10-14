@@ -84,7 +84,8 @@ panic = "warn"
 
 [profile.release]
 lto = "thin"
-codegen-units = 1
+# don't use below config, it's too slow
+# codegen-units = 1
 # `strip` is deliberately NOT set here, in any form — `strip = true` and
 # `strip = "symbols"` both make rustc pass `--strip-all` to the linker, which drops `fcitx_addon_factory_instance` from the
 # dynamic symbol table — the symbol Fcitx5 resolves with dlsym after dlopen, and

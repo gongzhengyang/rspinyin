@@ -18,12 +18,32 @@
 #include <stdio.h>
 
 static void print_json_line(const char *event, const char *text, gint cursor) {
-    g_autofree gchar *escaped = g_strescape(text ? text : "", NULL);
-    if (cursor >= 0) {
-        printf("{\"event\":\"%s\",\"text\":\"%s\",\"cursor\":%d}\n", event, escaped, cursor);
-    } else {
-        printf("{\"event\":\"%s\",\"text\":\"%s\"}\n", event, escaped);
+    /* Standard JSON string escaping: control characters as \uXXXX (and the two
+     * byte-value shorthands), everything else verbatim. UTF-8 bytes above 0x7f
+     * go out raw, which is valid JSON; g_strescape's octal form is not, and the
+     * harness's strict parser refuses it. */
+    printf("{\"event\":\"%s\",\"text\":\"", event);
+    for (const gchar *p = text ? text : ""; *p; ++p) {
+        guchar c = (guchar)*p;
+        switch (c) {
+        case '"': fputs("\\\"", stdout); break;
+        case '\\': fputs("\\\\", stdout); break;
+        case '\n': fputs("\\n", stdout); break;
+        case '\r': fputs("\\r", stdout); break;
+        case '\t': fputs("\\t", stdout); break;
+        default:
+            if (c < 0x20) {
+                printf("\\u%04x", c);
+            } else {
+                putchar(c);
+            }
+        }
     }
+    putchar('"');
+    if (cursor >= 0) {
+        printf(",\"cursor\":%d", cursor);
+    }
+    printf("}\n");
     fflush(stdout);
 }
 
@@ -48,6 +68,15 @@ static void on_preedit(GtkIMContext *ctx, gpointer data G_GNUC_UNUSED) {
 }
 
 static gboolean focused = FALSE;
+
+/* The activation-time dbus link is not up yet, so the focus_in issued at map
+ * time is lost; re-issue it once the module is connected. Idempotent. */
+static gboolean delayed_focus_in(gpointer data) {
+    GtkIMContext *ctx = GTK_IM_CONTEXT(data);
+    gtk_im_context_focus_in(ctx);
+    focused = TRUE;
+    return G_SOURCE_REMOVE;
+}
 
 static gboolean on_key_event(GtkWidget *widget, GdkEventKey *event, gpointer data) {
     GtkIMContext *ctx = GTK_IM_CONTEXT(data);
@@ -85,18 +114,41 @@ static void on_activate(GtkApplication *app, gpointer data G_GNUC_UNUSED) {
 
     gtk_widget_show_all(window);
 
+    /* The host's controller Activate (and any key) must find this context
+     * focused; 150 ms after map the immodule's dbus link is up. */
+    g_timeout_add(150, delayed_focus_in, ctx);
+
     /* Report the mapped window id so the harness can focus it before injecting. */
     GdkWindow *gdk = gtk_widget_get_window(window);
     Window xid = GDK_WINDOW_XID(gdk);
-    printf("{\"event\":\"ready\",\"window\":\"0x%lx\"}\n", (unsigned long)xid);
+    const gchar *caps = g_object_get_data(G_OBJECT(app), "rspinyin-caps");
+    printf("{\"event\":\"ready\",\"caps\":\"%s\",\"window\":%lu}\n",
+           caps ? caps : "", (unsigned long)xid);
     fflush(stdout);
 }
 
 int main(int argc, char **argv) {
+    /* The probe's window id is the X11 window the injection and screenshot channels
+     * target. A session can advertise both X11 and Wayland, but this client is the
+     * X11 test endpoint, so GTK must not silently pick the Wayland backend. */
+    g_setenv("GDK_BACKEND", "x11", TRUE);
     GtkApplication *app = gtk_application_new("dev.rspinyin.test-client",
                                               G_APPLICATION_NON_UNIQUE);
     g_signal_connect(app, "activate", G_CALLBACK(on_activate), NULL);
-    int status = g_application_run(G_APPLICATION(app), argc, argv);
+    const gchar *caps = "";
+    gchar **gtk_args = g_new0(gchar *, (gsize)argc + 1);
+    gsize gtk_argc = 0;
+    for (int index = 1; index < argc; ++index) {
+        if (g_str_has_prefix(argv[index], "--caps=")) {
+            caps = argv[index] + sizeof("--caps=") - 1;
+        } else if (!g_str_has_prefix(argv[index], "--display=")) {
+            gtk_args[gtk_argc++] = argv[index];
+        }
+    }
+    g_object_set_data_full(G_OBJECT(app), "rspinyin-caps",
+                           g_strdup(caps ? caps : ""), g_free);
+    int status = g_application_run(G_APPLICATION(app), (int)gtk_argc, gtk_args);
+    g_free(gtk_args);
     g_object_unref(app);
     return status;
 }

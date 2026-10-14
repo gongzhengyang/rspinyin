@@ -212,8 +212,12 @@ export component CandidateGrid inherits VerticalLayout {
 
                     // The text and its annotation are one group: the number gap separates the
                     // label from this group, the annotation gap separates the two inside it.
+                    // The gap is bound to the annotation's own visibility: a layout spacing
+                    // is charged for every child gap whether the child renders or not, so a
+                    // fixed spacing here would take the room the two-character candidate
+                    // text needs whenever this build draws no annotation.
                     HorizontalLayout {
-                        spacing: root.annotation-gap;
+                        spacing: root.show-annotation && cell.annotation != "" ? root.annotation-gap : 0px;
 
                         Text {
                             text: cell.display-text;

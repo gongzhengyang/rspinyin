@@ -13,7 +13,7 @@
 #   * the entry declares a licence identifier and a SHA256;
 #   * the recorded SHA256 matches the file, unless the entry is project-derived;
 #   * the licence is permissive (MIT / Apache-2.0 / BSD / ISC / Unicode / CC0),
-#     and the source is not on the excluded list of ADR-0000 (luna-pinyin,
+#     and the source is not on the excluded list of ADR-0000 (luna-pinyin and
 #     CC-CEDICT, commercial IME dictionaries, research-only word lists).
 #
 # Upstream sources are hash-pinned: a present file with an empty `sha256` fails
@@ -120,7 +120,6 @@ EXCLUDED = {
     "sogou": "commercial dictionary, no licence",
     "baidu": "commercial dictionary, no licence",
     "qq": "commercial dictionary, no licence",
-    "thuocl": "licence not yet verified; register it with an ADR before use",
     "subtlex": "research-only licence",
 }
 

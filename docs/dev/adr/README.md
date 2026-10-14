@@ -18,6 +18,9 @@
 | `0009` | `Placement` 追加 `Fixed` / `Remember` 两个变体 | **已分配，未落盘** | `docs/dev/features-add/phase-2.md` 的 `ADD-FEAT-P1.03.04` | 见 `docs/dev/features-add/phase-2.md` |
 | `0010` | 测试专用分配计数器（第四条 `unsafe` 白名单路径） | 已接受 | `docs/dev/opt-perf.md` 的 `PERF-P2.01.01` | [0010-test-only-allocation-counter.md](0010-test-only-allocation-counter.md) |
 | `0011` | 跨 addon 帧通道（wire 镜像 + 进程内符号握手） | 已接受 | `docs/dev/opt-basic.md` 的 `REFACTOR-P0.01.01` | [0011-frame-transport.md](0011-frame-transport.md) |
+| `0012` | 词源扩展与 bigram 共现语料（THUOCL/华宇接入；zh-Wikipedia CC BY-SA 语料治理） | 已接受 | `docs/dev/compare-and-improve.md` 的 IMP-15/IMP-03，2026-10-14 项目所有者裁决 | [0012-corpus-and-word-sources.md](0012-corpus-and-word-sources.md) |
+| `0013` | 增量契约扩展：`UserFreqSource::set_pinned` 默认方法（置顶词） | **已分配，未落盘** | `docs/dev/features-add-phase1.md` 的 `TASK-1.04.01` | 见 `docs/dev/features-add-phase1.md` |
+| `0014` | 增量契约扩展：`DecodeFlags::CORRECTION` 位（拼写纠错） | **已分配，未落盘** | `docs/dev/features-add-phase3.md` 的 `TASK-3.01.01` | 见 `docs/dev/features-add-phase3.md` |
 
 ## 编号冲突的由来
 

@@ -181,7 +181,7 @@ fn write_container(dir: &Path) {
         threshold: u32::MAX,
         requested: 0,
     };
-    let compiled = compile(&words, band, 0, &[]).expect("compiling the fixture");
+    let compiled = compile(&words, band, 0, &[], crate::dictc::normalize::NormalizeRules::default()).expect("compiling the fixture");
     let mut writer = DictWriter::new();
     writer
         .add_section(SectionKind::Fst, compiled.fst)

@@ -23,8 +23,16 @@
 #
 # Excluded by ADR-0000; do not add:
 #   luna-pinyin (LGPL-3.0), CC-CEDICT (CC BY-SA 4.0), the commercial
-#   dictionaries of Sogou/Baidu/QQ, research-only word lists, and THUOCL until
-#   its licence has been verified and recorded with an ADR.
+#   dictionaries of Sogou/Baidu/QQ, research-only word lists, and the Tencent
+#   embedding word list (licence unresolved; see ADR-0012 W-4). THUOCL and the
+#   huayu word list were lifted from this list by ADR-0012 (accepted
+#   2026-10-14).
+#
+# Corpus inputs (raw text consumed only to derive statistics, never committed
+# and never distributed) are NOT word sources: they are governed by
+# ADR-0012 decision 2, not by this allowlist. Derived artifacts produced from
+# such a corpus (`kind = "derived"`) stay pin-exempt under the same rule as
+# any generated file.
 
 [[source]]
 id = "pinyin-data"
@@ -90,6 +98,40 @@ layer = "L5"
 url = "https://github.com/gongzhengyang/rspinyin"
 license = "Project-owned (MIT OR Apache-2.0)"
 spdx = "MIT OR Apache-2.0"
+retrieved = ""
+sha256 = ""
+permissive = true
+
+# ADR-0012 (2026-10-14): THUOCL lifted from ADR-0000's pending-verification
+# list -- the repository LICENSE file is MIT. Registered here before the file
+# is fetched, so `sha256`/`retrieved` stay empty and CI stays green until the
+# download lands (the moment data/raw/thuocl.tsv exists, CI fails until the
+# recorded hash matches). Per-domain THUOCL files, if adopted later, register
+# as `thuocl-<domain>` with layer L5.
+[[source]]
+id = "thuocl"
+kind = "upstream"
+layer = "L4"
+url = "https://github.com/thunlp/THUOCL"
+license = "MIT"
+spdx = "MIT"
+retrieved = ""
+sha256 = ""
+permissive = true
+
+# ADR-0012 (2026-10-14): the huayu system word list (Public Domain, per the
+# rime-ice upstream credits) registered as the two-character core-band
+# source. Public Domain data carries no SPDX identifier; `CC0-1.0` is the
+# machine-readable equivalent declaration and the `license` label records the
+# underlying fact. Same fetch discipline as above: empty hash until the file
+# exists.
+[[source]]
+id = "huayu"
+kind = "upstream"
+layer = "L2"
+url = "<huayu original publication URL, fixed at fetch time>"
+license = "Public Domain (huayu system wordlist)"
+spdx = "CC0-1.0"
 retrieved = ""
 sha256 = ""
 permissive = true

@@ -21,6 +21,7 @@ use ime_dict::format::{
     collision_limit, count_colliding_hashes, find_colliding_hashes, hash_word, pack_fst_value,
 };
 
+use super::normalize::{NormalizeReport, NormalizeRules};
 use super::source::Word;
 
 /// Weight multiplier applied to the key a polyphone correction names.
@@ -65,6 +66,8 @@ pub(crate) struct Stats {
     /// text; the count is reported because a count far past the birthday bound is
     /// what a broken hash looks like.
     pub(crate) hash_collisions: u64,
+    /// Words per normalization band, from the unigram channel's re-weighting.
+    pub(crate) weight_bands: NormalizeReport,
     /// Total FST keys.
     pub(crate) keys: u64,
 }
@@ -112,11 +115,19 @@ pub(crate) struct Compiled {
 ///
 /// Word ids follow hash order, which is what makes `ENTRIES` and `UNIGRAM`
 /// addressable by the same index and lets the unigram table be searched by hash.
+///
+/// The `WORDLIST` and `ENTRIES` sections are assembled from the words' raw
+/// weights -- within a key every candidate shares the word's character count, so
+/// the corpus frequency is the within-key signal and must not be re-banded. The
+/// `UNIGRAM` section is assembled from the banded weights [`NormalizeRules`]
+/// produces: that is the channel where words of different lengths compete, and
+/// the channel the long tail's corpus noise is flattened out of.
 pub(crate) fn compile(
     words: &[Word],
     band: Band,
     cap: usize,
     corrections: &[(String, String)],
+    normalize: NormalizeRules,
 ) -> Result<Compiled> {
     let mut ordered: Vec<&Word> = words.iter().collect();
     ordered.sort_by(|left, right| {
@@ -159,6 +170,7 @@ pub(crate) fn compile(
         let id = id as u32;
         let characters = word.text.chars().count();
         stats.shape[characters.clamp(1, 5) - 1] += 1;
+        stats.weight_bands.note(normalize.band(characters, word.weight));
         if word.polyphone {
             stats.polyphone_risk += 1;
         }
@@ -226,7 +238,13 @@ pub(crate) fn compile(
         stats.keys += 1;
     }
 
-    let max_weight = ordered.iter().map(|word| word.weight).max().unwrap_or(0);
+    // The unigram table is scaled to its own heaviest entry -- the banded one, not
+    // the raw one -- so the bands, not a single outlier, define the mapping's span.
+    let max_weight = ordered
+        .iter()
+        .map(|word| normalize.normalized_weight(word.text.chars().count(), word.weight))
+        .max()
+        .unwrap_or(0);
     let mut entries = Vec::with_capacity(ordered.len() * ENTRY_SIZE);
     let mut strpool = Vec::new();
     let mut unigram = Vec::with_capacity(ordered.len() * UNIGRAM_ENTRY_SIZE);
@@ -238,6 +256,7 @@ pub(crate) fn compile(
         // decode path asks for the same word's count once per span the word covers. A word
         // in contract is at most `MAX_WORD_LEN` bytes, so the count always fits the field.
         let characters = u8::try_from(word.text.chars().count()).unwrap_or(u8::MAX);
+        let banded = normalize.normalized_weight(word.text.chars().count(), word.weight);
         entries.extend_from_slice(
             &DictEntry::new(
                 offset,
@@ -250,7 +269,7 @@ pub(crate) fn compile(
             .encode(),
         );
         unigram.extend_from_slice(&hash_word(&word.text).to_le_bytes());
-        unigram.extend_from_slice(&prob_q12(word.weight, max_weight).to_le_bytes());
+        unigram.extend_from_slice(&prob_q12(banded, max_weight).to_le_bytes());
         unigram.extend_from_slice(&0u16.to_le_bytes());
     }
 

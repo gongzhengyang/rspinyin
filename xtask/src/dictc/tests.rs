@@ -105,6 +105,8 @@ fn scratch_args(root: &Path) -> DictcArgs {
         expand_cap: 4,
         expand_min_weight: None,
         max_key_growth: 500.0,
+        tail_flat_weight: 100,
+        core_min_freq: 20,
         synth: None,
     }
 }
@@ -274,9 +276,18 @@ fn test_load_allowlist_refuses_a_copyleft_source() {
 }
 
 #[test]
-fn test_load_allowlist_requires_a_pin_for_an_upstream_source() {
+fn test_load_allowlist_requires_a_pin_once_the_source_is_fetched() {
+    // The allowlist lives at `<root>/data/sources.toml`, so the fixture root needs
+    // the `data/` level for the raw directory to resolve against.
     let dir = scratch("pin");
-    let path = dir.join("sources.toml");
+    let data = dir.join("data");
+    let raw = data.join("raw");
+    fs::create_dir_all(&raw).expect("creating data/raw");
+    let path = data.join("sources.toml");
+
+    // A source registered ahead of its fetch carries an empty pin by design: the
+    // entry says "this is where the data will come from", and CI stays green until
+    // the download lands.
     fs::write(
         &path,
         "[[source]]\nid = \"jieba-dict\"\nkind = \"upstream\"\nspdx = \"MIT\"\n\
@@ -284,7 +295,13 @@ fn test_load_allowlist_requires_a_pin_for_an_upstream_source() {
              layer = \"L4\"\n",
     )
     .expect("writing the fixture");
-    let failure = load_allowlist(&path).expect_err("an unpinned upstream source must fail");
+    let allowlist = load_allowlist(&path).expect("an unfetched upstream source needs no pin");
+    assert_eq!(allowlist.source.len(), 1);
+
+    // The moment the file exists the pin becomes mandatory: the bytes the build
+    // would consume are no longer hypothetical, and an unpinned fetch cannot pass.
+    fs::write(raw.join("jieba-dict.tsv"), "中国\t500\n").expect("writing the raw source");
+    let failure = load_allowlist(&path).expect_err("a fetched source must be pinned");
     assert!(failure.to_string().contains("sha256"), "{failure}");
     fs::remove_dir_all(&dir).expect("cleaning up");
 }

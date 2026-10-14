@@ -21,13 +21,13 @@ use super::flush::Delta;
 
 /// What the store loaded into memory at open.
 ///
-/// The counts are what the decoder reads on the hot path; the pinned set is what the
+/// The records are what the decoder reads on the hot path; the pinned set is what the
 /// keystroke that forgets a word reads, and it is kept separate because it is empty for
 /// every store whose owner never pinned anything -- which is every store today.
 #[derive(Debug, Default)]
 pub(super) struct Loaded {
-    /// The flushed count of every record.
-    pub(super) counts: HashMap<Box<str>, u32>,
+    /// The flushed record of every key.
+    pub(super) records: HashMap<Box<str>, Stored>,
     /// The keys the user pinned, which eviction leaves alone.
     pub(super) pinned: HashSet<Box<str>>,
 }
@@ -42,22 +42,38 @@ pub(super) struct Loaded {
 /// [`LARGE_STORE_CODE`] for it. Refusing to open would cost the user the history the store
 /// already holds over a condition the decode path survives -- the same trade
 /// [`Inner::stored_freq`] makes when a single read fails.
-pub(super) fn load_committed(db: &Database, cap: u64) -> Option<Loaded> {
+///
+/// `v1` reads the v1 table of a store whose migration failed; its rows hydrate as their
+/// v2 equivalents, which is what they are.
+pub(super) fn load_committed(db: &Database, cap: u64, v1: bool) -> Option<Loaded> {
     let txn = db.begin_read().ok()?;
-    let table = txn.open_table(USER_WORDS).ok()?;
-    let stored = table.len().ok()?;
+    let view = if v1 {
+        WordsView::V1(txn.open_table(USER_WORDS).ok()?)
+    } else {
+        WordsView::V2(txn.open_table(USER_WORDS_V2).ok()?)
+    };
+    // Sized up front: the count is known, and growing the table mid-load would copy it.
+    let stored = match &view {
+        WordsView::V1(table) => table.len().ok()?,
+        WordsView::V2(table) => table.len().ok()?,
+    };
     if stored > cap {
         return None;
     }
-    // Sized up front: the count is known, and growing the table mid-load would copy it.
-    let mut counts = HashMap::with_capacity(usize::try_from(stored).ok()?);
-    for entry in table.iter().ok()? {
-        let (key, value) = entry.ok()?;
-        counts.insert(Box::from(key.value()), value.value().0);
+    let mut records = HashMap::with_capacity(usize::try_from(stored).ok()?);
+    view.for_each(|key, row| {
+        records.insert(Box::from(key), row.as_stored());
+        Ok(())
+    })
+    .ok()?;
+    if records.len() as u64 != stored {
+        // The iteration stopped early: a partial map would answer reads the file does
+        // not back, so the load reports the store as unloadable instead.
+        return None;
     }
-    // The pinned keys come along for the same reason the counts do: the keystroke that asks
-    // to forget a word may not open a read transaction to find out whether it is protected.
-    // Only the pinned ones are kept, so an ordinary store holds an empty set.
+    // The pinned keys come along for the same reason the records do: the keystroke that
+    // asks to forget a word may not open a read transaction to find out whether it is
+    // protected. Only the pinned ones are kept, so an ordinary store holds an empty set.
     let mut pinned = HashSet::new();
     let meta = txn.open_table(USER_META).ok()?;
     for entry in meta.iter().ok()? {
@@ -66,7 +82,7 @@ pub(super) fn load_committed(db: &Database, cap: u64) -> Option<Loaded> {
             pinned.insert(Box::from(key.value()));
         }
     }
-    Some(Loaded { counts, pinned })
+    Some(Loaded { records, pinned })
 }
 
 impl Inner {
@@ -76,7 +92,7 @@ impl Inner {
     /// that cannot be read must still let the user type. Zero means "no boost", the same
     /// answer as a word that was never recorded.
     ///
-    /// This is the fallback path's reader. A store whose counts were loaded answers from
+    /// This is the fallback path's reader. A store whose records were loaded answers from
     /// [`Inner::committed`] and never reaches it.
     fn stored_freq(&self, key: &str) -> u32 {
         #[cfg(test)]
@@ -84,11 +100,11 @@ impl Inner {
         let Ok(txn) = self.db.begin_read() else {
             return 0;
         };
-        let Ok(table) = txn.open_table(USER_WORDS) else {
+        let Ok(view) = self.open_words(&txn) else {
             return 0;
         };
-        match table.get(key) {
-            Ok(Some(guard)) => guard.value().0,
+        match view.get(key) {
+            Ok(Some(record)) => record.commits,
             _ => 0,
         }
     }
@@ -143,18 +159,24 @@ impl Inner {
 
     /// Adopts what a successful flush wrote.
     ///
-    /// The store's value for a key becomes what it held plus the delta, which is exactly
+    /// The store's record for a key becomes what it held plus the delta, which is exactly
     /// what the write merged, so the map stays equal to the file. This is called after the
     /// commit returns: a failed flush rolled its transaction back and must leave the map
     /// alone, which is why the caller does not call it on that path.
+    ///
+    /// The accumulator is re-derived from the new commit count, which is the un-decayed
+    /// identity the write path also stores; the decay fold (`1.02.02`) replaces both
+    /// derivations with the same arithmetic, so the map keeps matching the file.
     pub(super) fn adopt(&self, drained: &[(Box<str>, Delta)]) {
         if !self.is_hydrated {
             return;
         }
-        let mut counts = lock(&self.committed);
+        let mut records = lock(&self.committed);
         for (key, delta) in drained {
-            let entry = counts.entry(key.clone()).or_insert(0);
-            *entry = entry.saturating_add(delta.count);
+            let record = records.entry(key.clone()).or_insert_with(|| Stored::identity(0));
+            record.commits = record.commits.saturating_add(delta.count);
+            record.tick = record.tick.max(delta.tick);
+            record.dee_q16 = i64::from(record.commits) << 16;
         }
     }
 

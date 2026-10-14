@@ -27,6 +27,7 @@
 mod budget;
 mod build;
 mod manifest;
+mod normalize;
 pub mod quality;
 mod source;
 
@@ -110,6 +111,16 @@ pub struct DictcArgs {
     /// Key-growth ceiling in percent; a larger growth fails the build.
     #[arg(long, default_value_t = 30.0)]
     max_key_growth: f64,
+    /// The constant every tail-band word receives after weight normalization:
+    /// three-or-more character words, and two-character words below
+    /// `--core-min-freq`.
+    #[arg(long, default_value_t = 100)]
+    tail_flat_weight: u32,
+    /// Two-character words below this source frequency drop into the tail band:
+    /// below it the frequency is noise, not signal. A word at the floor stays in
+    /// the core band.
+    #[arg(long, default_value_t = 20)]
+    core_min_freq: u32,
     /// Compile N synthetic words instead of reading the input file.
     #[arg(long, hide = true)]
     synth: Option<u32>,
@@ -159,6 +170,15 @@ struct Allowlist {
 /// the file and row, so the offending input can be fixed directly.
 pub fn run(args: DictcArgs) -> Result<()> {
     let root = resolve_root(args.root.as_deref())?;
+    // The normalization rules are checked before any file is read: a combination
+    // that would flatten the whole core band is a caller error, and the atomic
+    // write downstream is for crashes, not for refuse-able arguments.
+    let normalize_rules = normalize::NormalizeRules {
+        tail_flat_weight: args.tail_flat_weight,
+        core_min_freq: args.core_min_freq,
+        ..normalize::NormalizeRules::default()
+    };
+    normalize_rules.validate()?;
     let allowlist = load_allowlist(&root.join(&args.sources))?;
 
     // The allowlist gate comes first: a source that is not registered, or whose
@@ -186,7 +206,11 @@ pub fn run(args: DictcArgs) -> Result<()> {
     };
     let polyphone = load_polyphone(&polyphone_path)?;
     let (corrections, unmatched) = apply_polyphone(&words, &polyphone);
-    let mut compiled = compile(&words, band, args.expand_cap, &corrections)?;
+    // The raw weights drive the container's within-key order (the signal the
+    // quality harness measures); the normalization rules re-band only the
+    // unigram channel, where words of different lengths compete. `compile`
+    // carries the per-band audit out in its stats.
+    let mut compiled = compile(&words, band, args.expand_cap, &corrections, normalize_rules)?;
     compiled.stats.polyphone_unmatched = unmatched;
     let built = Instant::now();
 
@@ -236,6 +260,7 @@ pub fn run(args: DictcArgs) -> Result<()> {
         &skips,
         band,
         args.expand_cap,
+        normalize_rules,
         [
             parsed.duration_since(started),
             built.duration_since(parsed),
@@ -261,6 +286,7 @@ fn report(
     skips: &Skips,
     band: Band,
     cap: usize,
+    normalize_rules: normalize::NormalizeRules,
     times: [Duration; 4],
 ) -> Result<()> {
     let size = fs::metadata(output)
@@ -287,6 +313,15 @@ fn report(
         "dictc: L3c polyphone corrections: {} keys added or reweighted, {} rows unmatched, \
          {} (key, word) pairs dropped at the 32-word ceiling",
         stats.polyphone_keys, stats.polyphone_unmatched, stats.truncated_pairs
+    );
+    println!(
+        "dictc: weight bands (unigram channel): {} char-freq, {} core-true-freq, {} tail-flat \
+         (flat {}, core floor {})",
+        stats.weight_bands.char_freq,
+        stats.weight_bands.core_true_freq,
+        stats.weight_bands.tail_flat,
+        normalize_rules.tail_flat_weight,
+        normalize_rules.core_min_freq
     );
     println!(
         "dictc: {} polyphone-risk words (a character of the word has several readings)",
@@ -351,11 +386,28 @@ fn resolve_root(explicit: Option<&Path>) -> Result<PathBuf> {
 }
 
 /// Loads and schema-checks the source allowlist.
+///
+/// A source registered before its file is fetched carries an empty pin by design
+/// (the header of `data/sources.toml` states the discipline): the pin is required
+/// only once `data/raw/<id>.tsv` exists, which is what lets an allowlist entry
+/// land ahead of its download without failing every build in between. A fetched
+/// file with an empty or stale pin still refuses, which is the "unfinished entry
+/// cannot pass" half of the same discipline.
+///
+/// # Errors
+/// Returns an error when a registered source misses a required field, is not
+/// marked permissive, or names a fetched upstream file whose pin is empty.
 fn load_allowlist(path: &Path) -> Result<Allowlist> {
     let text =
         fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
     let allowlist: Allowlist = toml::from_str(&text)
         .with_context(|| format!("{}: invalid allowlist document", path.display()))?;
+    // `<root>/data/sources.toml` is the layout the allowlist documents; the raw
+    // files it names live under `<root>/data/raw/`.
+    let raw_dir = path
+        .parent()
+        .and_then(Path::parent)
+        .map(|root| root.join("data").join("raw"));
     for source in &allowlist.source {
         ensure!(
             !source.id.is_empty()
@@ -375,8 +427,11 @@ fn load_allowlist(path: &Path) -> Result<Allowlist> {
             source.id
         );
         if source.kind == "upstream" {
+            let fetched = raw_dir
+                .as_ref()
+                .is_some_and(|dir| dir.join(format!("{}.tsv", source.id)).exists());
             ensure!(
-                !source.sha256.is_empty() && !source.retrieved.is_empty(),
+                !fetched || (!source.sha256.is_empty() && !source.retrieved.is_empty()),
                 "{}: upstream source `{}` needs both `sha256` and `retrieved` before it \
                  can be compiled",
                 path.display(),

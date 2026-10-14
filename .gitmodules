@@ -1,0 +1,9 @@
+[submodule "remarks/fcitx5-rime"]
+	path = remarks/fcitx5-rime
+	url = https://github.com/fcitx/fcitx5-rime
+[submodule "remarks/rime-ice"]
+	path = remarks/rime-ice
+	url = https://github.com/iDvel/rime-ice
+[submodule "remarks/librime"]
+	path = remarks/librime
+	url = https://github.com/rime/librime.git

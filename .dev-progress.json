@@ -1,0 +1,187 @@
+{
+  "version": 2,
+  "global_status": "IN_PROGRESS",
+  "total": 28,
+  "completed": 0,
+  "is_workspace": false,
+  "active_run": {
+    "skill": "dev-rust-single",
+    "mode": "single-agent",
+    "started_at": "2026-10-14T08:24:17Z"
+  },
+  "last_run": {
+    "skill": "dev-rust-single",
+    "mode": "single-agent",
+    "updated_at": "2026-10-14T08:25:00Z"
+  },
+  "tasks": [
+    {
+      "id": "TASK-1.01.01",
+      "file": "./docs/dev/features-add-phase1.md",
+      "title": "dictc 权重分层归一化管线",
+      "status": "READY_FOR_FINAL_GATE"
+    },
+    {
+      "id": "TASK-1.01.02",
+      "file": "./docs/dev/features-add-phase1.md",
+      "title": "质量门升级：分层 top1 审计与权重重调",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-1.02.01",
+      "file": "./docs/dev/features-add-phase1.md",
+      "title": "用户词频库 schema v2（dee/tick）与打开时迁移",
+      "status": "IN_PROGRESS"
+    },
+    {
+      "id": "TASK-1.02.02",
+      "file": "./docs/dev/features-add-phase1.md",
+      "title": "衰减数学与打分集成（formula_d/p 定点移植）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-1.02.03",
+      "file": "./docs/dev/features-add-phase1.md",
+      "title": "衰减配置键与空闲批量重算",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-1.03.01",
+      "file": "./docs/dev/features-add-phase1.md",
+      "title": "容器 v2：BIGRAM 段生成管线与读端兼容",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-1.03.02",
+      "file": "./docs/dev/features-add-phase1.md",
+      "title": "DictLm bigram 真查与两模型同序契约",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-1.04.01",
+      "file": "./docs/dev/features-add-phase1.md",
+      "title": "置顶词引擎侧转正（PinHighlighted 闭合）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-1.04.02",
+      "file": "./docs/dev/features-add-phase1.md",
+      "title": "置顶管理闭环（list/export/提示与一致性）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-2.01.01",
+      "file": "./docs/dev/features-add-phase2.md",
+      "title": "模糊音配置节与会话接线",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-2.02.01",
+      "file": "./docs/dev/features-add-phase2.md",
+      "title": "FstLexicon::prefix 实装（FST 前缀区间流式走查）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-2.02.02",
+      "file": "./docs/dev/features-add-phase2.md",
+      "title": "简拼生产接线（engine.abbrev 转正）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-2.03.01",
+      "file": "./docs/dev/features-add-phase2.md",
+      "title": "简繁转换 commit 接线与降级上报",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-2.03.02",
+      "file": "./docs/dev/features-add-phase2.md",
+      "title": "标点/全宽配置默认值投影",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-2.04.01",
+      "file": "./docs/dev/features-add-phase2.md",
+      "title": "词源接入：华宇野风（PD）与 THUOCL（MIT）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-2.04.02",
+      "file": "./docs/dev/features-add-phase2.md",
+      "title": "两字词层换血与多音字自动校验",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-2.05.01",
+      "file": "./docs/dev/features-add-phase2.md",
+      "title": "会话共享粒度（per-program Context 池）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-2.06.01",
+      "file": "./docs/dev/features-add-phase2.md",
+      "title": "数据驱动解码冒烟基线（TSV key_sequence→expected_text）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-3.01.01",
+      "file": "./docs/dev/features-add-phase3.md",
+      "title": "拼写纠错（邻位替换 + 键序颠倒）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-3.02.01",
+      "file": "./docs/dev/features-add-phase3.md",
+      "title": "上文重排（上一 commit 词作 bigram 上下文）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-3.03.01",
+      "file": "./docs/dev/features-add-phase3.md",
+      "title": "重码治理：截断审计与自适应上限",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-3.03.02",
+      "file": "./docs/dev/features-add-phase3.md",
+      "title": "词库热替换（staged 文件 + 配置重载触发）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-3.04.01",
+      "file": "./docs/dev/features-add-phase3.md",
+      "title": "用户造词写路径（链式词库 + 句内成分回写）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-3.05.01",
+      "file": "./docs/dev/features-add-phase3.md",
+      "title": "中英混输（英文词段 + 融合档位）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-3.05.02",
+      "file": "./docs/dev/features-add-phase3.md",
+      "title": "错音错字提示（annotation 通道）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-3.05.03",
+      "file": "./docs/dev/features-add-phase3.md",
+      "title": "符号面板 v 模式（触发前缀 + 候选通道）",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-3.06.01",
+      "file": "./docs/dev/features-add-phase3.md",
+      "title": "切输入法收尾策略与 preedit capability 协商",
+      "status": "PENDING"
+    },
+    {
+      "id": "TASK-3.06.02",
+      "file": "./docs/dev/features-add-phase3.md",
+      "title": "compose/dead key、诊断节流与状态区 Action",
+      "status": "PENDING"
+    }
+  ]
+}
