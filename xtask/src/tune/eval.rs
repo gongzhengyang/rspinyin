@@ -17,6 +17,7 @@ use ime_types::{Lexicon, WordRef};
 use super::REPORT_CANDIDATES;
 use super::io::Row;
 use super::lexicon::{NoUserFreq, TsvLexicon};
+use crate::dictc::quality::{LengthBandAccuracy, Top1Band};
 
 /// Longest key the ranking walk accepts, in syllables.
 const MAX_KEY_SYLLABLES: usize = 16;
@@ -148,6 +149,8 @@ pub(super) struct Metrics {
     pub(super) weight_total: u64,
     /// Sum of the weights of the rows whose expected word was ranked first.
     pub(super) weight_hit: u64,
+    /// First-choice accuracy attributed by the expected word's length.
+    pub(super) length_bands: LengthBandAccuracy,
 }
 
 impl Metrics {
@@ -170,6 +173,12 @@ impl Metrics {
     /// plain rate does.
     pub(super) fn weighted_rate(&self) -> f64 {
         percent(self.weight_hit, self.weight_total)
+    }
+
+    /// Formats one band's rate; an unmeasured band stays visibly unmeasured.
+    pub(super) fn band_rate(band: Top1Band) -> String {
+        band.top1()
+            .map_or_else(|| "n/a".to_owned(), |rate| format!("{:.1}%", rate * 100.0))
     }
 }
 
@@ -196,6 +205,20 @@ pub(super) fn evaluate(
         if first.word == row.word {
             metrics.first_choice += 1;
             metrics.weight_hit += u64::from(row.weight);
+            let band = match row.word.chars().count() {
+                1 => &mut metrics.length_bands.single,
+                2 => &mut metrics.length_bands.two,
+                _ => &mut metrics.length_bands.long,
+            };
+            band.note(true);
+        }
+        if first.word != row.word {
+            let band = match row.word.chars().count() {
+                1 => &mut metrics.length_bands.single,
+                2 => &mut metrics.length_bands.two,
+                _ => &mut metrics.length_bands.long,
+            };
+            band.note(false);
         }
         let reachable = candidates
             .iter()
@@ -226,6 +249,13 @@ pub(super) fn report(path: &Path, weights: &ScoreWeights, metrics: &Metrics) {
         "tune: first {:.1}% ({}/{rows})",
         metrics.first_rate(),
         metrics.first_choice
+    );
+    let bands = metrics.length_bands;
+    println!(
+        "tune: top1 by length: 1字 {} | 2字 {} | 3+字 {}",
+        Metrics::band_rate(bands.single),
+        Metrics::band_rate(bands.two),
+        Metrics::band_rate(bands.long)
     );
     println!("tune: weighted {:.1}%", metrics.weighted_rate());
     println!(

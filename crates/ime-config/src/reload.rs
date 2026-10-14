@@ -211,6 +211,14 @@ backup_keep = 3
 level = "info"
 # When the log file reaches this many MiB it rolls over, and this many rolled files
 # are kept. Takes effect on reload.
+
+# Logical-clock half-life of user-word decay, in commits. The default matches the
+# librime e-folding constant. Takes effect on reload.
+decay_half_life_ticks = 139
+
+# Smallest user-decay accumulator, in Q16.16; a record at or below it stops
+# ranking. Takes effect on reload.
+decay_floor = 65536
 log_rotation_mb = 8
 log_keep_files = 3
 # Accepted, and deliberately without effect on what is recorded: the plugin never
@@ -321,6 +329,8 @@ struct PartialData {
     durability: Option<String>,
     backup_enabled: Option<bool>,
     backup_keep: Option<u8>,
+    decay_half_life_ticks: Option<i64>,
+    decay_floor: Option<i64>,
 }
 
 /// The `[diagnostics]` table of a document.
@@ -651,6 +661,18 @@ fn merge_data(partial: Option<PartialData>, config: &mut Config, warnings: &mut 
     // second check here would be a second place the bound is written down.
     config.data.backup_enabled = partial.backup_enabled.unwrap_or(config.data.backup_enabled);
     config.data.backup_keep = partial.backup_keep.unwrap_or(config.data.backup_keep);
+    if let Some(written) = partial.decay_half_life_ticks {
+        match u32::try_from(written) {
+            Ok(half_life) if half_life > 0 => config.data.decay_half_life_ticks = half_life,
+            _ => warnings.report_error(ConfigError::Invalid {
+                key: String::from("data.decay_half_life_ticks"),
+                reason: format!("{written} is not a usable commit count"),
+            }),
+        }
+    }
+    if let Some(floor) = partial.decay_floor {
+        config.data.decay_floor = floor;
+    }
 }
 
 /// Copies the `[diagnostics]` keys the document sets over the defaults.

@@ -1,13 +1,20 @@
 //! The capacity policy: keeping the store under [`USER_WORD_CAP`] records.
 //!
-//! Responsibility: decide when the store is too big, find the exact `last_used_ms`
-//! threshold that separates the records to remove from the ones to keep, and remove them
-//! in short write transactions from a thread of its own.
+//! Responsibility: decide when the store is too big, find the exact `tick` threshold that
+//! separates the records to remove from the ones to keep, and remove them in short write
+//! transactions from a thread of its own.
 //!
 //! Boundaries: this module owns the sweep and nothing else. It never records, never
-//! flushes and never reads a frequency; it moves rows out of `user_words` and out of the
-//! cache, and it leaves the store usable at every point in between. Splitting the sweep
-//! out of the store is what keeps the store's own file about the hot path.
+//! flushes and never reads a frequency; it moves rows out of the words table and out of
+//! the cache, and it leaves the store usable at every point in between. Splitting the
+//! sweep out of the store is what keeps the store's own file about the hot path.
+//!
+//! The ranking is the logical tick, not the wall clock: the tick is what the decay fold
+//! user-decay arithmetic also reads a record's age from, so "oldest" means the same thing to the
+//! policy that evicts as to the arithmetic that decays. One consequence is that the rows
+//! a schema-1 migration stamped with tick zero are all equally old -- they tie on the
+//! keeping side of the threshold and only become evictable once enough later records
+//! carry ticks for the rank to clear zero.
 
 use std::collections::BinaryHeap;
 use std::ops::Bound;
@@ -103,7 +110,7 @@ impl Inner {
         self.delete_stale(threshold, target)
     }
 
-    /// Returns the `rank`-th smallest `last_used_ms`, or `None` when the store holds fewer
+    /// Returns the `rank`-th smallest `tick`, or `None` when the store holds fewer
     /// records than `rank`.
     ///
     /// The caller asks for one more than the number of records it wants to remove, so that
@@ -122,7 +129,7 @@ impl Inner {
             .begin_read()
             .map_err(|error| store_error(&self.path, &error))?;
         let table = txn
-            .open_table(USER_WORDS)
+            .open_table(USER_WORDS_V2)
             .map_err(|error| store_error(&self.path, &error))?;
         let meta = txn
             .open_table(USER_META)
@@ -138,7 +145,7 @@ impl Inner {
                 continue;
             }
             seen += 1;
-            let stamp = value.value().1;
+            let stamp = value.value().2;
             if (oldest.len() as u64) < rank {
                 oldest.push(stamp);
             } else if let Some(worst) = oldest.peek()
@@ -187,7 +194,7 @@ impl Inner {
             .begin_read()
             .map_err(|error| store_error(&self.path, &error))?;
         let table = txn
-            .open_table(USER_WORDS)
+            .open_table(USER_WORDS_V2)
             .map_err(|error| store_error(&self.path, &error))?;
         let meta = txn
             .open_table(USER_META)
@@ -201,7 +208,7 @@ impl Inner {
         let mut last: Option<Box<str>> = None;
         for entry in range.take(EVICT_BATCH) {
             let (key, value) = entry.map_err(|error| store_error(&self.path, &error))?;
-            if value.value().1 < threshold && !is_pinned(&meta, key.value(), &self.path)? {
+            if value.value().2 < threshold && !is_pinned(&meta, key.value(), &self.path)? {
                 stale.push(Box::from(key.value()));
             }
             last = Some(Box::from(key.value()));
@@ -227,7 +234,7 @@ impl Inner {
             .map_err(|error| store_error(&self.path, &error))?;
         {
             let mut table = txn
-                .open_table(USER_WORDS)
+                .open_table(USER_WORDS_V2)
                 .map_err(|error| store_error(&self.path, &error))?;
             let mut meta = txn
                 .open_table(USER_META)

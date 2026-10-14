@@ -176,7 +176,11 @@ mod tests {
     fn test_normalize_long_words_are_flattened() {
         let rules = NormalizeRules::default();
         assert_eq!(rules.normalized_weight(3, 987_654), 100);
-        assert_eq!(rules.normalized_weight(12, 1), 100, "however rare or frequent");
+        assert_eq!(
+            rules.normalized_weight(12, 1),
+            100,
+            "however rare or frequent"
+        );
         assert_eq!(rules.band(3, 987_654), WeightBand::TailFlat);
     }
 
@@ -233,7 +237,8 @@ mod tests {
             .map(|&(characters, raw)| rules.normalized_weight(characters, raw))
             .collect();
         assert_eq!(
-            forward, backward.iter().rev().copied().collect::<Vec<u32>>(),
+            forward,
+            backward.iter().rev().copied().collect::<Vec<u32>>(),
             "the same words in any order receive the same weights"
         );
     }
@@ -256,7 +261,10 @@ mod tests {
             ..NormalizeRules::default()
         };
         let failure = rules.validate().expect_err("a zero flat weight is refused");
-        assert!(failure.to_string().contains("tail-flat-weight"), "{failure}");
+        assert!(
+            failure.to_string().contains("tail-flat-weight"),
+            "{failure}"
+        );
     }
 
     #[test]

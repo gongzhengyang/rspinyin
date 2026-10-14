@@ -14,16 +14,21 @@
 //! # The document
 //!
 //! ```text
-//! # rspinyin user dictionary export v1
-//! # Columns: key <TAB> weight <TAB> last_used_unix <TAB> created_unix <TAB> pinned
+//! # rspinyin user dictionary export v2
+//! # Columns: key <TAB> weight <TAB> last_used_unix <TAB> created_unix <TAB> pinned <TAB> dee_q16 <TAB> tick
 //! # `key` is the word the user committed, which is what the frequency was recorded against.
-//! nihao<TAB>128<TAB>1759161600000<TAB>1756570000000<TAB>0
+//! nihao<TAB>128<TAB>1759161600000<TAB>1756570000000<TAB>0<TAB>8388608<TAB>412
 //! ```
 //!
 //! Rows come out in key order, which is the order the store's table holds them in, so two
 //! exports of an unchanged store are byte-identical and can be diffed. A line starting with
 //! `#` is a comment; a document whose first non-blank line is not the marker above is not an
 //! export of this format and is refused whole.
+//!
+//! The `dee_q16` column is the decay accumulator in Q16.16 and `tick` the record's
+//! logical stamp -- the two inputs the store's decay reads. A v2 import accepts the v1
+//! document as well: its five columns map onto the first five of these, and its rows
+//! enter the store un-ticked and un-decayed, which is what a v1 record is.
 
 use std::fmt::Write as _;
 use std::io::{Read, Write};
@@ -69,11 +74,13 @@ pub(super) fn set_export_limit(limit: u64) {
 }
 
 /// The first line of an export, and the marker an import is recognised by.
-const EXPORT_MARKER: &str = "# rspinyin user dictionary export v1";
+const EXPORT_MARKER: &str = "# rspinyin user dictionary export v2";
+/// The marker a schema-1 build wrote. An import still recognises it: a document a
+/// user exported under v1 has to come back into the store that upgraded.
+const EXPORT_MARKER_V1: &str = "# rspinyin user dictionary export v1";
 
 /// The line that names the columns, written under the marker.
-const EXPORT_COLUMNS: &str =
-    "# Columns: key <TAB> weight <TAB> last_used_unix <TAB> created_unix <TAB> pinned";
+const EXPORT_COLUMNS: &str = "# Columns: key <TAB> weight <TAB> last_used_unix <TAB> created_unix <TAB> pinned <TAB> dee_q16 <TAB> tick";
 
 /// What the `key` column holds, written under the columns.
 ///
@@ -228,6 +235,8 @@ impl Inner {
                 last_used_unix: delta.last_used_ms,
                 created_unix: 0,
                 pinned: false,
+                tick: delta.tick,
+                dee_q16: i64::from(delta.count) << 16,
             })?;
         }
         document.finish()
@@ -237,7 +246,9 @@ impl Inner {
     ///
     /// One read transaction covers both tables, so the document cannot mix two generations
     /// of the store. A record with no metadata row is one an older build wrote: it becomes
-    /// an unpinned record with no creation time, which is exactly what it was.
+    /// an unpinned record with no creation time, which is exactly what it was. The words
+    /// table is read through the schema view, so a store whose migration failed exports
+    /// its v1 rows with the un-ticked, un-decayed columns they read as.
     ///
     /// # Errors
     /// Returns [`ImeError::DictUnavailable`] when a table fails and whatever
@@ -252,38 +263,36 @@ impl Inner {
             .db
             .begin_read()
             .map_err(|error| store_error(&self.path, &error))?;
-        let words = txn
-            .open_table(USER_WORDS)
-            .map_err(|error| store_error(&self.path, &error))?;
+        let words = self.open_words(&txn)?;
         let meta = txn
             .open_table(USER_META)
             .map_err(|error| store_error(&self.path, &error))?;
-        for entry in words
-            .iter()
-            .map_err(|error| store_error(&self.path, &error))?
-        {
-            let (key, value) = entry.map_err(|error| store_error(&self.path, &error))?;
-            let key = key.value();
+        let mut fold = |key: &str, row: StoredRow| -> Result<(), ImeError> {
             if removed.contains(key) {
-                continue;
+                return Ok(());
             }
             let held = meta
                 .get(key)
                 .map_err(|error| store_error(&self.path, &error))?;
             let (created_unix, pinned) = held.map_or((0, 0), |guard| guard.value());
-            let mut row = UserRecord {
+            let mut record = UserRecord {
                 key: String::from(key),
-                weight: value.value().0,
-                last_used_unix: value.value().1,
+                weight: row.commits,
+                last_used_unix: row.last_used_ms,
                 created_unix,
                 pinned: pinned != 0,
+                tick: row.tick,
+                dee_q16: row.dee_q16,
             };
             if let Some(delta) = unclaimed.remove(key) {
-                row.weight = row.weight.saturating_add(delta.count);
-                row.last_used_unix = row.last_used_unix.max(delta.last_used_ms);
+                record.weight = record.weight.saturating_add(delta.count);
+                record.last_used_unix = record.last_used_unix.max(delta.last_used_ms);
+                record.tick = record.tick.max(delta.tick);
             }
-            document.push(&row)?;
-        }
+            document.push(&record)?;
+            Ok(())
+        };
+        words.for_each(&self.path, &mut fold)?;
         Ok(())
     }
 
@@ -309,27 +318,54 @@ impl Inner {
         // flush, and an import is a management operation -- nothing calls it while the user is
         // typing -- so it may wait for that to be true.
         self.flush_now(Durability::Immediate)?;
-        let mut merged: Vec<(Box<str>, u32, bool)> = Vec::with_capacity(rows.len());
+        let mut merged: Vec<(Box<str>, Stored, bool)> = Vec::with_capacity(rows.len());
         let mut txn = self
             .db
             .begin_write()
             .map_err(|error| store_error(&self.path, &error))?;
         {
             let mut words = txn
-                .open_table(USER_WORDS)
+                .open_table(USER_WORDS_V2)
                 .map_err(|error| store_error(&self.path, &error))?;
             let mut meta = txn
                 .open_table(USER_META)
                 .map_err(|error| store_error(&self.path, &error))?;
             for row in rows {
-                let held = words
+                let previous = words
                     .get(row.key.as_str())
                     .map_err(|error| store_error(&self.path, &error))?
-                    .map_or((0, 0), |guard| guard.value());
-                let weight = held.0.max(row.weight);
-                let last_used = held.1.max(row.last_used_unix);
+                    .map_or(
+                        StoredRow {
+                            commits: 0,
+                            last_used_ms: 0,
+                            tick: 0,
+                            dee_q16: 0,
+                        },
+                        |guard| {
+                            let (commits, last_used_ms, tick, dee) = guard.value();
+                            StoredRow {
+                                commits,
+                                last_used_ms,
+                                tick,
+                                dee_q16: dee_q16(dee),
+                            }
+                        },
+                    );
+                let weight = previous.commits.max(row.weight);
+                let last_used = previous.last_used_ms.max(row.last_used_unix);
+                let merged_row = Stored {
+                    commits: weight,
+                    // The accumulator follows the weight it belongs to, and a tick only
+                    // ever moves forward: a document from an older build carries no tick
+                    // (zero) and cannot rewind the clock of a record the store holds.
+                    dee_q16: previous.dee_q16.max(row.dee_q16),
+                    tick: previous.tick.max(row.tick),
+                };
                 words
-                    .insert(row.key.as_str(), (weight, last_used))
+                    .insert(
+                        row.key.as_str(),
+                        (weight, last_used, merged_row.tick, merged_row.dee_bits()),
+                    )
                     .map_err(|error| store_error(&self.path, &error))?;
                 let (created, pinned) = meta
                     .get(row.key.as_str())
@@ -343,14 +379,14 @@ impl Inner {
                     (earliest_stamp(created, row.created_unix), pinned),
                 )
                 .map_err(|error| store_error(&self.path, &error))?;
-                merged.push((Box::from(row.key.as_str()), weight, pinned != 0));
+                merged.push((Box::from(row.key.as_str()), merged_row, pinned != 0));
             }
         }
         txn.set_durability(Durability::Immediate);
         txn.commit()
             .map_err(|error| store_error(&self.path, &error))?;
-        for (key, weight, pinned) in &merged {
-            self.adopt_imported(key, *weight, *pinned);
+        for (key, row, pinned) in &merged {
+            self.adopt_imported(key, *row, *pinned);
         }
         Ok(u64::try_from(rows.len()).unwrap_or(u64::MAX))
     }
@@ -431,12 +467,14 @@ impl ExportDocument {
         // unwrapped: there is no panic path to take and no error to report.
         let _ = writeln!(
             self.line,
-            "{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
             row.key,
             row.weight,
             row.last_used_unix,
             row.created_unix,
-            u8::from(row.pinned)
+            u8::from(row.pinned),
+            row.dee_q16,
+            row.tick
         );
         self.bytes = self
             .bytes
@@ -495,6 +533,10 @@ fn data_lines(document: &str) -> impl Iterator<Item = &str> {
 
 /// Reads an export document, validating every row before any of them is trusted.
 ///
+/// A document under either marker is accepted: the v2 document is what this build
+/// writes, and the v1 one is what a schema-1 build wrote -- its rows read as un-ticked,
+/// un-decayed records, which is what they are.
+///
 /// # Panics
 /// Never: every field is parsed with a checked conversion and every failure is a rejected
 /// row.
@@ -503,13 +545,15 @@ fn parse_export(document: &str) -> Parsed {
         .lines()
         .map(str::trim_end)
         .find(|line| !line.is_empty());
-    if marker != Some(EXPORT_MARKER) {
+    let recognised = marker == Some(EXPORT_MARKER) || marker == Some(EXPORT_MARKER_V1);
+    if !recognised {
         return Parsed::refused(document);
     }
+    let v1 = marker == Some(EXPORT_MARKER_V1);
     let mut rows = Vec::new();
     let mut rejected = 0u64;
     for line in data_lines(document) {
-        match parse_row(line) {
+        match parse_row(line, v1) {
             Some(row) => rows.push(row),
             None => rejected = rejected.saturating_add(1),
         }
@@ -527,8 +571,10 @@ fn parse_export(document: &str) -> Parsed {
 /// Parses one data row, or answers `None` when it is not one.
 ///
 /// The key is the only column that may hold anything but ASCII digits, and it is taken as
-/// written: a key the store could not export is one an import would not find either.
-fn parse_row(line: &str) -> Option<UserRecord> {
+/// written: a key the store could not export is one an import would not find either. A v1
+/// row carries the five columns the v1 format defined; a v2 row adds the decay
+/// accumulator and the tick.
+fn parse_row(line: &str, v1: bool) -> Option<UserRecord> {
     let mut columns = line.split('\t');
     let key = columns.next()?;
     let weight = columns.next()?.parse::<u32>().ok()?;
@@ -539,7 +585,22 @@ fn parse_row(line: &str) -> Option<UserRecord> {
         "1" => true,
         _ => return None,
     };
-    if columns.next().is_some() || !is_exportable(key) {
+    let (dee_q16, tick) = if v1 {
+        // A v1 record has no decay history: the accumulator is the un-decayed identity
+        // and the tick is zero, the same reading the migration gives a v1 row.
+        if columns.next().is_some() {
+            return None;
+        }
+        (i64::from(weight) << 16, 0)
+    } else {
+        let dee_q16 = columns.next()?.parse::<i64>().ok()?;
+        let tick = columns.next()?.parse::<u64>().ok()?;
+        if columns.next().is_some() {
+            return None;
+        }
+        (dee_q16, tick)
+    };
+    if !is_exportable(key) {
         return None;
     }
     Some(UserRecord {
@@ -548,6 +609,8 @@ fn parse_row(line: &str) -> Option<UserRecord> {
         last_used_unix,
         created_unix,
         pinned,
+        tick,
+        dee_q16,
     })
 }
 

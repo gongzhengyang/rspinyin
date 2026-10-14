@@ -79,6 +79,20 @@ fn comparison(defaults: &ScoreWeights, before: &Metrics, weights: &ScoreWeights,
         before.reach_rate(),
         before.weighted_rate()
     );
+    let before_bands = before.length_bands;
+    let after_bands = after.length_bands;
+    println!(
+        "tune: shipped bands                          1字 {} | 2字 {} | 3+字 {}",
+        Metrics::band_rate(before_bands.single),
+        Metrics::band_rate(before_bands.two),
+        Metrics::band_rate(before_bands.long)
+    );
+    println!(
+        "tune: best bands                             1字 {} | 2字 {} | 3+字 {}",
+        Metrics::band_rate(after_bands.single),
+        Metrics::band_rate(after_bands.two),
+        Metrics::band_rate(after_bands.long)
+    );
     println!(
         "tune: best         {:>8} {:>7.1}% {:>7.1}% {:>7.1}%",
         after.rows,

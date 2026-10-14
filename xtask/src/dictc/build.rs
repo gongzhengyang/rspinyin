@@ -170,7 +170,9 @@ pub(crate) fn compile(
         let id = id as u32;
         let characters = word.text.chars().count();
         stats.shape[characters.clamp(1, 5) - 1] += 1;
-        stats.weight_bands.note(normalize.band(characters, word.weight));
+        stats
+            .weight_bands
+            .note(normalize.band(characters, word.weight));
         if word.polyphone {
             stats.polyphone_risk += 1;
         }

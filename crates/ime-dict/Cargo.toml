@@ -29,5 +29,10 @@ harness = false
 name = "userdb"
 harness = false
 
+[[bench]]
+name = "decode"
+path = "benches/pure/decode.rs"
+harness = false
+
 [lints]
 workspace = true

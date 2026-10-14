@@ -45,7 +45,7 @@ pub(super) struct Loaded {
 ///
 /// `v1` reads the v1 table of a store whose migration failed; its rows hydrate as their
 /// v2 equivalents, which is what they are.
-pub(super) fn load_committed(db: &Database, cap: u64, v1: bool) -> Option<Loaded> {
+pub(super) fn load_committed(db: &Database, path: &Path, cap: u64, v1: bool) -> Option<Loaded> {
     let txn = db.begin_read().ok()?;
     let view = if v1 {
         WordsView::V1(txn.open_table(USER_WORDS).ok()?)
@@ -61,7 +61,7 @@ pub(super) fn load_committed(db: &Database, cap: u64, v1: bool) -> Option<Loaded
         return None;
     }
     let mut records = HashMap::with_capacity(usize::try_from(stored).ok()?);
-    view.for_each(|key, row| {
+    view.for_each(path, |key, row: StoredRow| {
         records.insert(Box::from(key), row.as_stored());
         Ok(())
     })
@@ -104,7 +104,7 @@ impl Inner {
             return 0;
         };
         match view.get(key) {
-            Ok(Some(record)) => record.commits,
+            Ok(Some(record)) => self.effective_freq(&record),
             _ => 0,
         }
     }
@@ -165,7 +165,7 @@ impl Inner {
     /// alone, which is why the caller does not call it on that path.
     ///
     /// The accumulator is re-derived from the new commit count, which is the un-decayed
-    /// identity the write path also stores; the decay fold (`1.02.02`) replaces both
+    /// identity the write path also stores; the decay fold replaces both
     /// derivations with the same arithmetic, so the map keeps matching the file.
     pub(super) fn adopt(&self, drained: &[(Box<str>, Delta)]) {
         if !self.is_hydrated {
@@ -173,10 +173,10 @@ impl Inner {
         }
         let mut records = lock(&self.committed);
         for (key, delta) in drained {
-            let record = records.entry(key.clone()).or_insert_with(|| Stored::identity(0));
-            record.commits = record.commits.saturating_add(delta.count);
-            record.tick = record.tick.max(delta.tick);
-            record.dee_q16 = i64::from(record.commits) << 16;
+            let previous = records
+                .entry(key.clone())
+                .or_insert_with(|| Stored::identity(0));
+            *previous = self.merged_record(*previous, *delta);
         }
     }
 
@@ -200,9 +200,9 @@ impl Inner {
     /// is the fallback path's copy of the file, and the file changed under it -- and a
     /// tombstone for the key goes too: the import has just put the word back, and the
     /// removal it was waiting to flush is the older of the two statements.
-    pub(super) fn adopt_imported(&self, key: &str, weight: u32, pinned: bool) {
+    pub(super) fn adopt_imported(&self, key: &str, row: Stored, pinned: bool) {
         if self.is_hydrated {
-            lock(&self.committed).insert(Box::from(key), weight);
+            lock(&self.committed).insert(Box::from(key), row);
         }
         if let Some(mut cache) = lock_cache(&self.cache) {
             cache.remove(key);

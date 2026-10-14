@@ -57,7 +57,7 @@ mod tables;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
@@ -65,6 +65,7 @@ use clap::Args;
 use ime_core::segment::{HINT_INLINE_BOUNDARIES, SyllableDag};
 use ime_dict::fst_index::FstLexicon;
 use ime_types::Lexicon;
+use serde::Serialize;
 use smallvec::SmallVec;
 
 use crate::tune::{DEFAULT_HOLDOUT, REPORT_CANDIDATES};
@@ -111,6 +112,20 @@ pub const MAX_CORRECTIONS: usize = 20_000;
 /// a narrower set can still be measured deliberately with `--min-cases`, but never by
 /// accident.
 pub const MIN_HOLDOUT_CASES: usize = 5_000;
+
+/// Total top-1 floor established by the full-dictionary hold-out baseline.
+///
+/// The 78% phase target is reached only after normalization, bigrams and the
+/// two-character source refresh all land; locking that future target now would turn a
+/// roadmap goal into a false current regression. The value is measured from the current
+/// 6,000-case hold-out set and may only rise. The band floor is checked separately
+/// because the total can hide a core-band regression.
+pub const MIN_TOTAL_TOP1: f64 = 0.7375;
+
+/// Two-character top-1 floor held at the measured baseline until a tuning run proves a
+/// raise. The total floor can rise independently; this one protects the core band from
+/// paying for a tail-band improvement.
+pub const MIN_CORE_TOP1: f64 = 0.883;
 
 /// Longest correction row the table format defines, in columns.
 const MAX_CORRECTION_COLUMNS: usize = 4;
@@ -173,7 +188,7 @@ pub struct HoldoutCase {
 }
 
 /// Quality of one decode over the whole hold-out set.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct QualityReport {
     /// Fraction of cases whose first candidate is the expected word.
     pub top1_rate: f64,
@@ -191,6 +206,45 @@ pub struct QualityReport {
     /// a dictionary that gains a word moves this number while the other stays where it is,
     /// and a dictionary that reorders its candidates moves both.
     pub served_top1_rate: f64,
+    /// Top-1 accuracy by the expected word's length, matching the normalization bands.
+    pub length_bands: LengthBandAccuracy,
+}
+
+/// Top-1 accuracy attributed by word length.
+///
+/// The bands mirror the normalization bands so a regression can name its layer instead of
+/// surfacing as an anonymous drop in the total.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct LengthBandAccuracy {
+    /// Single-character cases.
+    pub single: Top1Band,
+    /// Two-character cases: the normalization pipeline's true-frequency core.
+    pub two: Top1Band,
+    /// Three-or-more-character cases: the flattened tail.
+    pub long: Top1Band,
+}
+
+/// One word-length band's hit count and sample size.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Top1Band {
+    /// Cases in the band.
+    pub cases: u64,
+    /// Cases whose expected word came first.
+    pub first: u64,
+}
+
+impl Top1Band {
+    /// The band's top-1 rate; `None` when it is empty, so a report never presents a
+    /// misleading 0% for a layer the hold-out set does not exercise.
+    pub fn top1(self) -> Option<f64> {
+        (self.cases > 0).then(|| self.first as f64 / self.cases as f64)
+    }
+
+    /// Records one case and whether it hit.
+    pub(crate) fn note(&mut self, first: bool) {
+        self.cases += 1;
+        self.first += u64::from(first);
+    }
 }
 
 /// What one pass counted, before the rates were divided out.
@@ -208,6 +262,8 @@ struct Tally {
     within: u64,
     /// Cases whose expected word the key does not serve at all.
     missing: u64,
+    /// Cases grouped by the expected word's length.
+    length_bands: LengthBandAccuracy,
 }
 
 impl Tally {
@@ -223,6 +279,7 @@ impl Tally {
             top9_rate: self.within as f64 / total,
             unreachable: u32::try_from(self.missing).unwrap_or(u32::MAX),
             served_top1_rate: self.served_first(),
+            length_bands: self.length_bands,
         }
     }
 
@@ -364,8 +421,15 @@ fn tally<L: Lexicon>(
         if only.is_some_and(|source| source != case.source) {
             continue;
         }
+        let band = match case.expected.chars().count() {
+            1 => &mut counted.length_bands.single,
+            2 => &mut counted.length_bands.two,
+            _ => &mut counted.length_bands.long,
+        };
+        let rank = rank_of(lexicon, &case.key, &case.expected)?;
+        band.note(rank == Some(0));
         counted.cases += 1;
-        match rank_of(lexicon, &case.key, &case.expected)? {
+        match rank {
             None => counted.missing += 1,
             Some(0) => {
                 counted.first += 1;
@@ -572,6 +636,17 @@ pub struct QualityArgs {
     /// Case floor the held-out set has to reach.
     #[arg(long, default_value_t = MIN_HOLDOUT_CASES)]
     min_cases: usize,
+    /// Test seam for the release total-top1 gate; production uses the constant.
+    #[arg(skip)]
+    #[cfg(test)]
+    gate_total_top1: f64,
+    /// Test seam for the release core-band gate; production uses the constant.
+    #[arg(skip)]
+    #[cfg(test)]
+    gate_core_top1: f64,
+    /// Print one machine-readable report instead of the human-readable breakdown.
+    #[arg(long)]
+    json: bool,
 }
 
 /// The two bounds one correction table is audited against.
@@ -618,14 +693,37 @@ pub fn run(args: QualityArgs) -> Result<()> {
         cases.len(),
         holdout.display()
     );
-    report("all", &measure(&cases, &lexicon)?, cases.len());
+    let rates = measure(&cases, &lexicon)?;
+    let mut layers = BTreeMap::new();
     for source in ReadingSource::ALL {
         let counted = tally(&cases, &lexicon, Some(source))?;
         if counted.cases > 0 {
+            let source_rates = counted.report();
+            layers.insert(source.as_str(), source_rates);
+        }
+    }
+    if args.json {
+        let snapshot = QualitySnapshot {
+            total: rates,
+            layers,
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&snapshot)
+                .context("rendering the quality report as JSON")?
+        );
+    } else {
+        report("all", &rates, cases.len());
+        for (source, source_rates) in &layers {
             report(
-                source.as_str(),
-                &counted.report(),
-                usize::try_from(counted.cases).unwrap_or(usize::MAX),
+                source,
+                source_rates,
+                usize::try_from(
+                    source_rates.length_bands.single.cases
+                        + source_rates.length_bands.two.cases
+                        + source_rates.length_bands.long.cases,
+                )
+                .unwrap_or(usize::MAX),
             );
         }
     }
@@ -641,6 +739,22 @@ pub fn run(args: QualityArgs) -> Result<()> {
             ceiling: args.max_corrections,
         },
     )
+    .and_then(|()| {
+        let (total_floor, core_floor) = quality_floors(&args);
+        require_quality(&rates, total_floor, core_floor)
+    })
+}
+
+/// Selects the release floors, or the fixture floors a small end-to-end test needs.
+#[cfg(test)]
+fn quality_floors(args: &QualityArgs) -> (f64, f64) {
+    (args.gate_total_top1, args.gate_core_top1)
+}
+
+/// Selects the release floors; production callers cannot override them.
+#[cfg(not(test))]
+fn quality_floors(_args: &QualityArgs) -> (f64, f64) {
+    (MIN_TOTAL_TOP1, MIN_CORE_TOP1)
 }
 
 /// Prints one line of the measurement.
@@ -654,6 +768,54 @@ fn report(label: &str, rates: &QualityReport, cases: usize) {
     println!(
         "quality: {label}: first choice {served_first:.1}% of the {served} cases the key serves"
     );
+    let bands = rates.length_bands;
+    println!(
+        "quality: {label}: top1 by length: 1字 {} | 2字 {} | 3+字 {}",
+        band_rate(bands.single),
+        band_rate(bands.two),
+        band_rate(bands.long)
+    );
+}
+
+/// Formats one band's rate, keeping an unpopulated band visibly unmeasured.
+fn band_rate(band: Top1Band) -> String {
+    band.top1()
+        .map_or_else(|| "n/a".to_owned(), |rate| format!("{:.1}%", rate * 100.0))
+}
+
+/// Applies the release-quality floors to one whole-set report.
+///
+/// # Errors
+///
+/// Returns an error when total top-1 or the two-character core band misses its floor.
+/// The total alone is not enough: a tail-band gain could otherwise hide a regression in
+/// exactly the core layer the normalization pipeline is meant to protect.
+fn require_quality(rates: &QualityReport, total_floor: f64, core_floor: f64) -> Result<()> {
+    ensure!(
+        rates.top1_rate >= total_floor,
+        "quality: total top1 {:.1}% is below the {:.1}% floor",
+        rates.top1_rate * 100.0,
+        total_floor * 100.0
+    );
+    let core = rates.length_bands.two.top1().context(
+        "quality: the hold-out set has no two-character cases, so the core band cannot be gated",
+    )?;
+    ensure!(
+        core >= core_floor,
+        "quality: two-character top1 {:.1}% is below the {:.1}% floor",
+        core * 100.0,
+        core_floor * 100.0
+    );
+    Ok(())
+}
+
+/// The machine-readable quality document: the whole set plus each populated layer.
+#[derive(Debug, Serialize)]
+struct QualitySnapshot {
+    /// Rates over every case.
+    total: QualityReport,
+    /// Rates by reading source; a source absent from the hold-out set is omitted.
+    layers: BTreeMap<&'static str, QualityReport>,
 }
 
 /// Refuses a held-out set too small for a rate over it to resolve anything.

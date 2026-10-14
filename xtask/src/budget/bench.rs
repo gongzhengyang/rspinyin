@@ -96,6 +96,11 @@ const CASE_BINDINGS: &[CaseBinding] = &[
         BenchUnit::Nanos,
     ),
     CaseBinding("transport/post_frame", "bench.post_ui_ns", BenchUnit::Nanos),
+    CaseBinding(
+        "decode/user_decay_cold",
+        "bench.decode_user_decay_cold_us",
+        BenchUnit::Micros,
+    ),
 ];
 
 /// One benchmark case bound to the threshold it is asserted against.
@@ -134,6 +139,10 @@ pub(super) const DESIGN_CASES: &[&str] = &[
     // The transport case (ADR-0011) belongs to the post path's own card, which states
     // its threshold in the 0.5.3 table as `BUDGET-LAT-06`.
     "transport/post_frame",
+    // The user-decay fold is the cold read path named by `BUDGET-LAT-07`; its warm
+    // companion is measured for regression evidence but has no separate threshold.
+    "decode/user_decay_cold",
+    "decode/user_decay_warm",
 ];
 
 /// The unit a case's threshold is written in.
@@ -448,6 +457,7 @@ mod sources {
     /// dictionary container and a store in a directory of its own, so a file is what
     /// they are about, and no threshold is bound to any of their cases.
     const BOUND_BENCH_DIRS: &[&str] = &[
+        "crates/ime-dict/benches/pure",
         "crates/ime-core/benches",
         "crates/ime-ui/benches",
         "crates/ime-fcitx5/benches",

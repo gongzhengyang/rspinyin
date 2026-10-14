@@ -41,13 +41,19 @@ pub struct UserRecord {
     pub key: String,
     /// Accumulated frequency, saturating at `u32::MAX`.
     pub weight: u32,
-    /// Last use, in unix milliseconds; drives eviction and the enumeration's order.
+    /// Last use, in unix milliseconds; drives the enumeration's order.
     pub last_used_unix: u64,
     /// First learning time, in unix milliseconds; zero for a record written before this
     /// build started stamping it.
     pub created_unix: u64,
     /// Whether the user pinned the word, which exempts it from eviction.
     pub pinned: bool,
+    /// The record's logical tick: the clock value of its last write, which eviction
+    /// ranks by.
+    pub tick: u64,
+    /// The decay accumulator in Q16.16, the working form of the f32 bits the file
+    /// stores. A record with no decay history carries `commits << 16`.
+    pub dee_q16: i64,
 }
 
 /// The reason a removal did or did not happen, for the diagnostics surface.
@@ -208,6 +214,8 @@ impl Inner {
                 last_used_unix: delta.last_used_ms,
                 created_unix: 0,
                 pinned: false,
+                tick: delta.tick,
+                dee_q16: i64::from(delta.count) << 16,
             });
         }
         Ok(kept
@@ -232,7 +240,9 @@ impl Inner {
     ///
     /// One read transaction covers both tables, so the page cannot mix two generations of
     /// the store. A record with no metadata row is one an older build wrote: it becomes an
-    /// unpinned record with no creation time, which is exactly what it was.
+    /// unpinned record with no creation time, which is exactly what it was. The words
+    /// table is read through the schema view, so a store whose migration failed lists its
+    /// v1 rows the same way it serves them.
     ///
     /// # Errors
     /// Returns [`ImeError::DictUnavailable`] when the transaction or a table fails.
@@ -246,39 +256,36 @@ impl Inner {
             .db
             .begin_read()
             .map_err(|error| store_error(&self.path, &error))?;
-        let words = txn
-            .open_table(USER_WORDS)
-            .map_err(|error| store_error(&self.path, &error))?;
+        let words = self.open_words(&txn)?;
         let meta = txn
             .open_table(USER_META)
             .map_err(|error| store_error(&self.path, &error))?;
-        for entry in words
-            .iter()
-            .map_err(|error| store_error(&self.path, &error))?
-        {
-            let (key, value) = entry.map_err(|error| store_error(&self.path, &error))?;
-            let key = key.value();
+        let mut fold = |key: &str, row: StoredRow| -> Result<(), ImeError> {
             if removed.contains(key) {
-                continue;
+                return Ok(());
             }
-            let (weight, last_used_unix) = value.value();
             let held = meta
                 .get(key)
                 .map_err(|error| store_error(&self.path, &error))?;
             let (created_unix, pinned) = held.map_or((0, 0), |guard| guard.value());
-            let mut row = UserRecord {
+            let mut record = UserRecord {
                 key: String::from(key),
-                weight,
-                last_used_unix,
+                weight: row.commits,
+                last_used_unix: row.last_used_ms,
                 created_unix,
                 pinned: pinned != 0,
+                tick: row.tick,
+                dee_q16: row.dee_q16,
             };
             if let Some(delta) = unclaimed.remove(key) {
-                row.weight = row.weight.saturating_add(delta.count);
-                row.last_used_unix = row.last_used_unix.max(delta.last_used_ms);
+                record.weight = record.weight.saturating_add(delta.count);
+                record.last_used_unix = record.last_used_unix.max(delta.last_used_ms);
+                record.tick = record.tick.max(delta.tick);
             }
-            kept.push(row);
-        }
+            kept.push(record);
+            Ok(())
+        };
+        words.for_each(&self.path, &mut fold)?;
         Ok(())
     }
 }

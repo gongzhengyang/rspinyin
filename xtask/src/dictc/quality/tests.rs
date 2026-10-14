@@ -84,6 +84,9 @@ fn quality_args(root: &Path) -> QualityArgs {
         min_corrections: 2,
         max_corrections: MAX_CORRECTIONS,
         min_cases: 2,
+        json: false,
+        gate_total_top1: 0.0,
+        gate_core_top1: 0.0,
     }
 }
 
@@ -181,7 +184,14 @@ fn write_container(dir: &Path) {
         threshold: u32::MAX,
         requested: 0,
     };
-    let compiled = compile(&words, band, 0, &[], crate::dictc::normalize::NormalizeRules::default()).expect("compiling the fixture");
+    let compiled = compile(
+        &words,
+        band,
+        0,
+        &[],
+        crate::dictc::normalize::NormalizeRules::default(),
+    )
+    .expect("compiling the fixture");
     let mut writer = DictWriter::new();
     writer
         .add_section(SectionKind::Fst, compiled.fst)
@@ -302,6 +312,70 @@ fn test_measure_counts_the_last_slot_of_the_page() {
     // The ninth candidate is the last one the reachability metric looks at.
     assert_eq!(report.top9_rate, 1.0);
     assert_eq!(report.unreachable, 0);
+}
+
+#[test]
+fn test_measure_groups_top1_by_expected_word_length() {
+    let lexicon = MockLexicon::new(vec![
+        ("wo", vec!["我", "沃"]),
+        ("ni'hao", vec!["你好", "尼号"]),
+        ("yin'hang", vec!["银行", "印行"]),
+        ("mei'you", vec!["没有", "未有"]),
+    ]);
+    let cases = vec![
+        case("wo", "我", ReadingSource::L1),
+        case("wo", "沃", ReadingSource::L1),
+        case("ni'hao", "你好", ReadingSource::L1),
+        case("yin'hang", "银行", ReadingSource::L1),
+        case("mei'you", "未有", ReadingSource::L1),
+        case("zhong'guo'ren'min", "中国人民", ReadingSource::L1),
+    ];
+    let report = measure(&cases, &lexicon).expect("measuring banded cases");
+    assert_eq!(report.top1_rate, 0.5);
+    let bands = report.length_bands;
+    assert_eq!((bands.single.cases, bands.single.first), (2, 1));
+    assert_eq!((bands.two.cases, bands.two.first), (3, 2));
+    assert_eq!((bands.long.cases, bands.long.first), (1, 0));
+    assert_eq!(bands.single.top1(), Some(0.5));
+    assert_eq!(bands.two.top1(), Some(2.0 / 3.0));
+    assert_eq!(bands.long.top1(), Some(0.0));
+    assert_eq!(
+        bands.single.cases + bands.two.cases + bands.long.cases,
+        cases.len() as u64
+    );
+}
+
+#[test]
+fn test_empty_length_band_has_no_top1_rate() {
+    let report = measure(&[], &MockLexicon::new(Vec::new())).expect("measuring nothing");
+    let bands = report.length_bands;
+    assert_eq!(bands.single.top1(), None);
+    assert_eq!(bands.two.top1(), None);
+    assert_eq!(bands.long.top1(), None);
+}
+
+#[test]
+fn test_quality_report_json_exposes_length_bands() {
+    let report = QualityReport {
+        top1_rate: 0.5,
+        top9_rate: 1.0,
+        unreachable: 1,
+        served_top1_rate: 1.0,
+        length_bands: LengthBandAccuracy {
+            single: Top1Band { cases: 1, first: 1 },
+            ..LengthBandAccuracy::default()
+        },
+    };
+    let json = serde_json::to_value(report).expect("serializing the report");
+    assert_eq!(json["length_bands"]["single"]["cases"], 1);
+    assert_eq!(json["length_bands"]["single"]["first"], 1);
+    assert_eq!(json["length_bands"]["two"]["cases"], 0);
+}
+
+#[test]
+fn test_quality_release_floors_protect_the_core_band() {
+    assert_eq!(MIN_TOTAL_TOP1, 0.7375);
+    assert_eq!(MIN_CORE_TOP1, 0.883);
 }
 
 #[test]

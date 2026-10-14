@@ -24,7 +24,7 @@
 //!
 //! The logical clock measures usage, not time: it advances once per `record` call, and
 //! `tick` on a record is the value the clock held when that record was last written. The
-//! decay the clock feeds is `TASK-1.02.02`'s arithmetic; this schema only carries its two
+//! decay the clock feeds is the user-decay arithmetic; this schema only carries its two
 //! inputs so the fold never needs another migration.
 //!
 //! # Migration from schema 1
@@ -95,6 +95,7 @@ use std::cell::Cell;
 mod backup;
 mod cache;
 mod clock;
+mod decay;
 mod evict;
 mod export;
 mod flush;
@@ -103,7 +104,7 @@ mod manage;
 
 use self::cache::MissCache;
 use self::evict::{Sweep, start_sweep};
-use self::flush::{FLUSH_SETTLE_TIMEOUT_MS, FlushThread, Pending};
+use self::flush::{Delta, FLUSH_SETTLE_TIMEOUT_MS, FlushThread, Pending};
 use self::hydrate::load_committed;
 
 pub use self::backup::{
@@ -112,6 +113,7 @@ pub use self::backup::{
     backup_dir, list_backups, recover_user_db_with_backup, run_backup,
 };
 pub use self::clock::{Clock, SystemClock};
+pub use self::decay::DecayParams;
 pub use self::export::{EXPORT_LIMIT_BYTES, ImportReport};
 pub use self::flush::CommitReport;
 pub use self::manage::{ForgetOutcome, MAX_LIST_LIMIT, UserRecord};
@@ -390,13 +392,18 @@ enum SchemaOutcome {
 /// migration itself fails.
 fn prepare_schema(path: &Path, db: &Database) -> Result<SchemaOutcome, ImeError> {
     let version = {
-        let txn = db
-            .begin_read()
-            .map_err(|error| store_error(path, &error))?;
-        let meta = txn.open_table(META).map_err(|error| store_error(path, &error))?;
-        meta.get(SCHEMA_KEY)
-            .map_err(|error| store_error(path, &error))?
-            .map(|guard| guard.value())
+        let txn = db.begin_read().map_err(|error| store_error(path, &error))?;
+        match txn.open_table(META) {
+            Ok(meta) => meta
+                .get(SCHEMA_KEY)
+                .map_err(|error| store_error(path, &error))?
+                .map(|guard| guard.value()),
+            // A file with no `meta` table at all is a fresh one: the store this build
+            // is about to create, or the zero-byte file `prepare_path` made before
+            // `redb` wrote anything. That is the "no version" state, not a failure.
+            Err(redb::TableError::TableDoesNotExist(_)) => None,
+            Err(error) => return Err(store_error(path, &error)),
+        }
     };
     match version {
         None => {
@@ -433,7 +440,7 @@ fn prepare_schema(path: &Path, db: &Database) -> Result<SchemaOutcome, ImeError>
 /// # Errors
 /// Returns [`ImeError::DictUnavailable`] when a table cannot be created.
 fn ensure_tables(path: &Path, db: &Database) -> Result<(), ImeError> {
-    let mut txn = db
+    let txn = db
         .begin_write()
         .map_err(|error| store_error(path, &error))?;
     txn.open_table(USER_WORDS_V2)
@@ -474,10 +481,7 @@ fn migrate_v1(path: &Path, db: &Database) -> Result<(), ImeError> {
         let mut v2 = txn
             .open_table(USER_WORDS_V2)
             .map_err(|error| store_error(path, &error))?;
-        for entry in v1
-            .iter()
-            .map_err(|error| store_error(path, &error))?
-        {
+        for entry in v1.iter().map_err(|error| store_error(path, &error))? {
             let (key, value) = entry.map_err(|error| store_error(path, &error))?;
             let (commits, last_used) = value.value();
             let dee = i64::from(commits) << 16;
@@ -528,9 +532,7 @@ fn dee_q16(bits: u32) -> i64 {
 /// with the tables, so a store that opens without one is a store this build did not
 /// prepare and cannot serve.
 fn read_tick(path: &Path, db: &Database) -> Result<u64, ImeError> {
-    let txn = db
-        .begin_read()
-        .map_err(|error| store_error(path, &error))?;
+    let txn = db.begin_read().map_err(|error| store_error(path, &error))?;
     let tick = txn
         .open_table(META_TICK)
         .map_err(|error| store_error(path, &error))?;
@@ -548,7 +550,7 @@ fn read_tick(path: &Path, db: &Database) -> Result<u64, ImeError> {
 /// One hydrated record: what the store flushed, in the form the read paths consume.
 ///
 /// `dee_q16` is the decay accumulator in Q16.16 and `tick` the record's own logical
-/// stamp; both are the inputs the decay fold (`1.02.02`) consumes. Until that fold
+/// stamp; both are the inputs the decay fold consumes. Until that fold
 /// arrives the read paths answer `commits`, which is the v1 semantic the store keeps
 /// for an un-decayed record.
 #[derive(Clone, Copy, Debug)]
@@ -618,14 +620,14 @@ impl StoredRow {
 /// words table goes through this view rather than naming a table. A v1 row reads as
 /// its v2 equivalent with no tick and an un-decayed accumulator -- which is exactly
 /// what it is.
-pub(super) enum WordsView<'txn> {
+pub(super) enum WordsView {
     /// The v1 table of a store whose migration failed.
-    V1(redb::ReadOnlyTable<&'txn str, (u32, u64)>),
+    V1(redb::ReadOnlyTable<&'static str, (u32, u64)>),
     /// The table this build writes.
-    V2(redb::ReadOnlyTable<&'txn str, (u32, u64, u64, u32)>),
+    V2(redb::ReadOnlyTable<&'static str, (u32, u64, u64, u32)>),
 }
 
-impl WordsView<'_> {
+impl WordsView {
     /// The stored record `key` maps to, or `None` when the store does not hold it.
     ///
     /// # Errors
@@ -650,23 +652,25 @@ impl WordsView<'_> {
     /// Feeds every record, in key order, to `visit`.
     ///
     /// # Errors
-    /// Returns the underlying `redb` failure for the iteration itself, and whatever
-    /// `visit` reports for a row.
-    pub(super) fn for_each<F>(&self, mut visit: F) -> Result<(), redb::StorageError>
+    /// Returns [`ImeError::DictUnavailable`] for the iteration itself -- rendered against
+    /// `path`, the store the view was opened from -- and whatever `visit` reports for a
+    /// row.
+    pub(super) fn for_each<F>(&self, path: &Path, mut visit: F) -> Result<(), ImeError>
     where
         F: FnMut(&str, StoredRow) -> Result<(), ImeError>,
     {
+        let failed = |error: redb::StorageError| store_error(path, &error);
         match self {
             Self::V1(table) => {
-                for entry in table.iter()? {
-                    let (key, value) = entry?;
+                for entry in table.iter().map_err(failed)? {
+                    let (key, value) = entry.map_err(failed)?;
                     let (commits, last_used_ms) = value.value();
                     visit(key.value(), StoredRow::from_v1(commits, last_used_ms))?;
                 }
             }
             Self::V2(table) => {
-                for entry in table.iter()? {
-                    let (key, value) = entry?;
+                for entry in table.iter().map_err(failed)? {
+                    let (key, value) = entry.map_err(failed)?;
                     let (commits, last_used_ms, tick, dee) = value.value();
                     visit(
                         key.value(),
@@ -696,6 +700,8 @@ struct Inner {
     /// sweep forgets what it removed. Empty when the store was too large to load -- see
     /// [`Inner::is_hydrated`].
     committed: Mutex<HashMap<Box<str>, Stored>>,
+    /// The decay policy this build uses until configuration projection supplies one.
+    decay: DecayParams,
     /// Whether [`Inner::committed`] holds the whole store.
     ///
     /// Decided once, at open, and never changed: it is what lets the hot paths choose
@@ -767,15 +773,36 @@ struct Inner {
 }
 
 impl Inner {
+    /// Merges one flushed delta into a stored record, advancing its decay state.
+    ///
+    /// Existing usage is folded to the newer of its own stamp and the delta's stamp,
+    /// then the new commits enter at that stamp. The flush preserves that anchor:
+    /// aging to the current clock is a read-path fold, while the next task's idle
+    /// sweep will fold batches forward without rewriting every record's usage stamp.
+    pub(super) fn merged_record(&self, previous: Stored, delta: Delta) -> Stored {
+        let anchor = previous.tick.max(delta.tick);
+        let aged = self.decay.fold(previous.dee_q16, previous.tick, anchor);
+        let entered = aged.saturating_add(i64::from(delta.count) << 16);
+        Stored {
+            commits: previous.commits.saturating_add(delta.count),
+            dee_q16: entered,
+            tick: anchor,
+        }
+    }
+
+    /// Reads the current effective frequency of one stored record.
+    pub(super) fn effective_freq(&self, record: &Stored) -> u32 {
+        let now = self.tick.load(Ordering::Relaxed);
+        let aged = self.decay.fold(record.dee_q16, record.tick, now);
+        self.decay.effective_freq(record.commits, aged)
+    }
+
     /// Opens the words table the file carries, in the schema this open found.
     ///
     /// # Errors
     /// Returns [`ImeError::DictUnavailable`] when the table cannot be opened -- which
     /// for a store this build wrote means the file is not the one that was opened.
-    pub(super) fn open_words<'txn>(
-        &self,
-        txn: &'txn redb::ReadTransaction,
-    ) -> Result<WordsView<'txn>, ImeError> {
+    pub(super) fn open_words(&self, txn: &redb::ReadTransaction) -> Result<WordsView, ImeError> {
         let view = if self.v1_readonly {
             WordsView::V1(
                 txn.open_table(USER_WORDS)
@@ -851,6 +878,18 @@ impl UserDb {
         Self::open_with_hydrate_cap(path, clock, HYDRATE_CAP)
     }
 
+    /// Opens the store at `path` with a clock and decay policy supplied by the caller.
+    ///
+    /// # Errors
+    /// As [`UserDb::open`].
+    pub fn open_with_decay(
+        path: impl AsRef<Path>,
+        clock: Box<dyn Clock>,
+        decay: DecayParams,
+    ) -> Result<Self, ImeError> {
+        Self::open_with_hydrate_cap_and_decay(path, clock, HYDRATE_CAP, decay)
+    }
+
     /// Opens the store at `path` with an injected clock and hydration ceiling.
     ///
     /// The ceiling is a parameter for the same reason the clock is: the behaviour of a
@@ -866,12 +905,28 @@ impl UserDb {
         clock: Box<dyn Clock>,
         hydrate_cap: u64,
     ) -> Result<Self, ImeError> {
+        Self::open_with_hydrate_cap_and_decay(path, clock, hydrate_cap, DecayParams::default())
+    }
+
+    /// Opens the store with a hydration ceiling and an explicit decay policy.
+    ///
+    /// The policy is projected from configuration by the caller; it is captured before
+    /// the store's threads start, so every later fold uses one coherent policy.
+    ///
+    /// # Errors
+    /// As [`UserDb::open`].
+    pub fn open_with_hydrate_cap_and_decay(
+        path: impl AsRef<Path>,
+        clock: Box<dyn Clock>,
+        hydrate_cap: u64,
+        decay: DecayParams,
+    ) -> Result<Self, ImeError> {
         let path = path.as_ref().to_path_buf();
         prepare_path(&path)?;
         let db = Database::create(&path).map_err(|error| store_error(&path, &error))?;
         let schema = prepare_schema(&path, &db)?;
         let v1_readonly = schema == SchemaOutcome::V1Degraded;
-        let loaded = load_committed(&db, hydrate_cap, v1_readonly);
+        let loaded = load_committed(&db, &path, hydrate_cap, v1_readonly);
         let is_hydrated = loaded.is_some();
         let held = loaded.unwrap_or_default();
         // A v1 store served read-only carries no clock at all -- its migration, the
@@ -885,6 +940,7 @@ impl UserDb {
         let inner = Arc::new(Inner {
             db,
             is_hydrated,
+            decay,
             committed: Mutex::new(held.records),
             pinned: Mutex::new(held.pinned),
             tick: AtomicU64::new(tick),
@@ -983,7 +1039,7 @@ impl UserDb {
         self.inner.stored_count()
     }
 
-    /// Drops the oldest `percent` of the stored records, oldest by `last_used_ms`.
+    /// Drops the oldest `percent` of the stored records, oldest by logical `tick`.
     ///
     /// The threshold is the exact percentile, found with a bounded max-heap over one
     /// read-only scan, so the sweep removes the records the policy names rather than an
@@ -1097,26 +1153,47 @@ impl UserFreqSource for UserDb {
         // two locks are taken in the order the module fixes, `committed` before `pending`,
         // and both are released before the call returns.
         if self.inner.is_hydrated {
-            let committed = lock(&self.inner.committed);
-            // The decay fold (`1.02.02`) reads the accumulator and the tick out of the
-            // same record; until it lands the answer is the commit count, which is the
-            // v1 semantic and the un-decayed limit of the fold.
-            let base = committed.get(key).map_or(0, |record| record.commits);
+            let now = self.inner.tick.load(Ordering::Relaxed);
+            let mut committed = lock(&self.inner.committed);
             // The delta is read under its own lock while `committed` is still held, in the
             // order the module fixes: `committed` first, then `pending`, never the reverse.
-            let (forgotten, delta) = {
+            let (forgotten, pending) = {
                 let pending = lock(&self.inner.pending);
                 (
                     pending.removed.contains(key),
-                    pending.entries.get(key).map_or(0, |entry| entry.count),
+                    pending.entries.get(key).copied(),
                 )
             };
+            let answer = committed.get_mut(key).map_or_else(
+                || {
+                    pending.map_or(0, |delta| {
+                        self.inner
+                            .decay
+                            .fold(i64::from(delta.count) << 16, delta.tick, now)
+                    })
+                },
+                |record| match pending {
+                    Some(delta) => {
+                        let anchor = record.tick.max(delta.tick);
+                        let aged = self.inner.decay.fold(record.dee_q16, record.tick, anchor);
+                        let entered = aged.saturating_add(i64::from(delta.count) << 16);
+                        self.inner.decay.fold(entered, anchor, now)
+                    }
+                    None => {
+                        record.dee_q16 = self.inner.decay.fold(record.dee_q16, record.tick, now);
+                        record.tick = record.tick.max(now);
+                        record.dee_q16
+                    }
+                },
+            );
+            let commits = committed.get(key).map_or(0, |record| record.commits);
+            let commits = pending.map_or(commits, |delta| commits.saturating_add(delta.count));
             // A tombstone outranks the count the file still holds: the user asked for the
             // word to go, and the flush that makes the file agree has not run yet.
             return if forgotten {
                 0
             } else {
-                base.saturating_add(delta)
+                self.inner.decay.effective_freq(commits, answer)
             };
         }
         // The store was too large to load, so the answer has to come from the file. The

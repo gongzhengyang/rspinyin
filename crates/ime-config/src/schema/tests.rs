@@ -94,6 +94,10 @@ fn scalar_breakers() -> Vec<ScalarBreaker> {
             c.phrases.max_entries = 0
         }),
         ("data.backup_keep", |c: &mut Config| c.data.backup_keep = 0),
+        ("data.decay_half_life_ticks", |c: &mut Config| {
+            c.data.decay_half_life_ticks = 0
+        }),
+        ("data.decay_floor", |c: &mut Config| c.data.decay_floor = -1),
     ]
 }
 
@@ -559,6 +563,22 @@ fn test_data_section_reads_the_backup_keys_from_a_document() {
 }
 
 #[test]
+fn test_data_section_reads_the_decay_keys_from_a_document() {
+    let (config, warnings) = parsed_document(
+        "[data]\n\
+         decay_half_life_ticks = 200\n\
+         decay_floor = 128\n",
+    );
+    assert!(warnings.is_empty(), "both decay values are usable");
+    assert_eq!(config.data.decay_half_life_ticks, 200);
+    assert_eq!(config.data.decay_floor, 128);
+    assert_eq!(
+        parsed_document("[data]\ndecay_half_life_ticks = 139\ndecay_floor = 65536\n").0,
+        Config::default(),
+    );
+}
+
+#[test]
 fn test_data_section_repairs_a_backup_keep_a_document_writes_out_of_range() {
     let out_of_range = [String::from("0"), (MAX_BACKUP_KEEP + 1).to_string()];
     for written in out_of_range {
@@ -577,4 +597,19 @@ fn test_data_section_repairs_a_backup_keep_a_document_writes_out_of_range() {
             "the reason quotes what the document said: {warnings:?}"
         );
     }
+}
+
+#[test]
+fn test_data_section_repairs_decay_values_a_document_writes_out_of_range() {
+    let document = "[data]\ndecay_half_life_ticks = 0\ndecay_floor = -1\n";
+
+    let (repaired, warnings) = parsed_document(document);
+    assert_eq!(repaired, Config::default(), "both defaults are restored");
+    assert_eq!(
+        rejected(&warnings),
+        [
+            String::from("data.decay_half_life_ticks"),
+            String::from("data.decay_floor"),
+        ],
+    );
 }

@@ -68,6 +68,7 @@ const DOCUMENT: &str = r#"{
   "alloc_count": { "decode_steady": 5 },
   "robustness": { "soak_hours": 5.5, "rss_drift_mb": 5.5, "pass_rate_pct": 5.5 },
   "bench": {
+    "decode_user_decay_cold_us": 1.0,
     "passthrough_classify_ns": 555.5,
     "input_buffer_ops_us": 5.5,
     "decode_holdout_s": 5.5,

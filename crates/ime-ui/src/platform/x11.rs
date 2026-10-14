@@ -194,7 +194,10 @@ impl X11Backend {
         scale: f32,
         display: Option<&str>,
     ) -> Result<Self, PlatformError> {
-        let (conn, screen_num) = x11rb::connect(display).map_err(|e| { eprintln!("DBG connect: {e:?}"); unavailable(e) })?;
+        let (conn, screen_num) = x11rb::connect(display).map_err(|e| {
+            eprintln!("DBG connect: {e:?}");
+            unavailable(e)
+        })?;
         let screen = conn
             .setup()
             .roots
@@ -225,7 +228,10 @@ impl X11Backend {
         // A window whose visual is not the root's must carry a colormap for that visual,
         // or the server rejects the window with `BadMatch`.
         conn.create_colormap(ColormapAlloc::NONE, colormap, root, visual)
-            .map_err(|e| { eprintln!("DBG cmap: {e:?}"); unavailable(e) })?;
+            .map_err(|e| {
+                eprintln!("DBG cmap: {e:?}");
+                unavailable(e)
+            })?;
 
         // `create_window` is an unchecked request: a server that refuses it reports the
         // error asynchronously and the request silently does nothing, which is how a
@@ -268,7 +274,8 @@ impl X11Backend {
                 .map_err(unavailable)?;
             match argb_cookie.check() {
                 Ok(()) => depth,
-                Err(e) => { eprintln!("DBG argb create: {e:?}");
+                Err(e) => {
+                    eprintln!("DBG argb create: {e:?}");
                     conn.free_colormap(colormap).map_err(unavailable)?;
                     conn.destroy_window(window).map_err(unavailable)?;
                     // The root path: whatever depth the root uses, no colormap, and an
@@ -293,12 +300,17 @@ impl X11Backend {
                             },
                         )
                         .map_err(unavailable)?;
-                    root_cookie.check().map_err(|e| { eprintln!("DBG root create: {e:?}"); unavailable(e) })?;
+                    root_cookie.check().map_err(|e| {
+                        eprintln!("DBG root create: {e:?}");
+                        unavailable(e)
+                    })?;
                     screen.root_depth
                 }
             }
         };
-        set_window_properties(&conn, window, &atoms).map_err(|e| eprintln!("DBG props: {e:?}")).unwrap_or(());
+        set_window_properties(&conn, window, &atoms)
+            .map_err(|e| eprintln!("DBG props: {e:?}"))
+            .unwrap_or(());
         conn.create_gc(
             gc,
             window,

@@ -105,6 +105,7 @@ impl Budgets {
                 pass_rate_pct: positive(robust, "robustness", "pass_rate_pct")?,
             },
             bench: Bench {
+                decode_user_decay_cold_us: positive(bench, "bench", "decode_user_decay_cold_us")?,
                 passthrough_classify_ns: positive(bench, "bench", "passthrough_classify_ns")?,
                 buffer_ops_us: positive(bench, "bench", "input_buffer_ops_us")?,
                 decode_holdout_s: positive(bench, "bench", "decode_holdout_s")?,
@@ -169,6 +170,10 @@ impl Budgets {
             Threshold("bench.decode_holdout_s", b.decode_holdout_s),
             Threshold("bench.ui_wakeup_latency_us", b.ui_wakeup_latency_us),
             Threshold("bench.post_ui_ns", b.post_ui_ns),
+            Threshold(
+                "bench.decode_user_decay_cold_us",
+                b.decode_user_decay_cold_us,
+            ),
             Threshold("alloc_count.decode_steady", a.decode_steady as f64),
             Threshold("net_sockets", self.net_sockets as f64),
         ]

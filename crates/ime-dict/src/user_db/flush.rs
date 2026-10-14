@@ -74,6 +74,12 @@ pub(super) struct Pending {
     /// by it, and a batch that carried the flush's own reading would make every record of one
     /// window equally old, which is a coarser ranking than the store had before.
     pub(super) last_used_nanos: u64,
+    /// The logical clock value this key's most recent record was stamped with.
+    ///
+    /// The clock lives in an atomic the record path advances per record, so reading it here
+    /// costs the same monotonic load the nanosecond stamp does. Eviction ranks by it, and the
+    /// decay fold measures a record's age with it.
+    pub(super) tick: u64,
 }
 
 /// One delta taken out of the delta map, stamped for the store.
@@ -87,6 +93,8 @@ pub(super) struct Delta {
     pub(super) count: u32,
     /// Wall-clock milliseconds of the most recent record.
     pub(super) last_used_ms: u64,
+    /// The logical clock value of the most recent record.
+    pub(super) tick: u64,
 }
 
 impl Pending {
@@ -104,6 +112,7 @@ impl Pending {
         Delta {
             count: self.count,
             last_used_ms: now_ms.saturating_sub(age_ms),
+            tick: self.tick,
         }
     }
 }
@@ -137,6 +146,11 @@ impl Inner {
     pub(super) fn record_delta(&self, key: &str) -> bool {
         let now_nanos = self.clock.now_nanos();
         self.last_record_nanos.store(now_nanos, Ordering::Relaxed);
+        // One commit, one tick of the logical clock: the clock measures usage, so the
+        // half-life a decay names in commits is a half-life in these ticks. The advance
+        // is an atomic add -- no lock, no IO -- and the value this record stamped is the
+        // one the fetch returns.
+        let tick = self.tick.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         let mut pending = lock(&self.pending);
         // Committing the word again takes the tombstone back: the user is asking for it to be
         // learned, which is the opposite of the removal still waiting to be flushed, and the
@@ -145,6 +159,7 @@ impl Inner {
         let merged = if let Some(entry) = pending.entries.get_mut(key) {
             entry.count = entry.count.saturating_add(1);
             entry.last_used_nanos = now_nanos;
+            entry.tick = tick;
             true
         } else {
             false
@@ -157,6 +172,7 @@ impl Inner {
             let fresh = Pending {
                 count: 1,
                 last_used_nanos: now_nanos,
+                tick,
             };
             pending.entries.insert(Box::from(key), fresh);
         }
@@ -304,7 +320,7 @@ impl Inner {
         let mut txn = self.db.begin_write().map_err(|error| error.to_string())?;
         {
             let mut words = txn
-                .open_table(USER_WORDS)
+                .open_table(USER_WORDS_V2)
                 .map_err(|error| error.to_string())?;
             let mut meta = txn
                 .open_table(USER_META)
@@ -320,13 +336,37 @@ impl Inner {
                 let previous = words
                     .get(key.as_ref())
                     .map_err(|error| error.to_string())?
-                    .map_or((0, 0), |guard| guard.value());
-                let total = previous.0.saturating_add(delta.count);
+                    .map_or(
+                        StoredRow {
+                            commits: 0,
+                            last_used_ms: 0,
+                            tick: 0,
+                            dee_q16: 0,
+                        },
+                        |guard| {
+                            let (commits, last_used_ms, tick, dee) = guard.value();
+                            StoredRow {
+                                commits,
+                                last_used_ms,
+                                tick,
+                                dee_q16: dee_q16(dee),
+                            }
+                        },
+                    );
+                let next = self.merged_record(previous.as_stored(), *delta);
                 words
-                    .insert(key.as_ref(), (total, previous.1.max(delta.last_used_ms)))
+                    .insert(
+                        key.as_ref(),
+                        (
+                            next.commits,
+                            previous.last_used_ms.max(delta.last_used_ms),
+                            next.tick,
+                            next.dee_bits(),
+                        ),
+                    )
                     .map_err(|error| error.to_string())?;
                 if caching {
-                    updated.push((key.as_ref(), total));
+                    updated.push((key.as_ref(), self.effective_freq(&next)));
                 }
                 let stamped = meta
                     .get(key.as_ref())
@@ -337,6 +377,16 @@ impl Inner {
                         .map_err(|error| error.to_string())?;
                 }
             }
+            // The clock's file copy follows the batch it stamped, so a reopen resumes the
+            // clock at least where the file's records left it -- a crash between this and
+            // the next flush rewinds it by one window, and a rewind only makes records
+            // younger, which the fold bounds the same way it bounds every age.
+            let mut clock = txn
+                .open_table(META_TICK)
+                .map_err(|error| error.to_string())?;
+            clock
+                .insert(TICK_KEY, self.tick.load(Ordering::Relaxed))
+                .map_err(|error| error.to_string())?;
         }
         txn.set_durability(durability);
         txn.commit().map_err(|error| error.to_string())?;

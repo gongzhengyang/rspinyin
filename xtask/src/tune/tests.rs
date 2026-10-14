@@ -327,6 +327,13 @@ fn test_rank_and_evaluate_count_the_first_choice_and_the_reachable_rows() {
     assert_eq!(metrics.first_rate(), 100.0 / 3.0);
     assert_eq!(metrics.reach_rate(), 200.0 / 3.0);
     assert_eq!(metrics.weighted_rate(), 60.0);
+    let bands = metrics.length_bands;
+    assert_eq!((bands.two.cases, bands.two.first), (1, 1));
+    assert_eq!((bands.single.cases, bands.single.first), (1, 0));
+    assert_eq!(bands.long.cases, 0);
+    assert_eq!(bands.single.top1(), Some(0.0));
+    assert_eq!(bands.two.top1(), Some(1.0));
+    assert_eq!(bands.long.top1(), None);
     assert_eq!(percent(0, 0), 0.0);
     grid_search(&rows, &lexicon, &lm).expect("the grid search runs");
     fs::remove_dir_all(&dir).expect("cleaning up");

@@ -7,7 +7,7 @@
 //! holds. They are re-exported from [`crate::schema`], so the public path of every
 //! type is the one it has always had.
 
-use super::{DEFAULT_BACKUP_KEEP, Durability, LogLevel};
+use super::{DEFAULT_BACKUP_KEEP, DEFAULT_DECAY_HALF_LIFE_TICKS, Durability, LogLevel};
 
 /// The `[data]` section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,11 +27,16 @@ pub struct DataConfig {
     /// landed, so zero would remove the copy that was just written. Such a value is
     /// reported and replaced by [`crate::schema::Config::repaired`].
     pub backup_keep: u8,
+    /// `decay_half_life_ticks`: logical commits over which user usage halves.
+    pub decay_half_life_ticks: u32,
+    /// `decay_floor`: the user accumulator floor in Q16.16.
+    pub decay_floor: i64,
 }
 
 impl Default for DataConfig {
     /// The shipped defaults: eventual writes, backups on, [`DEFAULT_BACKUP_KEEP`]
-    /// generations kept.
+    /// generations kept, and decay enabled at the librime-equivalent half-life with a
+    /// one-use accumulator floor.
     ///
     /// Written out rather than derived, because two of the three keys are not
     /// zero-valued: a derived default would turn the copies off and ask for no
@@ -41,6 +46,8 @@ impl Default for DataConfig {
             durability: Durability::Eventual,
             backup_enabled: true,
             backup_keep: DEFAULT_BACKUP_KEEP,
+            decay_half_life_ticks: DEFAULT_DECAY_HALF_LIFE_TICKS,
+            decay_floor: 1 << 16,
         }
     }
 }

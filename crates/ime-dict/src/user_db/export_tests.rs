@@ -11,7 +11,7 @@ use super::tests::{TestClock, open_in, temp_dir};
 use super::*;
 
 /// The header an export of this build writes, as the tests read it back.
-const MARKER: &str = "# rspinyin user dictionary export v1";
+const MARKER: &str = "# rspinyin user dictionary export v2";
 
 /// Renders the store's export into a string.
 fn document_of(db: &UserDb) -> String {
@@ -24,7 +24,7 @@ fn document_of(db: &UserDb) -> String {
 /// An import document holding `rows`, under this build's marker and column line.
 fn document(rows: &str) -> String {
     format!(
-        "{MARKER}\n# Columns: key <TAB> weight <TAB> last_used_unix <TAB> created_unix <TAB> pinned\n{rows}"
+        "{MARKER}\n# Columns: key <TAB> weight <TAB> last_used_unix <TAB> created_unix <TAB> pinned <TAB> dee_q16 <TAB> tick\n{rows}"
     )
 }
 
@@ -50,9 +50,11 @@ fn test_export_tsv_writes_the_header_and_every_record() {
         lines[1]
     );
     assert!(lines[2].starts_with('#'));
-    // Rows come out in key order, and the creation stamp is the first use.
-    assert_eq!(lines[3], "a\t1\t2000\t2000\t0");
-    assert_eq!(lines[4], "b\t1\t1000\t1000\t0");
+    // Rows come out in key order, and the creation stamp is the first use. The two
+    // decay columns carry the un-decayed identity: the accumulator is the count in
+    // Q16.16 and the tick is the logical clock the record was stamped with.
+    assert_eq!(lines[3], "a\t1\t2000\t2000\t0\t65536\t2");
+    assert_eq!(lines[4], "b\t1\t1000\t1000\t0\t65536\t1");
 }
 
 #[test]
@@ -63,7 +65,7 @@ fn test_export_tsv_carries_a_record_the_flush_has_not_written() {
 
     let document = document_of(&db);
     assert!(
-        document.contains("fresh\t1\t0\t0\t0\n"),
+        document.contains("fresh\t1\t0\t0\t0\t65536\t1\n"),
         "an unflushed word is part of the export: {document}"
     );
 }
@@ -188,9 +190,9 @@ fn test_export_refuses_a_key_the_format_cannot_carry() {
     {
         let txn = db.inner.db.begin_write().expect("writing");
         {
-            let mut words = txn.open_table(USER_WORDS).expect("opening the table");
+            let mut words = txn.open_table(USER_WORDS_V2).expect("opening the table");
             words
-                .insert("a\tb", (1u32, 1u64))
+                .insert("a\tb", (1u32, 1u64, 0u64, 65536u32))
                 .expect("inserting a key the format cannot carry");
         }
         txn.commit().expect("committing");
@@ -208,7 +210,7 @@ fn test_export_refuses_a_key_the_format_cannot_carry() {
 fn test_import_refuses_a_malformed_row_without_applying_anything() {
     let dir = temp_dir("import-malformed");
     let db = open_in(&dir, TestClock::default());
-    let text = document("good\t3\t1000\t900\t0\nbad\t3\t1000\n");
+    let text = document("good\t3\t1000\t900\t0\t196608\t0\nbad\t3\t1000\n");
 
     let report = db
         .import_tsv(&mut text.as_bytes())
@@ -259,8 +261,9 @@ fn test_import_refuses_a_document_that_is_not_utf8() {
 fn test_import_refuses_a_bad_pin_flag_and_a_non_decimal_weight() {
     let dir = temp_dir("import-bad-columns");
     let db = open_in(&dir, TestClock::default());
-    let text =
-        document("one\t3\t1000\t900\t2\nnegative\t-3\t1000\t900\t0\nfloat\t3.5\t1000\t900\t0\n");
+    let text = document(
+        "one\t3\t1000\t900\t2\t196608\t0\nnegative\t-3\t1000\t900\t0\nfloat\t3.5\t1000\t900\t0\n",
+    );
 
     let report = db
         .import_tsv(&mut text.as_bytes())
@@ -280,7 +283,7 @@ fn test_import_merges_with_what_the_store_already_holds() {
     db.final_commit().expect("flushing");
     assert_eq!(db.freq("word"), 2);
 
-    let higher = document("word\t9\t5000\t100\t1\n");
+    let higher = document("word\t9\t5000\t100\t1\t589824\t0\n");
     let report = db
         .import_tsv(&mut higher.as_bytes())
         .expect("importing a stronger record");
@@ -293,7 +296,7 @@ fn test_import_merges_with_what_the_store_already_holds() {
     assert_eq!(rows[0].created_unix, 100, "the earlier creation wins");
     assert!(rows[0].pinned, "and the pin is carried over");
 
-    let lower = document("word\t1\t10\t100\t0\n");
+    let lower = document("word\t1\t10\t100\t0\t65536\t0\n");
     db.import_tsv(&mut lower.as_bytes())
         .expect("importing a weaker record");
     assert_eq!(
@@ -315,7 +318,7 @@ fn test_import_into_a_readonly_store_reports_readonly() {
     let _ = db.final_commit().expect_err("the injected flush fails");
     assert!(db.is_readonly(), "the store degraded");
 
-    let text = document("word\t3\t1000\t900\t0\n");
+    let text = document("word\t3\t1000\t900\t0\t196608\t0\n");
     let error = db
         .import_tsv(&mut text.as_bytes())
         .expect_err("a read-only store takes nothing");
@@ -331,7 +334,7 @@ fn test_import_into_a_readonly_store_reports_readonly() {
 fn test_import_refuses_a_document_past_the_size_limit() {
     let dir = temp_dir("import-limit");
     let db = open_in(&dir, TestClock::default());
-    let text = document("word\t3\t1000\t900\t0\n");
+    let text = document("word\t3\t1000\t900\t0\t196608\t0\n");
 
     set_export_limit(16);
     let error = db

@@ -324,14 +324,15 @@ fn test_list_words_drops_a_forgotten_word_before_the_flush() {
 fn test_list_words_reads_an_old_record_as_unpinned_and_unstamped() {
     let dir = temp_dir("list-legacy");
     let db = open_in(&dir, TestClock::default());
-    // A row written the way the first release wrote one: an entry in `user_words` and no
-    // metadata row at all.
+    // A row written the way the first release wrote one: an entry in the words table and
+    // no metadata row at all. Under schema 2 such a row arrives through the migration --
+    // tick zero, an un-decayed accumulator -- which is the shape the fixture writes.
     {
         let txn = db.inner.db.begin_write().expect("writing");
         {
-            let mut words = txn.open_table(USER_WORDS).expect("opening the table");
+            let mut words = txn.open_table(USER_WORDS_V2).expect("opening the table");
             words
-                .insert("legacy", (3u32, 1_700_000_000_000u64))
+                .insert("legacy", (3u32, 1_700_000_000_000u64, 0u64, 196_608u32))
                 .expect("inserting the old row");
         }
         txn.commit().expect("committing");

@@ -185,6 +185,7 @@ cargo test --workspace --doc                        # doctest 单独补跑
 | `BUDGET-LAT-04` | 首次按键到窗口可见（窗口已预创建、已预热） | P99 ≤ 8ms | 探针打点 | TASK-1.04.07 |
 | `BUDGET-LAT-05` | 插件加载耗时（fcitx5 启动时同步加载） | ≤ 120ms | `fcitx5 -v` 启动日志计时 | TASK-1.04.02 |
 | `BUDGET-LAT-06` | 单次 `UiCommand` 跨 addon 传输（wire 组装 + sink 调用，ADR-0011） | P99 ≤ 100ns（criterion `transport/post_frame` 实测 36.2ns mean，2026-10-01 本机锚定，阈值取约 2.8× 余量） | `criterion` 基准（`ime-fcitx5` benches/transport.rs） | REFACTOR-P0.01.01 |
+| `BUDGET-LAT-07` | 用户词频衰减首次折叠（cold） | P99 ≤ 100µs（0.10ms）；已折叠缓存命中（warm）不新增扫描或分配 | `criterion` 基准（`ime-dict` benches/decode.rs，`decode/user_decay_cold`、`decode/user_decay_warm`） | TASK-1.02.02 |
 | `BUDGET-MEM-01` | UI 渲染层常驻内存增量 | ≤ 18MB RSS | `/proc/self/status` VmRSS 差分 | TASK-1.05.03 |
 | `BUDGET-MEM-02` | 插件总内存增量（含词库 mmap 页缓存） | ≤ 45MB RSS | 同上 | TASK-1.03.02 |
 | `BUDGET-MEM-03` | 词库 mmap 常驻（匿名驻留部分） | ≤ 25MB | `smaps_rollup` 的 `Anonymous` 与 `Private_Dirty` | TASK-1.03.02 |

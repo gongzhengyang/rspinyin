@@ -161,7 +161,8 @@ fn test_compile_applies_polyphone_corrections_without_duplicating_a_word() {
         requested: 50_000,
     };
     let corrections = vec![("银行".to_owned(), "yin'hang".to_owned())];
-    let compiled = compile(&words, band, 4, &corrections, NormalizeRules::default()).expect("compiling");
+    let compiled =
+        compile(&words, band, 4, &corrections, NormalizeRules::default()).expect("compiling");
     assert_eq!(compiled.stats.polyphone_keys, 1);
     let reader = Reader::parse(image_of(&compiled), Verify::Full).expect("parsing");
     assert_eq!(
@@ -180,7 +181,8 @@ fn test_compile_adds_a_corrected_key_outside_the_band() {
         requested: 50_000,
     };
     let corrections = vec![("银行".to_owned(), "yin'hang".to_owned())];
-    let compiled = compile(&words, band, 4, &corrections, NormalizeRules::default()).expect("compiling");
+    let compiled =
+        compile(&words, band, 4, &corrections, NormalizeRules::default()).expect("compiling");
     assert_eq!(
         compiled.stats.expanded_words, 0,
         "the word is outside the band"
@@ -369,7 +371,8 @@ fn test_compile_expands_every_polyphone_word_of_the_band() {
         }
     }
 
-    let compiled = compile(&words, expansion_band(), 4, &[], NormalizeRules::default()).expect("compiling");
+    let compiled =
+        compile(&words, expansion_band(), 4, &[], NormalizeRules::default()).expect("compiling");
     assert_eq!(compiled.stats.words, 100);
     // The twenty heavy words are the band, every one of them carries a character with a
     // second reading, and every one of them therefore generates a second key.
@@ -390,7 +393,8 @@ fn test_compile_expands_every_polyphone_word_of_the_band() {
 #[test]
 fn test_compile_keeps_the_key_growth_inside_the_target_band() {
     let (words, _) = expansion_fixture();
-    let compiled = compile(&words, expansion_band(), 4, &[], NormalizeRules::default()).expect("compiling");
+    let compiled =
+        compile(&words, expansion_band(), 4, &[], NormalizeRules::default()).expect("compiling");
     let baseline = compiled.stats.baseline_keys();
     assert_eq!(baseline, 100, "one baseline key per word");
     // Twenty words gained one key each, over a hundred baseline keys.

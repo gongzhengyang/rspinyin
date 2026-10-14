@@ -43,6 +43,7 @@
     "pass_rate_pct": 100.0
   },
   "bench": {
+    "decode_user_decay_cold_us": 100.0,
     "passthrough_classify_ns": 500.0,
     "input_buffer_ops_us": 1.0,
     "decode_holdout_s": 3.0,

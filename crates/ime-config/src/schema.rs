@@ -85,6 +85,24 @@ pub const MAX_BACKUP_KEEP: u8 = 32;
 /// The `data.backup_keep` the shipped configuration declares.
 pub const DEFAULT_BACKUP_KEEP: u8 = 3;
 
+/// The `data.decay_half_life_ticks` the shipped configuration declares.
+///
+/// Two hundred commits is the librime e-folding constant; its half-life is `200 *
+/// ln(2)`, rounded to the nearest whole logical commit.
+pub const DEFAULT_DECAY_HALF_LIFE_TICKS: u32 = 139;
+
+/// The largest `data.decay_half_life_ticks` accepts.
+///
+/// The fold saturates for any `u32`, but a ceiling keeps an unusable policy from
+/// silently disabling decay forever when a magnitude was meant to be a smaller count.
+pub const MAX_DECAY_HALF_LIFE_TICKS: u32 = 1_000_000_000;
+
+/// The largest `data.decay_floor` accepts, in Q16.16.
+///
+/// One integer word of accumulator is far above the useful stop-acting threshold and
+/// bounds the floor independently of the platform's `i64` width.
+pub const MAX_DECAY_FLOOR_Q16: i64 = 1 << 31;
+
 /// The `keys.flip_keys` key.
 pub(crate) const KEY_FLIP_KEYS: &str = "keys.flip_keys";
 /// The `keys.highlight_keys` key.
@@ -550,6 +568,8 @@ impl Default for Config {
                 durability: Durability::Eventual,
                 backup_enabled: true,
                 backup_keep: DEFAULT_BACKUP_KEEP,
+                decay_half_life_ticks: DEFAULT_DECAY_HALF_LIFE_TICKS,
+                decay_floor: 1 << 16,
             },
             diagnostics: DiagnosticsConfig {
                 level: LogLevel::Info,
@@ -737,6 +757,18 @@ impl Config {
             1..=MAX_BACKUP_KEEP,
             defaults.data.backup_keep,
             "data.backup_keep",
+        );
+        data.decay_half_life_ticks = warnings.in_range(
+            data.decay_half_life_ticks,
+            1..=MAX_DECAY_HALF_LIFE_TICKS,
+            defaults.data.decay_half_life_ticks,
+            "data.decay_half_life_ticks",
+        );
+        data.decay_floor = warnings.in_range(
+            data.decay_floor,
+            0..=MAX_DECAY_FLOOR_Q16,
+            defaults.data.decay_floor,
+            "data.decay_floor",
         );
         repair_bindings(&mut self.keys.flip_keys, KEY_FLIP_KEYS, &mut warnings);
         repair_bindings(

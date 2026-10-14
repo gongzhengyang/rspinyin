@@ -429,6 +429,11 @@ mod tests {
         let lm = InMemoryLm::new();
         let ranked = decode_user("de", &lexicon, &user, &lm);
         assert_eq!(ranked.candidates[0].text, "得");
+        // The store passes an already-decayed usage value across the frozen contract:
+        // the same key's history sinking to zero returns the ranking to the dictionary.
+        let aged = MockUserFreq::with(&[("得", 0)]);
+        let decayed = decode_user("de", &lexicon, &aged, &lm);
+        assert_eq!(decayed.candidates[0].text, "的");
         // Without a history the dictionary's own order decides.
         let plain = decode("de", &lexicon, &lm);
         assert_eq!(plain.candidates[0].text, "的");

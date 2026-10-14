@@ -147,6 +147,8 @@ pub struct Robustness {
 /// criterion owns which field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bench {
+    /// First fold of one user-decay accumulator, in microseconds.
+    pub decode_user_decay_cold_us: f64,
     /// One `passthrough/classify` call, in nanoseconds.
     pub passthrough_classify_ns: f64,
     /// One `push_char` and one `backspace`, in microseconds.
@@ -311,6 +313,11 @@ const BINDINGS: &[Binding] = &[
     ),
     Binding("robustness.pass_rate_pct", "BUDGET-ROB-01", ThresholdFirst),
     Binding("bench.post_ui_ns", "BUDGET-LAT-06", ThresholdFirst),
+    Binding(
+        "bench.decode_user_decay_cold_us",
+        "BUDGET-LAT-07",
+        ThresholdFirst,
+    ),
     Binding(
         "bench.passthrough_classify_ns",
         "TASK-1.02.06#2",

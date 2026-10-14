@@ -253,7 +253,7 @@ impl Scorer {
     /// uni  * unigram(word)
     /// bi   * bigram(prev_word, word)
     /// len  * (char_count - 1) * 256
-    /// user * min(log2(1 + freq) / 8, 2) * 256
+    /// user * min(log2(1 + decay-weighted usage) / 8, 2) * 256
     /// ```
     ///
     /// A word with no predecessor contributes no bigram term: the model carries
@@ -263,7 +263,9 @@ impl Scorer {
     ///
     /// # Panics
     ///
-    /// Never panics: every arithmetic step saturates instead of overflowing.
+    /// Never panics: every arithmetic step saturates instead of overflowing. The user
+    /// source supplies decay-weighted usage, and `user_term` saturates its mapped
+    /// contribution so an unusually large learned count cannot overflow the score.
     ///
     /// # Examples
     ///
