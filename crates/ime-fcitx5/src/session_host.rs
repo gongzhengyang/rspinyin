@@ -54,6 +54,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use ime_core::privacy::InputContextKind;
+use ime_dict::script::ScriptIndex;
 use ime_core::state::SessionEnv;
 use ime_types::{Anchor, UiEvent};
 
@@ -486,6 +487,22 @@ pub fn install(env: SessionEnv<'static>, privacy: ContextPrivacy, config: Routin
     }
     *slot = Some(SessionHost::new(KeyRouter::new(env, privacy, config)));
     true
+}
+
+/// Installs the variant table the script mode converts through, when a host is installed.
+///
+/// Called right after [`install`] by the same step, with the built-in seed table: the
+/// contexts the host creates afterwards share the handle, and the ones alive already --
+/// none, at installation time -- are re-pointed by the router itself.
+///
+/// # Panics
+///
+/// Never.
+pub fn install_script(index: std::sync::Arc<ScriptIndex>) {
+    let mut slot = lock_sessions();
+    if let Some(host) = slot.as_mut() {
+        host.router.use_script(index);
+    }
 }
 
 /// Whether a session host is installed.

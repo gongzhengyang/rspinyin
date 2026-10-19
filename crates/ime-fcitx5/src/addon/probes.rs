@@ -145,3 +145,16 @@ pub fn write_snapshot() -> io::Result<()> {
     };
     probes().write_snapshot(&path)
 }
+
+/// Counts one pin toggle the user's store took.
+///
+/// Called by the engine's effect executor, the layer the counter table names as the
+/// raiser: a pin is a store-side condition the engine observes, not one the store
+/// reports -- the store carries no diagnostics of its own.
+///
+/// # Panics
+///
+/// Never.
+pub fn bump_user_pin() {
+    probes().bump(ime_diag::probe::Counter::UserPin);
+}

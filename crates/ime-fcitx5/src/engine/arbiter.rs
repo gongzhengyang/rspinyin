@@ -360,9 +360,7 @@ fn composing(session: &Session, action: KeyAction, cfg: &SessionConfig) -> Execu
         KeyAction::Escape => Executability::Executable,
         KeyAction::ForgetHighlighted => has_highlight(session),
         KeyAction::AddPhrase => add_phrase(session),
-        // The pin set does not exist yet: the step reports `dict/unsupported` and changes
-        // nothing, so the key is not the plugin's to take.
-        KeyAction::PinHighlighted => Executability::Inert,
+        KeyAction::PinHighlighted => has_highlight(session),
         KeyAction::Ignore => Executability::Inert,
     }
 }

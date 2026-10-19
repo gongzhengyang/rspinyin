@@ -221,10 +221,23 @@ impl Lexicon for MockLexicon {
         ))
     }
 
-    fn prefix(&self, _prefix: &str, _limit: usize) -> Result<WordIter<'_>, ImeError> {
-        // Prefix enumeration is a Phase 2 capability; the frozen contract says the
-        // Phase 1 answer is this code rather than an invented one.
-        Err(ImeError::Unsupported)
+    fn prefix(&self, prefix: &str, limit: usize) -> Result<WordIter<'_>, ImeError> {
+        if let Some(failure) = self.failures.get(prefix) {
+            return Err(failure.error());
+        }
+        // The same range walk the real lexicon streams: the keys are sorted, so every
+        // key that starts with `prefix` is one contiguous run, and the first key past
+        // it ends the enumeration. The limit is pushed into the take, so a query costs
+        // at most `limit` words whatever the range holds.
+        let words = self
+            .words
+            .range(prefix.to_owned()..)
+            .take_while(|(key, _)| key.starts_with(prefix))
+            .flat_map(|(_, stored)| stored.iter())
+            .take(limit)
+            .map(OwnedWord::borrow)
+            .collect();
+        Ok(WordIter::from_vec(words))
     }
 
     fn fallback_single(&self, syl: SyllableId, limit: usize) -> Result<WordIter<'_>, ImeError> {

@@ -11,12 +11,13 @@
 //! Driven entirely from the in-memory doubles next door. No dictionary file, no
 //! clock, no environment, no display server.
 
-use ime_types::KeyAction;
+use ime_types::{DecodeFlags, KeyAction};
 
+use crate::fuzzy;
 use crate::state::SessionConfig;
 use crate::state::machine::{Effect, Session, SessionEvent, SessionState, step};
 
-use super::{Fixture, composing, frame_of, highlighted, kinds};
+use super::{Fixture, composing, frame_of, highlighted, kinds, pin_toggle};
 
 /// A live composition on `raw`, with the fixture that decoded it kept alive beside it.
 fn composing_on(raw: &str) -> (Session, Fixture) {
@@ -317,4 +318,223 @@ fn test_reload_preserves_active_session() {
     assert_eq!(session.decoded(), &before);
     assert_eq!(effects.len(), 1, "only the frame is re-sent");
     assert!(matches!(effects.first(), Some(Effect::SendFrame(_))));
+}
+
+#[test]
+fn test_pin_highlighted_arm_toggles_the_highlighted_word_for_the_input() {
+    let (mut session, fixture) = composing_on("ni");
+    let cfg = SessionConfig::default();
+    let env = fixture.env();
+    let _ = session.handle_key(KeyAction::MoveHighlight(2), &cfg, &env);
+    let expected = highlighted(&session).unwrap_or_default().to_owned();
+
+    let effects = session.handle_key(KeyAction::PinHighlighted, &cfg, &env);
+
+    assert_eq!(effects.len(), 1, "the arm emits exactly one effect");
+    assert_eq!(
+        kinds(&effects),
+        ["toggle-user-pin"],
+        "the arm asks the store for a pin, not a diagnostic"
+    );
+    let (key, word) = pin_toggle(&effects).expect("the toggle the arm emitted");
+    assert_eq!(key, "ni", "the pin belongs to the input the user typed");
+    assert_eq!(word, expected, "and names the highlighted candidate");
+    assert_eq!(
+        session.state,
+        SessionState::Composing,
+        "the composition survives the pin"
+    );
+    assert_eq!(
+        session.buf.raw(),
+        "ni",
+        "and so does the input the pin is keyed by"
+    );
+}
+
+#[test]
+fn test_pin_highlighted_arm_does_nothing_without_a_composition() {
+    let fixture = Fixture::new();
+    let mut session = Session::new();
+    let effects = session.handle_key(
+        KeyAction::PinHighlighted,
+        &SessionConfig::default(),
+        &fixture.env(),
+    );
+    assert!(effects.is_empty(), "there is no highlight to pin");
+    assert_eq!(session.state, SessionState::Idle);
+}
+
+#[test]
+fn test_pin_applied_event_refreshes_a_composing_session() {
+    let (mut session, fixture) = composing_on("ni");
+    let cfg = SessionConfig::default();
+    let env = fixture.env();
+    let before = session.decoded().clone();
+
+    let effects = step(&mut session, SessionEvent::PinApplied, &cfg, &env);
+
+    assert_eq!(
+        session.state,
+        SessionState::Composing,
+        "the refresh keeps the composition"
+    );
+    assert_eq!(
+        kinds(&effects),
+        ["send-frame"],
+        "the store changed what ranks, so the window is re-sent"
+    );
+    assert_eq!(
+        session.buf.raw(),
+        "ni",
+        "the input is untouched by the re-rank"
+    );
+    // The refresh decodes again, so the list is a new answer rather than the old one
+    // echoed back: equal here because the fixture's store recorded no pin, which is
+    // exactly the identity the host loop relies on when a toggle changes nothing.
+    assert_eq!(session.decoded(), &before);
+}
+
+#[test]
+fn test_fuzzy_classes_latched_from_the_config_widen_the_lattice() {
+    // The dictionary holds the word under its canonical spelling only: `zong` typed
+    // reaches `总` only when the zh_z class is latched, because the class is what
+    // widens the input's syllable to the `zhong` family.
+    let cfg = SessionConfig {
+        fuzzy: fuzzy::projection(false, DecodeFlags::FUZZY_ZH_Z),
+        ..SessionConfig::default()
+    };
+    let fixture = Fixture::with_dictionary(&[("zhong", "总"), ("zong", "宗")]);
+    let env = fixture.env();
+    let mut session = Session::new();
+    for ch in "zong".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+    }
+    let texts: Vec<&str> = session
+        .decoded()
+        .candidates
+        .iter()
+        .map(|candidate| candidate.text.as_str())
+        .collect();
+    assert_eq!(
+        texts.first(),
+        Some(&"宗"),
+        "the exact spelling still ranks first"
+    );
+    assert!(
+        texts.contains(&"总"),
+        "the widened family is reachable: {texts:?}"
+    );
+
+    // Everything off: the same input reaches its own family alone, which is the
+    // byte-identical-to-the-mainline decode the default promises.
+    let plain = Fixture::with_dictionary(&[("zhong", "总"), ("zong", "宗")]);
+    let env = plain.env();
+    let mut session = Session::new();
+    for ch in "zong".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &SessionConfig::default(), &env);
+    }
+    let texts: Vec<&str> = session
+        .decoded()
+        .candidates
+        .iter()
+        .map(|candidate| candidate.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        ["宗"],
+        "without a class the variant spelling is unreachable: {texts:?}"
+    );
+}
+
+#[test]
+fn test_fuzzy_reload_latches_at_the_next_composition() {
+    // The classes latch beside the scheme: a reload mid composition changes nothing
+    // about the composition on screen, and answers the next one (0.4 rule 10).
+    let off = SessionConfig::default();
+    let on = SessionConfig {
+        fuzzy: fuzzy::projection(false, DecodeFlags::FUZZY_ZH_Z),
+        ..SessionConfig::default()
+    };
+    let fixture = Fixture::with_dictionary(&[("zhong", "总"), ("zong", "宗")]);
+    let env = fixture.env();
+    let mut session = Session::new();
+    let _ = session.handle_key(KeyAction::InputChar('z'), &on, &env);
+    let _ = session.handle_key(KeyAction::InputChar('o'), &on, &env);
+    let _ = session.handle_key(KeyAction::InputChar('n'), &on, &env);
+    let _ = session.handle_key(KeyAction::InputChar('g'), &on, &env);
+    let mid: Vec<&str> = session
+        .decoded()
+        .candidates
+        .iter()
+        .map(|candidate| candidate.text.as_str())
+        .collect();
+    assert!(
+        mid.contains(&"总"),
+        "the composition typed under the class reaches the widened family: {mid:?}"
+    );
+
+    // Back to idle with the master switch off, then composing again: the next
+    // composition reads the new latch, not the one it was typed under.
+    let _ = session.handle_key(KeyAction::Escape, &off, &env);
+    // The host confirms the preedit is gone, which is what completes the cancel.
+    let _ = step(&mut session, SessionEvent::PreeditCleared, &off, &env);
+    assert_eq!(session.state, SessionState::Idle);
+    for ch in "zong".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &off, &env);
+    }
+    let after: Vec<&str> = session
+        .decoded()
+        .candidates
+        .iter()
+        .map(|candidate| candidate.text.as_str())
+        .collect();
+    assert_eq!(
+        after,
+        ["宗"],
+        "the reload answered the next composition: {after:?}"
+    );
+}
+
+#[test]
+fn test_abbrev_switch_expands_the_initial_reading() {
+    // The fixture carries the abbreviation key a reader of `nh` asks for: the walk
+    // spells the initials as `n'h` and answers the prefix range with the word.
+    let fixture = Fixture::with_dictionary(&[("n'h", "你好"), ("ni'hao", "你好")]);
+    let on = SessionConfig {
+        abbrev: true,
+        ..SessionConfig::default()
+    };
+    let env = fixture.env();
+    let mut session = Session::new();
+    let _ = session.handle_key(KeyAction::InputChar('n'), &on, &env);
+    let _ = session.handle_key(KeyAction::InputChar('h'), &on, &env);
+    let texts: Vec<&str> = session
+        .decoded()
+        .candidates
+        .iter()
+        .map(|candidate| candidate.text.as_str())
+        .collect();
+    assert!(
+        texts.contains(&"你好"),
+        "the abbreviation reaches the word: {texts:?}"
+    );
+
+    // The shipped switch is off, and the same input reaches nothing: no syllable
+    // spells `nh`, and without the expansion the input is the pass-through
+    // candidate alone.
+    let env = fixture.env();
+    let mut session = Session::new();
+    let _ = session.handle_key(KeyAction::InputChar('n'), &SessionConfig::default(), &env);
+    let _ = session.handle_key(KeyAction::InputChar('h'), &SessionConfig::default(), &env);
+    let texts: Vec<&str> = session
+        .decoded()
+        .candidates
+        .iter()
+        .map(|candidate| candidate.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        ["nh"],
+        "with the switch off the input is echoed, not expanded: {texts:?}"
+    );
 }

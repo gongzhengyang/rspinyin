@@ -1,5 +1,5 @@
-//! Driving a session from the host: one session per input context, and the executor of
-//! the effects a step returns.
+//! Driving a session from the host: the session a context runs, the state a released
+//! context parks for its successor, and the executor of the effects a step returns.
 //!
 //! # Responsibility
 //!
@@ -45,7 +45,10 @@
 //!
 //! This file holds [`KeyRouter`] itself and the per-context state it keeps: one
 //! [`Session`] per input context, the mode bits that context carries and the anchor the
-//! host last reported. The three pieces beside it are leaves:
+//! host last reported. Under the shipped `[engine] share_state = "context"` tier that
+//! state is private to its context from birth to release; the opt-in `"program"` tier
+//! pools it by application, so the next window of the same program starts where the last
+//! one left off. The three pieces beside it are leaves:
 //!
 //! * [`config`] is the routing layer's view of the configuration document, projected from
 //!   the document by [`RoutingConfig::from_config`].
@@ -64,9 +67,11 @@
 
 use std::collections::HashMap;
 
+use ime_config::ShareState;
 use ime_core::passthrough::{PassthroughDecision, classify};
 use ime_core::privacy::InputContextKind;
-use ime_core::state::{FrameContext, Session, SessionEnv, SessionEvent, SessionState};
+use ime_core::state::{SessionEnv, SessionEvent, SessionState};
+use ime_dict::script::ScriptIndex;
 use ime_types::{Anchor, KeyAction, UiEvent};
 
 use crate::engine::badge::BadgeState;
@@ -83,12 +88,13 @@ use crate::privacy_impl::{ContextPrivacy, ContextReport, report_suppression};
 pub mod phrases;
 
 mod config;
+mod context;
 mod effects;
 mod modes;
 
 pub use self::config::RoutingConfig;
 
-use self::modes::Modes;
+use self::context::{Context, PoolKey, PoolSlot, ScriptState, pool_key};
 use self::phrases::PhraseHandle;
 
 #[cfg(test)]
@@ -109,64 +115,6 @@ pub const STALE_IC_CODE: &str = "ffi/stale-ic";
 /// than wrapping into another context's range.
 const SESSION_ID_STRIDE: u64 = 1 << 32;
 
-/// What the engine holds for one input context.
-struct Context {
-    /// The host's stable identity for this context, for the calls that go back to it.
-    ic: u64,
-    /// The composing session: the input, the candidates and the window's state.
-    session: Session,
-    /// The mode bits the engine owns; see [`Modes`].
-    modes: Modes,
-    /// Where the host last reported the caret. Written into every frame, so a frame
-    /// emitted on a key the host said nothing about still lands in the right place.
-    anchor: Anchor,
-    /// The phrase document a saved phrase is appended to.
-    ///
-    /// A clone of the router's handle rather than a reference to the router: the effect
-    /// that writes a phrase is applied here, where the session's own state is, and the
-    /// handle is shared precisely so that both can reach one store.
-    phrases: PhraseHandle,
-}
-
-impl Context {
-    /// A context that has just been activated.
-    fn new(ic: u64, session: Session, phrases: PhraseHandle) -> Self {
-        Self {
-            ic,
-            session,
-            modes: Modes::default(),
-            phrases,
-            // Until the host reports a cursor rectangle, the window is anchored at the
-            // origin of the first screen with no scaling; the cursor work replaces this
-            // through `KeyRouter::set_anchor`.
-            anchor: FrameContext::default().anchor,
-        }
-    }
-
-    /// Writes the cursor position and the mode bits into the session.
-    ///
-    /// Called before every step that may emit a frame, so the frame carries where the
-    /// window goes and what its status strip says. The strip written here is the standing
-    /// answer — the mode name — because at this point the step has not run and the frame
-    /// it will produce does not exist; the header's slot is resolved again when a frame
-    /// is posted, where the frame's own candidates and page state are known. See the
-    /// `engine::badge` module.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` — the configuration in force, whose scheme hint the label shows.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    fn write_frame_context(&mut self, config: &RoutingConfig) {
-        let status = self
-            .modes
-            .status(self.session.temp_english, config.scheme_hint);
-        self.session.set_frame_context(self.anchor, status);
-    }
-}
-
 /// Everything a step and its effect executor read besides the session itself.
 ///
 /// Grouped so that a step, its effects and the commit path that closes them take the
@@ -185,11 +133,13 @@ struct StepCtx<'a, 'b> {
     badge: &'b mut BadgeState,
 }
 
-/// The engine's routing state: one session per input context.
+/// The engine's routing state: a session per input context, pooled by the tier in force.
 ///
 /// The host thread owns one of these for the lifetime of the addon. It is created with
 /// the data sources the decode reads and the privacy state the commit path asks, and
-/// every input context the host activates gets a session of its own.
+/// every input context the host activates gets a session of its own -- or, under the
+/// program tier, adopts the session the last released context of the same application
+/// parked. See [`PoolKey`].
 pub struct KeyRouter<'a> {
     /// The decoder, the dictionary, the user's frequencies and the language model.
     env: SessionEnv<'a>,
@@ -200,8 +150,21 @@ pub struct KeyRouter<'a> {
     config: RoutingConfig,
     /// The phrase document a saved phrase is appended to, and the table it is read into.
     phrases: PhraseHandle,
+    /// The variant table the script mode converts through, or its absence. Shared with
+    /// every context this router creates; installed by the data assembly, or missing
+    /// until it is.
+    script: ScriptState,
     /// The live contexts, keyed by the host's input-context id.
     contexts: HashMap<u64, Context>,
+    /// The states a deactivated context of the program tier parked, keyed by the pool
+    /// key they belong to.
+    ///
+    /// A slot exists only between the release of the last live context of its key and
+    /// the next activation under the same key: it is taken out whole by the context that
+    /// adopts it, and it is emptied again when the tier in force changes, because state
+    /// parked under one tier must not answer under another. The map is bounded by the
+    /// number of programs seen since the process started, one small slot each.
+    pool: HashMap<PoolKey, PoolSlot>,
     /// The base of the next session id range; see [`SESSION_ID_STRIDE`].
     next_session_base: u64,
     /// Whether the header's first-run key hint is still owed: the one badge bit that
@@ -239,10 +202,30 @@ impl<'a> KeyRouter<'a> {
             privacy,
             config,
             phrases: phrases::handle(),
+            script: ScriptState::Missing,
             contexts: HashMap::new(),
+            pool: HashMap::new(),
             next_session_base: 1,
             badge: BadgeState::new(),
         }
+    }
+
+    /// Installs `index` as the variant table the script mode converts through.
+    ///
+    /// The contexts created after this point share the handle; the ones alive before it
+    /// are re-pointed too, for the same reason [`KeyRouter::use_phrases`] re-points
+    /// theirs -- a table installed between two activations of one context must not
+    /// leave that context answering from a state the assembly already replaced.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn use_script(&mut self, index: std::sync::Arc<ScriptIndex>) {
+        let script = ScriptState::Ready(index);
+        for context in self.contexts.values_mut() {
+            context.script = script.clone();
+        }
+        self.script = script;
     }
 
     /// Adopts `phrases` as the document this router saves into, for the tests: a router
@@ -313,10 +296,26 @@ impl<'a> KeyRouter<'a> {
     /// Never.
     pub fn activate_reported(&mut self, ic: u64, report: ContextReport<'_>) -> InputContextKind {
         let kind = self.privacy.observe(ic, report);
-        let session = Session::new_with_counter(self.next_session_base);
-        self.next_session_base = self.next_session_base.saturating_add(SESSION_ID_STRIDE);
-        self.contexts
-            .insert(ic, Context::new(ic, session, self.phrases.clone()));
+        let key = pool_key(self.config.share, ic, kind.app_id);
+        // The program tier's whole point: the state a released context of this key
+        // parked is the state this context starts from. Under the context tier the pool
+        // never holds the key, so the lookup misses and the branch costs one hash probe.
+        let context = match self.pool.remove(&key) {
+            Some(slot) => Context::adopted(ic, key, slot, self.phrases.clone(), self.script.clone()),
+            None => {
+                let base = self.next_session_base;
+                self.next_session_base = self.next_session_base.saturating_add(SESSION_ID_STRIDE);
+                Context::fresh(
+                    ic,
+                    key,
+                    base,
+                    self.phrases.clone(),
+                    self.script.clone(),
+                    self.config.output,
+                )
+            }
+        };
+        self.contexts.insert(ic, context);
         if !self.privacy.should_learn(ic) {
             report_suppression(ic, &kind);
         }
@@ -351,8 +350,39 @@ impl<'a> KeyRouter<'a> {
         };
         if let Some(mut ctx) = self.contexts.remove(&ic) {
             ctx.run(SessionEvent::Reset, &mut step, host);
+            self.park(ctx);
         }
         self.privacy.forget(ic);
+    }
+
+    /// Parks the state of a deactivated context, when it has a successor to hand it to.
+    ///
+    /// Three conditions, each its own refusal. Only the program tier parks, and only
+    /// program-key state: the context tier's contract is today's behaviour, where a
+    /// deactivated context ends as a whole and its next activation starts fresh, so a
+    /// context-tier key never enters the pool under any tier -- which is also what keeps
+    /// the unknown-application contexts of the program tier from pooling. A key another
+    /// live context still holds does not park: the live context's state is the
+    /// authoritative one, and what the releasing window did since focus left is nobody's
+    /// to adopt. And a context created under a tier that is no longer in force does not
+    /// park: a policy switch closes the states of the old tier rather than letting them
+    /// resurface under the new one -- the same snapshot semantics that lets the live
+    /// contexts finish what they started.
+    fn park(&mut self, ctx: Context) {
+        let key = ctx.key;
+        if !matches!(key, PoolKey::Program(_)) || self.config.share != ShareState::Program {
+            return;
+        }
+        if self.contexts.values().any(|live| live.key == key) {
+            return;
+        }
+        self.pool.insert(
+            key,
+            PoolSlot {
+                session: ctx.session,
+                modes: ctx.modes,
+            },
+        );
     }
 
     /// Takes back the composition of an input context that stays active.
@@ -567,7 +597,7 @@ impl<'a> KeyRouter<'a> {
                             // hide: an idle session has no window to take down.
                             // Learning is untouched — typed English is not a candidate
                             // choice.
-                            let text = ctx.modes.transform_output(&text);
+                            let text = ctx.modes.transform_output(&text, ctx.script.index());
                             host.commit(ic, &text);
                             return true;
                         }
@@ -581,9 +611,25 @@ impl<'a> KeyRouter<'a> {
         }
         // The mode bits go into the session before the step, so the frame a mode key
         // repaints carries the switch that key just made.
-        let mode_acted = ctx.modes.apply(action, ctx.ic, host);
-        ctx.write_frame_context(config);
-        let session_acted = ctx.run(SessionEvent::Key(action), &mut step, host);
+        let mode_acted = match action {
+            // The script toggle reads a table the mode bits cannot hold, so its arm is
+            // the context's own: flip the bit through the table, or report the
+            // degradation and hand the key back.
+            KeyAction::ToggleScript => ctx.toggle_script(),
+            _ => ctx.modes.apply(action, ctx.ic, host),
+        };
+        // A refused script toggle is the one mode key that reaches here without acting:
+        // the degradation is reported, the bit never moved, and nothing the session
+        // could repaint would differ -- so the step is skipped and the key goes back to
+        // the application rather than being swallowed by a switch that answered
+        // nothing.
+        let refused_toggle = action == KeyAction::ToggleScript && !mode_acted;
+        let session_acted = if refused_toggle {
+            false
+        } else {
+            ctx.write_frame_context(config);
+            ctx.run(SessionEvent::Key(action), &mut step, host)
+        };
         // `EnterTempEnglish` is the one action whose whole effect is a session flag: with
         // nothing composing it emits no effect, and the key would be handed back even
         // though the mode changed.
@@ -674,6 +720,14 @@ impl<'a> KeyRouter<'a> {
     ///
     /// Never.
     pub fn reload(&mut self, config: RoutingConfig, host: &mut dyn Host) {
+        // A tier switch empties the pool rather than keeping it: a state parked under
+        // the old tier can never be adopted under the new one -- the keys are of
+        // different shapes -- so keeping it would only be memory that answers nothing.
+        // The live contexts stay as they are (the snapshot rule below), and every
+        // activation after this point pools under the tier the new configuration names.
+        if config.share != self.config.share {
+            self.pool.clear();
+        }
         self.config = config;
         let mut step = StepCtx {
             env: &self.env,
@@ -696,7 +750,7 @@ impl<'a> KeyRouter<'a> {
     /// Read-only: every mutation a session undergoes goes through an event this type
     /// routes.
     #[cfg(test)]
-    pub(super) fn session(&self, ic: u64) -> Option<&Session> {
+    pub(super) fn session(&self, ic: u64) -> Option<&ime_core::state::Session> {
         self.contexts.get(&ic).map(|ctx| &ctx.session)
     }
 

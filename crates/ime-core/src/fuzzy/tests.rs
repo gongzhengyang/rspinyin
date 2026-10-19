@@ -475,3 +475,47 @@ fn test_penalize_costs_less_than_a_twentieth_of_one_log_probability_unit() {
     assert!(penalty > 0);
     assert!(penalty < (Q * Q) / 20);
 }
+
+#[test]
+fn test_projection_selects_every_class_under_the_master_switch() {
+    let all = projection(true, DecodeFlags::empty());
+    assert!(all.contains(DecodeFlags::FUZZY), "the master bit rides along");
+    for class in CLASSES {
+        assert!(all.contains(class.flag), "{} is selected", class.name);
+    }
+}
+
+#[test]
+fn test_projection_one_class_sets_the_master_bit_and_only_that_class() {
+    let one = projection(false, DecodeFlags::FUZZY_N_L);
+    assert!(one.contains(DecodeFlags::FUZZY), "one class switches the master on");
+    assert!(one.contains(DecodeFlags::FUZZY_N_L));
+    assert!(
+        !one.contains(DecodeFlags::FUZZY_ZH_Z),
+        "a class the section did not name stays off"
+    );
+}
+
+#[test]
+fn test_projection_empty_section_projects_to_no_flags() {
+    assert_eq!(
+        projection(false, DecodeFlags::empty()),
+        DecodeFlags::empty(),
+        "an all-off section decodes as a build without the section"
+    );
+}
+
+#[test]
+fn test_flag_mask_covers_every_bit_the_namespace_owns() {
+    let mut seen = DecodeFlags::FUZZY;
+    for class in CLASSES {
+        assert!(
+            FLAG_MASK.contains(class.flag),
+            "{} is missing from the mask",
+            class.name
+        );
+        assert!(!seen.contains(class.flag), "{} repeats a bit", class.name);
+        seen |= class.flag;
+    }
+    assert_eq!(seen, FLAG_MASK, "the mask owns exactly the namespace's bits");
+}

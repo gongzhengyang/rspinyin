@@ -20,8 +20,6 @@ use std::collections::BinaryHeap;
 use std::ops::Bound;
 use std::time::Duration;
 
-use redb::ReadOnlyTable;
-
 use super::*;
 
 use super::cache::lock_cache;
@@ -67,6 +65,9 @@ pub(super) fn start_sweep(inner: &Arc<Inner>) -> Option<Sweep> {
 /// apart from that hand-off.
 type StaleBatch = (Vec<Box<str>>, Option<Box<str>>);
 
+/// One transaction's folded records and the cursor that continues the sweep.
+type FoldedBatch = (Vec<(Box<str>, Stored)>, Option<Box<str>>);
+
 impl Inner {
     /// Whether no record has arrived for at least `idle_ms`.
     fn idle_for_ms(&self, idle_ms: u64) -> bool {
@@ -88,8 +89,114 @@ impl Inner {
         let Ok(count) = self.stored_count() else {
             return;
         };
+        let _ = self.fold_forward();
         if count > USER_WORD_CAP {
             let _ = self.evict_oldest(EVICT_FRACTION);
+        }
+    }
+
+    /// Folds every record on disk forward to the current logical clock.
+    ///
+    /// The write is split by [`EVICT_BATCH`] so the sweep shares the file in the same
+    /// short transactions eviction uses. A record's tick moves with its accumulator:
+    /// folding it again from the old anchor would repeat the same work, and the next
+    /// fold then covers only the commits that arrived since this sweep. Failures are
+    /// returned to the caller; the idle sweep treats them the way it treats eviction
+    /// failures, as a reason to retry on the next idle window.
+    pub(super) fn fold_forward(&self) -> Result<u64, ImeError> {
+        if self.readonly.load(Ordering::Acquire) || self.v1_readonly {
+            return Ok(0);
+        }
+        let now = self.tick.load(Ordering::Relaxed);
+        let mut folded = 0u64;
+        let mut cursor: Option<Box<str>> = None;
+        loop {
+            let (batch, last) = self.fold_batch(cursor.as_deref(), now)?;
+            folded += batch.len() as u64;
+            let Some(last) = last else {
+                break;
+            };
+            cursor = Some(last);
+        }
+        Ok(folded)
+    }
+
+    /// Folds the next [`EVICT_BATCH`] records after `after`, in one transaction.
+    ///
+    /// The updated records are returned so the commit can bring the hydrated map and
+    /// the fallback cache into step only after the file has accepted them. `last` is
+    /// the final key examined even when that record already sat at `now`, so the
+    /// cursor still advances across an already-current store.
+    fn fold_batch(&self, after: Option<&str>, now: u64) -> Result<FoldedBatch, ImeError> {
+        let mut txn = self
+            .db
+            .begin_write()
+            .map_err(|error| store_error(&self.path, &error))?;
+        let mut folded = Vec::new();
+        let mut last: Option<Box<str>> = None;
+        let mut updates: Vec<(Box<str>, u32, u64, i64)> = Vec::new();
+        {
+            let words = txn
+                .open_table(USER_WORDS_V2)
+                .map_err(|error| store_error(&self.path, &error))?;
+            let range = match after {
+                Some(key) => words.range::<&str>((Bound::Excluded(key), Bound::Unbounded)),
+                None => words.range::<&str>(..),
+            }
+            .map_err(|error| store_error(&self.path, &error))?;
+            for entry in range.take(EVICT_BATCH) {
+                let (key, value) = entry.map_err(|error| store_error(&self.path, &error))?;
+                let key = key.value();
+                let (commits, last_used_ms, tick, dee) = value.value();
+                let folded_dee = self.decay.fold(dee_q16(dee), tick, now);
+                if folded_dee != dee_q16(dee) || tick != now {
+                    updates.push((Box::from(key), commits, last_used_ms, folded_dee));
+                    folded.push((
+                        Box::from(key),
+                        Stored {
+                            commits,
+                            dee_q16: folded_dee,
+                            tick: now,
+                        },
+                    ));
+                }
+                last = Some(Box::from(key));
+            }
+        }
+        if !updates.is_empty() {
+            let mut words = txn
+                .open_table(USER_WORDS_V2)
+                .map_err(|error| store_error(&self.path, &error))?;
+            for (key, commits, last_used_ms, folded_dee) in updates {
+                words
+                    .insert(
+                        key.as_ref(),
+                        (commits, last_used_ms, now, dee_bits(folded_dee)),
+                    )
+                    .map_err(|error| store_error(&self.path, &error))?;
+            }
+        }
+        if !folded.is_empty() {
+            txn.set_durability(Durability::Eventual);
+            txn.commit()
+                .map_err(|error| store_error(&self.path, &error))?;
+            self.adopt_folded(&folded);
+        }
+        Ok((folded, last))
+    }
+
+    /// Adopts records the idle fold wrote to the in-memory read paths.
+    fn adopt_folded(&self, folded: &[(Box<str>, Stored)]) {
+        if self.is_hydrated {
+            let mut committed = lock(&self.committed);
+            for (key, record) in folded {
+                committed.insert(key.clone(), *record);
+            }
+        }
+        if let Some(mut cache) = lock_cache(&self.cache) {
+            for (key, record) in folded {
+                cache.insert(key, self.effective_freq(record));
+            }
         }
     }
 
@@ -121,18 +228,18 @@ impl Inner {
     ///
     /// A pinned record takes no part in the ranking: it is exempt from eviction, so it must
     /// not be one of the records the percentile counts either, or the policy would remove
-    /// fewer records than it names. The pin is read from the metadata table rather than from
-    /// the loaded set, because a store too large to load holds no pins in memory at all.
+    /// fewer records than it names. The pin is read from the loaded set, which every open
+    /// fills -- a store past the record ceiling included -- and which the toggle updates on
+    /// the keystroke itself, so a pin protects from the moment the user makes it rather
+    /// than from the flush that persists it.
     fn stale_threshold(&self, rank: u64) -> Result<Option<u64>, ImeError> {
+        let pins = lock(&self.pinned).clone();
         let txn = self
             .db
             .begin_read()
             .map_err(|error| store_error(&self.path, &error))?;
         let table = txn
             .open_table(USER_WORDS_V2)
-            .map_err(|error| store_error(&self.path, &error))?;
-        let meta = txn
-            .open_table(USER_META)
             .map_err(|error| store_error(&self.path, &error))?;
         let mut oldest: BinaryHeap<u64> = BinaryHeap::with_capacity(rank as usize);
         let mut seen = 0u64;
@@ -141,7 +248,7 @@ impl Inner {
             .map_err(|error| store_error(&self.path, &error))?
         {
             let (key, value) = entry.map_err(|error| store_error(&self.path, &error))?;
-            if is_pinned(&meta, key.value(), &self.path)? {
+            if pins.contains(key.value()) {
                 continue;
             }
             seen += 1;
@@ -187,17 +294,17 @@ impl Inner {
     /// together with the last key examined, which is the next cursor.
     ///
     /// A pinned record is never stale however old its stamp is: the sweep passes over it and
-    /// leaves the cursor where it was, so the batch it belongs to still ends.
+    /// leaves the cursor where it was, so the batch it belongs to still ends. The pin is
+    /// read from the loaded set, for the same reason [`Inner::stale_threshold`] reads it
+    /// there: the set is what the toggle updates, and it is filled at every open.
     fn scan_stale(&self, after: Option<&str>, threshold: u64) -> Result<StaleBatch, ImeError> {
+        let pins = lock(&self.pinned).clone();
         let txn = self
             .db
             .begin_read()
             .map_err(|error| store_error(&self.path, &error))?;
         let table = txn
             .open_table(USER_WORDS_V2)
-            .map_err(|error| store_error(&self.path, &error))?;
-        let meta = txn
-            .open_table(USER_META)
             .map_err(|error| store_error(&self.path, &error))?;
         let range = match after {
             Some(key) => table.range::<&str>((Bound::Excluded(key), Bound::Unbounded)),
@@ -208,7 +315,7 @@ impl Inner {
         let mut last: Option<Box<str>> = None;
         for entry in range.take(EVICT_BATCH) {
             let (key, value) = entry.map_err(|error| store_error(&self.path, &error))?;
-            if value.value().2 < threshold && !is_pinned(&meta, key.value(), &self.path)? {
+            if value.value().2 < threshold && !pins.contains(key.value()) {
                 stale.push(Box::from(key.value()));
             }
             last = Some(Box::from(key.value()));
@@ -260,21 +367,4 @@ impl Inner {
         }
         Ok(())
     }
-}
-
-/// Whether the metadata row of `key` says the user pinned it.
-///
-/// A key with no metadata row is a record an older build wrote, and it was not pinned:
-/// there was no way to pin one then. Reading the table rather than the loaded set is what
-/// makes the exemption work for a store too large to load, which holds no pins in memory.
-///
-/// # Errors
-/// Returns [`ImeError::DictUnavailable`] when the lookup fails.
-fn is_pinned(
-    meta: &ReadOnlyTable<&str, (u64, u64)>,
-    key: &str,
-    path: &Path,
-) -> Result<bool, ImeError> {
-    let held = meta.get(key).map_err(|error| store_error(path, &error))?;
-    Ok(held.is_some_and(|guard| guard.value().1 != 0))
 }

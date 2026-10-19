@@ -105,7 +105,7 @@ fn test_forget_of_an_unknown_key_reports_not_found_and_changes_nothing() {
 }
 
 #[test]
-fn test_forget_of_a_pinned_word_is_refused() {
+fn test_forget_of_a_pinned_word_clears_the_pin_and_deletes_the_record() {
     let dir = temp_dir("forget-pinned");
     let mut db = open_in(&dir, TestClock::default());
     let document = concat!(
@@ -117,15 +117,37 @@ fn test_forget_of_a_pinned_word_is_refused() {
         .import_tsv(&mut document.as_bytes())
         .expect("importing a pinned word");
     assert_eq!(report.applied, 1);
-
-    assert_eq!(db.forget_with_outcome("yinhang"), ForgetOutcome::Pinned);
-    assert_eq!(db.freq("yinhang"), 7, "the record is still there");
-    assert!(
-        !db.forget("yinhang"),
-        "the frozen method reports the refusal too"
+    assert_eq!(
+        db.freq("yinhang"),
+        PINNED_FREQ,
+        "the fixture is live: the imported pin caps the word"
     );
-    db.final_commit().expect("flushing");
-    assert_eq!(db.record_count().expect("counting"), 1);
+
+    // The removal takes the pin with it: the word is gone, and a pin on an absent
+    // word would be a statement about nothing. The user is not asked to unpin first.
+    assert_eq!(db.forget_with_outcome("yinhang"), ForgetOutcome::Removed);
+    assert_eq!(
+        db.freq("yinhang"),
+        0,
+        "the tombstone hides the word at once, pin and all"
+    );
+    db.final_commit().expect("flushing the removal");
+    db.wait_for_flush();
+    assert_eq!(db.record_count().expect("counting"), 0);
+
+    // And the removal was whole: a reopen finds no record, no pin, and no key row the
+    // toggle could still release.
+    drop(db);
+    let db = UserDb::open_with(db_path(&dir), Box::new(TestClock::default()))
+        .expect("reopening the store after the removal");
+    assert_eq!(db.freq("yinhang"), 0, "the record stayed gone");
+    db.set_pinned("yinhang", Some("yinhang"))
+        .expect("a fresh pin is accepted: no stale state refused it");
+    assert_eq!(
+        db.freq("yinhang"),
+        PINNED_FREQ,
+        "the new pin is the only pin the store holds"
+    );
 }
 
 #[test]

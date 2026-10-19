@@ -245,6 +245,42 @@ fn bench_lookup(
     });
 }
 
+/// Registers the prefix cases: a hot range, and a range nothing answers.
+///
+/// The hit case streams a first-syllable prefix -- the shape an abbreviation query
+/// spells, and the query the abbreviation walk puts through [`Lexicon::prefix`] with
+/// the walk's own limit. The miss case names a range no key starts with, which is one
+/// seek to the first key past the range and one comparison: the two together are the
+/// pair the prefix budget is stated against.
+fn bench_prefix(group: &mut BenchmarkGroup<'_, WallTime>, fixture: &Fixture) {
+    const PREFIX_LIMIT: usize = ime_core::segment::abbrev::PREFIX_LIMIT;
+    let syllables = ime_core::segment::SYLLABLES;
+    if syllables.len() < 8 {
+        return;
+    }
+    let hits: Vec<&str> = syllables[..8].to_vec();
+    // A first syllable the fixture really uses, followed by a tail no key carries: the
+    // seek lands inside the block and the first comparison ends the walk.
+    let miss = format!("{}'qqq", syllables[0]);
+    group.bench_function("prefix_hit", |bencher| {
+        let mut cursor = 0usize;
+        bencher.iter(|| {
+            let prefix = hits[cursor % hits.len()];
+            cursor = cursor.wrapping_add(1);
+            let served = fixture
+                .lexicon
+                .prefix(black_box(prefix), PREFIX_LIMIT);
+            black_box(served.map(|iter| iter.count()))
+        });
+    });
+    group.bench_function("prefix_miss", |bencher| {
+        bencher.iter(|| {
+            let served = fixture.lexicon.prefix(black_box(miss.as_str()), PREFIX_LIMIT);
+            black_box(served.map(|iter| iter.count()))
+        });
+    });
+}
+
 /// Benchmarks the steps of the dictionary read path: resolving a key to its words -- inline
 /// and spilled apart -- and turning one record into the word it names.
 fn dict_bench(c: &mut Criterion) {
@@ -264,6 +300,7 @@ fn dict_bench(c: &mut Criterion) {
     bench_lookup(&mut group, "lookup", &fixture.lexicon, &mixed);
     bench_lookup(&mut group, "lookup_inline", &fixture.lexicon, &inline);
     bench_lookup(&mut group, "lookup_spill", &fixture.lexicon, &spill);
+    bench_prefix(&mut group, &fixture);
     // One conversion per call, which is what the decoder runs once per candidate: the record
     // is checked against the string pool on every access, so this measures the four bounds
     // checks and the borrow rather than a lookup.

@@ -243,7 +243,7 @@ impl Decoder {
         // nothing is lost by asking. A request that carries no input at all stays out of that
         // path: there is nothing to read, and the empty root path the sweep would find at
         // node 0 is not a candidate.
-        let built = scratch.dag.build(&req.raw);
+        let built = scratch.dag.build_for(&req.raw, req.flags);
         let abbrev_readable = is_enabled(req.flags) && !scratch.dag.is_empty();
         if built.is_err() && !abbrev_readable {
             passthrough_into(&mut scratch.out, &req.raw);

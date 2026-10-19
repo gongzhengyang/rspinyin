@@ -7,7 +7,7 @@
 //! one. It knows nothing about words, syllables or weights, and it performs no
 //! parsing of what it is handed beyond the checks the layout itself requires
 //! (a section length that is a multiple of the record size, at most one payload
-//! per kind, no `BIGRAM` payload in version 1).
+//! per kind, and fixed-width section rows.
 //!
 //! # Atomic replacement
 //!
@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 use ime_types::DictError;
 
 use crate::format::{
-    self, ENTRY_SIZE, FLAG_BIGRAM_PRESENT, FORMAT_VERSION, HEADER_SIZE, MAGIC, SECTION_ALIGN,
-    SECTION_COUNT, SECTION_ENTRY_SIZE, SECTIONS_OFFSET, SectionEntry, SectionKind,
+    self, BIGRAM_ENTRY_SIZE, ENTRY_SIZE, FLAG_BIGRAM_PRESENT, FORMAT_VERSION, HEADER_SIZE, MAGIC,
+    SECTION_ALIGN, SECTION_COUNT, SECTION_ENTRY_SIZE, SECTIONS_OFFSET, SectionEntry, SectionKind,
 };
 
 /// Suffix appended to the destination path while the image is being written.
@@ -70,23 +70,18 @@ impl DictWriter {
     /// Returns [`DictError::LengthOutOfRange`] when the same kind is added twice,
     /// when the `ENTRIES` payload is not a whole number of [`ENTRY_SIZE`]-byte
     /// records, when the `UNIGRAM` payload is not a whole number of
-    /// [`format::UNIGRAM_ENTRY_SIZE`]-byte records, or when the `WORDLIST`
-    /// payload is not a whole number of `u32`s. A `BIGRAM` payload is rejected in
-    /// version 1, whose `flags` contract states that the section is never emitted.
+    /// [`format::UNIGRAM_ENTRY_SIZE`]-byte records, when the `BIGRAM` payload is
+    /// not a whole number of [`BIGRAM_ENTRY_SIZE`]-byte records, or when the
+    /// `WORDLIST` payload is not a whole number of `u32`s.
     // `is_multiple_of` stabilized in Rust 1.87, while the workspace MSRV is 1.85.
     #[allow(clippy::manual_is_multiple_of)]
     pub fn add_section(&mut self, kind: SectionKind, bytes: Vec<u8>) -> Result<(), DictError> {
-        if kind == SectionKind::Bigram && !bytes.is_empty() {
-            return Err(DictError::LengthOutOfRange {
-                field: "bigram_len",
-                value: bytes.len() as u64,
-            });
-        }
         let width = match kind {
             SectionKind::Entries => ENTRY_SIZE,
             SectionKind::Unigram => format::UNIGRAM_ENTRY_SIZE,
             SectionKind::WordList => 4,
-            SectionKind::Fst | SectionKind::StrPool | SectionKind::Bigram => 1,
+            SectionKind::Fst | SectionKind::StrPool => 1,
+            SectionKind::Bigram => BIGRAM_ENTRY_SIZE,
         };
         if bytes.len() % width != 0 {
             return Err(DictError::LengthOutOfRange {
@@ -319,6 +314,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
+    use crate::format::BigramRecord;
     use crate::format::reader::{Reader, Verify};
 
     /// Serial number for temporary directories; tests in one binary run in
@@ -468,13 +464,28 @@ mod tests {
     }
 
     #[test]
-    fn test_add_section_rejects_a_bigram_payload_in_version_one() {
+    fn test_add_section_accepts_a_bigram_payload_and_rejects_a_partial_record() {
         let mut writer = DictWriter::new();
-        let result = writer.add_section(SectionKind::Bigram, vec![1, 2, 3, 4]);
+        writer
+            .add_section(
+                SectionKind::Bigram,
+                BigramRecord::new(7, 9).encode().to_vec(),
+            )
+            .expect("a v2 container may carry a bigram section");
+        assert_eq!(writer.flags(), FLAG_BIGRAM_PRESENT);
+        let image = writer.encode().expect("encoding");
+        let reader =
+            crate::format::reader::Reader::parse(image, crate::format::reader::Verify::Full)
+                .expect("the image is valid");
+        assert_eq!(reader.header().format_version, FORMAT_VERSION);
+        assert_eq!(reader.bigram_count(), 1);
+        assert_eq!(reader.bigram(0).expect("record"), BigramRecord::new(7, 9));
+
+        let mut writer = DictWriter::new();
         assert!(matches!(
-            result,
+            writer.add_section(SectionKind::Bigram, vec![1, 2, 3, 4]),
             Err(DictError::LengthOutOfRange {
-                field: "bigram_len",
+                field: "section_len",
                 ..
             })
         ));
@@ -594,10 +605,10 @@ mod tests {
         ));
 
         let mut bytes = image();
-        bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
+        bytes[4..6].copy_from_slice(&3u16.to_le_bytes());
         assert!(matches!(
             format::parse_header(&bytes),
-            Err(DictError::FormatVersion { found: 2 })
+            Err(DictError::FormatVersion { found: 3 })
         ));
 
         let mut bytes = image();

@@ -26,9 +26,12 @@
 //! the routing layer one value and a reload replaces it whole.
 
 use ime_config::keymap::{KeyBindings, project_keys};
-use ime_config::{Config, SchemeChoice};
+use ime_config::{Config, SchemeChoice, ShareState};
 use ime_core::state::SessionConfig;
+use ime_config::PunctMode;
 use ime_types::ImeError;
+
+use super::modes::OutputProjection;
 
 /// The configuration values the routing layer acts on.
 ///
@@ -61,6 +64,12 @@ pub struct RoutingConfig {
     /// `[engine] passthrough_url`: whether keys are left to the application while the
     /// caret sits inside a URL or an email address.
     pub passthrough_url: bool,
+    /// The output bits a fresh context starts from, from the `[engine]` section's
+    /// `full_width` and `punct_mode`.
+    pub output: OutputProjection,
+    /// `[engine] share_state`: whether the state a window switch keeps is per input
+    /// context or per application.
+    pub share: ShareState,
 }
 
 impl Default for RoutingConfig {
@@ -82,6 +91,8 @@ impl Default for RoutingConfig {
             // classifies exactly as a fresh installation does.
             auto_english_on_uppercase: true,
             passthrough_url: true,
+            output: OutputProjection::default(),
+            share: ShareState::Context,
         }
     }
 }
@@ -123,6 +134,12 @@ impl RoutingConfig {
         // because they are the section `ime-core` cannot name a type of its own for.
         session.scheme = scheme;
         session.keep_full_pinyin = keep_full_pinyin;
+        // The fuzzy classes are projected once, here: the master bit and the class bits
+        // have to agree, and one projection per configuration load is where that
+        // agreement is kept. The session latches the mask beside the scheme.
+        session.fuzzy =
+            ime_core::fuzzy::projection(config.fuzzy.enabled, config.fuzzy.class_flags());
+        session.abbrev = config.engine.abbrev;
         let routing = Self {
             keys,
             session,
@@ -130,6 +147,11 @@ impl RoutingConfig {
             scheme_hint: config.scheme.header_hint(),
             auto_english_on_uppercase: config.engine.auto_english_on_uppercase,
             passthrough_url: config.engine.passthrough_url,
+            output: OutputProjection {
+                full_width: config.engine.full_width,
+                punct_full: config.engine.punct_mode == PunctMode::Chinese,
+            },
+            share: config.engine.share_state,
         };
         (routing, warnings)
     }

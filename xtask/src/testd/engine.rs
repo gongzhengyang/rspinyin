@@ -78,8 +78,8 @@ use ime_core::segment::{HINT_INLINE_BOUNDARIES, SyllableDag};
 use ime_core::state::Paging;
 use ime_core::viterbi::Decoder;
 use ime_types::{
-    CandidateSource, DecodeRequest, DecodeResult, KeyAction, LanguageModel, Lexicon, PageState,
-    UserFreqSource,
+    CandidateSource, DecodeFlags, DecodeRequest, DecodeResult, KeyAction, LanguageModel, Lexicon,
+    PageState, UserFreqSource,
 };
 use smallvec::SmallVec;
 
@@ -109,6 +109,11 @@ struct Session<'a> {
     /// rather than from the dictionary itself. A spec may declare one code and no more,
     /// which is what makes that reading unambiguous.
     failure_codes: Vec<String>,
+    /// The fuzzy classes the scenario decodes with, as the projected mask: the master
+    /// bit and the class bits, ready to insert into every request.
+    fuzzy: DecodeFlags,
+    /// Whether every request carries the abbreviation switch.
+    abbrev: bool,
     /// The input buffer, kept across steps the way a session keeps it.
     buffer: InputBuffer,
     /// The segmentation graph of the current input, kept so a step allocates nothing.
@@ -126,11 +131,18 @@ impl<'a> Session<'a> {
     /// # Panics
     ///
     /// Never panics.
-    fn new(sources: Sources<'a>, failure_codes: Vec<String>) -> Self {
+    fn new(
+        sources: Sources<'a>,
+        failure_codes: Vec<String>,
+        fuzzy: DecodeFlags,
+        abbrev: bool,
+    ) -> Self {
         Self {
             decoder: Decoder::default(),
             sources,
             failure_codes,
+            fuzzy,
+            abbrev,
             buffer: InputBuffer::new(),
             dag: SyllableDag::new(),
         }
@@ -204,7 +216,14 @@ impl<'a> Session<'a> {
         if self.dag.has_path() {
             self.write_back_grid();
         }
-        let request = DecodeRequest::new(self.buffer.raw());
+        let mut request = DecodeRequest::new(self.buffer.raw());
+        // The scenario's fuzzy classes ride every request, inserted over the defaults
+        // rather than replacing them: the class bits are the only thing a scenario
+        // names, and the request's own switches are the harness's business. The
+        // abbreviation switch is the same shape, set rather than inserted -- it is a
+        // single switch with no partial state to accumulate.
+        request.flags.insert(self.fuzzy);
+        request.flags.set(DecodeFlags::ABBREV, self.abbrev);
         let result = self.decoder.decode(
             &request,
             self.sources.lexicon,
@@ -338,7 +357,12 @@ pub fn assert_repeatable(
 ///
 /// Never panics.
 fn trace(scenario: &Scenario, sources: &Sources<'_>) -> Result<Vec<StepPrint>, Divergence> {
-    let mut session = Session::new(*sources, scenario.dictionary.failure_codes());
+    let mut session = Session::new(
+        *sources,
+        scenario.dictionary.failure_codes(),
+        fuzzy_flags(scenario)?,
+        scenario.abbrev,
+    );
     let mut prints = Vec::with_capacity(scenario.steps.len());
     for (index, step) in scenario.steps.iter().enumerate() {
         if !drives(step.action) {
@@ -351,6 +375,30 @@ fn trace(scenario: &Scenario, sources: &Sources<'_>) -> Result<Vec<StepPrint>, D
         prints.push(seen.print());
     }
     Ok(prints)
+}
+
+/// Projects the fuzzy classes a scenario names onto the flags one request carries.
+///
+/// The names are read through the class table, and a name the table does not know is
+/// a divergence rather than a silent miss: a scenario that thought it had selected a
+/// class and had not would pass for the wrong reason.
+///
+/// # Errors
+///
+/// [`Divergence::class_name`] for a name the class table does not define.
+///
+/// # Panics
+///
+/// Never panics.
+fn fuzzy_flags(scenario: &Scenario) -> Result<DecodeFlags, Divergence> {
+    let mut classes = DecodeFlags::empty();
+    for name in &scenario.fuzzy {
+        match ime_core::fuzzy::class_by_name(name) {
+            Some(class) => classes.insert(class.flag),
+            None => return Err(Divergence::class_name(name.clone())),
+        }
+    }
+    Ok(ime_core::fuzzy::projection(false, classes))
 }
 
 /// Returns `true` when a decode degraded because the dictionary refused a lookup.

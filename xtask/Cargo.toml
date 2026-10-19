@@ -22,6 +22,7 @@ smallvec.workspace = true                                             # testd �
 x11rb.workspace = true                                                # testd 的 XTEST 键鼠注入与窗口几何读取
 crc32fast.workspace = true
 png.workspace = true                                                    # testd 的截图通道：PNG 编解码
+regex.workspace = true                                                 # testd 冒烟基线的 @regex 期望断言
 ime-types.workspace = true
 ime-core.workspace = true
 ime-dict.workspace = true

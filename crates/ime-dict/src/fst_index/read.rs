@@ -107,14 +107,40 @@ impl FstLexicon {
         let Some((ids, count)) = self.word_ids(key)? else {
             return Ok(());
         };
+        self.read_ids_into(ids, count, limit, out)?;
+        Ok(())
+    }
+
+    /// Reads at most `limit` words from an id range `word_ids` resolved earlier, and
+    /// answers how many it wrote.
+    ///
+    /// This is [`Self::read_words_into`]'s second half, split out so the prefix walk can
+    /// feed it the payload a stream step already produced: the walk holds the key and its
+    /// packed range in its hands, and looking the key up a second time to decode what is
+    /// already decoded would be one seek per key for nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DictError::LengthOutOfRange`] when a word id leaves the entry table or
+    /// when a record's text leaves the string pool.
+    pub(super) fn read_ids_into<'a>(
+        &'a self,
+        ids: &[u8],
+        count: usize,
+        limit: usize,
+        out: &mut WordBuf<'a>,
+    ) -> Result<usize, DictError> {
+        let mut written = 0usize;
         for index in 0..count.min(limit) {
             let id = read_u32(ids, index * WORD_ID_SIZE, "wordlist_entry")?;
             let entry = self.entry(id)?;
             // The record becomes a word through the entry table, which checks it against the
             // string pool on every access; this loop never slices the pool itself, so there is
             // exactly one place where a damaged record can turn into a word.
-            out.push(self.entry_to_ref(&entry)?);
+            let word = self.entry_to_ref(&entry)?;
+            out.push(word);
+            written = written.saturating_add(1);
         }
-        Ok(())
+        Ok(written)
     }
 }

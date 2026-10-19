@@ -60,6 +60,13 @@ pub enum Effect {
         /// is the key its frequency was recorded under.
         key: String,
     },
+    /// Toggle the highlighted candidate's pin for the current input.
+    ToggleUserPin {
+        /// The input the pin belongs to.
+        key: String,
+        /// The highlighted candidate's text.
+        word: String,
+    },
     /// Save the highlighted candidate as a phrase the user defined on purpose.
     ///
     /// The session holds no phrase table and writes no file, so the pair leaves as an

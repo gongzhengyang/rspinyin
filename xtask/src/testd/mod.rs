@@ -53,6 +53,7 @@ pub mod mirror_cli;
 pub mod purity;
 pub mod review;
 pub mod sandbox;
+pub mod smoke;
 pub mod suite;
 pub mod ui_metrics;
 pub mod uiframe;

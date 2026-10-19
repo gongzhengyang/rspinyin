@@ -218,7 +218,7 @@ fn test_transform_output_default_modes_leave_ascii_and_cjk_alike_untouched() {
     // plugin cannot be rewritten, so the whole hot path is the borrowed text itself.
     let text = "nihao 你好";
     assert_eq!(
-        Modes::default().transform_output(text),
+        Modes::default().transform_output(text, None),
         Cow::Borrowed(text),
         "the modes off the rewrite borrow the text: no allocation on the hot path"
     );
@@ -230,12 +230,12 @@ fn test_transform_output_full_width_widens_ascii_and_spares_cjk() {
     assert!(modes.apply(KeyAction::ToggleFullWidth, 1, &mut SilentHost));
 
     assert_eq!(
-        modes.transform_output("nihao 3").as_ref(),
+        modes.transform_output("nihao 3", None).as_ref(),
         "ｎｉｈａｏ　３",
         "letters, the space and the digit all widen"
     );
     assert_eq!(
-        modes.transform_output("你好").as_ref(),
+        modes.transform_output("你好", None).as_ref(),
         "你好",
         "a Chinese candidate has no ASCII to widen"
     );
@@ -248,8 +248,8 @@ fn test_transform_output_chinese_punct_substitutes_the_marks_of_a_commit() {
     // the text. The apostrophe is the table's deliberate `None` — the syllable
     // separator, not a quotation mark — and it stands.
     let modes = Modes::default();
-    assert_eq!(modes.transform_output("a,b").as_ref(), "a，b");
-    assert_eq!(modes.transform_output("ni'hao").as_ref(), "ni'hao");
+    assert_eq!(modes.transform_output("a,b", None).as_ref(), "a，b");
+    assert_eq!(modes.transform_output("ni'hao", None).as_ref(), "ni'hao");
 }
 
 #[test]
@@ -258,7 +258,7 @@ fn test_transform_output_english_punct_leaves_the_marks_to_widening_alone() {
     let mut modes = Modes::default();
     assert!(modes.apply(KeyAction::TogglePunct, 1, &mut SilentHost));
     assert_eq!(
-        modes.transform_output("a,b"),
+        modes.transform_output("a,b", None),
         Cow::Borrowed("a,b"),
         "and with full width off too, the text is the application's byte for byte"
     );
@@ -267,7 +267,7 @@ fn test_transform_output_english_punct_leaves_the_marks_to_widening_alone() {
     // so the letter and the mark both land on their full-width forms.
     assert!(modes.apply(KeyAction::ToggleFullWidth, 1, &mut SilentHost));
     assert_eq!(
-        modes.transform_output("a,b").as_ref(),
+        modes.transform_output("a,b", None).as_ref(),
         "ａ，ｂ",
         "widening covers the letters the substitution table leaves alone"
     );
@@ -277,8 +277,8 @@ fn test_transform_output_english_punct_leaves_the_marks_to_widening_alone() {
 fn test_transform_output_twice_is_the_same_as_once() {
     let mut modes = Modes::default();
     assert!(modes.apply(KeyAction::ToggleFullWidth, 1, &mut SilentHost));
-    let once = modes.transform_output("ni hao, 3");
-    let twice = modes.transform_output(once.as_ref());
+    let once = modes.transform_output("ni hao, 3", None);
+    let twice = modes.transform_output(once.as_ref(), None);
     assert_eq!(
         twice.as_ref(),
         once.as_ref(),

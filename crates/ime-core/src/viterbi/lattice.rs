@@ -50,6 +50,7 @@ use ime_types::{
 use smallvec::SmallVec;
 
 use crate::segment::{DagEdge, MAX_NODES, MAX_SYLLABLE_LEN, Readings, SyllableDag};
+use crate::segment::syllable;
 
 /// Longest word span, in syllables, the lattice considers.
 ///
@@ -427,6 +428,9 @@ struct Single {
     syllable: SyllableId,
     /// Whether a word edge already covers this span.
     covered: bool,
+    /// The span's own penalty, which the fallback edge carries: zero for an exact
+    /// span, the fuzzy penalty for a variant.
+    penalty_q8: i32,
 }
 
 /// The walk's state: the dictionary, the buffers it reuses for every span, and
@@ -520,7 +524,13 @@ impl Builder<'_, '_, '_> {
 
     /// Spells one span and records the words stored under its key.
     fn span(&mut self, dag: &SyllableDag, frame: Frame, edge: DagEdge) {
-        let text = dag.syllable_text(frame.node, edge);
+        // The key is spelled from the edge's syllable, not from the input's bytes: a
+        // fuzzy variant covers the bytes the input spells but names the syllable the
+        // dictionary stores its words under, and the key is what the dictionary is
+        // asked for. For an exact edge the two are the same text, because the graph
+        // admits a syllable only when its spelling is the input's.
+        let text = syllable::syllable_at(edge.syllable)
+            .unwrap_or_else(|| dag.syllable_text(frame.node, edge));
         if text.is_empty() {
             return;
         }
@@ -545,6 +555,7 @@ impl Builder<'_, '_, '_> {
                 end: edge.end,
                 syllable: edge.syllable,
                 covered,
+                penalty_q8: edge.penalty_q8,
             });
         }
         // A longer span is still worth spelling even when this one has no word:
@@ -585,7 +596,10 @@ impl Builder<'_, '_, '_> {
                 characters: chars::count_characters(word.text),
                 source,
                 word,
-                penalty_q8: 0,
+                // The graph's own penalty rides along: zero for an edge the input
+                // spells, the fuzzy penalty for a variant, so the exact reading
+                // outranks the widened one at equal dictionary weight.
+                penalty_q8: edge.penalty_q8,
             });
         }
         if covered {
@@ -618,7 +632,7 @@ impl Builder<'_, '_, '_> {
                             characters: chars::count_characters(word.text),
                             source,
                             word,
-                            penalty_q8: 0,
+                            penalty_q8: single.penalty_q8,
                         });
                         self.reach(single.end);
                     }

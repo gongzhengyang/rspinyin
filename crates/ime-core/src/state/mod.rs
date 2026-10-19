@@ -107,6 +107,21 @@ pub struct SessionConfig {
     /// full-pinyin syllable gets nothing at all, which reads as "the input method
     /// broke" rather than as "you are in the wrong mode".
     pub keep_full_pinyin: bool,
+    /// The fuzzy-equivalence classes the `[fuzzy]` section selects, as the decode
+    /// flag mask the projection computed: the master [`ime_types::DecodeFlags::FUZZY`]
+    /// bit exactly when at least one class bit is set.
+    ///
+    /// The mask is precomputed by the projection rather than assembled here because
+    /// the master bit and the class bits must agree, and a projection that runs once
+    /// per configuration load is where that agreement is kept. Empty -- the default --
+    /// decodes exactly as a build before the section existed.
+    pub fuzzy: ime_types::DecodeFlags,
+    /// `engine.abbrev`: whether an initial-letter abbreviation is expanded, so that
+    /// `nh` reaches a word spelled `ni'hao`.
+    ///
+    /// Off by default: an abbreviation is ambiguous by nature, and a user who never
+    /// asked for one must not have it answered ahead of the full spelling.
+    pub abbrev: bool,
 }
 
 impl Default for SessionConfig {
@@ -120,6 +135,8 @@ impl Default for SessionConfig {
             max_width_dp: 720,
             scheme: SchemeId::FULL,
             keep_full_pinyin: true,
+            fuzzy: ime_types::DecodeFlags::empty(),
+            abbrev: false,
         }
     }
 }

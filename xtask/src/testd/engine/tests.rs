@@ -19,7 +19,7 @@ use ime_types::{
     UserFreqSource,
 };
 
-use super::doubles::{LookupFailure, MockLexicon, MockUserFreq};
+use super::doubles::{LookupFailure, MockLexicon, MockUserFreq, OwnedWord};
 // Imported from the submodule rather than through `super`'s re-exports: the re-exports
 // exist for callers outside this file, and routing the tests through them made the
 // non-test build report them as unused, since `mod tests` is `#[cfg(test)]`.
@@ -520,12 +520,39 @@ fn test_mock_lexicon_failing_key_answers_its_frozen_code() {
 }
 
 #[test]
-fn test_mock_lexicon_prefix_reports_the_phase_two_code() {
-    let lexicon = MockLexicon::default();
-    let error = lexicon
+fn test_mock_lexicon_prefix_walks_its_range_and_answers_failures() {
+    // Two keys share the prefix and one does not: the walk serves the matching
+    // words in key order and stops at the first key that diverges, the same
+    // range walk the real lexicon streams.
+    let words = BTreeMap::from([
+        (
+            String::from("ni"),
+            vec![OwnedWord::at(0, 1, "你"), OwnedWord::at(1, 1, "拟")],
+        ),
+        (String::from("nihao"), vec![OwnedWord::at(0, 2, "你好")]),
+        (String::from("wo"), vec![OwnedWord::at(0, 1, "我")]),
+    ]);
+    let lexicon = MockLexicon::new(words, BTreeMap::new(), BTreeMap::new());
+    let texts: Vec<&str> = lexicon
         .prefix("ni", 9)
-        .expect_err("prefix enumeration is a Phase 2 capability");
-    assert_eq!(error.to_string(), "dict/unsupported");
+        .expect("the prefix walk is served")
+        .map(|word| word.text)
+        .collect();
+    assert_eq!(texts, ["你", "拟", "你好"]);
+    // The limit pushes into the walk, so a query costs at most `limit` words
+    // whatever the range holds.
+    assert_eq!(
+        lexicon
+            .prefix("ni", 2)
+            .expect("the capped walk is served")
+            .count(),
+        2
+    );
+    // A refused prefix is refused whole, like a refused key.
+    let failures = BTreeMap::from([(String::from("ni"), LookupFailure::Corrupt)]);
+    let broken = MockLexicon::new(BTreeMap::new(), BTreeMap::new(), failures);
+    let error = broken.prefix("ni", 9).expect_err("the prefix is refused");
+    assert_eq!(error.to_string().split(':').next(), Some("dict/corrupt"));
 }
 
 #[test]

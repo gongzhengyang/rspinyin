@@ -239,4 +239,85 @@ impl UserFreqSource for UserFrequency {
             Self::Missing => Err(ImeError::Unsupported),
         }
     }
+
+    /// Toggles, moves or clears a pin, or reports that there is no store to hold one.
+    ///
+    /// # Errors
+    ///
+    /// [`ImeError::Unsupported`] with no store, and whatever the toggle raises with one --
+    /// `data/readonly-mode` when the store has degraded.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    fn set_pinned(&self, key: &str, word: Option<&str>) -> Result<(), ImeError> {
+        match self {
+            Self::Store(store) => lock(&store.db).set_pinned(key, word),
+            Self::Missing => Err(ImeError::Unsupported),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The frequency wrapper's own arms: what an absent store answers, and that a real
+    //! one receives what the session hands it.
+
+    use ime_dict::user_db::{BackupConfig, UserDb};
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// Opens a store in a directory of the test's own, under the system temp directory.
+    fn store_in(label: &str) -> (std::path::PathBuf, UserDb) {
+        let dir = std::env::temp_dir().join(format!(
+            "rspinyin-sources-{}-{label}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("creating the test directory");
+        let db = UserDb::open(dir.join("user.redb")).expect("opening the test store");
+        (dir, db)
+    }
+
+    #[test]
+    fn test_missing_store_refuses_the_pin_and_answers_nothing_else() {
+        let missing = UserFrequency::Missing;
+        let error = missing
+            .set_pinned("ni", Some("你"))
+            .expect_err("there is no store to hold a pin");
+        assert!(matches!(error, ImeError::Unsupported), "{error}");
+        assert_eq!(missing.freq("你"), 0);
+        assert!(!missing.forget("你"));
+    }
+
+    #[test]
+    fn test_store_source_receives_the_pin_toggle() {
+        let (_dir, mut db) = store_in("pin");
+        db.record("你", 0);
+        // The record is flushed before the toggling starts -- `final_commit` runs on the
+        // caller's thread -- so the reads below answer from the flushed count and never
+        // land in the window a flush's drain leaves between the delta map and the map
+        // that adopted it.
+        db.final_commit().expect("flushing the record");
+        let store = UserStore {
+            db: Mutex::new(db),
+            backup: BackupConfig::disabled(_dir.clone()),
+        };
+        let source = UserFrequency::Store(Arc::new(store));
+        source
+            .set_pinned("ni", Some("你"))
+            .expect("the store takes the pin");
+        assert_eq!(
+            source.freq("你"),
+            u32::MAX,
+            "the pinned word answers the cap the ranking lifts it with"
+        );
+        // The second press is the toggle's other half, and the store answers its own
+        // count again.
+        source
+            .set_pinned("ni", Some("你"))
+            .expect("the store takes the release");
+        assert_eq!(source.freq("你"), 1);
+    }
 }

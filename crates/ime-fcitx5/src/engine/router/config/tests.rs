@@ -227,3 +227,70 @@ fn test_from_config_clamps_a_raw_length_limit_the_schema_forbids() {
 
     assert_eq!(projected.session.max_raw_len, 1);
 }
+
+#[test]
+fn test_from_config_projects_the_fuzzy_section_onto_the_session_mask() {
+    // One class with the master switch off: the projection sets the master bit
+    // beside the class, because the decode gate needs the two to agree.
+    let mut config = Config::default();
+    config.fuzzy.zh_z = true;
+    let (projected, warnings) = RoutingConfig::from_config(&config);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(projected.session.fuzzy.contains(ime_types::DecodeFlags::FUZZY_ZH_Z));
+    assert!(
+        projected.session.fuzzy.contains(ime_types::DecodeFlags::FUZZY),
+        "one class switches the master on"
+    );
+    assert!(
+        !projected.session.fuzzy.contains(ime_types::DecodeFlags::FUZZY_N_L),
+        "a class the section did not name stays off"
+    );
+
+    // The master switch alone selects every class.
+    let mut config = Config::default();
+    config.fuzzy.enabled = true;
+    let (projected, _) = RoutingConfig::from_config(&config);
+    assert!(projected.session.fuzzy.contains(ime_types::DecodeFlags::FUZZY_F_H));
+
+    // The shipped document selects nothing, and the session decodes as a build
+    // before the section existed.
+    let (projected, _) = RoutingConfig::from_config(&Config::default());
+    assert_eq!(projected.session.fuzzy, ime_types::DecodeFlags::empty());
+}
+
+#[test]
+fn test_from_config_carries_the_abbrev_switch() {
+    let mut config = Config::default();
+    assert!(
+        !RoutingConfig::from_config(&config).0.session.abbrev,
+        "the shipped document leaves abbreviations off"
+    );
+    config.engine.abbrev = true;
+    let (projected, warnings) = RoutingConfig::from_config(&config);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(projected.session.abbrev, "the switch reaches the session");
+}
+
+#[test]
+fn test_from_config_projects_the_output_bits_a_context_starts_from() {
+    // The shipped document starts half width with Chinese marks, which is what a
+    // context with no configuration has always started from.
+    let (projected, warnings) = RoutingConfig::from_config(&Config::default());
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(
+        projected.output,
+        super::super::modes::OutputProjection {
+            full_width: false,
+            punct_full: true,
+        }
+    );
+
+    // A document that says otherwise starts new contexts its own way.
+    let mut config = Config::default();
+    config.engine.full_width = true;
+    config.engine.punct_mode = ime_config::PunctMode::English;
+    let (projected, warnings) = RoutingConfig::from_config(&config);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(projected.output.full_width);
+    assert!(!projected.output.punct_full);
+}

@@ -35,6 +35,7 @@
 
 use std::path::{Path, PathBuf};
 
+use fst::{IntoStreamer, Streamer};
 use ime_core::segment::syllable_at;
 use ime_types::lexicon::WORD_ITER_INLINE;
 use ime_types::{DictError, ImeError, Lexicon, SyllableId, WordFlags, WordIter, WordRef};
@@ -42,7 +43,7 @@ use ime_types::{DictError, ImeError, Lexicon, SyllableId, WordFlags, WordIter, W
 use crate::entry::{EntryTable, MalformedEntry};
 use crate::format::{
     DictEntry, MAX_WORDS_PER_KEY, SectionEntry, SectionKind, UNIGRAM_ENTRY_SIZE, read_u16,
-    read_u32,
+    read_u32, unpack_fst_value,
     reader::{Reader, Verify},
 };
 use crate::mmap::{MappedFile, WordPool};
@@ -154,9 +155,9 @@ fn out_of_range(field: &'static str, value: u64) -> DictError {
 /// of a container the loader accepted, which is what lets the read path hand out `&str`
 /// without scanning it.
 ///
-/// Declaration order is drop order: the views are dropped before the mapping that backs
-/// them, so no destructor can run against an unmapped range even if a view ever gains
-/// one that reads its bytes.
+/// Declaration order is drop order: the views are dropped before the backing that owns
+/// their bytes, so no destructor can run against an unmapped range even if a view ever
+/// gains one that reads its bytes.
 #[derive(Debug)]
 pub struct FstLexicon {
     fst: fst::Map<&'static [u8]>,
@@ -168,19 +169,33 @@ pub struct FstLexicon {
     table: EntryTable<'static>,
     wordlist: &'static [u8],
     unigram: &'static [u8],
+    bigram: &'static [u8],
     entry_count: u32,
     /// Where the dictionary was loaded from, so that a failure can name the file the
-    /// user has to replace.
+    /// user has to replace. An image-loaded lexicon names the synthetic `<memory>`.
     path: PathBuf,
-    /// The read-only mapping every view above borrows from.
+    /// What every view above borrows from.
     ///
-    /// Held as a field rather than as a local because dropping it would unmap the file and
-    /// leave the `'static` views dangling, and it is declared last because fields drop in
-    /// declaration order — so it outlives the views it owns. Nothing reads it after
-    /// construction, which is the dead-code warning this allowance silences: the field's
-    /// whole purpose is its lifetime.
+    /// Held as a field rather than as a local because dropping a mapping would unmap
+    /// the file and leave the `'static` views dangling, and it is declared last because
+    /// fields drop in declaration order — so a mapping outlives the views it owns.
+    /// Nothing reads it after construction, which is the dead-code warning this
+    /// allowance silences: the field's whole purpose is its lifetime.
     #[allow(dead_code)]
-    mmap: MappedFile,
+    backing: Backing,
+}
+
+/// What an [`FstLexicon`]'s views borrow from.
+#[derive(Debug)]
+enum Backing {
+    /// The read-only mapping [`FstLexicon::load_with`] opened; dropping it unmaps
+    /// the file. The field is never read — the variant exists so the mapping is
+    /// dropped after the views, which is why the lint allowance is here.
+    #[allow(dead_code)]
+    Mapped(MappedFile),
+    /// No mapping: the image belongs to the caller, whose `'static` lifetime
+    /// already outlives the lexicon.
+    Static,
 }
 
 impl FstLexicon {
@@ -215,10 +230,44 @@ impl FstLexicon {
         // `MappedFile::static_bytes` documents, and it holds because the lexicon owns
         // the mapping for its whole life, never borrows it mutably and never remaps it.
         let image = mmap.static_bytes();
+        Self::parse_image(image, path.to_path_buf(), Backing::Mapped(mmap), verify)
+    }
+
+    /// Builds the lexicon over a byte image the caller owns for `'static`.
+    ///
+    /// The twin of [`FstLexicon::load_with`] for a caller that already holds the
+    /// container in memory — a benchmark or a test that encodes a container and leaks
+    /// it, rather than touching the filesystem. The same layout and checksum
+    /// validation runs over the image, and the views borrow the image instead of a
+    /// mapping; a failure names the synthetic path `<memory>` because there is no file
+    /// to replace.
+    ///
+    /// # Errors
+    ///
+    /// The layout and checksum errors of [`FstLexicon::load_with`], except
+    /// [`DictError::Io`]: there is no file to fail on.
+    pub fn from_image(image: &'static [u8]) -> Result<Self, DictError> {
+        Self::parse_image(
+            image,
+            PathBuf::from("<memory>"),
+            Backing::Static,
+            Verify::Full,
+        )
+    }
+
+    /// Validates `image` and builds the lexicon over it.
+    ///
+    /// `backing` keeps whatever owns the bytes alive for as long as the lexicon does;
+    /// the views are sliced out of the image itself rather than borrowed from the
+    /// reader, which is dropped before this function returns.
+    fn parse_image(
+        image: &'static [u8],
+        path: PathBuf,
+        backing: Backing,
+        verify: Verify,
+    ) -> Result<Self, DictError> {
         // The reader owns the layout checks -- magic, version, section table, section
-        // lengths and, under full verification, every checksum. It is dropped at the end
-        // of this function, which is why the views are sliced out of the image itself
-        // rather than borrowed from the reader.
+        // lengths and, under full verification, every checksum.
         let reader = Reader::parse(image, verify)?;
         let sections = reader.sections();
         let fst_bytes = section(image, sections, SectionKind::Fst)?;
@@ -239,9 +288,10 @@ impl FstLexicon {
             table: EntryTable::new(WordPool::verified(strpool)),
             wordlist: section(image, sections, SectionKind::WordList)?,
             unigram: section(image, sections, SectionKind::Unigram)?,
+            bigram: section(image, sections, SectionKind::Bigram)?,
             entry_count: reader.entry_count(),
-            path: path.to_path_buf(),
-            mmap,
+            path,
+            backing,
         })
     }
 
@@ -262,6 +312,19 @@ impl FstLexicon {
     /// Never.
     pub fn unigram_section(&self) -> &'static [u8] {
         self.unigram
+    }
+
+    /// Returns the `BIGRAM` section, which is the conditional model `DictLm` scores with.
+    ///
+    /// Exposed as bytes rather than as a typed slice: a record's pair key and probability
+    /// are decoded field by field, exactly like every other section read. The section is
+    /// empty for version 1 and for a version 2 container that carries no pairs.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn bigram_section(&self) -> &'static [u8] {
+        self.bigram
     }
 
     /// Returns the `(hash, prob_q12)` record at `index` of the unigram table.
@@ -395,11 +458,74 @@ impl Lexicon for FstLexicon {
         Ok(buf.into_word_iter())
     }
 
-    /// Prefix enumeration is a later phase: the signature is frozen now so that
-    /// callers do not have to change when abbreviation expansion lands, and the
-    /// implementation is one streamed walk over the prefix range of the same FST.
-    fn prefix(&self, _prefix: &str, _limit: usize) -> Result<WordIter<'_>, ImeError> {
-        Err(ImeError::Unsupported)
+    /// Streams the prefix range of the same FST `lookup` reads, one key at a time.
+    ///
+    /// Keys are the `'`-joined syllable strings, so an abbreviated query like `n'h` is
+    /// itself a literal key prefix: the FST orders keys lexicographically, and every
+    /// key that starts with `prefix` forms one contiguous range. The walk starts at
+    /// that range, stops at the first key that diverges -- lexicographic order says
+    /// everything past it is outside -- and pushes the caller's `limit` down into every
+    /// read, so a hot prefix costs one streamed pass and a miss one seek. The words of
+    /// one key keep the order that key stores them in, strongest first, which is what
+    /// `lookup` answers; the keys themselves arrive in lexicographic order, which is
+    /// the only order a range has.
+    ///
+    /// An empty prefix is the whole map: legal, and bounded by `limit` the way every
+    /// other query is. A limit of zero answers an empty iterator without touching the
+    /// index, which is what keeps a degenerate call from becoming a degenerate walk.
+    ///
+    /// # Errors
+    ///
+    /// [`ImeError::DictUnavailable`] when a read fails the way `lookup`'s can, and
+    /// [`ImeError::DictCorrupt`] for a key the index holds that is not UTF-8 -- a
+    /// condition the compiler's own validation makes unreachable, defended against
+    /// here because the mapped file is untrusted input and the walk would otherwise
+    /// hand a broken key's words out as if they were sound.
+    fn prefix(&self, prefix: &str, limit: usize) -> Result<WordIter<'_>, ImeError> {
+        let mut buf = WordBuf::new();
+        if limit == 0 {
+            return Ok(buf.into_word_iter());
+        }
+        let mut remaining = limit;
+        let mut stream = self.fst.range().ge(prefix.as_bytes()).into_stream();
+        while let Some((key, packed)) = stream.next() {
+            let Ok(key) = core::str::from_utf8(key) else {
+                return Err(ImeError::DictCorrupt { path: self.path.clone() });
+            };
+            if !key.starts_with(prefix) {
+                break;
+            }
+            // The same decode `word_ids` performs for `lookup`, on the payload the
+            // stream step already produced: the bounds checks run here rather than a
+            // second time inside a keyed read.
+            let (start, count) = unpack_fst_value(packed);
+            let Ok(start) = usize::try_from(start) else {
+                return Err(self.unavailable(out_of_range("wordlist_start", start)));
+            };
+            let Ok(count) = usize::try_from(count) else {
+                return Err(self.unavailable(out_of_range("wordlist_count", u64::from(count))));
+            };
+            let Some(from) = start.checked_mul(WORD_ID_SIZE) else {
+                return Err(self.unavailable(out_of_range("wordlist_start", start as u64)));
+            };
+            let Some(ids_end) = start.checked_add(count) else {
+                return Err(self.unavailable(out_of_range("wordlist_count", count as u64)));
+            };
+            let Some(to) = ids_end.checked_mul(WORD_ID_SIZE) else {
+                return Err(self.unavailable(out_of_range("wordlist_count", count as u64)));
+            };
+            let Some(ids) = self.wordlist.get(from..to) else {
+                return Err(self.unavailable(out_of_range("wordlist_start", start as u64)));
+            };
+            let written = self
+                .read_ids_into(ids, count, remaining, &mut buf)
+                .map_err(|cause| self.unavailable(cause))?;
+            remaining = remaining.saturating_sub(written);
+            if remaining == 0 {
+                break;
+            }
+        }
+        Ok(buf.into_word_iter())
     }
 
     /// Reads the single-character words of one syllable.

@@ -38,7 +38,7 @@ fn scratch_dir(tag: &str) -> PathBuf {
 }
 
 /// The 19 counter names, exactly as the boundary contract writes them.
-const CONTRACT_COUNTERS: [&str; 19] = [
+const CONTRACT_COUNTERS: [&str; 20] = [
     "ui.frame.coalesced",
     "ui.control.dropped",
     "ui.select.timeout",
@@ -52,6 +52,7 @@ const CONTRACT_COUNTERS: [&str; 19] = [
     "decode.no-path",
     "dict.lookup.miss",
     "userdb.commit.slow",
+    "userdb.pin",
     "data.readonly-mode",
     "config.invalid",
     "ui.theme.blur-unavailable",

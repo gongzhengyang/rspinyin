@@ -26,6 +26,10 @@ name = "dict"
 harness = false
 
 [[bench]]
+name = "script"
+harness = false
+
+[[bench]]
 name = "userdb"
 harness = false
 

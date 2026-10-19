@@ -7,3 +7,6 @@
 [submodule "remarks/librime"]
 	path = remarks/librime
 	url = https://github.com/rime/librime.git
+[submodule "remarks/WindInput"]
+	path = remarks/WindInput
+	url = https://github.com/huanfeng/WindInput.git

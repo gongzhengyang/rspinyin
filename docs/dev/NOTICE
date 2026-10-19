@@ -84,6 +84,8 @@ Unless required by law, SixtyFPS won't be liable for any direct, indirect, incid
 | `base`（https://github.com/gongzhengyang/rspinyin） | Project-owned (MIT OR Apache-2.0) | 本项目生成的衍生词库 |
 | `polyphone`（https://github.com/gongzhengyang/rspinyin） | Project-owned (MIT OR Apache-2.0) | 本项目生成的多音字权重校正表 |
 | `phrase`（https://github.com/gongzhengyang/rspinyin） | Project-owned (MIT OR Apache-2.0) | L5 |
+| `thuocl`（https://github.com/thunlp/THUOCL） | MIT | L4 |
+| `huayu`（http://bbs.pinyin.thunisoft.com/forum.php?mod=viewthread&tid=30049） | Public Domain (huayu system wordlist) | L2 |
 
 <!-- END GENERATED: slint licence and data sources -->
 

@@ -19,6 +19,7 @@
 //!                  the decay accumulator (stored as f32 bits, scored in Q16.16)
 //!   tick           &str -> u64   the global logical clock, one row
 //!   user_meta      &str -> (u64 created_ms, u64 pinned)      one row per record that has one
+//!   user_key_pins  &str -> &str   the word pinned under an input key, one row per pin
 //!   meta           &str -> u64                               schema_version
 //! ```
 //!
@@ -80,13 +81,11 @@
 //! the owner's own calls, and a graceful shutdown may not return before the delta is on disk.
 
 use std::collections::{HashMap, HashSet};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::Duration;
 
-use ime_types::{DictError, ImeError, UserFreqSource, WordRef};
+use ime_types::{DictError, ImeError, UserFreqSource};
 use redb::{Database, Durability, ReadableTable, ReadableTableMetadata, TableDefinition};
 
 #[cfg(test)]
@@ -101,11 +100,16 @@ mod export;
 mod flush;
 mod hydrate;
 mod manage;
+mod records;
+mod schema;
+mod source;
 
 use self::cache::MissCache;
 use self::evict::{Sweep, start_sweep};
 use self::flush::{Delta, FLUSH_SETTLE_TIMEOUT_MS, FlushThread, Pending};
-use self::hydrate::load_committed;
+use self::hydrate::{load_committed, load_pins};
+use self::records::{Stored, StoredRow, WordsView, dee_q16};
+use self::schema::{SchemaOutcome, dee_bits, prepare_path, prepare_schema, read_tick};
 
 pub use self::backup::{
     BACKUP_FAILED_CODE, BACKUP_INTERVAL_MS, BACKUP_KEEP_DEFAULT, BACKUP_RESTORED_CODE,
@@ -214,6 +218,11 @@ const SCHEMA_KEY: &str = "schema_version";
 /// eviction ranks by the logical `tick`.
 const USER_WORDS_V2: TableDefinition<&str, (u32, u64, u64, u32)> =
     TableDefinition::new("user_words_v2");
+/// The frequency a pinned word reports.
+///
+/// The value saturates the scoring formula's logarithmic user term at its ceiling, so a
+/// pinned word wins its key without exposing an infinite score to the decoder.
+pub(crate) const PINNED_FREQ: u32 = u32::MAX;
 /// The v1 record table, kept for exactly two purposes: the open-time migration reads
 /// it as its source, and a store whose migration failed serves it read-only. A store
 /// this build has migrated no longer carries it.
@@ -229,6 +238,14 @@ const TICK_KEY: &str = "clock";
 /// The pin flag is a `u64` holding zero or one rather than a `bool`, because redb's `bool`
 /// decoder panics on any other byte and this table is read from a user's own file.
 const USER_META: TableDefinition<&str, (u64, u64)> = TableDefinition::new("user_meta");
+/// One row per pin: the input key, and the word pinned under it.
+///
+/// The word-level flag in [`USER_META`] is what the ranking reads -- `freq` is asked about
+/// a word, and a pinned word answers [`PINNED_FREQ`] -- but the pin itself belongs to an
+/// input key: pinning a second word under the same key moves the pin (ADR-0013), and
+/// knowing which word to move requires the association. Both tables are written by the
+/// same flush, so they cannot disagree.
+const USER_KEY_PINS: TableDefinition<&str, &str> = TableDefinition::new("user_key_pins");
 /// Store-wide markers; version 2 holds the schema version.
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 
@@ -246,6 +263,11 @@ struct PendingState {
     /// failed flush drops the tombstones with the deltas of the same window, and the store
     /// is read-only from then on.
     removed: HashSet<Box<str>>,
+    /// Pin changes waiting for the next flush, with the target state after coalescing.
+    pins: HashMap<Box<str>, bool>,
+    /// Key-pin rows waiting for the next flush: the input key, and the word its row
+    /// should name -- or `None` for a row to delete.
+    key_rows: HashMap<Box<str>, Option<Box<str>>>,
     /// Monotonic nanoseconds of the last flush, so that the interval trigger measures
     /// typing time rather than wall-clock time.
     last_flush_nanos: u64,
@@ -270,421 +292,6 @@ fn store_error(path: &Path, error: &impl std::fmt::Display) -> ImeError {
     ImeError::DictUnavailable {
         path: path.to_path_buf(),
         cause: DictError::Io(std::io::Error::other(error.to_string())),
-    }
-}
-
-/// Sets the mode of `path` when it differs from `mode`.
-///
-/// # Errors
-/// Returns the underlying `std::io::Error` when the metadata or the mode change fails.
-fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
-    let current = std::fs::metadata(path)?.permissions().mode() & 0o777;
-    if current == mode {
-        return Ok(());
-    }
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-}
-
-/// Creates the directory and the file the store needs, with the modes it must keep.
-///
-/// The file is created here rather than by `redb`, which would create it `0644` under the
-/// user's umask, and the user database is private data. An existing file is tightened
-/// rather than trusted, because a wider mode survives a copy or a restore from a backup.
-///
-/// # Errors
-/// Returns [`ImeError::DictUnavailable`] when the directory cannot be created, or the file
-/// cannot be created or tightened.
-fn prepare_path(path: &Path) -> Result<(), ImeError> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-        && !parent.exists()
-    {
-        std::fs::create_dir_all(parent).map_err(|error| store_error(path, &error))?;
-        set_mode(parent, DIR_MODE).map_err(|error| store_error(path, &error))?;
-    }
-    if path.exists() {
-        return set_mode(path, FILE_MODE).map_err(|error| store_error(path, &error));
-    }
-    let created = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .mode(FILE_MODE)
-        .open(path)
-        .map_err(|error| store_error(path, &error))?;
-    drop(created);
-    Ok(())
-}
-
-/// Creates the tables and stamps the schema version this build writes.
-///
-/// # Errors
-/// Returns [`ImeError::DictUnavailable`] when the store cannot be written, or when it
-/// already carries a schema version this build does not know.
-fn stamp_schema(path: &Path, db: &Database) -> Result<(), ImeError> {
-    let mut txn = db
-        .begin_write()
-        .map_err(|error| store_error(path, &error))?;
-    {
-        let mut meta = txn
-            .open_table(META)
-            .map_err(|error| store_error(path, &error))?;
-        let found = meta
-            .get(SCHEMA_KEY)
-            .map_err(|error| store_error(path, &error))?
-            .map(|guard| guard.value());
-        if let Some(version) = found
-            && version != SCHEMA_VERSION
-        {
-            return Err(ImeError::DictUnavailable {
-                path: path.to_path_buf(),
-                cause: DictError::FormatVersion {
-                    found: u16::try_from(version).unwrap_or(u16::MAX),
-                },
-            });
-        }
-        meta.insert(SCHEMA_KEY, SCHEMA_VERSION)
-            .map_err(|error| store_error(path, &error))?;
-        txn.open_table(USER_WORDS_V2)
-            .map_err(|error| store_error(path, &error))?;
-        // Created here rather than on first use: a read transaction cannot create a table,
-        // so a store whose metadata table was never written would fail the first
-        // enumeration instead of answering an empty one.
-        txn.open_table(USER_META)
-            .map_err(|error| store_error(path, &error))?;
-        let mut tick = txn
-            .open_table(META_TICK)
-            .map_err(|error| store_error(path, &error))?;
-        tick.insert(TICK_KEY, 0)
-            .map_err(|error| store_error(path, &error))?;
-    }
-    txn.set_durability(Durability::Immediate);
-    txn.commit().map_err(|error| store_error(path, &error))?;
-    Ok(())
-}
-
-/// The schema state an open finds, and what this build did about it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SchemaOutcome {
-    /// A fresh file: the tables were created and the version stamped.
-    Fresh,
-    /// A store this build already wrote; nothing to do.
-    Current,
-    /// A schema-1 store this build migrated to schema 2.
-    Migrated,
-    /// A schema-1 store whose migration failed; the store opens read-only over v1
-    /// and the caller reports [`SCHEMA_MIGRATED_CODE`].
-    V1Degraded,
-}
-
-/// Brings the store's schema to the version this build writes.
-///
-/// A fresh file is stamped; a current one is left alone; a schema-1 store is migrated
-/// in one write transaction (see the module documentation); and a migration whose
-/// transaction fails degrades to [`SchemaOutcome::V1Degraded`] rather than refusing to
-/// open -- a user database that cannot be upgraded must still serve the history it
-/// holds, and the readonly discipline is how a store that cannot be written stays
-/// useful.
-///
-/// # Errors
-/// Returns [`ImeError::DictUnavailable`] when a store neither fresh nor readable names a
-/// schema version this build does not know, or when a table or transaction outside the
-/// migration itself fails.
-fn prepare_schema(path: &Path, db: &Database) -> Result<SchemaOutcome, ImeError> {
-    let version = {
-        let txn = db.begin_read().map_err(|error| store_error(path, &error))?;
-        match txn.open_table(META) {
-            Ok(meta) => meta
-                .get(SCHEMA_KEY)
-                .map_err(|error| store_error(path, &error))?
-                .map(|guard| guard.value()),
-            // A file with no `meta` table at all is a fresh one: the store this build
-            // is about to create, or the zero-byte file `prepare_path` made before
-            // `redb` wrote anything. That is the "no version" state, not a failure.
-            Err(redb::TableError::TableDoesNotExist(_)) => None,
-            Err(error) => return Err(store_error(path, &error)),
-        }
-    };
-    match version {
-        None => {
-            stamp_schema(path, db)?;
-            Ok(SchemaOutcome::Fresh)
-        }
-        Some(found) if found == SCHEMA_VERSION => {
-            ensure_tables(path, db)?;
-            Ok(SchemaOutcome::Current)
-        }
-        Some(found) if found == SCHEMA_VERSION_V1 => {
-            if migrate_v1(path, db).is_ok() {
-                Ok(SchemaOutcome::Migrated)
-            } else {
-                Ok(SchemaOutcome::V1Degraded)
-            }
-        }
-        Some(other) => Err(ImeError::DictUnavailable {
-            path: path.to_path_buf(),
-            cause: DictError::FormatVersion {
-                found: u16::try_from(other).unwrap_or(u16::MAX),
-            },
-        }),
-    }
-}
-
-/// Opens every table a current store carries, creating the ones a fresh schema would
-/// have made.
-///
-/// A read transaction cannot create a table, so a store whose auxiliary table was never
-/// written would fail its first enumeration instead of answering an empty one; the
-/// creation belongs to the open path, as it did under schema 1.
-///
-/// # Errors
-/// Returns [`ImeError::DictUnavailable`] when a table cannot be created.
-fn ensure_tables(path: &Path, db: &Database) -> Result<(), ImeError> {
-    let txn = db
-        .begin_write()
-        .map_err(|error| store_error(path, &error))?;
-    txn.open_table(USER_WORDS_V2)
-        .map_err(|error| store_error(path, &error))?;
-    txn.open_table(USER_META)
-        .map_err(|error| store_error(path, &error))?;
-    txn.open_table(META_TICK)
-        .map_err(|error| store_error(path, &error))?;
-    txn.commit().map_err(|error| store_error(path, &error))?;
-    Ok(())
-}
-
-/// Migrates a schema-1 store to schema 2 in one write transaction.
-///
-/// Every v1 row enters v2 with `tick = 0` and `dee = commits`: the migration folds no
-/// history, because a v1 row has no tick trace to fold from. The clock itself starts at
-/// zero, so at the migration instant the rows are un-aged and the fold reads them exactly
-/// as v1 ranked them; the decay begins as the user's next commits advance the clock. The
-/// v1 table is dropped once its rows are copied -- the upgrade is one-way (`ASM-A-09`),
-/// and a crash rolls the whole transaction back, leaving the file a v1 store the next
-/// open migrates again.
-///
-/// # Errors
-/// Returns [`ImeError::DictUnavailable`] when the transaction or any table fails; the
-/// caller degrades to a read-only v1 store on any of them.
-fn migrate_v1(path: &Path, db: &Database) -> Result<(), ImeError> {
-    #[cfg(test)]
-    if take_injected_migration_failure() {
-        return Err(store_error(path, &"injected migration failure"));
-    }
-    let mut txn = db
-        .begin_write()
-        .map_err(|error| store_error(path, &error))?;
-    {
-        let v1 = txn
-            .open_table(USER_WORDS)
-            .map_err(|error| store_error(path, &error))?;
-        let mut v2 = txn
-            .open_table(USER_WORDS_V2)
-            .map_err(|error| store_error(path, &error))?;
-        for entry in v1.iter().map_err(|error| store_error(path, &error))? {
-            let (key, value) = entry.map_err(|error| store_error(path, &error))?;
-            let (commits, last_used) = value.value();
-            let dee = i64::from(commits) << 16;
-            v2.insert(key.value(), (commits, last_used, 0, dee_bits(dee)))
-                .map_err(|error| store_error(path, &error))?;
-        }
-        let mut tick = txn
-            .open_table(META_TICK)
-            .map_err(|error| store_error(path, &error))?;
-        tick.insert(TICK_KEY, 0)
-            .map_err(|error| store_error(path, &error))?;
-        let mut meta = txn
-            .open_table(META)
-            .map_err(|error| store_error(path, &error))?;
-        meta.insert(SCHEMA_KEY, SCHEMA_VERSION)
-            .map_err(|error| store_error(path, &error))?;
-    }
-    // The borrow of `v1` ends with the block above, so the drop here is allowed. Reopening
-    // a v1-shaped table afterwards would answer an empty one, which is why the drop and
-    // the version stamp share the transaction: either both land or neither does.
-    txn.delete_table(USER_WORDS)
-        .map_err(|error| store_error(path, &error))?;
-    txn.set_durability(Durability::Immediate);
-    txn.commit().map_err(|error| store_error(path, &error))?;
-    Ok(())
-}
-
-/// The decay accumulator's storage encoding: f32 bits. A storage encoding only -- the
-/// scoring arithmetic on the value is integer fixed point, so no float order can leak
-/// into a ranking.
-fn dee_bits(dee_q16: i64) -> u32 {
-    f32::to_bits(dee_q16 as f32 / 65_536.0)
-}
-
-/// The working form of a stored accumulator: Q16.16 fixed point.
-fn dee_q16(bits: u32) -> i64 {
-    let held = f32::from_bits(bits);
-    // The `as` cast saturates instead of overflowing, and a value past the integer
-    // domain was already unusable as a weight -- the saturation is the floor behaviour
-    // the decay expects, not a silent error.
-    (held * 65_536.0) as i64
-}
-
-/// Reads the global logical clock the file holds.
-///
-/// # Errors
-/// Returns [`ImeError::DictUnavailable`] when the read fails; the clock row is written
-/// with the tables, so a store that opens without one is a store this build did not
-/// prepare and cannot serve.
-fn read_tick(path: &Path, db: &Database) -> Result<u64, ImeError> {
-    let txn = db.begin_read().map_err(|error| store_error(path, &error))?;
-    let tick = txn
-        .open_table(META_TICK)
-        .map_err(|error| store_error(path, &error))?;
-    tick.get(TICK_KEY)
-        .map_err(|error| store_error(path, &error))?
-        .map(|guard| guard.value())
-        .ok_or_else(|| {
-            store_error(
-                path,
-                &"the logical clock row is missing from the tick table",
-            )
-        })
-}
-
-/// One hydrated record: what the store flushed, in the form the read paths consume.
-///
-/// `dee_q16` is the decay accumulator in Q16.16 and `tick` the record's own logical
-/// stamp; both are the inputs the decay fold consumes. Until that fold
-/// arrives the read paths answer `commits`, which is the v1 semantic the store keeps
-/// for an un-decayed record.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Stored {
-    /// Commits so far, saturating at `u32::MAX`.
-    pub(crate) commits: u32,
-    /// The decay accumulator in Q16.16.
-    pub(crate) dee_q16: i64,
-    /// The record's logical tick.
-    pub(crate) tick: u64,
-}
-
-impl Stored {
-    /// The record a fresh write of `commits` commits carries, with no decay applied.
-    pub(crate) fn identity(commits: u32) -> Self {
-        Self {
-            commits,
-            dee_q16: i64::from(commits) << 16,
-            tick: 0,
-        }
-    }
-
-    /// The stored encoding of this record's accumulator.
-    pub(crate) fn dee_bits(&self) -> u32 {
-        dee_bits(self.dee_q16)
-    }
-}
-
-/// One record as a file row holds it: a [`Stored`] plus the wall-clock column the
-/// management surface still speaks.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct StoredRow {
-    /// Commits so far.
-    pub(super) commits: u32,
-    /// Last use, in unix milliseconds.
-    pub(super) last_used_ms: u64,
-    /// The record's logical tick.
-    pub(super) tick: u64,
-    /// The decay accumulator in Q16.16.
-    pub(super) dee_q16: i64,
-}
-
-impl StoredRow {
-    /// The in-memory form the hot read paths hold.
-    pub(super) fn as_stored(&self) -> Stored {
-        Stored {
-            commits: self.commits,
-            dee_q16: self.dee_q16,
-            tick: self.tick,
-        }
-    }
-
-    /// The row a v1 file's record reads as: no tick, an un-decayed accumulator.
-    pub(super) fn from_v1(commits: u32, last_used_ms: u64) -> Self {
-        Self {
-            commits,
-            last_used_ms,
-            tick: 0,
-            dee_q16: i64::from(commits) << 16,
-        }
-    }
-}
-
-/// The words table the store actually carries, in the schema it was opened with.
-///
-/// A store whose migration failed serves its v1 table read-only, so every read of the
-/// words table goes through this view rather than naming a table. A v1 row reads as
-/// its v2 equivalent with no tick and an un-decayed accumulator -- which is exactly
-/// what it is.
-pub(super) enum WordsView {
-    /// The v1 table of a store whose migration failed.
-    V1(redb::ReadOnlyTable<&'static str, (u32, u64)>),
-    /// The table this build writes.
-    V2(redb::ReadOnlyTable<&'static str, (u32, u64, u64, u32)>),
-}
-
-impl WordsView {
-    /// The stored record `key` maps to, or `None` when the store does not hold it.
-    ///
-    /// # Errors
-    /// Returns the underlying `redb` failure; every caller renders it against the
-    /// store's own path.
-    pub(super) fn get(&self, key: &str) -> Result<Option<Stored>, redb::StorageError> {
-        match self {
-            Self::V1(table) => Ok(table
-                .get(key)?
-                .map(|guard| Stored::identity(guard.value().0))),
-            Self::V2(table) => Ok(table.get(key)?.map(|guard| {
-                let (commits, _, tick, dee) = guard.value();
-                Stored {
-                    commits,
-                    dee_q16: dee_q16(dee),
-                    tick,
-                }
-            })),
-        }
-    }
-
-    /// Feeds every record, in key order, to `visit`.
-    ///
-    /// # Errors
-    /// Returns [`ImeError::DictUnavailable`] for the iteration itself -- rendered against
-    /// `path`, the store the view was opened from -- and whatever `visit` reports for a
-    /// row.
-    pub(super) fn for_each<F>(&self, path: &Path, mut visit: F) -> Result<(), ImeError>
-    where
-        F: FnMut(&str, StoredRow) -> Result<(), ImeError>,
-    {
-        let failed = |error: redb::StorageError| store_error(path, &error);
-        match self {
-            Self::V1(table) => {
-                for entry in table.iter().map_err(failed)? {
-                    let (key, value) = entry.map_err(failed)?;
-                    let (commits, last_used_ms) = value.value();
-                    visit(key.value(), StoredRow::from_v1(commits, last_used_ms))?;
-                }
-            }
-            Self::V2(table) => {
-                for entry in table.iter().map_err(failed)? {
-                    let (key, value) = entry.map_err(failed)?;
-                    let (commits, last_used_ms, tick, dee) = value.value();
-                    visit(
-                        key.value(),
-                        StoredRow {
-                            commits,
-                            last_used_ms,
-                            tick,
-                            dee_q16: dee_q16(dee),
-                        },
-                    )?;
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -736,6 +343,15 @@ struct Inner {
     /// are loaded at open for the same reason the counts are: a keystroke that asks to
     /// forget a word may not open a read transaction to find out whether it is pinned.
     pinned: Mutex<HashSet<Box<str>>>,
+    /// The input key each pinned word is pinned under.
+    ///
+    /// The ranking reads [`Inner::pinned`] alone -- `freq` is asked about a word -- but
+    /// the pin's owner is the input key it was pressed on: pinning a second word under
+    /// the same key moves the pin rather than adding one (ADR-0013), and the move needs
+    /// to know which word to release. Loaded at open from `user_key_pins`; kept in step
+    /// with the set by [`UserDb::set_pinned`], which mutates both before queueing the
+    /// durable write, so a read never sees the set without the map.
+    key_pins: Mutex<HashMap<Box<str>, Box<str>>>,
     /// The fallback path's cache, present only for a store that was not loaded.
     ///
     /// A loaded store answers from [`Inner::committed`] and never consults a cache, so it is
@@ -928,7 +544,15 @@ impl UserDb {
         let v1_readonly = schema == SchemaOutcome::V1Degraded;
         let loaded = load_committed(&db, &path, hydrate_cap, v1_readonly);
         let is_hydrated = loaded.is_some();
-        let held = loaded.unwrap_or_default();
+        // The pins ride with the load when the store fits, and are read on their own when
+        // it does not: the pinned set is what both the ranking's cap and eviction's
+        // protection consult, and neither may go blind because the record count passed
+        // the ceiling -- a pin set is a handful of rows, never the reason a store is too
+        // large to load.
+        let (records, pins) = match loaded {
+            Some(loaded) => (loaded.records, (loaded.pinned, loaded.key_pins)),
+            None => (HashMap::new(), load_pins(&db, &path, v1_readonly)),
+        };
         // A v1 store served read-only carries no clock at all -- its migration, the
         // only thing that would have written one, failed. Zero is the clock a fresh
         // store starts with, and a read-only store never advances it.
@@ -941,8 +565,9 @@ impl UserDb {
             db,
             is_hydrated,
             decay,
-            committed: Mutex::new(held.records),
-            pinned: Mutex::new(held.pinned),
+            committed: Mutex::new(records),
+            pinned: Mutex::new(pins.0),
+            key_pins: Mutex::new(pins.1),
             tick: AtomicU64::new(tick),
             schema_migrated: matches!(schema, SchemaOutcome::Migrated | SchemaOutcome::V1Degraded),
             v1_readonly,
@@ -1052,6 +677,18 @@ impl UserDb {
         self.inner.evict_oldest(percent)
     }
 
+    /// Folds every committed record forward to the current logical clock.
+    ///
+    /// The idle sweep calls this automatically; the public form exists for a maintainer
+    /// tool that wants the same bounded write path before reading or benchmarking a
+    /// store.
+    ///
+    /// # Errors
+    /// Returns [`ImeError::DictUnavailable`] when a fold transaction fails.
+    pub fn fold_forward(&self) -> Result<u64, ImeError> {
+        self.inner.fold_forward()
+    }
+
     /// Flushes the pending records with `durability`.
     ///
     /// The store's flush thread is held aside for the length of the call, so what this
@@ -1119,143 +756,6 @@ impl UserDb {
     #[cfg(test)]
     fn has_miss_cache(&self) -> bool {
         self.inner.cache.is_some()
-    }
-}
-
-impl Drop for UserDb {
-    /// Gives the flush thread a moment to step out of the file.
-    ///
-    /// The thread holds the store only for the length of one flush, but that is long enough
-    /// to keep the `redb` file lock standing after the last clone has dropped -- which is
-    /// what an immediate reopen (the recovery pass, a test) would otherwise meet. The wait
-    /// is bounded by [`FLUSH_SETTLE_TIMEOUT_MS`], the same bound an explicit flush waits
-    /// with; past it the flush is still running, and the lock lifts when it ends rather than
-    /// when this drop does.
-    fn drop(&mut self) {
-        // Best effort by design, and the guard is what keeps it so: only the last clone
-        // settles, because only it can be the one whose release ends the store. A clone
-        // that appears while this one drops keeps the store -- and its thread -- alive and
-        // owns the next settle itself.
-        if Arc::strong_count(&self.inner) != 1 {
-            return;
-        }
-        if let Some(writer) = self.inner.writer.get().and_then(|set| set.as_ref()) {
-            writer.settle(Duration::from_millis(FLUSH_SETTLE_TIMEOUT_MS));
-        }
-    }
-}
-
-impl UserFreqSource for UserDb {
-    fn freq(&self, key: &str) -> u32 {
-        // Both halves of the answer are in memory, so a decode never opens a read
-        // transaction: the frozen `UserFreqSource` contract requires this call not to block
-        // and not to take a lock a writer can hold, and a read transaction does both. The
-        // two locks are taken in the order the module fixes, `committed` before `pending`,
-        // and both are released before the call returns.
-        if self.inner.is_hydrated {
-            let now = self.inner.tick.load(Ordering::Relaxed);
-            let mut committed = lock(&self.inner.committed);
-            // The delta is read under its own lock while `committed` is still held, in the
-            // order the module fixes: `committed` first, then `pending`, never the reverse.
-            let (forgotten, pending) = {
-                let pending = lock(&self.inner.pending);
-                (
-                    pending.removed.contains(key),
-                    pending.entries.get(key).copied(),
-                )
-            };
-            let answer = committed.get_mut(key).map_or_else(
-                || {
-                    pending.map_or(0, |delta| {
-                        self.inner
-                            .decay
-                            .fold(i64::from(delta.count) << 16, delta.tick, now)
-                    })
-                },
-                |record| match pending {
-                    Some(delta) => {
-                        let anchor = record.tick.max(delta.tick);
-                        let aged = self.inner.decay.fold(record.dee_q16, record.tick, anchor);
-                        let entered = aged.saturating_add(i64::from(delta.count) << 16);
-                        self.inner.decay.fold(entered, anchor, now)
-                    }
-                    None => {
-                        record.dee_q16 = self.inner.decay.fold(record.dee_q16, record.tick, now);
-                        record.tick = record.tick.max(now);
-                        record.dee_q16
-                    }
-                },
-            );
-            let commits = committed.get(key).map_or(0, |record| record.commits);
-            let commits = pending.map_or(commits, |delta| commits.saturating_add(delta.count));
-            // A tombstone outranks the count the file still holds: the user asked for the
-            // word to go, and the flush that makes the file agree has not run yet.
-            return if forgotten {
-                0
-            } else {
-                self.inner.decay.effective_freq(commits, answer)
-            };
-        }
-        // The store was too large to load, so the answer has to come from the file. The
-        // fallback is bounded by the ceiling rather than by the word count: `on_demand`
-        // opens one transaction per distinct word per session.
-        self.inner.on_demand(key)
-    }
-
-    /// Records one commit of `key`, without blocking and without allocating when the key is
-    /// already pending.
-    ///
-    /// The wall clock is not read, the cache is not touched, and the write transaction is not
-    /// performed here: the delta map's own entry point owns the batching policy, and the flush
-    /// thread owns the disk. What is left on this path is one monotonic reading, one lock of
-    /// the delta map, one hash lookup, and -- only for a key the map has not seen -- one
-    /// allocation.
-    fn record(&self, key: &str, _weight_hint: u16) {
-        if self.is_readonly() {
-            return;
-        }
-        if self.inner.record_delta(key) {
-            self.inner.request_flush();
-        }
-    }
-
-    fn is_user_word(&self, _key: &str) -> bool {
-        // Version 1 stores frequencies only: a key is a word the user typed, not a word
-        // the user coined. The table that marks a coined word, and the write path that
-        // fills it, arrive with the Phase 2 user-word support.
-        false
-    }
-
-    fn forget(&self, key: &str) -> bool {
-        // The frozen method answers whether a record went away; `forget_with_outcome` is
-        // the same call with the reason kept, which is what the host reports a diagnostic
-        // from. A pinned record and a read-only store both answer `false`, because neither
-        // removed anything -- and the caller that needs to tell them apart asks for the
-        // outcome instead.
-        self.forget_with_outcome(key) == ForgetOutcome::Removed
-    }
-
-    fn list(&self, offset: u64, limit: u16) -> Result<Vec<WordRef<'_>>, ImeError> {
-        // The store cannot serve this method, and the reason is a property of the signature
-        // rather than a gap in the implementation. `WordRef<'a>`'s text borrows for as long
-        // as `&self`, and the store's word set changes under it: a borrow can be taken out
-        // of a mutex guard only for as long as the guard lives, and the store's keys live
-        // behind one -- `committed` for a loaded store, the cache for a fallback one --
-        // because `record` and `forget` take `&self` and must be able to write. There is no
-        // safe way to publish them for `'self`, and the two ways to fake it are both
-        // forbidden here: leaking the keys grows the resident set with the user's
-        // vocabulary, and reaching past the guard needs `unsafe`, which this crate confines
-        // to `mmap.rs`.
-        //
-        // `dict/unsupported` is the contract's code for a capability the build does not
-        // provide, and it is what a caller falls back from: `UserDb::list_words` answers the
-        // same page as owned rows, and `UserFreqSource::export_tsv` answers the whole store.
-        let _ = (offset, limit);
-        Err(ImeError::Unsupported)
-    }
-
-    fn export_tsv(&self, writer: &mut dyn std::io::Write) -> Result<u64, ImeError> {
-        self.inner.write_export(writer)
     }
 }
 

@@ -285,19 +285,9 @@ fn bindable_counts() -> (usize, usize) {
 /// * [`KeyAction::ToggleLang`] -- the language switch is the host's own hotkey
 ///   (`ASM-02`): Fcitx5's headers expose no per-context input-method state an engine
 ///   could read or write, so a chord here could only swallow the key.
-/// * [`KeyAction::ToggleScript`] -- v1 does not enable the simplified/traditional
-///   conversion, so binding a key that flips a display nothing changes would be the
-///   "claimed a key with no effect" defect; the chord returns when the conversion ships.
-/// * [`KeyAction::PinHighlighted`] -- the pin set does not exist yet: the step reports
-///   `dict/unsupported` and changes nothing, so no key may be taken for it.
 /// * [`KeyAction::AddPhrase`] -- waiting on the phrase-editor delivery, which binds it
 ///   when the workflow it belongs to exists.
-const UNBOUND_WHITELIST: [KeyAction; 4] = [
-    KeyAction::ToggleLang,
-    KeyAction::ToggleScript,
-    KeyAction::PinHighlighted,
-    KeyAction::AddPhrase,
-];
+const UNBOUND_WHITELIST: [KeyAction; 2] = [KeyAction::ToggleLang, KeyAction::AddPhrase];
 
 /// Every variant of the frozen action enum, with a representative payload for the ones
 /// that carry one.

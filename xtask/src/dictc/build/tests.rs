@@ -446,3 +446,152 @@ fn test_band_threshold_reads_the_frequency_ranking() {
 
     fs::remove_dir_all(&dir).expect("cleaning up");
 }
+
+#[test]
+fn test_merge_two_char_layer_overrides_fills_and_skips_other_lengths() {
+    let l1 = test_l1();
+    let mut jieba = vec![
+        word("中国", "zhong'guo", 5_000, &l1),
+        word("银行", "yin'hang", 4_000, &l1),
+        word("好心", "hao'xin", 200, &l1),
+    ];
+    let huayu = vec![
+        // Both sources hold it: the huayu weight and reading win.
+        word("银行", "yin'xing", 9_000, &l1),
+        word("中国", "zhong'guo", 8_000, &l1),
+        // Only huayu holds it: the gap is filled.
+        word("大国", "da'guo", 700, &l1),
+        // Other lengths pass through untouched.
+        word("好", "hao", 50, &l1),
+        word("阿尔巴", "a'er'ba", 900, &l1),
+    ];
+    let stats = merge_two_char_layer(&mut jieba, huayu, 0);
+    assert_eq!(stats.overridden, 2);
+    assert_eq!(stats.added, 1);
+    assert_eq!(jieba.len(), 4, "three originals plus one added word");
+    // Shared words keep the jieba weight -- the corpus ranking is the backbone
+    // -- and take the huayu reading, which the automatic polyphone check then
+    // judges.
+    let bank = jieba.iter().find(|w| w.text == "银行").expect("银行");
+    assert_eq!(bank.weight, 4_000, "the jieba weight is the backbone");
+    assert_eq!(bank.key, "yin'xing", "the huayu reading travels with the word");
+    let china = jieba.iter().find(|w| w.text == "中国").expect("中国");
+    assert_eq!(china.weight, 5_000);
+    // A word only huayu holds joins at the jieba weight of its rank in the
+    // admitted layer (rank 2 of three): jieba's own third weight.
+    let added = jieba.iter().find(|w| w.text == "大国").expect("大国");
+    assert_eq!(added.weight, 200);
+    let heart = jieba.iter().find(|w| w.text == "好心").expect("好心");
+    assert_eq!(heart.weight, 200, "a word only jieba holds is untouched");
+}
+
+#[test]
+fn test_merge_two_char_layer_floor_and_order_free() {
+    let l1 = test_l1();
+    let make_huayu = || -> Vec<Vec<Word>> {
+        // The same entries in two different orders: the merge must not tell
+        // them apart.
+        vec![
+            vec![
+                word("银行", "yin'xing", 9_000, &l1),
+                word("小国", "xiao'guo", 50, &l1),
+                word("大国", "da'guo", 700, &l1),
+            ],
+            vec![
+                word("大国", "da'guo", 700, &l1),
+                word("小国", "xiao'guo", 50, &l1),
+                word("银行", "yin'xing", 9_000, &l1),
+            ],
+        ]
+    };
+    let mut first = vec![word("银行", "yin'hang", 4_000, &l1)];
+    let mut second = vec![word("银行", "yin'hang", 4_000, &l1)];
+    let mut orders = make_huayu();
+    let second_order = orders.pop().expect("the second row order");
+    let first_order = orders.pop().expect("the first row order");
+    let a = merge_two_char_layer(&mut first, first_order, 100);
+    let b = merge_two_char_layer(&mut second, second_order, 100);
+    assert_eq!(a, b, "the stats do not depend on the huayu row order");
+    let key = |words: &[Word]| -> Vec<(String, u32, String)> {
+        let mut rows: Vec<_> = words
+            .iter()
+            .map(|w| (w.text.clone(), w.weight, w.key.clone()))
+            .collect();
+        rows.sort();
+        rows
+    };
+    assert_eq!(key(&first), key(&second), "the merged lists agree");
+    // The floor keeps the 50-weight entry out entirely.
+    assert!(first.iter().all(|w| w.text != "小国"));
+    assert_eq!(first.len(), 2, "jieba's 银行 slot plus the added 大国");
+}
+
+#[test]
+fn test_polyphone_rule_keeps_the_readings_usage_supports() {
+    let l1 = test_l1();
+    // 行 reads xing 1000 weighted and hang 300 weighted; 长 reads chang 1000
+    // and zhang 300. Both divergent readings clear a 5% floor.
+    let mut words = vec![
+        word("行人", "xing'ren", 1_000, &l1),
+        word("行长", "hang'zhang", 300, &l1),
+        // Divergent on both characters, each above the floor.
+        word("银行", "yin'hang", 300, &l1),
+    ];
+    let counts = apply_polyphone_rule(
+        &mut words,
+        &l1,
+        &std::collections::BTreeSet::new(),
+        PolyphoneRule { freq_ratio_pct: 5 },
+    );
+    assert_eq!(counts, PolyphoneAutoCounts { assigned: 2, flattened: 0, manual: 0, total: 2 });
+    let bank = words.iter().find(|w| w.text == "银行").expect("银行");
+    assert_eq!(bank.key, "yin'hang", "a supported reading is kept");
+}
+
+#[test]
+fn test_polyphone_rule_flattens_below_the_floor_and_exempts_manual() {
+    let l1 = test_l1();
+    // The corpus votes: 行 reads xing 1000 weighted and hang 801; 长 reads
+    // chang 1000 and zhang once. 银行's hang clears the 5% line, 好长's zhang
+    // does not, and 心行 states the same kind of divergence but the L3c table
+    // owns it.
+    let mut words = vec![
+        word("行", "xing", 1_000, &l1),
+        word("长", "chang", 1_000, &l1),
+        word("银行", "yin'hang", 300, &l1),
+        word("心行", "xin'hang", 500, &l1),
+        word("好长", "hao'zhang", 1, &l1),
+    ];
+    let manual = std::collections::BTreeSet::from([String::from("心行")]);
+    let counts = apply_polyphone_rule(
+        &mut words,
+        &l1,
+        &manual,
+        PolyphoneRule { freq_ratio_pct: 5 },
+    );
+    assert_eq!(counts.total, 3, "every divergent word is examined");
+    assert_eq!(counts.assigned, 1, "hang carries 300 of xing's 1000");
+    assert_eq!(counts.flattened, 1, "zhang carries 1 of chang's 1000");
+    assert_eq!(counts.manual, 1);
+    let pair = words.iter().find(|w| w.text == "好长").expect("好长");
+    assert_eq!(pair.key, "hao'chang", "flattened onto the top reading");
+    let owned = words.iter().find(|w| w.text == "心行").expect("心行");
+    assert_eq!(owned.key, "xin'hang", "a manual row is left to the table");
+}
+
+#[test]
+fn test_polyphone_rule_zero_top_votes_leaves_the_reading_standing() {
+    let l1 = test_l1();
+    // Every word of the list states hang for 行: the top reading's vote count is
+    // zero, so there is no majority to lose to and the reading stands.
+    let mut words = vec![word("银行", "yin'hang", 4_000, &l1)];
+    let counts = apply_polyphone_rule(
+        &mut words,
+        &l1,
+        &std::collections::BTreeSet::new(),
+        PolyphoneRule { freq_ratio_pct: 5 },
+    );
+    assert_eq!(counts.total, 1);
+    assert_eq!(counts.assigned, 1);
+    assert_eq!(words[0].key, "yin'hang");
+}

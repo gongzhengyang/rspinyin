@@ -202,6 +202,17 @@ fn userdb_bench(c: &mut Criterion) {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // One idle-sweep pass over a full working-set batch. The first iteration performs the
+    // writes; the remaining iterations measure the scan of a store already at its logical
+    // clock, which is the steady-state cost the sweep adds while idle.
+    if let Some((db, dir)) = loaded(fixture("sweep", &keys("seen", 4_096), HYDRATE_CAP)) {
+        group.bench_function("sweep", |bencher| {
+            bencher.iter(|| black_box(db.fold_forward().ok()));
+        });
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // The key path the 0.05ms budget is stated for. The key set is small and rotates: a key
     // is forgotten once and then only re-marked, so the tombstone set stops growing and no
     // flush is charged to the case. What is measured is the check and the insert, which is

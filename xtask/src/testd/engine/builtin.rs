@@ -50,6 +50,8 @@ pub fn scenarios() -> Vec<Scenario> {
         ranking_follows_the_unigram(),
         ranking_follows_the_user_frequency(),
         ranking_follows_the_language_model(),
+        fuzzy_widens_to_the_canonical_family(),
+        abbrev_reaches_the_full_spelling(),
         falls_back_to_single_characters(),
         fills_a_page_and_the_next(),
     ];
@@ -279,6 +281,54 @@ fn ranking_follows_the_language_model() -> Scenario {
             key('n', candidates("西安", 3, &["先", "西"])),
         ],
     )
+}
+
+/// One variant input that a fuzzy class widens to the family it belongs to.
+///
+/// `zong` is spelled exactly and reaches `宗`; the `zh_z` class widens its one
+/// syllable to `zhong`, so `总` -- stored only under the canonical spelling --
+/// joins the list beside it. The exact reading stays first: the widening rides a
+/// penalty, which is what keeps a class from reordering a list the dictionary
+/// already ranked. The intermediate keystrokes have no word of either family, so
+/// each answers the pass-through candidate alone, which is what makes the widened
+/// step the only place the class could have had an effect.
+fn fuzzy_widens_to_the_canonical_family() -> Scenario {
+    let spec = dictionary(&[("zong", &["宗"][..]), ("zhong", &["总"][..])]);
+    Scenario::new(
+        "engine-fuzzy-zh-z-reaches-the-canonical-family",
+        spec,
+        vec![
+            key('z', candidates("z", 1, &[])),
+            key('o', candidates("zo", 1, &[])),
+            key('n', candidates("zon", 1, &[])),
+            key('g', candidates("宗", 2, &["总"])),
+        ],
+    )
+    .fuzzy(&["zh_z"])
+}
+
+/// One initial-letter input that the abbreviation switch expands to a full word.
+///
+/// `nh` spells no syllable, so without the switch the input is echoed back as the
+/// pass-through candidate; with it, the walk reads the input as initials, asks for the
+/// `n'h` range the full spelling is a member of, and offers `你好`. The first
+/// keystroke alone is one initial with nothing to pair with -- the walk's own
+/// length filter drops a two-syllable word from a one-syllable reading -- so the
+/// expansion is visible exactly where it should be, on the second letter.
+fn abbrev_reaches_the_full_spelling() -> Scenario {
+    // The `n'h` key is the abbreviation entry a compiled dictionary carries beside the
+    // full spelling: the walk asks for the initials themselves, and the full spelling's
+    // own key answers the longer reading (`nih` -> `ni'h`), not this one.
+    let spec = dictionary(&[("ni'hao", &["你好"][..]), ("n'h", &["你好"][..])]);
+    Scenario::new(
+        "engine-abbrev-reaches-the-full-spelling",
+        spec,
+        vec![
+            key('n', candidates("n", 1, &[])),
+            key('h', candidates("你好", 1, &[])),
+        ],
+    )
+    .abbrev()
 }
 
 /// One input whose readings fill more than one page of the window.

@@ -40,7 +40,10 @@ use sha2::{Digest, Sha256};
 use super::budget::{Ledger, SectionUsage};
 
 /// Schema version of the manifest document.
-pub const MANIFEST_SCHEMA: u32 = 1;
+///
+/// 2 added `polyphone_auto`; a reader that sees the field absent knows it is
+/// reading a schema-1 document and skips the checks the record feeds.
+pub const MANIFEST_SCHEMA: u32 = 2;
 
 /// Entry count below which the compiled dictionary is a development word list.
 ///
@@ -151,6 +154,23 @@ pub struct ExpansionRecord {
     pub added_keys: u64,
 }
 
+/// What the automatic polyphone check decided.
+///
+/// The three buckets partition the words the check examined, so their sum is the
+/// recorded total; the quality closure reads the record back and asserts the sum,
+/// which is what turns "no reading disappeared silently" from a hope into a gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct PolyphoneAutoRecord {
+    /// Divergent words whose readings cleared the frequency floor.
+    pub assigned: u64,
+    /// Divergent words flattened onto their characters' top readings.
+    pub flattened: u64,
+    /// Divergent words the L3c table states a reading for.
+    pub manual: u64,
+    /// Every word the check examined; the buckets' sum.
+    pub total: u64,
+}
+
 /// The container the build wrote.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DictionaryRecord {
@@ -191,6 +211,8 @@ pub struct BuildFacts {
     pub sources: Vec<SourceIdentity>,
     /// The L3b expansion band and its outcome.
     pub expansion: ExpansionRecord,
+    /// What the automatic polyphone check decided.
+    pub polyphone_auto: PolyphoneAutoRecord,
     /// Distinct FST keys in the container.
     pub keys: u64,
 }
@@ -209,6 +231,8 @@ pub struct Manifest {
     pub sources: Vec<SourceRecord>,
     /// The L3b expansion band and its outcome.
     pub expansion: ExpansionRecord,
+    /// What the automatic polyphone check decided.
+    pub polyphone_auto: PolyphoneAutoRecord,
     /// Per-section sizes, ordered as the container lays them out.
     pub sections: Vec<SectionUsage>,
     /// The container the build wrote.
@@ -307,6 +331,7 @@ pub fn record_build(
         format_version: FORMAT_VERSION,
         sources,
         expansion: facts.expansion,
+        polyphone_auto: facts.polyphone_auto,
         sections: ordered_sections(ledger),
         dictionary: describe_container(root, container, entries, facts.keys)?,
     };

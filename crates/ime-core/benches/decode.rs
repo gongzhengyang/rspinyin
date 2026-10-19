@@ -128,6 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     bench_decode(&mut criterion, &dictionary, &model);
     bench_decode_reuse(&mut criterion, &dictionary, &model);
+    bench_fuzzy(&mut criterion, &dictionary, &model);
     bench_allocations(&mut criterion, &dictionary, &model);
     bench_session(&mut criterion, &dictionary, &model);
     bench_holdout(&mut criterion, &dictionary, &model);
@@ -204,6 +205,64 @@ fn bench_decode(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &I
             );
         });
     }
+    group.finish();
+}
+
+/// Times the fuzzy classes' two modes against the same input.
+///
+/// The widening's cost is conditional by design: a section with no class selected
+/// adds nothing to the decode path, and the whole cost lands on the enabled mode.
+/// Both modes are measured on the same case, so the pair reads as one claim -- the
+/// gap between the two is what the classes cost, and the closed group is the proof
+/// that the closed path paid nothing.
+fn bench_fuzzy(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &InMemoryLm) {
+    let Some(case) = CASES.iter().find(|case| case.name == REUSE_CASE) else {
+        return;
+    };
+    let decoder = Decoder::default();
+    let user = NoUser;
+    let off = DecodeRequest::new(case.raw);
+    let mut on = DecodeRequest::new(case.raw);
+    // Every class at once, which is the widest the section can project: the master
+    // switch plus the eight class bits, the mask the projection computes for
+    // `[fuzzy] enabled = true`.
+    on.flags.insert(ime_core::fuzzy::projection(true, DecodeFlags::empty()));
+    let mut abbrev = DecodeRequest::new(case.raw);
+    abbrev.flags.insert(DecodeFlags::ABBREV);
+    let mut group = criterion.benchmark_group("decode");
+    group.bench_function("fuzzy-off", |bencher| {
+        bencher.iter_batched(
+            || off.clone(),
+            |request| {
+                let result = decoder.decode(black_box(&request), dictionary, &user, model);
+                black_box(result.candidates.len())
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.bench_function("fuzzy-on", |bencher| {
+        bencher.iter_batched(
+            || on.clone(),
+            |request| {
+                let result = decoder.decode(black_box(&request), dictionary, &user, model);
+                black_box(result.candidates.len())
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    // The abbreviation switch shares the budget the two fuzzy modes bound: its walk
+    // runs beside the fuzzy one and under the same edge ceiling, and the enabled mode
+    // is what the budget is stated against.
+    group.bench_function("abbrev-on", |bencher| {
+        bencher.iter_batched(
+            || abbrev.clone(),
+            |request| {
+                let result = decoder.decode(black_box(&request), dictionary, &user, model);
+                black_box(result.candidates.len())
+            },
+            BatchSize::SmallInput,
+        );
+    });
     group.finish();
 }
 

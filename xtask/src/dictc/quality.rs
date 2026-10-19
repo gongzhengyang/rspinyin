@@ -58,6 +58,7 @@ mod tables;
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
@@ -65,7 +66,7 @@ use clap::Args;
 use ime_core::segment::{HINT_INLINE_BOUNDARIES, SyllableDag};
 use ime_dict::fst_index::FstLexicon;
 use ime_types::Lexicon;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::tune::{DEFAULT_HOLDOUT, REPORT_CANDIDATES};
@@ -472,6 +473,8 @@ pub enum Origin {
     Manual,
     /// Counted from the project's own word list.
     Corpus,
+    /// Carried over from the huayu word list's own readings.
+    Huayu,
 }
 
 impl Origin {
@@ -481,6 +484,7 @@ impl Origin {
             "unihan" => Some(Self::Unihan),
             "manual" => Some(Self::Manual),
             "corpus" => Some(Self::Corpus),
+            "huayu" => Some(Self::Huayu),
             _ => None,
         }
     }
@@ -514,6 +518,8 @@ pub struct OriginMix {
     pub manual: u32,
     /// Rows marked `corpus`.
     pub corpus: u32,
+    /// Rows marked `huayu`.
+    pub huayu: u32,
 }
 
 impl OriginMix {
@@ -533,6 +539,7 @@ impl OriginMix {
             Some(Origin::Unihan) => &mut self.unihan,
             Some(Origin::Manual) => &mut self.manual,
             Some(Origin::Corpus) => &mut self.corpus,
+            Some(Origin::Huayu) => &mut self.huayu,
         };
         *slot = slot.saturating_add(1);
     }
@@ -543,6 +550,7 @@ impl OriginMix {
             .saturating_add(self.unihan)
             .saturating_add(self.manual)
             .saturating_add(self.corpus)
+            .saturating_add(self.huayu)
     }
 
     /// Rows of one origin.
@@ -551,6 +559,7 @@ impl OriginMix {
             Origin::Unihan => self.unihan,
             Origin::Manual => self.manual,
             Origin::Corpus => self.corpus,
+            Origin::Huayu => self.huayu,
         }
     }
 }
@@ -658,6 +667,66 @@ struct Bounds {
     ceiling: usize,
 }
 
+/// The manifest fields the polyphone-auto gate reads.
+#[derive(Debug, Deserialize)]
+struct ManifestGate {
+    /// What the build's automatic polyphone check decided; absent in a
+    /// schema-1 manifest, which predates the check.
+    #[serde(default)]
+    polyphone_auto: Option<PolyphoneAutoView>,
+}
+
+/// One polyphone-auto record as it travels in a manifest and in the report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolyphoneAutoView {
+    /// Divergent words whose readings cleared the frequency floor.
+    pub assigned: u64,
+    /// Divergent words flattened onto their characters' top readings.
+    pub flattened: u64,
+    /// Divergent words the L3c table states a reading for.
+    pub manual: u64,
+    /// Every word the check examined; the buckets' sum.
+    pub total: u64,
+}
+
+/// Verifies the automatic polyphone check accounted for every word it examined.
+///
+/// The buckets are recorded in the manifest the build wrote beside the container;
+/// a missing manifest, or a schema-1 manifest from before the check existed, has
+/// nothing to gate and passes. A record whose buckets do not sum to its total
+/// means a word was examined and then dropped from every count -- exactly the
+/// silent loss the check exists to prevent -- and fails the closure.
+///
+/// # Errors
+///
+/// Returns an error when the manifest cannot be read or parsed, or when the
+/// recorded buckets do not sum to the recorded total.
+fn gate_polyphone_auto(manifest: &Path) -> Result<Option<PolyphoneAutoView>> {
+    let Ok(text) = fs::read_to_string(manifest) else {
+        return Ok(None);
+    };
+    let parsed: ManifestGate = serde_json::from_str(&text)
+        .with_context(|| format!("{}: unreadable manifest", manifest.display()))?;
+    let Some(record) = parsed.polyphone_auto else {
+        return Ok(None);
+    };
+    let summed = record
+        .assigned
+        .saturating_add(record.flattened)
+        .saturating_add(record.manual);
+    ensure!(
+        summed == record.total,
+        "quality: the automatic polyphone check accounted for {summed} of {} examined \
+         words (assigned {}, flattened {}, manual {}); a word dropped from every \
+         bucket is the silent loss the check exists to prevent",
+        record.total,
+        record.assigned,
+        record.flattened,
+        record.manual
+    );
+    Ok(Some(record))
+}
+
 /// Entry point for the quality closure.
 ///
 /// Prints the two rates over the whole held-out set, the same rates per reading layer, and
@@ -702,10 +771,21 @@ pub fn run(args: QualityArgs) -> Result<()> {
             layers.insert(source.as_str(), source_rates);
         }
     }
+    let polyphone = root.join(&args.polyphone);
+    let rows = load_corrections(&polyphone)?;
+    report_coverage(&rows, &lexicon)?;
+    let auto = gate_polyphone_auto(&super::manifest::manifest_path(&dict))?;
+    if let Some(record) = auto {
+        println!(
+            "quality: polyphone auto-check: {} readings kept, {} words flattened, {} manual, {} examined",
+            record.assigned, record.flattened, record.manual, record.total
+        );
+    }
     if args.json {
         let snapshot = QualitySnapshot {
             total: rates,
             layers,
+            polyphone_auto: auto,
         };
         println!(
             "{}",
@@ -727,9 +807,6 @@ pub fn run(args: QualityArgs) -> Result<()> {
             );
         }
     }
-    let polyphone = root.join(&args.polyphone);
-    let rows = load_corrections(&polyphone)?;
-    report_coverage(&rows, &lexicon)?;
     audit(
         &polyphone,
         &OriginMix::of(&rows),
@@ -816,6 +893,10 @@ struct QualitySnapshot {
     total: QualityReport,
     /// Rates by reading source; a source absent from the hold-out set is omitted.
     layers: BTreeMap<&'static str, QualityReport>,
+    /// What the build's automatic polyphone check decided, when the manifest
+    /// beside the container carries the record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    polyphone_auto: Option<PolyphoneAutoView>,
 }
 
 /// Refuses a held-out set too small for a rate over it to resolve anything.

@@ -51,7 +51,7 @@ use ime_types::{OverlayEntry, OverlayFrame, OverlayKind, OverlaySection, UiComma
 
 use crate::engine::host::Host;
 use crate::engine::{
-    CHORDS, CTRL, DigitZero, Dispatcher, HoldOutcome, KEY_E, KEY_PERIOD, KEY_SPACE, Overlay,
+    CHORDS, CTRL, DigitZero, Dispatcher, HoldOutcome, KEY_E, KEY_PERIOD, KEY_SPACE, KEY_T, Overlay,
     RoutingConfig, SHIFT,
 };
 use crate::ffi::emit_diagnostic;
@@ -355,6 +355,11 @@ fn mode_section() -> OverlaySection {
 }
 
 /// The 编辑 group: the composing keymap's own rows, which no configuration unbinds.
+///
+/// The pin chord is here because it acts on the composition the same way the rows
+/// above it do and answers to no configuration either -- it is the routing table's
+/// fixed management chord, and the label says what the second press does, because a
+/// toggle the user cannot see undoing itself is a pin that looks broken.
 fn edit_section() -> OverlaySection {
     OverlaySection {
         title: String::from("编辑"),
@@ -374,6 +379,10 @@ fn edit_section() -> OverlaySection {
             OverlayEntry {
                 keys: String::from("Space"),
                 label: String::from("上屏"),
+            },
+            OverlayEntry {
+                keys: String::from("Ctrl+P"),
+                label: String::from("置顶候选（再按取消）"),
             },
         ],
     }
@@ -442,6 +451,7 @@ fn chord_name(sym: u32, mask: u32) -> Option<String> {
         KEY_SPACE => "Space",
         KEY_PERIOD => ".",
         KEY_E => "E",
+        KEY_T => "T",
         _ => return None,
     };
     let mut name = String::new();
@@ -465,6 +475,7 @@ fn chord_label(action: KeyAction) -> Option<&'static str> {
         KeyAction::ToggleLang => Some("切换中英"),
         KeyAction::ToggleFullWidth => Some("全角 / 半角"),
         KeyAction::TogglePunct => Some("中英标点"),
+        KeyAction::ToggleScript => Some("简 ↔ 繁"),
         KeyAction::EnterTempEnglish => Some("临时英文"),
         KeyAction::InputChar(_)
         | KeyAction::Backspace
@@ -479,7 +490,6 @@ fn chord_label(action: KeyAction) -> Option<&'static str> {
         | KeyAction::MoveCaret(_)
         | KeyAction::Escape
         | KeyAction::Ignore
-        | KeyAction::ToggleScript
         | KeyAction::ForgetHighlighted
         | KeyAction::PinHighlighted
         | KeyAction::AddPhrase => None,

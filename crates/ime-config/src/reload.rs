@@ -103,12 +103,11 @@ schema_version = 2
 
 [engine]
 # "chinese" replaces ASCII punctuation with its Chinese mark; "english" leaves it to
-# the application. Not wired yet: the punctuation switch is runtime state, and this
-# build starts it at the shipped value without reading the document.
+# the application. Takes effect on reload: new contexts start where the document says,
+# and the chords keep flipping both switches at runtime.
 punct_mode = "chinese"
-# Widen the committed text of ASCII characters. Not wired yet: the full-width switch
-# is runtime state, and this build starts it at the shipped value without reading the
-# document.
+# Widen the committed text of ASCII characters. Takes effect on reload: new contexts
+# start where the document says, and the chord keeps flipping the switch at runtime.
 full_width = false
 # Commit a leading uppercase letter instead of decoding it, so typing English needs no
 # mode switch. Takes effect on reload.
@@ -122,9 +121,19 @@ max_raw_len = 64
 # "full" verifies the whole dictionary when it is loaded, "header" only its header.
 # Read once, when the dictionary is mapped. Takes effect at the next fcitx5 restart.
 verify_dict_on_load = "full"
-# Expand initial-letter abbreviations, so that `nh` reaches `你好`. Off by default: an
-# abbreviation is ambiguous by nature. Not wired yet.
+# Expand initial-letter abbreviations, so that `nh` reaches `ni'hao`. Off by default:
+# an abbreviation is ambiguous by nature, and the abbreviation candidate rides a
+# penalty so it never outranks the full spelling at equal dictionary weight. Takes
+# effect on reload: the switch latches with the scheme, so a change answers the next
+# composition and never re-reads one in progress.
 abbrev = false
+# "context" keeps one session per input context; "program" shares one session across
+# every input context of the same application, so the Chinese/English mode and the
+# other mode bits survive a window switch inside one application. Applications are
+# told apart by a hash of their identifier, never by a name. Takes effect on reload:
+# the sessions already alive finish under the policy they started with, and the next
+# activation pools under the new one.
+share_state = "context"
 
 [ui]
 # Show the composing text in the application's preedit area instead of the window.
@@ -182,6 +191,23 @@ show_hint = true
 # Still read a full-pinyin syllable typed while a double-pinyin layout is active.
 # Takes effect on reload.
 keep_full_pinyin = true
+
+[fuzzy]
+# Each key selects one fuzzy-equivalence class the decoder widens with: `zh_z` makes
+# `zh` and `z` read as each other, `n_l` makes `n` and `l` do the same, and so on for
+# every pair the class table defines. `enabled = true` selects every class at once;
+# an individual `true` selects its class even with the master switch off. Takes
+# effect on reload: the classes latch with the scheme, so a change answers the next
+# composition and never re-reads one in progress.
+enabled = false
+zh_z = false
+ch_c = false
+sh_s = false
+n_l = false
+f_h = false
+an_ang = false
+en_eng = false
+in_ing = false
 
 [phrases]
 # Let the phrase table take part in a decode. With it off the dictionary answers alone.
@@ -244,9 +270,24 @@ struct PartialConfig {
     theme: Option<PartialTheme>,
     keys: Option<PartialKeys>,
     scheme: Option<PartialScheme>,
+    fuzzy: Option<PartialFuzzy>,
     data: Option<PartialData>,
     diagnostics: Option<PartialDiagnostics>,
     phrases: Option<PartialPhrases>,
+}
+
+/// The `[fuzzy]` table of a document.
+#[derive(Deserialize)]
+struct PartialFuzzy {
+    enabled: Option<bool>,
+    zh_z: Option<bool>,
+    ch_c: Option<bool>,
+    sh_s: Option<bool>,
+    n_l: Option<bool>,
+    f_h: Option<bool>,
+    an_ang: Option<bool>,
+    en_eng: Option<bool>,
+    in_ing: Option<bool>,
 }
 
 /// The `[engine]` table of a document.
@@ -259,6 +300,7 @@ struct PartialEngine {
     max_raw_len: Option<u8>,
     verify_dict_on_load: Option<String>,
     abbrev: Option<bool>,
+    share_state: Option<String>,
 }
 
 /// The `[scheme]` table of a document.
@@ -524,6 +566,7 @@ impl Config {
         merge_theme(partial.theme, &mut config, &mut warnings);
         merge_keys(partial.keys, &mut config, &mut warnings);
         merge_scheme(partial.scheme, &mut config, &mut warnings);
+        merge_fuzzy(partial.fuzzy, &mut config);
         merge_data(partial.data, &mut config, &mut warnings);
         merge_diagnostics(partial.diagnostics, &mut config, &mut warnings);
         merge_phrases(partial.phrases, &mut config, &mut warnings);
@@ -551,6 +594,27 @@ fn merge_engine(partial: Option<PartialEngine>, config: &mut Config, warnings: &
         warnings,
     );
     engine.abbrev = partial.abbrev.unwrap_or(engine.abbrev);
+    take_enum(partial.share_state, &mut engine.share_state, warnings);
+}
+
+/// Copies the `[fuzzy]` keys the document sets over the defaults.
+///
+/// The section is nine bools and nothing else, so there is no value to repair: a key
+/// the document sets is a key that is usable, and the rule the section carries -- how
+/// the master switch and the individual switches combine -- is the projection's, not
+/// the load's.
+fn merge_fuzzy(partial: Option<PartialFuzzy>, config: &mut Config) {
+    let Some(partial) = partial else { return };
+    let fuzzy = &mut config.fuzzy;
+    fuzzy.enabled = partial.enabled.unwrap_or(fuzzy.enabled);
+    fuzzy.zh_z = partial.zh_z.unwrap_or(fuzzy.zh_z);
+    fuzzy.ch_c = partial.ch_c.unwrap_or(fuzzy.ch_c);
+    fuzzy.sh_s = partial.sh_s.unwrap_or(fuzzy.sh_s);
+    fuzzy.n_l = partial.n_l.unwrap_or(fuzzy.n_l);
+    fuzzy.f_h = partial.f_h.unwrap_or(fuzzy.f_h);
+    fuzzy.an_ang = partial.an_ang.unwrap_or(fuzzy.an_ang);
+    fuzzy.en_eng = partial.en_eng.unwrap_or(fuzzy.en_eng);
+    fuzzy.in_ing = partial.in_ing.unwrap_or(fuzzy.in_ing);
 }
 
 /// Copies the `[phrases]` keys the document sets over the defaults.

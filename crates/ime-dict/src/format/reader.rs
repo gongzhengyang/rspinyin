@@ -23,9 +23,9 @@ use std::path::Path;
 use ime_types::DictError;
 
 use crate::format::{
-    self, DictEntry, ENTRY_SIZE, FLAG_BIGRAM_PRESENT, HEADER_SIZE, Header, SECTION_COUNT,
-    SectionEntry, SectionKind, UNIGRAM_ENTRY_SIZE, crc32, hash_word, parse_header,
-    parse_section_table, unpack_fst_value,
+    self, BIGRAM_ENTRY_SIZE, BigramRecord, DictEntry, ENTRY_SIZE, FLAG_BIGRAM_PRESENT,
+    FORMAT_VERSION_V1, HEADER_SIZE, Header, SECTION_COUNT, SectionEntry, SectionKind,
+    UNIGRAM_ENTRY_SIZE, crc32, hash_word, parse_header, parse_section_table, unpack_fst_value,
 };
 
 /// How much of a container [`Reader::parse`] verifies while opening it.
@@ -132,11 +132,44 @@ impl<D: AsRef<[u8]>> Reader<D> {
             });
         }
         let has_bigram = header.flags & FLAG_BIGRAM_PRESENT != 0;
+        if header.format_version == FORMAT_VERSION_V1 && has_bigram {
+            return Err(DictError::LengthOutOfRange {
+                field: "bigram_flags",
+                value: u64::from(header.flags),
+            });
+        }
         if has_bigram != !reader.sections[SectionKind::Bigram.as_raw() as usize - 1].is_absent() {
             return Err(DictError::LengthOutOfRange {
                 field: "bigram_flags",
                 value: u64::from(header.flags),
             });
+        }
+        if has_bigram {
+            let bigram = reader.section(SectionKind::Bigram)?;
+            if bigram.len() % BIGRAM_ENTRY_SIZE != 0 {
+                return Err(DictError::LengthOutOfRange {
+                    field: "bigram_len",
+                    value: bigram.len() as u64,
+                });
+            }
+            for index in 1..bigram.len() / BIGRAM_ENTRY_SIZE {
+                let (previous, record) = (
+                    reader.bigram(index as u32 - 1)?,
+                    reader.bigram(index as u32)?,
+                );
+                if record._pad != 0 {
+                    return Err(DictError::LengthOutOfRange {
+                        field: "bigram_pad",
+                        value: u64::from(record._pad),
+                    });
+                }
+                if previous.pair_key > record.pair_key {
+                    return Err(DictError::LengthOutOfRange {
+                        field: "bigram_order",
+                        value: record.pair_key,
+                    });
+                }
+            }
         }
 
         if verify == Verify::Full {
@@ -347,6 +380,39 @@ impl<D: AsRef<[u8]>> Reader<D> {
             }
         }
         Ok(None)
+    }
+
+    /// Returns the number of bigram records in the container.
+    pub fn bigram_count(&self) -> usize {
+        self.section(SectionKind::Bigram)
+            .map_or(0, |table| table.len() / BIGRAM_ENTRY_SIZE)
+    }
+
+    /// Returns the bigram record at `index`.
+    ///
+    /// # Errors
+    /// Returns [`DictError::LengthOutOfRange`] when `index` is past the section or
+    /// when the fixed-width row is truncated.
+    pub fn bigram(&self, index: u32) -> Result<BigramRecord, DictError> {
+        let table = self.section(SectionKind::Bigram)?;
+        let at = usize::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_mul(BIGRAM_ENTRY_SIZE))
+            .ok_or(DictError::LengthOutOfRange {
+                field: "bigram_index",
+                value: u64::from(index),
+            })?;
+        if at + BIGRAM_ENTRY_SIZE > table.len() {
+            return Err(DictError::LengthOutOfRange {
+                field: "bigram_index",
+                value: u64::from(index),
+            });
+        }
+        Ok(BigramRecord {
+            pair_key: format::read_u64(table, at, "bigram_pair_key")?,
+            prob_q12: format::read_u16(table, at + 8, "bigram_prob")?,
+            _pad: format::read_u16(table, at + 10, "bigram_pad")?,
+        })
     }
 
     /// Returns the number of `word_id` pairs in the word-list section.
@@ -581,10 +647,24 @@ mod tests {
     #[test]
     fn test_parse_rejects_an_unsupported_format_version() {
         let mut image = sample_image();
-        image[4..6].copy_from_slice(&2u16.to_le_bytes());
+        image[4..6].copy_from_slice(&3u16.to_le_bytes());
         assert!(matches!(
             Reader::parse(image, Verify::Full),
-            Err(DictError::FormatVersion { found: 2 })
+            Err(DictError::FormatVersion { found: 3 })
+        ));
+    }
+
+    #[test]
+    fn test_parse_rejects_a_bigram_section_in_a_version_one_container() {
+        let mut image = sample_image();
+        image[4..6].copy_from_slice(&1u16.to_le_bytes());
+        image[6..8].copy_from_slice(&FLAG_BIGRAM_PRESENT.to_le_bytes());
+        assert!(matches!(
+            Reader::parse(image, Verify::Full),
+            Err(DictError::LengthOutOfRange {
+                field: "bigram_flags",
+                value: 1,
+            })
         ));
     }
 
@@ -604,6 +684,10 @@ mod tests {
                 .copied()
                 .find(|entry| entry.kind == kind)
                 .expect("section present");
+            assert!(
+                !entry.is_absent(),
+                "{kind:?}: an absent section has no byte to corrupt"
+            );
             let at = entry.offset as usize + entry.len as usize - 1;
             image[at] ^= 0xFF;
             assert!(

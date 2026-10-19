@@ -30,6 +30,8 @@ pub(super) struct Loaded {
     pub(super) records: HashMap<Box<str>, Stored>,
     /// The keys the user pinned, which eviction leaves alone.
     pub(super) pinned: HashSet<Box<str>>,
+    /// The input key each pinned word is pinned under.
+    pub(super) key_pins: HashMap<Box<str>, Box<str>>,
 }
 
 /// Reads the whole store into memory, or reports that it is too large to load.
@@ -74,15 +76,74 @@ pub(super) fn load_committed(db: &Database, path: &Path, cap: u64, v1: bool) -> 
     // The pinned keys come along for the same reason the records do: the keystroke that
     // asks to forget a word may not open a read transaction to find out whether it is
     // protected. Only the pinned ones are kept, so an ordinary store holds an empty set.
+    let pins = match read_pins(&txn, path) {
+        Ok(pins) => pins,
+        Err(_) => return None,
+    };
+    Some(Loaded {
+        records,
+        pinned: pins.0,
+        key_pins: pins.1,
+    })
+}
+
+/// Reads the pin state a store holds: the pinned words, and the input key each is
+/// pinned under.
+///
+/// Both halves are read because they answer different questions -- the word set drives
+/// the ranking's cap and eviction's protection, the key map drives the toggle that
+/// moves a pin -- and a store's pins are a handful of rows whatever its record count,
+/// so the read costs nothing next to the load it accompanies.
+///
+/// # Errors
+/// Returns [`ImeError::DictUnavailable`] when either pin table fails.
+pub(super) fn read_pins(
+    txn: &redb::ReadTransaction,
+    path: &Path,
+) -> Result<(HashSet<Box<str>>, HashMap<Box<str>, Box<str>>), ImeError> {
     let mut pinned = HashSet::new();
-    let meta = txn.open_table(USER_META).ok()?;
-    for entry in meta.iter().ok()? {
-        let (key, value) = entry.ok()?;
+    let meta = txn
+        .open_table(USER_META)
+        .map_err(|error| store_error(path, &error))?;
+    for entry in meta.iter().map_err(|error| store_error(path, &error))? {
+        let (key, value) = entry.map_err(|error| store_error(path, &error))?;
         if value.value().1 != 0 {
             pinned.insert(Box::from(key.value()));
         }
     }
-    Some(Loaded { records, pinned })
+    let mut key_pins = HashMap::new();
+    let rows = txn
+        .open_table(USER_KEY_PINS)
+        .map_err(|error| store_error(path, &error))?;
+    for entry in rows.iter().map_err(|error| store_error(path, &error))? {
+        let (key, word) = entry.map_err(|error| store_error(path, &error))?;
+        key_pins.insert(Box::from(key.value()), Box::from(word.value()));
+    }
+    Ok((pinned, key_pins))
+}
+
+/// Reads the pin state of a store whose records were too many to load.
+///
+/// A store past the ceiling still knows its pins: the pinned set is what the fallback
+/// read consults before answering [`PINNED_FREQ`], and eviction's protection reads the
+/// same set, so leaving it empty would silence the cap and expose the pins to the sweep
+/// for a condition -- record count -- that says nothing about pin count. A v1 store
+/// served read-only carries no pin tables at all, and answers with two empty sets.
+///
+/// # Errors
+/// Returns [`ImeError::DictUnavailable`] when the read transaction or a table fails.
+pub(super) fn load_pins(
+    db: &Database,
+    path: &Path,
+    v1: bool,
+) -> (HashSet<Box<str>>, HashMap<Box<str>, Box<str>>) {
+    if v1 {
+        return (HashSet::new(), HashMap::new());
+    }
+    let Ok(txn) = db.begin_read() else {
+        return (HashSet::new(), HashMap::new());
+    };
+    read_pins(&txn, path).unwrap_or_default()
 }
 
 impl Inner {

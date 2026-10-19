@@ -27,13 +27,11 @@
 //!
 //! # Bigrams
 //!
-//! Version 1 of the container has no bigram section (`SectionKind::Bigram` is reserved
-//! and empty), so every pair is a miss. The miss path answers what the in-memory model
-//! answers for a pair it was never given -- the word's unigram minus
-//! [`BIGRAM_MISS_PENALTY`] -- rather than the bare penalty, because the two models have
-//! to rank identically for a dictionary to be swappable for the model a test drives the
-//! decoder with. When the Phase 3 section lands, this type gains a second view over it
-//! and nothing above changes.
+//! A version 2 container may carry a sorted `BIGRAM` section; version 1 cannot. A hit is
+//! mapped through the same Q12-to-Q8.8 table as a unigram so both channels rank on one
+//! scale. Every miss -- a missing section or an unknown pair -- answers what the in-memory
+//! model answers: the word's unigram plus [`BIGRAM_MISS_PENALTY`]. That identical fallback
+//! is why the two models can be swapped without changing candidate order.
 //!
 //! # Hash collisions
 //!
@@ -52,13 +50,85 @@
 use ime_core::lm::{BIGRAM_MISS_PENALTY, UNIGRAM_MISS, log2_q8};
 use ime_types::LanguageModel;
 
-use crate::format::{PROB_Q12_MAX, UNIGRAM_ENTRY_SIZE, hash_word, read_u16, read_u32};
+use crate::format::{
+    BIGRAM_ENTRY_SIZE, PROB_Q12_MAX, UNIGRAM_ENTRY_SIZE, hash_word, read_u16, read_u32,
+};
 
 use super::FstLexicon;
 
 /// Entries in the score table: one per Q12 probability a record can carry, plus zero.
 const SCALE_LEN: usize = PROB_Q12_MAX as usize + 1;
 
+/// A verified `BIGRAM` section: sorted fixed-width rows plus the shared score mapping.
+///
+/// The rows were bounds-checked, order-checked and pad-checked by the container reader,
+/// but lookup still reads through slices and checked arithmetic. A damaged row therefore
+/// becomes a miss rather than a crash, and the caller applies its documented miss fallback.
+pub(crate) struct BigramTable {
+    /// `(previous hash, next hash, probability)` rows in ascending pair-key order.
+    records: &'static [u8],
+}
+
+impl BigramTable {
+    /// Builds the table, or returns `None` when the section is absent.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub(crate) fn new(records: &'static [u8]) -> Option<Self> {
+        (!records.is_empty()).then_some(Self { records })
+    }
+
+    /// Returns how many complete rows the section holds.
+    pub(crate) fn count(&self) -> u32 {
+        u32::try_from(self.records.len() / BIGRAM_ENTRY_SIZE).unwrap_or(u32::MAX)
+    }
+
+    /// Returns the conditional score for one pair, or `None` for a miss.
+    ///
+    /// A miss is also the safe answer if a row no longer looks complete: the container
+    /// reader should have rejected that file, and a miss keeps the model usable without
+    /// repeating validation work on the hot path.
+    pub(crate) fn prob_q8(&self, prev: &str, word: &str, scale: &[i32]) -> Option<i32> {
+        let target = u64::from(hash_word(prev)) << 32 | u64::from(hash_word(word));
+        let (mut low, mut high) = (0u32, self.count());
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let (pair_key, prob_q12) = self.record(middle)?;
+            if pair_key == target {
+                return Some(
+                    scale
+                        .get(usize::from(prob_q12))
+                        .copied()
+                        .unwrap_or(UNIGRAM_MISS),
+                );
+            }
+            if pair_key < target {
+                low = middle.saturating_add(1);
+            } else {
+                high = middle;
+            }
+        }
+        None
+    }
+
+    /// Returns the record at `index`, or `None` when the row is unavailable.
+    fn record(&self, index: u32) -> Option<(u64, u16)> {
+        let start = usize::try_from(index)
+            .ok()?
+            .checked_mul(BIGRAM_ENTRY_SIZE)?;
+        let end = start.checked_add(BIGRAM_ENTRY_SIZE)?;
+        let row = self.records.get(start..end)?;
+        let mut pair_key = [0; size_of::<u64>()];
+        pair_key.copy_from_slice(row.first_chunk::<8>()?);
+        let mut probability = [0; size_of::<u16>()];
+        probability.copy_from_slice(row.get(8..10)?.first_chunk::<2>()?);
+        Some((
+            u64::from_le_bytes(pair_key),
+            u16::from_le_bytes(probability),
+        ))
+    }
+}
 /// The language model of a compiled dictionary, read straight out of its mapping.
 ///
 /// The view is borrowed for `'static` for the same reason the lexicon's own views are:
@@ -120,6 +190,8 @@ const SCALE_LEN: usize = PROB_Q12_MAX as usize + 1;
 pub struct DictLm {
     /// The `UNIGRAM` section: `(hash, prob_q12)` records in ascending hash order.
     unigram: &'static [u8],
+    /// The `BIGRAM` section, or `None` for a container that carries no pairs.
+    bigram: Option<BigramTable>,
     /// Number of records the search may read.
     count: u32,
     /// Q8.8 log-probability of each Q12 probability a record can carry.
@@ -153,6 +225,7 @@ impl DictLm {
             .min(records);
         Self {
             unigram,
+            bigram: BigramTable::new(lexicon.bigram_section()),
             count: u32::try_from(count).unwrap_or(u32::MAX),
             scale,
         }
@@ -201,16 +274,21 @@ impl LanguageModel for DictLm {
         UNIGRAM_MISS
     }
 
-    /// Returns the word's unigram minus [`BIGRAM_MISS_PENALTY`], which is what the miss
-    /// path answers.
+    /// Returns the recorded conditional score, or the unigram miss fallback.
     ///
-    /// The container carries no bigram section in version 1, so every pair is a miss and
-    /// the predecessor is never read. The answer is the documented miss fallback rather
-    /// than the bare penalty because it has to equal what the in-memory model answers
-    /// for the same pair: the two models are interchangeable, and a caller that swaps
-    /// one for the other must get the same candidate order.
-    fn bigram(&self, _prev: &str, word: &str) -> i32 {
-        self.unigram(word).saturating_add(BIGRAM_MISS_PENALTY)
+    /// The fallback is used both for an absent section and for a pair the section does
+    /// not hold. It deliberately equals what the in-memory model answers for the same
+    /// miss: the two models are interchangeable, and swapping them must not change the
+    /// candidate order.
+    fn bigram(&self, prev: &str, word: &str) -> i32 {
+        match self
+            .bigram
+            .as_ref()
+            .and_then(|table| table.prob_q8(prev, word, &self.scale))
+        {
+            Some(score) => score,
+            None => self.unigram(word).saturating_add(BIGRAM_MISS_PENALTY),
+        }
     }
 }
 
@@ -220,6 +298,10 @@ impl core::fmt::Debug for DictLm {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("DictLm")
             .field("entries", &self.count)
+            .field(
+                "bigram_entries",
+                &self.bigram.as_ref().map_or(0, BigramTable::count),
+            )
             .finish()
     }
 }

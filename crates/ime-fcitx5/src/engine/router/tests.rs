@@ -23,6 +23,8 @@
 //! temporary directory, and no test here touches the environment, the clock or a display
 //! server.
 
+mod pool;
+
 use std::fs;
 use std::path::PathBuf;
 use std::thread;
@@ -40,12 +42,14 @@ use ime_types::{
 use crate::engine::host::Host;
 use crate::engine::router::phrases::{PhraseHandle, PhraseStore};
 use crate::engine::router::{KeyRouter, RoutingConfig};
-use crate::engine::{CTRL, KEY_SPACE};
+use crate::engine::{CTRL, KEY_SPACE, KEY_T, SHIFT};
 use crate::ffi::FcitxKeyEvent;
 use crate::privacy_impl::{AppBlacklist, ContextPrivacy, ContextReport};
 
 /// The input context every test uses.
 const IC: u64 = 1;
+/// A second input context, for the tests that hold two of them.
+const IC2: u64 = 2;
 
 /// A second input context, for the test that focus creates a session where none was.
 const OTHER_IC: u64 = 2;
@@ -214,6 +218,10 @@ struct RecordingHost {
     hides: usize,
     /// How many times the application's preedit area was emptied.
     cleared: usize,
+    /// How many frames the window was sent.
+    frames: usize,
+    /// The text of every commit, in order.
+    commits: Vec<String>,
 }
 
 impl Default for RecordingHost {
@@ -226,12 +234,16 @@ impl Default for RecordingHost {
             is_enabled: true,
             hides: 0,
             cleared: 0,
+            frames: 0,
+            commits: Vec::new(),
         }
     }
 }
 
 impl Host for RecordingHost {
-    fn commit(&mut self, _ic: u64, _text: &str) {}
+    fn commit(&mut self, _ic: u64, text: &str) {
+        self.commits.push(String::from(text));
+    }
 
     fn set_preedit(&mut self, _ic: u64, _text: &str, _caret: u32) {}
 
@@ -242,6 +254,7 @@ impl Host for RecordingHost {
     fn post_ui(&mut self, _ic: u64, command: UiCommand) {
         match command {
             UiCommand::Frame(frame) => {
+                self.frames += 1;
                 self.highlighted = frame.candidates.first().map(|held| held.text.clone());
                 self.status = Some(frame.status.clone());
             }
@@ -265,7 +278,7 @@ struct Fixture {
     /// The dictionary the decode reads.
     lexicon: TestLexicon,
     /// The user frequencies the commit path writes to.
-    user: SilentUser,
+    user: Box<dyn UserFreqSource>,
     /// The language model the ranking is scored with.
     lm: InMemoryLm,
     /// The decoder, built with the shipped configuration.
@@ -280,6 +293,14 @@ impl Fixture {
     /// The directory is emptied rather than merely created, so that a second run of the
     /// suite does not read a document the first one left behind.
     fn new(label: &str) -> Self {
+        Self::with_user(label, Box::new(SilentUser))
+    }
+
+    /// Builds the doubles with `user` answering the frequency path.
+    ///
+    /// The directory is emptied rather than merely created, so that a second run of the
+    /// suite does not read a document the first one left behind.
+    fn with_user(label: &str, user: Box<dyn UserFreqSource>) -> Self {
         let name = format!("rspinyin-router-{}-{label}", std::process::id());
         let dir = std::env::temp_dir().join(name);
         let _ = fs::remove_dir_all(&dir);
@@ -290,7 +311,7 @@ impl Fixture {
                 ("ni", "尼", 800_000, 1),
                 ("ni'hao", "你好", 900_000, 2),
             ]),
-            user: SilentUser,
+            user,
             lm: InMemoryLm::new(),
             decoder: Decoder::default(),
             dir,
@@ -302,7 +323,7 @@ impl Fixture {
         SessionEnv {
             decoder: &self.decoder,
             lexicon: &self.lexicon,
-            user_freq: &self.user,
+            user_freq: &*self.user,
             lm: &self.lm,
         }
     }
@@ -425,6 +446,114 @@ fn test_add_phrase_accepts_a_row_the_document_cannot_take() {
         !document.exists(),
         "a write the document refused leaves no file behind"
     );
+}
+
+/// A user source that answers nothing and keeps the pin requests it is given, so the
+/// router's pin branch can be asserted from the outside.
+#[derive(Default)]
+struct PinningUser {
+    /// Every `(key, word)` pair the source was asked to pin, in order. Behind a shared
+    /// handle because the fixture owns the source and the test reads the log.
+    requests: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+}
+
+impl PinningUser {
+    /// Builds the source and the handle its requests land in.
+    fn new() -> (
+        Self,
+        std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    ) {
+        let requests: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> =
+            std::sync::Arc::default();
+        (
+            Self {
+                requests: requests.clone(),
+            },
+            requests,
+        )
+    }
+}
+
+impl UserFreqSource for PinningUser {
+    fn freq(&self, _key: &str) -> u32 {
+        0
+    }
+
+    fn record(&self, _key: &str, _weight_hint: u16) {}
+
+    fn is_user_word(&self, _key: &str) -> bool {
+        false
+    }
+
+    fn set_pinned(&self, key: &str, word: Option<&str>) -> Result<(), ImeError> {
+        let word = word.map(str::to_owned).unwrap_or_default();
+        self.requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((String::from(key), word));
+        Ok(())
+    }
+}
+
+#[test]
+fn test_pin_highlighted_asks_the_store_and_reranks_the_frame() {
+    let (user, requests) = PinningUser::new();
+    let fixture = Fixture::with_user("pin", Box::new(user));
+    let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
+    let mut router = fixture.router(handle);
+    router.activate_reported(IC, ordinary_report());
+    let mut host = RecordingHost::default();
+
+    type_ni(&mut router, &mut host);
+    let highlighted = host.highlighted.clone().expect("a frame with a candidate");
+    let frames_before = host.frames;
+
+    assert!(
+        router.step_session(IC, SessionEvent::Key(KeyAction::PinHighlighted), &mut host),
+        "the pin was applied, so the key is the plugin's"
+    );
+    assert!(
+        host.diagnostics.is_empty(),
+        "a pin the store took is not a failure: {:?}",
+        host.diagnostics
+    );
+    assert_eq!(
+        requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_slice(),
+        [(String::from("ni"), highlighted)],
+        "the store is asked for the input key and the highlighted word"
+    );
+    // The executor looped `PinApplied` back into the session, which decoded again and
+    // re-sent the window: the frame the user sees is the one that ranks the pin.
+    assert_eq!(
+        host.frames,
+        frames_before + 1,
+        "the frame is re-sent after the store changed what ranks"
+    );
+}
+
+#[test]
+fn test_pin_at_a_source_without_pin_storage_reports_and_releases_the_key() {
+    // The default `set_pinned` answers `dict/unsupported` (ADR-0013): the store took
+    // nothing, so nothing re-ranks, and a key the plugin did not act on reaches the
+    // application -- the same discipline every other refused action follows.
+    let fixture = Fixture::new("pin-unsupported");
+    let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
+    let mut router = fixture.router(handle);
+    router.activate_reported(IC, ordinary_report());
+    let mut host = RecordingHost::default();
+
+    type_ni(&mut router, &mut host);
+    let before = host.diagnostics.len();
+    assert!(
+        !router.step_session(IC, SessionEvent::Key(KeyAction::PinHighlighted), &mut host),
+        "a key the plugin could not act on must reach the application"
+    );
+    assert_eq!(host.diagnostics.len(), before + 1, "{:?}", host.diagnostics);
+    let reported = host.diagnostics.last().cloned().unwrap_or_default();
+    assert_eq!(reported, "dict/unsupported", "{reported}");
 }
 
 #[test]
@@ -704,5 +833,118 @@ fn test_focus_in_ensures_a_context_instead_of_rebuilding_it() {
     assert!(
         router.session(OTHER_IC).is_some(),
         "focus is what makes a session exist for a context"
+    );
+}
+
+#[test]
+fn test_script_toggle_converts_the_commit_and_toggles_back() {
+    let fixture = Fixture::new("script");
+    let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
+    let mut router = fixture.router(handle);
+    router.use_script(std::sync::Arc::new(ime_dict::script::ScriptIndex::from_pairs(
+        &[("你", "妳")],
+    )));
+    router.activate_reported(IC, ordinary_report());
+    let mut host = RecordingHost::default();
+
+    // Simplified first: the shipped bit is off, and the commit borrows through.
+    type_ni(&mut router, &mut host);
+    router.key_event(IC, &press(KEY_SPACE, 0), &mut host);
+    assert_eq!(host.commits.last().map(String::as_str), Some("你"));
+
+    // The toggle flips the bit, and the same input commits converted. The chord is
+    // the real one the routing table names, so the key travels the route a user's
+    // keystroke travels.
+    assert!(
+        router.key_event(IC, &press(KEY_T, CTRL | SHIFT), &mut host),
+        "a toggle with a table is the plugin's key"
+    );
+    assert!(host.diagnostics.is_empty(), "{:?}", host.diagnostics);
+    type_ni(&mut router, &mut host);
+    router.key_event(IC, &press(KEY_SPACE, 0), &mut host);
+    assert_eq!(
+        host.commits.last().map(String::as_str),
+        Some("妳"),
+        "the traditional mode converts the commit"
+    );
+
+    // The second toggle is the way back, and the commit is plain again.
+    assert!(router.key_event(IC, &press(KEY_T, CTRL | SHIFT), &mut host));
+    type_ni(&mut router, &mut host);
+    router.key_event(IC, &press(KEY_SPACE, 0), &mut host);
+    assert_eq!(host.commits.last().map(String::as_str), Some("你"));
+}
+
+#[test]
+fn test_script_toggle_without_a_table_reports_and_releases_the_key() {
+    // A build whose assembly installed no table: the toggle reports the degradation
+    // the code was registered for, the key reaches the application, and the next
+    // toggle behaves the same -- the mode bit never moved.
+    let fixture = Fixture::new("script-missing");
+    let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
+    let mut router = fixture.router(handle);
+    router.activate_reported(IC, ordinary_report());
+    let mut host = RecordingHost::default();
+
+    type_ni(&mut router, &mut host);
+    assert!(
+        !router.key_event(IC, &press(KEY_T, CTRL | SHIFT), &mut host),
+        "a key the plugin did not act on must reach the application"
+    );
+    // The refusal is reported on the process diagnostic channel -- the registered code
+    // has no frozen `ImeError` variant to travel in, which is why the reporter is the
+    // emitter and not the host boundary. What the host can assert is the shape of the
+    // refusal: no error was fabricated, the composition survived the refused toggle
+    // untouched, and a second press refuses the same way -- the mode bit never moved.
+    assert!(host.diagnostics.is_empty(), "{:?}", host.diagnostics);
+
+    assert!(!router.key_event(IC, &press(KEY_T, CTRL | SHIFT), &mut host));
+    router.key_event(IC, &press(KEY_SPACE, 0), &mut host);
+    assert_eq!(
+        host.commits.last().map(String::as_str),
+        Some("你"),
+        "the composition the refusal preserved commits unchanged"
+    );
+}
+
+#[test]
+fn test_output_projection_reaches_a_new_context_and_spares_one_in_flight() {
+    // The document asks for full width and English marks: a context created under it
+    // commits widened ASCII from its first keystroke, while the context created
+    // before the reload keeps the bits its own creation gave it.
+    let fixture = Fixture::new("output-projection");
+    let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
+    let mut config = RoutingConfig::default();
+    let mut router = KeyRouter::new(fixture.env(), shipped_privacy(), config);
+    router.use_phrases(handle);
+    router.activate_reported(IC, ordinary_report());
+    let mut host = RecordingHost::default();
+
+    // Half width first: the shipped projection.
+    type_ni(&mut router, &mut host);
+    router.key_event(IC, &press(KEY_SPACE, 0), &mut host);
+    assert_eq!(host.commits.last().map(String::as_str), Some("你"));
+
+    // The reload replaces the routing view whole; the live context keeps its bits.
+    config.output.full_width = true;
+    router.reload(config, &mut host);
+    type_ni(&mut router, &mut host);
+    router.key_event(IC, &press(KEY_SPACE, 0), &mut host);
+    assert_eq!(
+        host.commits.last().map(String::as_str),
+        Some("你"),
+        "an in-flight session keeps its own output bits"
+    );
+
+    // A context created under the reloaded view starts where the document says.
+    router.activate_reported(IC2, ordinary_report());
+    // `ai` is a syllable of its own, so the composition commits as one widened word.
+    let _ = router.key_event(IC2, &press(crate::engine::KEY_A, 0), &mut host);
+    let _ = router.key_event(IC2, &press(0x0069, 0), &mut host);
+    router.key_event(IC2, &press(KEY_SPACE, 0), &mut host);
+    assert_eq!(
+        host.commits.last().map(String::as_str),
+        Some("ａｉ"),
+        "the new context starts full width, down to the widened letters"
     );
 }

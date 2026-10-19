@@ -103,11 +103,11 @@ sha256 = ""
 permissive = true
 
 # ADR-0012 (2026-10-14): THUOCL lifted from ADR-0000's pending-verification
-# list -- the repository LICENSE file is MIT. Registered here before the file
-# is fetched, so `sha256`/`retrieved` stay empty and CI stays green until the
-# download lands (the moment data/raw/thuocl.tsv exists, CI fails until the
-# recorded hash matches). Per-domain THUOCL files, if adopted later, register
-# as `thuocl-<domain>` with layer L5.
+# list -- the repository LICENSE file is MIT. Fetched 2026-10-19: the eleven
+# per-domain files under data/ are merged into one `thuocl.tsv` by
+# `data/fetch.sh` (deterministic merge; the digest pins the merged file, so an
+# upstream row edit still re-pins). Per-domain files, if wanted separately
+# later, register as `thuocl-<domain>` with layer L5.
 [[source]]
 id = "thuocl"
 kind = "upstream"
@@ -115,23 +115,26 @@ layer = "L4"
 url = "https://github.com/thunlp/THUOCL"
 license = "MIT"
 spdx = "MIT"
-retrieved = ""
-sha256 = ""
+retrieved = "2026-10-19"
+sha256 = "5495acaa243879eb7714c05e524c089182822cb4462d21ff969ab010b08ba187"
 permissive = true
 
 # ADR-0012 (2026-10-14): the huayu system word list (Public Domain, per the
 # rime-ice upstream credits) registered as the two-character core-band
 # source. Public Domain data carries no SPDX identifier; `CC0-1.0` is the
 # machine-readable equivalent declaration and the `license` label records the
-# underlying fact. Same fetch discipline as above: empty hash until the file
-# exists.
+# underlying fact. The URL is the forum thread that publishes the attachment;
+# `data/fetch.sh` scrapes the per-session download token from that page, while
+# the attachment (a zip holding the .uwl database, decoded by the documented
+# format into `word<TAB>reading<TAB>frequency` rows) has been byte-stable
+# across sessions, which is what the digest pins.
 [[source]]
 id = "huayu"
 kind = "upstream"
 layer = "L2"
-url = "<huayu original publication URL, fixed at fetch time>"
+url = "http://bbs.pinyin.thunisoft.com/forum.php?mod=viewthread&tid=30049"
 license = "Public Domain (huayu system wordlist)"
 spdx = "CC0-1.0"
-retrieved = ""
-sha256 = ""
+retrieved = "2026-10-19"
+sha256 = "41beef9b3265cfa790702d10e2917ec91c0370a0722ec0ded183cf0525638604"
 permissive = true

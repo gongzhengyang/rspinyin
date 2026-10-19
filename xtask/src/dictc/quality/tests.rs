@@ -415,11 +415,12 @@ fn test_reading_source_parses_its_three_spellings() {
 }
 
 #[test]
-fn test_origin_parses_its_three_spellings() {
+fn test_origin_parses_its_spellings() {
     assert_eq!(Origin::parse("unihan"), Some(Origin::Unihan));
     assert_eq!(Origin::parse("manual"), Some(Origin::Manual));
     assert_eq!(Origin::parse("corpus"), Some(Origin::Corpus));
-    // The column is exact, and a commercial source is not one of the three values.
+    assert_eq!(Origin::parse("huayu"), Some(Origin::Huayu));
+    // The column is exact, and a commercial source is not one of the values.
     assert_eq!(Origin::parse("Unihan"), None);
     assert_eq!(Origin::parse("sogou"), None);
     assert_eq!(Origin::parse(""), None);
@@ -490,13 +491,15 @@ fn test_origin_mix_counts_each_origin_and_the_unannotated_rows() {
         correction(Some(Origin::Unihan)),
         correction(Some(Origin::Manual)),
         correction(Some(Origin::Corpus)),
+        correction(Some(Origin::Huayu)),
         correction(None),
     ];
     let mix = OriginMix::of(&rows);
-    assert_eq!(mix.total(), 5);
+    assert_eq!(mix.total(), 6);
     assert_eq!(mix.count(Origin::Unihan), 2);
     assert_eq!(mix.count(Origin::Manual), 1);
     assert_eq!(mix.count(Origin::Corpus), 1);
+    assert_eq!(mix.count(Origin::Huayu), 1);
     assert_eq!(mix.unspecified, 1);
     let mut empty = OriginMix::default();
     assert_eq!(empty.total(), 0);
@@ -637,6 +640,58 @@ fn test_run_refuses_bounds_no_table_could_satisfy() {
     assert!(
         failure.to_string().contains("is past --max-corrections"),
         "{failure}"
+    );
+    fs::remove_dir_all(&dir).expect("cleaning up");
+}
+
+#[test]
+fn test_polyphone_auto_gate_passes_a_balanced_record_and_a_missing_manifest() {
+    let dir = scratch("polyphone-gate");
+    // No manifest at all: a container built before the record existed has
+    // nothing to gate.
+    assert_eq!(
+        gate_polyphone_auto(&dir.join("absent.manifest.json")).expect("no manifest"),
+        None
+    );
+    let balanced = dir.join("balanced.manifest.json");
+    fs::write(
+        &balanced,
+        r#"{"schema": 2, "polyphone_auto": {"assigned": 12, "flattened": 3, "manual": 5, "total": 20}}"#,
+    )
+    .expect("writing the manifest");
+    let record = gate_polyphone_auto(&balanced).expect("a balanced record");
+    assert_eq!(
+        record,
+        Some(PolyphoneAutoView {
+            assigned: 12,
+            flattened: 3,
+            manual: 5,
+            total: 20,
+        })
+    );
+    fs::remove_dir_all(&dir).expect("cleaning up");
+}
+
+#[test]
+fn test_polyphone_auto_gate_refuses_a_record_that_loses_words() {
+    let dir = scratch("polyphone-gate-bad");
+    let unbalanced = dir.join("unbalanced.manifest.json");
+    fs::write(
+        &unbalanced,
+        r#"{"schema": 2, "polyphone_auto": {"assigned": 12, "flattened": 3, "manual": 4, "total": 20}}"#,
+    )
+    .expect("writing the manifest");
+    let failure = gate_polyphone_auto(&unbalanced).expect_err("a word went missing");
+    assert!(
+        failure.to_string().contains("accounted for 19 of 20"),
+        "{failure}"
+    );
+    // A schema-1 manifest carries no record at all, which gates nothing.
+    let schema_one = dir.join("schema-one.manifest.json");
+    fs::write(&schema_one, r#"{"schema": 1}"#).expect("writing the manifest");
+    assert_eq!(
+        gate_polyphone_auto(&schema_one).expect("a schema-1 manifest"),
+        None
     );
     fs::remove_dir_all(&dir).expect("cleaning up");
 }

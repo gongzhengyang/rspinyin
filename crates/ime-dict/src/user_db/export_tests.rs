@@ -288,10 +288,14 @@ fn test_import_merges_with_what_the_store_already_holds() {
         .import_tsv(&mut higher.as_bytes())
         .expect("importing a stronger record");
     assert_eq!(report.applied, 1);
-    assert_eq!(db.freq("word"), 9, "the larger weight wins");
+    assert_eq!(
+        db.freq("word"),
+        PINNED_FREQ,
+        "the imported pin is live: freq answers the cap, not the count"
+    );
     let rows = db.list_words(0, 10).expect("listing");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].weight, 9);
+    assert_eq!(rows[0].weight, 9, "the larger weight won");
     assert_eq!(rows[0].last_used_unix, 5000, "the later use wins");
     assert_eq!(rows[0].created_unix, 100, "the earlier creation wins");
     assert!(rows[0].pinned, "and the pin is carried over");
@@ -299,12 +303,11 @@ fn test_import_merges_with_what_the_store_already_holds() {
     let lower = document("word\t1\t10\t100\t0\t65536\t0\n");
     db.import_tsv(&mut lower.as_bytes())
         .expect("importing a weaker record");
+    let rows = db.list_words(0, 10).expect("listing");
     assert_eq!(
-        db.freq("word"),
-        9,
+        rows[0].weight, 9,
         "an import never lowers a count the user earned by typing"
     );
-    let rows = db.list_words(0, 10).expect("listing");
     assert_eq!(rows[0].created_unix, 100);
     assert!(rows[0].pinned, "and a pin is never taken away");
 }

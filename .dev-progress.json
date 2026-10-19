@@ -7,12 +7,12 @@
   "active_run": {
     "skill": "dev-rust-single",
     "mode": "single-agent",
-    "started_at": "2026-10-14T08:24:17Z"
+    "started_at": "2026-10-16T00:00:00Z"
   },
   "last_run": {
     "skill": "dev-rust-single",
     "mode": "single-agent",
-    "updated_at": "2026-10-14T09:31:00Z"
+    "updated_at": "2026-10-16T00:00:00Z"
   },
   "tasks": [
     {
@@ -43,91 +43,93 @@
       "id": "TASK-1.02.03",
       "file": "./docs/dev/features-add-phase1.md",
       "title": "衰减配置键与空闲批量重算",
-      "status": "IN_PROGRESS"
+      "status": "READY_FOR_FINAL_GATE"
     },
     {
       "id": "TASK-1.03.01",
       "file": "./docs/dev/features-add-phase1.md",
       "title": "容器 v2：BIGRAM 段生成管线与读端兼容",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE"
     },
     {
       "id": "TASK-1.03.02",
       "file": "./docs/dev/features-add-phase1.md",
       "title": "DictLm bigram 真查与两模型同序契约",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE"
     },
     {
       "id": "TASK-1.04.01",
       "file": "./docs/dev/features-add-phase1.md",
       "title": "置顶词引擎侧转正（PinHighlighted 闭合）",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE"
     },
     {
       "id": "TASK-1.04.02",
       "file": "./docs/dev/features-add-phase1.md",
       "title": "置顶管理闭环（list/export/提示与一致性）",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE"
     },
     {
       "id": "TASK-2.01.01",
       "file": "./docs/dev/features-add-phase2.md",
       "title": "模糊音配置节与会话接线",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE"
     },
     {
       "id": "TASK-2.02.01",
       "file": "./docs/dev/features-add-phase2.md",
       "title": "FstLexicon::prefix 实装（FST 前缀区间流式走查）",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE"
     },
     {
       "id": "TASK-2.02.02",
       "file": "./docs/dev/features-add-phase2.md",
       "title": "简拼生产接线（engine.abbrev 转正）",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE"
     },
     {
       "id": "TASK-2.03.01",
       "file": "./docs/dev/features-add-phase2.md",
       "title": "简繁转换 commit 接线与降级上报",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE"
     },
     {
       "id": "TASK-2.03.02",
       "file": "./docs/dev/features-add-phase2.md",
       "title": "标点/全宽配置默认值投影",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE"
     },
     {
       "id": "TASK-2.04.01",
       "file": "./docs/dev/features-add-phase2.md",
       "title": "词源接入：华宇野风（PD）与 THUOCL（MIT）",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE"
     },
     {
       "id": "TASK-2.04.02",
       "file": "./docs/dev/features-add-phase2.md",
       "title": "两字词层换血与多音字自动校验",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE"
     },
     {
       "id": "TASK-2.05.01",
       "file": "./docs/dev/features-add-phase2.md",
       "title": "会话共享粒度（per-program Context 池）",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "evidence": "schema.rs ShareState closed_set + EngineConfig.share_state; reload.rs PartialEngine/merge_engine/DEFAULT_CONFIG_TOML + 2 repair tests; router/config.rs RoutingConfig.share; router.rs PoolKey/pool_key/PoolSlot/Context{fresh,adopted}/park + create-or-adopt activate_reported + last-live park on deactivate + pool.clear() on tier switch (snapshot semantics); tests: 7 pool tests (script bit across ICs, temp english, two-program isolation, unknown-app never pools, last-live park, policy switch, context-tier zero-diff) + test_load_repairs_an_unknown_share_state_to_the_context_default + test_reload_adopts_the_program_share_state; cargo nextest run -p ime-fcitx5 = 492 passed (keymap_matrix 2568 green)"
     },
     {
       "id": "TASK-2.06.01",
       "file": "./docs/dev/features-add-phase2.md",
       "title": "数据驱动解码冒烟基线（TSV key_sequence→expected_text）",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "evidence": "xtask/src/testd/smoke.rs (TSV 驱动器: parse_cases/expectation(@first|@contains|@regex|literal)/evaluate/run_cases/mount(FstLexicon::load+DictLm::new+FreshUser)/derive(留出集派生 core 带, 手写带保留), 11 单测) + main.rs TestdSmoke 子命令 + tests/smoke/cases.tsv (200 例: 30 手写 ambiguity/edge + 170 core 派生) + tests/smoke/README.md 指南 + justfile smoke 可选档(ci 链尾, 缺词典报跳过); regex 依赖入 workspace/contracts §6; 实测: 200/200 绿 1.7s(≤2s), 破坏用例→红且 FAIL 行可定位, cargo nextest run -p xtask 1214 绿"
     },
     {
       "id": "TASK-3.01.01",
       "file": "./docs/dev/features-add-phase3.md",
       "title": "拼写纠错（邻位替换 + 键序颠倒）",
-      "status": "PENDING"
+      "status": "IN_PROGRESS"
     },
     {
       "id": "TASK-3.02.01",

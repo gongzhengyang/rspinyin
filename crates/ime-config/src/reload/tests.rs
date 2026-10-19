@@ -136,6 +136,8 @@ fn test_load_reads_every_key_from_a_document() {
          [theme]\nscheme = \"dark\"\naccent = \"#4c9aff\"\n\
          [keys]\ndigit_zero = \"flip\"\nenter_commit_raw = true\n\
          flip_keys = [\"minus\", \"page_up\"]\nhighlight_keys = [\"tab\"]\n\
+         [fuzzy]\nenabled = true\nzh_z = true\nch_c = true\nsh_s = true\n\
+         n_l = true\nf_h = true\nan_ang = true\nen_eng = true\nin_ing = true\n\
          [data]\ndurability = \"immediate\"\n\
          [diagnostics]\nlevel = \"trace\"\nlog_rotation_mb = 1\nlog_keep_files = 1\n\
          log_input_content = true\nprobes = false\n",
@@ -163,6 +165,8 @@ fn test_load_reads_every_key_from_a_document() {
     assert!(config.keys.enter_commit_raw);
     assert_eq!(config.keys.flip_keys.len(), 2);
     assert_eq!(config.keys.highlight_keys, [KeyName::Tab]);
+    assert!(config.fuzzy.enabled && config.fuzzy.zh_z && config.fuzzy.f_h);
+    assert!(config.fuzzy.an_ang && config.fuzzy.in_ing);
     assert_eq!(config.data.durability, Durability::Immediate);
     assert_eq!(config.diagnostics.level, LogLevel::Trace);
     assert!(config.diagnostics.log_input_content && !config.diagnostics.probes);
@@ -643,5 +647,78 @@ fn test_reload_keeps_the_decode_settings_when_the_file_cannot_be_read() {
         store.scheme(),
         before,
         "a kept configuration keeps its decode settings"
+    );
+}
+
+#[test]
+fn test_fuzzy_section_merges_key_by_key_over_the_defaults() {
+    let document = "schema_version = 2\n[fuzzy]\nzh_z = true\nn_l = true\n";
+    let (config, warnings) = Config::from_document(document).expect("a legal document");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(config.fuzzy.zh_z && config.fuzzy.n_l, "the keys the document sets");
+    assert!(
+        !config.fuzzy.enabled && !config.fuzzy.ch_c && !config.fuzzy.in_ing,
+        "and every key it leaves out keeps its default"
+    );
+}
+
+#[test]
+fn test_fuzzy_class_flags_maps_the_section_onto_the_frozen_bits() {
+    let mut config = Config::default();
+    assert_eq!(
+        config.fuzzy.class_flags(),
+        ime_types::DecodeFlags::empty(),
+        "the shipped section selects nothing"
+    );
+    config.fuzzy.zh_z = true;
+    config.fuzzy.in_ing = true;
+    let flags = config.fuzzy.class_flags();
+    assert!(flags.contains(ime_types::DecodeFlags::FUZZY_ZH_Z));
+    assert!(flags.contains(ime_types::DecodeFlags::FUZZY_IN_ING));
+    assert!(
+        !flags.contains(ime_types::DecodeFlags::FUZZY),
+        "the master switch is the projection's, not the section's"
+    );
+}
+
+#[test]
+fn test_load_repairs_an_unknown_share_state_to_the_context_default() {
+    // The boundary: a sharing mode this build does not know. The value is repaired
+    // while the configuration is adopted, so a caller asking for the section never
+    // receives a mode no pool implements, and the diagnostic names the key so the
+    // document's author can fix the spelling.
+    let path = scratch("share-state-custom").join(FILE_NAME);
+    write(&path, "[engine]\nshare_state = \"window\"\n");
+
+    let (store, warnings) = ConfigStore::load_at(&path, 7);
+
+    assert_eq!(rejected(&warnings), [String::from("engine.share_state")]);
+    assert_eq!(
+        store.current().engine.share_state,
+        crate::schema::ShareState::Context,
+        "the repaired mode answers per-context sharing"
+    );
+    assert_eq!(
+        store.current().engine.share_state,
+        Config::default().engine.share_state
+    );
+}
+
+#[test]
+fn test_reload_adopts_the_program_share_state_of_the_new_document() {
+    let path = scratch("reload-share-state").join(FILE_NAME);
+    write(&path, "");
+    let (mut store, _) = ConfigStore::load_at(&path, 7);
+    assert_eq!(
+        store.current().engine.share_state,
+        crate::schema::ShareState::Context
+    );
+
+    write(&path, "[engine]\nshare_state = \"program\"\n");
+    assert!(matches!(store.reload(), ReloadOutcome::Updated { .. }));
+
+    assert_eq!(
+        store.current().engine.share_state,
+        crate::schema::ShareState::Program
     );
 }

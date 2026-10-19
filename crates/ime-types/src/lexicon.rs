@@ -121,6 +121,22 @@ pub trait UserFreqSource: Send + Sync {
         let _ = writer;
         Err(ImeError::Unsupported)
     }
+
+    /// Pins `word` for `key`, or clears the key's pin when `word` is `None`.
+    ///
+    /// With a word, this is the UI's toggle: pinning an unpinned word pins it, pressing
+    /// the action again on the same word unpins it, and pressing it on a different word
+    /// moves the pin to that word. A real implementation keeps the state in memory and
+    /// batches the durable write; the call must not block the host thread.
+    ///
+    /// # Errors
+    ///
+    /// [`ImeError::Unsupported`] by default, so sources without pin storage keep their
+    /// current behavior. A real implementation propagates read-only and storage errors.
+    fn set_pinned(&self, key: &str, word: Option<&str>) -> Result<(), ImeError> {
+        let _ = (key, word);
+        Err(ImeError::Unsupported)
+    }
 }
 
 /// Language model scoring.

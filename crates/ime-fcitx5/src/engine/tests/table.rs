@@ -588,6 +588,7 @@ fn test_translate_key_matches_every_chord_it_declares() {
         (KEY_SPACE, SHIFT, KeyAction::ToggleFullWidth),
         (KEY_PERIOD, CTRL, KeyAction::TogglePunct),
         (KEY_E, CTRL | SHIFT, KeyAction::EnterTempEnglish),
+        (KEY_T, CTRL | SHIFT, KeyAction::ToggleScript),
     ];
     let keys = KeyBindings::default();
     for (sym, mask, expected) in rows {

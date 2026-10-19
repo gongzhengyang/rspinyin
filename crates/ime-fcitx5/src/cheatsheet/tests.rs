@@ -132,8 +132,8 @@ fn test_build_default_config_yields_three_groups_with_a_fixed_entry_count() {
         .collect();
     assert_eq!(
         counts,
-        [3, 5, 4],
-        "组字: highlight, page, enter; 模式: three chords and two panels; 编辑: four rows"
+        [3, 6, 5],
+        "组字: highlight, page, enter; 模式: four chords and two panels, the script switch among them; 编辑: five rows, the pin chord among them"
     );
 }
 
@@ -199,16 +199,17 @@ fn test_build_lists_the_mode_chords_the_engine_table_declares() {
     // routing table does not answer would be exactly the lie this panel exists to
     // prevent.
     assert_eq!(
-        &named[..3],
+        &named[..4],
         &[
             ("Shift+Space", "全角 / 半角"),
             ("Ctrl+.", "中英标点"),
             ("Ctrl+Shift+E", "临时英文"),
+            ("Ctrl+Shift+T", "简 ↔ 繁"),
         ],
         "the chords are read out of the engine's table, in its order"
     );
     assert_eq!(
-        &named[3..],
+        &named[4..],
         &[("Ctrl+Shift+/", "命令面板"), ("Ctrl+Shift+P", "诊断面板")],
         "the two fixed panel chords close the group"
     );

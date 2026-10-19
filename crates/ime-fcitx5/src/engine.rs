@@ -167,6 +167,10 @@ const KEY_A: u32 = 0x0061;
 /// `FcitxKey_e`, the letter of the temporary-English chord; crate-visible like
 /// [`KEY_SPACE`].
 pub(crate) const KEY_E: u32 = 0x0065;
+/// `FcitxKey_p`, the letter of the pin chord; crate-visible like [`KEY_E`].
+pub(crate) const KEY_P: u32 = 0x0070;
+/// `FcitxKey_t`, the letter of the script chord; crate-visible like [`KEY_E`].
+pub(crate) const KEY_T: u32 = 0x0074;
 /// `FcitxKey_z`, the high end of the letter row.
 const KEY_Z: u32 = 0x007a;
 /// `FcitxKey_BackSpace`.
@@ -311,6 +315,11 @@ pub(crate) const CHORDS: &[Chord] = &[
         sym: KEY_E,
         mask: CTRL | SHIFT,
         action: KeyAction::EnterTempEnglish,
+    },
+    Chord {
+        sym: KEY_T,
+        mask: CTRL | SHIFT,
+        action: KeyAction::ToggleScript,
     },
 ];
 

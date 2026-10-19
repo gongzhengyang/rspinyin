@@ -52,6 +52,12 @@ fn manifest_with(entries: u64) -> Manifest {
             expanded_words: 250,
             added_keys: 300,
         },
+        polyphone_auto: PolyphoneAutoRecord {
+            assigned: 0,
+            flattened: 0,
+            manual: 0,
+            total: 0,
+        },
         sections: Vec::new(),
         dictionary: DictionaryRecord {
             path: "data/compiled/base.dict".to_owned(),
@@ -86,6 +92,12 @@ fn facts(sources: Vec<SourceIdentity>) -> BuildFacts {
             band_words: 1_000,
             expanded_words: 250,
             added_keys: 300,
+        },
+        polyphone_auto: PolyphoneAutoRecord {
+            assigned: 12,
+            flattened: 3,
+            manual: 5,
+            total: 20,
         },
         keys: 6_000,
     }

@@ -319,7 +319,30 @@ audits: check-deps check-unsafe check-no-grab check-net check-slint check-ui che
 # gate fail on a machine with no network. It is its own recipe and its own CI job
 # (`audit`), run where the network is available. `AGENTS.md` section 3.9 makes it a
 # pre-commit step for exactly that reason.
-ci: check audits check-host
+# The decode smoke baseline: the TSV pin that keeps "these keys must give this text"
+# true across ranking and dictionary work. An optional tier of `just ci` in the same
+# sense `check-host` is: it needs the compiled `data/compiled/base.dict`, which a
+# fresh checkout has not built yet, so the absence is a reported skip rather than a
+# red gate -- the dictionary is one `cargo run -p xtask -- dictc` away, and the CI `smoke` job
+# sets RSPINYIN_REQUIRE_SMOKE_DICT=1 to make a missing dictionary a failure there.
+smoke:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -f data/compiled/base.dict ]; then
+        if [ "${RSPINYIN_REQUIRE_SMOKE_DICT:-0}" = "1" ]; then
+            printf '%s\n' \
+                "smoke: data/compiled/base.dict is missing and RSPINYIN_REQUIRE_SMOKE_DICT=1" \
+                "smoke: makes that a failure. Build it with: cargo xtask dictc" >&2
+            exit 1
+        fi
+        printf '%s\n' \
+            "smoke: skipped: data/compiled/base.dict is not built, so the decode smoke" \
+            "smoke: baseline has nothing to decode against. Build it with: cargo xtask dictc" >&2
+        exit 0
+    fi
+    cargo run --quiet -p xtask -- testd-smoke
+
+ci: check audits check-host smoke
 
 # `just ci` with the host-ABI half required rather than optional: the same suite, but
 # a missing Fcitx5 development package is a failure instead of a reported skip.

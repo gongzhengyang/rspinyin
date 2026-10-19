@@ -44,7 +44,8 @@ use crate::ffi::emit_diagnostic;
 use crate::privacy_impl::LearningGate;
 
 use super::phrases::PHRASE_ADDED_CODE;
-use super::{Context, StepCtx};
+use super::context::Context;
+use super::StepCtx;
 
 /// What one round of effect execution did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -58,6 +59,8 @@ struct Applied {
     /// Whether the application's preedit area was emptied, which is the other thing the
     /// session waits for the host to confirm.
     preedit_cleared: bool,
+    /// Whether a pin toggle reached the store, which the session ranks again after.
+    pin_applied: bool,
 }
 
 impl Context {
@@ -98,6 +101,8 @@ impl Context {
                 pending = Some(SessionEvent::CommitDone);
             } else if applied.preedit_cleared {
                 pending = Some(SessionEvent::PreeditCleared);
+            } else if applied.pin_applied {
+                pending = Some(SessionEvent::PinApplied);
             }
         }
         acted
@@ -158,7 +163,7 @@ impl Context {
                     // record effect carries the key the user chose, before any
                     // transformation — so the dictionary never learns a widened
                     // spelling.
-                    let text = self.modes.transform_output(&text);
+                    let text = self.modes.transform_output(&text, self.script.index());
                     host.commit(self.ic, &text);
                     self.hide(HideReason::Committed, host);
                     applied.acted = true;
@@ -193,16 +198,26 @@ impl Context {
                     //
                     // The store answers whether anything was there to remove, and `false`
                     // is reported rather than swallowed: a key the plugin claimed and then
-                    // did nothing with is the class the shortcut table forbids. The three
+                    // did nothing with is the class the shortcut table forbids. The two
                     // ways `UserFreqSource::forget` answers `false` -- never learned,
-                    // pinned, read-only -- are not distinguished here, because only the
-                    // first is reachable today: pinning has no UI path yet, and read-only
-                    // mode is already reported with `data/readonly-mode` when the store
-                    // degrades. A source that gains a pinning path must widen this.
+                    // read-only -- are not distinguished here, because only the first is
+                    // reachable on this path: a read-only store is already reported with
+                    // `data/readonly-mode` when the store degrades. A pinned word is not a
+                    // refusal: the removal takes the pin with it.
                     if !ctx.env.user_freq.forget(&key) {
                         host.diagnose(self.ic, &ImeError::UserWordNotFound);
                     }
                     applied.acted = true;
+                }
+                Effect::ToggleUserPin { key, word } => {
+                    match ctx.env.user_freq.set_pinned(&key, Some(&word)) {
+                        Ok(()) => {
+                            crate::addon::probes::bump_user_pin();
+                            applied.acted = true;
+                            applied.pin_applied = true;
+                        }
+                        Err(err) => host.diagnose(self.ic, &err),
+                    }
                 }
                 Effect::Diagnose(err) => host.diagnose(self.ic, &err),
                 Effect::ModeFlash { bit } => {

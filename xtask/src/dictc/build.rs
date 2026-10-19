@@ -11,7 +11,7 @@
 //! deterministic by construction: every map it iterates is ordered, so the same
 //! words and thresholds always produce the same bytes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -22,7 +22,7 @@ use ime_dict::format::{
 };
 
 use super::normalize::{NormalizeReport, NormalizeRules};
-use super::source::Word;
+use super::source::{Word, baseline_key, compose_readings};
 
 /// Weight multiplier applied to the key a polyphone correction names.
 ///
@@ -35,8 +35,239 @@ const POLYPHONE_WEIGHT_FACTOR: u32 = 4;
 /// selects the head of the list instead of silently expanding everything.
 const FALLBACK_BAND_THRESHOLD: u32 = 100;
 
+/// The reading-frequency floor a stated reading must clear to survive.
+///
+/// Rime-ice's discipline, in percent: a word whose reading for a character
+/// disagrees with that character's top reading keeps the reading only when the
+/// reading carries at least `freq_ratio_pct` percent of the top reading's
+/// weighted usage across the word list itself. Below the line the word is
+/// flattened onto the top reading -- the data-driven counterpart of the manual
+/// L3c table, which stays the authority for the readings the floor rejects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PolyphoneRule {
+    /// Minimum percent of the character's top-reading usage a divergent reading
+    /// needs; `5` is rime-ice's 5:100 line.
+    pub(crate) freq_ratio_pct: u8,
+}
+
+/// What the automatic polyphone check decided, for the manifest and the gate.
+///
+/// The three buckets partition the words the pass examined -- every word whose
+/// stated reading disagrees with some character's top reading -- and
+/// `assigned + flattened + manual == total` is the no-silent-loss invariant the
+/// quality gate asserts over the manifest.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct PolyphoneAutoCounts {
+    /// Divergent words whose readings cleared the floor and were kept.
+    pub(crate) assigned: u64,
+    /// Divergent words flattened onto their characters' top readings.
+    pub(crate) flattened: u64,
+    /// Divergent words the L3c table states a reading for, left to it.
+    pub(crate) manual: u64,
+    /// Every word the pass examined; the buckets' sum.
+    pub(crate) total: u64,
+}
+
+/// Applies the automatic polyphone check to one word list, in place.
+///
+/// The evidence is the list itself: every word votes its weight for the
+/// `(character, reading)` pairs its key names, and a stated reading survives
+/// against its character's top reading by [`PolyphoneRule`]'s share of that
+/// vote. A word the L3c table names is exempt whole -- a row that took the
+/// trouble to state a reading has already been hand-verified -- and a word
+/// whose key already uses every character's top reading has nothing to check.
+/// Flattening replaces the key with the L3a baseline; the per-character reading
+/// lists are untouched, so the L3b expansion still reaches the readings the
+/// word lost from its baseline.
+///
+/// Deterministic and order-free: the vote is a sum over an ordered map, and
+/// each word's verdict depends on the votes alone, never on where the word
+/// sits in the list.
+pub(crate) fn apply_polyphone_rule(
+    words: &mut [Word],
+    l1: &BTreeMap<char, Vec<String>>,
+    manual: &BTreeSet<String>,
+    rule: PolyphoneRule,
+) -> PolyphoneAutoCounts {
+    // One vote per word: each `(character, reading)` pair a key names gains the
+    // word's weight. A `BTreeMap` keeps the sum independent of iteration order.
+    let mut votes: BTreeMap<(char, &str), u64> = BTreeMap::new();
+    for word in words.iter() {
+        let weight = u64::from(word.weight);
+        for (character, syllable) in word.text.chars().zip(word.key.split('\'')) {
+            *votes.entry((character, syllable)).or_default() += weight;
+        }
+    }
+    // The verdicts are decided against the immutable list and applied after the
+    // borrow ends: a flatten replaces the key with the L3a baseline, and every
+    // examined word's characters are in the L1 table -- a divergence is only
+    // detectable against a top reading -- so the recomposition cannot fail.
+    let mut counts = PolyphoneAutoCounts::default();
+    let mut flattened_keys: Vec<Option<String>> = Vec::with_capacity(words.len());
+    for word in words.iter() {
+        let divergences: Vec<(char, &str)> = word
+            .text
+            .chars()
+            .zip(word.key.split('\''))
+            .filter(|(character, syllable)| {
+                l1.get(character)
+                    .and_then(|readings| readings.first())
+                    .is_some_and(|top| {
+                        // The top reading is spelled tonelessly; the stated one went
+                        // through the same fold, so the strings compare directly.
+                        top != *syllable
+                    })
+            })
+            .collect();
+        if divergences.is_empty() {
+            flattened_keys.push(None);
+            continue;
+        }
+        counts.total += 1;
+        if manual.contains(&word.text) {
+            counts.manual += 1;
+            flattened_keys.push(None);
+            continue;
+        }
+        let survives = divergences.iter().all(|(character, syllable)| {
+            let stated = votes.get(&(*character, *syllable)).copied().unwrap_or(0);
+            let Some(top) = l1.get(character).and_then(|readings| readings.first()) else {
+                return false;
+            };
+            let top_votes = votes.get(&(*character, top.as_str())).copied().unwrap_or(0);
+            if top_votes == 0 {
+                // Nothing reads the character at the top reading, so there is
+                // no majority to lose to; the stated reading stands.
+                return true;
+            }
+            stated.saturating_mul(100) / top_votes >= u64::from(rule.freq_ratio_pct)
+        });
+        if survives {
+            counts.assigned += 1;
+            flattened_keys.push(None);
+            continue;
+        }
+        counts.flattened += 1;
+        flattened_keys.push(
+            compose_readings(&word.text, l1)
+                .and_then(|readings| baseline_key(&readings)),
+        );
+    }
+    for (word, key) in words.iter_mut().zip(flattened_keys) {
+        if let Some(baseline) = key {
+            word.key = baseline;
+        }
+    }
+    counts
+}
+
 /// How many expanded words the build log shows as a sample.
 const EXPANDED_EXAMPLES: usize = 12;
+
+/// What the two-character layer merge changed, for the build log.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct TwoCharMergeStats {
+    /// Words both sources hold, whose reading the huayu layer contributed.
+    pub(crate) overridden: u64,
+    /// Words only the huayu layer holds, added to the list.
+    pub(crate) added: u64,
+}
+
+/// Merges the huayu two-character layer into the jieba word list.
+///
+/// The two sources measure frequency on different scales -- jieba counts corpus
+/// occurrences, huayu counts input-method usage with a saturating field: its
+/// heaviest two thousand entries all sit between 62,000 and 64,288, hundreds of
+/// them on identical values, so the head of the huayu ranking is a tie cluster
+/// whose order would scramble the candidates a hold-out set actually asks for.
+/// The merge therefore takes each source where it is strong:
+///
+/// 1. a word both sources hold keeps its jieba weight -- the corpus ranking is
+///    the backbone the hold-out numbers were measured against -- and takes the
+///    huayu reading, which is the pinyin the IME-scene frequency was measured
+///    against and what the automatic polyphone check then judges;
+/// 2. a word only huayu holds is added at the tail of the ranking: one
+///    weight, the lightest jieba two-character weight carries. The corpus
+///    gives no evidence to rank a segmentation gap against, and a head
+///    placement is exactly what let colloquial bigrams the segmenter splits
+///    (`这是`, `的人`) displace the corpus-backed candidates a hold-out set
+///    asks for; entering at the tail keeps the word reachable and leaves the
+///    ordering to the user's own accumulation, which is the channel the
+///    learning design trusts with per-user truth anyway.
+///
+/// Words of any other length pass through untouched. Entries below `min_freq`
+/// are not admitted at all -- the remedy when the merged build outgrows its
+/// budget is a tighter huayu floor, not a bigger ceiling.
+///
+/// The rule is deterministic and order-free: a word's outcome is decided by
+/// whether the huayu source names it and by the total orders of the two
+/// rankings, never by the order either list happens to hold its rows.
+pub(crate) fn merge_two_char_layer(
+    jieba: &mut Vec<Word>,
+    huayu: Vec<Word>,
+    min_freq: u32,
+) -> TwoCharMergeStats {
+    let mut stats = TwoCharMergeStats::default();
+    // The huayu layer the floor admits, strongest first; the text breaks ties,
+    // which makes the order total whatever order the rows arrived in.
+    let mut admitted: Vec<Word> = huayu
+        .into_iter()
+        .filter(|word| word.text.chars().count() == 2 && word.weight >= min_freq)
+        .collect();
+    admitted.sort_by(|left, right| {
+        right
+            .weight
+            .cmp(&left.weight)
+            .then_with(|| left.text.cmp(&right.text))
+    });
+    // The two-character words jieba already holds: a huayu entry with a twin
+    // here is a reading upgrade, and one without is an addition.
+    let jieba_texts: BTreeSet<String> = jieba
+        .iter()
+        .filter(|word| word.text.chars().count() == 2)
+        .map(|word| word.text.clone())
+        .collect();
+
+    // The weight the added words enter at: the lightest two-character weight
+    // jieba carries, so they rank after everything the corpus backs.
+    let tail_weight = jieba
+        .iter()
+        .filter(|word| word.text.chars().count() == 2)
+        .map(|word| word.weight)
+        .min();
+
+    // Split the merge: a jieba word the admitted layer names stays at its
+    // jieba weight and takes the huayu reading in place, everything else
+    // stays put. The admitted layer is indexed once: a linear find per jieba
+    // word would be a quadratic walk over a quarter-million entries.
+    let admitted_by_text: BTreeMap<&str, &Word> =
+        admitted.iter().map(|word| (word.text.as_str(), word)).collect();
+    for word in jieba.iter_mut() {
+        if let Some(&huayu_word) = admitted_by_text.get(word.text.as_str()) {
+            word.key = huayu_word.key.clone();
+            word.readings = huayu_word.readings.clone();
+            word.polyphone = huayu_word.polyphone;
+            stats.overridden += 1;
+        }
+    }
+
+    // The words only huayu holds, entering at the ranking's tail.
+    let mut added: Vec<Word> = admitted
+        .iter()
+        .filter(|word| !jieba_texts.contains(word.text.as_str()))
+        .filter_map(|word| {
+            let weight = tail_weight?;
+            let mut added = word.clone();
+            added.weight = weight;
+            Some(added)
+        })
+        .collect();
+    stats.added = added.len() as u64;
+
+    jieba.append(&mut added);
+    stats
+}
+
 
 /// What the compiler measured, for the build log.
 #[derive(Debug, Default)]
@@ -107,6 +338,8 @@ pub(crate) struct Compiled {
     pub(crate) wordlist: Vec<u8>,
     /// `FST` payload.
     pub(crate) fst: Vec<u8>,
+    /// `BIGRAM` payload.
+    pub(crate) bigram: Vec<u8>,
     /// Measurements for the build log.
     pub(crate) stats: Stats,
 }
@@ -158,6 +391,7 @@ pub(crate) fn compile(
         hash_collisions: collisions,
         ..Stats::default()
     };
+    let bigram = Vec::new();
     let mut corrections_by_word: BTreeMap<&str, &str> = BTreeMap::new();
     for (word, reading) in corrections {
         corrections_by_word.insert(word.as_str(), reading.as_str());
@@ -281,6 +515,7 @@ pub(crate) fn compile(
         unigram,
         wordlist,
         fst: fst_builder.into_inner()?,
+        bigram,
         stats,
     })
 }

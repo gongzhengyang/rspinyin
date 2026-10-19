@@ -48,8 +48,8 @@ use ime_dict::paths::READONLY_CODE;
 use ime_dict::recover::USER_DB_RECOVERED_CODE;
 use ime_dict::user_db::{
     BACKUP_FAILED_CODE, BACKUP_RESTORED_CODE, BackupConfig, BackupOutcome, COMMIT_BATCH,
-    COMMIT_INTERVAL_MS, Clock, LARGE_STORE_CODE, RestoreOutcome, SLOW_DISK_CODE, SystemClock,
-    UserDb, backup_dir, list_backups, recover_user_db_with_backup, run_backup,
+    COMMIT_INTERVAL_MS, Clock, DecayParams, LARGE_STORE_CODE, RestoreOutcome, SLOW_DISK_CODE,
+    SystemClock, UserDb, backup_dir, list_backups, recover_user_db_with_backup, run_backup,
 };
 use ime_types::ImeError;
 
@@ -159,7 +159,8 @@ pub(super) fn recover_stores() -> Result<(), ImeError> {
         Ok(outcome) => emit_notice(restore_notice(outcome)),
         Err(error) => report_step_failure("store-recovery", &error),
     }
-    match UserDb::open(&paths.user_db) {
+    let decay = decay_policy(&data);
+    match UserDb::open_with_decay(&paths.user_db, Box::new(SystemClock::new()), decay) {
         Ok(db) => {
             if !db.is_hydrated() {
                 // The store is past its hydration ceiling and reads fall back to the
@@ -195,6 +196,20 @@ fn backup_policy(data: &DataConfig, directory: &Path) -> BackupConfig {
         BackupConfig::disabled(directory)
     };
     policy.with_keep(data.backup_keep)
+}
+
+/// The decay policy the `[data]` section names.
+///
+/// Configuration repair has already replaced an unusable key with its shipped value; the
+/// fallback is the second line of defence that keeps a hand-built store open if the two
+/// layers ever disagree.
+///
+/// # Panics
+///
+/// Never.
+fn decay_policy(data: &DataConfig) -> DecayParams {
+    DecayParams::new(data.decay_half_life_ticks, data.decay_floor)
+        .unwrap_or_else(|_| DecayParams::default())
 }
 
 /// The batching window a `data.durability` value names, as [`UserDb::set_flush_window`]
@@ -481,6 +496,24 @@ mod tests {
             (1, 0),
             "immediate is the zero window: one record, no delay"
         );
+    }
+
+    #[test]
+    fn test_decay_policy_follows_the_data_section_and_repairs_a_bad_value() {
+        let valid = DataConfig {
+            decay_half_life_ticks: 200,
+            decay_floor: 128,
+            ..DataConfig::default()
+        };
+        let expected = DecayParams::new(200, 128).expect("the repaired configuration is valid");
+        assert_eq!(decay_policy(&valid), expected);
+
+        let invalid = DataConfig {
+            decay_half_life_ticks: 0,
+            decay_floor: -1,
+            ..DataConfig::default()
+        };
+        assert_eq!(decay_policy(&invalid), DecayParams::default());
     }
 
     #[test]

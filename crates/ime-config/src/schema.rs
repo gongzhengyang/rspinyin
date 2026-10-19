@@ -182,6 +182,19 @@ closed_set! {
 }
 
 closed_set! {
+    /// How sessions are shared across input contexts: the `engine.share_state` key.
+    ///
+    /// `Context` keeps one session per input context, which is the historical
+    /// behaviour: two windows of one application hold independent mode bits. `Program`
+    /// shares one session across every input context of the same application, so the
+    /// mode bits survive a window switch inside one application; the sessions of two
+    /// different applications never touch. Applications are told apart by the hashed
+    /// identifier the privacy layer computes, never by a name.
+    ShareState, key = "engine.share_state", message = "unknown sharing mode",
+    default = Context, values = { Context => "context", Program => "program" }
+}
+
+closed_set! {
     /// Which colour scheme the candidate window uses: the `theme.scheme` key.
     ThemeScheme, key = "theme.scheme", message = "unknown scheme",
     default = Auto, values = { Auto => "auto", Light => "light", Dark => "dark" }
@@ -382,6 +395,83 @@ pub struct EngineConfig {
     /// configuration's half of the engine's `DecodeFlags::ABBREV` switch; the decoder
     /// reads no configuration, so the host layer turns this flag into that bit.
     pub abbrev: bool,
+    /// `share_state`: how sessions are shared across input contexts.
+    pub share_state: ShareState,
+}
+
+/// The `[fuzzy]` section: the fuzzy-equivalence classes the decoder widens with.
+///
+/// Every key is a bool and no value a bool can hold is invalid, so the section needs
+/// no repair -- the only rule it carries is the projection's, which turns the section
+/// into the decode flags and is `ime-core`'s to state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FuzzyConfig {
+    /// `enabled`: the master switch. On, it selects every class at once.
+    pub enabled: bool,
+    /// `zh_z`: `zh` and `z` read as each other.
+    pub zh_z: bool,
+    /// `ch_c`: `ch` and `c` read as each other.
+    pub ch_c: bool,
+    /// `sh_s`: `sh` and `s` read as each other.
+    pub sh_s: bool,
+    /// `n_l`: `n` and `l` read as each other.
+    pub n_l: bool,
+    /// `f_h`: `f` and `h` read as each other.
+    pub f_h: bool,
+    /// `an_ang`: `an` and `ang` read as each other.
+    pub an_ang: bool,
+    /// `en_eng`: `en` and `eng` read as each other.
+    pub en_eng: bool,
+    /// `in_ing`: `in` and `ing` read as each other.
+    pub in_ing: bool,
+}
+
+impl FuzzyConfig {
+    /// The class bits this section selects, without the master switch.
+    ///
+    /// A `true` selects its class; the master switch is not consulted here because
+    /// the projection is what OR-scope it over the selection. An all-false section
+    /// answers an empty mask, which projects to no flags at all.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn class_flags(&self) -> ime_types::DecodeFlags {
+        let mut flags = ime_types::DecodeFlags::empty();
+        for (selected, flag) in [
+            (self.zh_z, ime_types::DecodeFlags::FUZZY_ZH_Z),
+            (self.ch_c, ime_types::DecodeFlags::FUZZY_CH_C),
+            (self.sh_s, ime_types::DecodeFlags::FUZZY_SH_S),
+            (self.n_l, ime_types::DecodeFlags::FUZZY_N_L),
+            (self.f_h, ime_types::DecodeFlags::FUZZY_F_H),
+            (self.an_ang, ime_types::DecodeFlags::FUZZY_AN_ANG),
+            (self.en_eng, ime_types::DecodeFlags::FUZZY_EN_ENG),
+            (self.in_ing, ime_types::DecodeFlags::FUZZY_IN_ING),
+        ] {
+            if selected {
+                flags.insert(flag);
+            }
+        }
+        flags
+    }
+}
+
+impl Default for FuzzyConfig {
+    /// The shipped values: everything off. A build with no `[fuzzy]` section at all
+    /// decodes exactly as this default decodes.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            zh_z: false,
+            ch_c: false,
+            sh_s: false,
+            n_l: false,
+            f_h: false,
+            an_ang: false,
+            en_eng: false,
+            in_ing: false,
+        }
+    }
 }
 
 /// The `[ui.animation]` section: how the candidate window fades in and out.
@@ -497,6 +587,8 @@ pub struct Config {
     pub keys: KeysConfig,
     /// The `[scheme]` section.
     pub scheme: SchemeConfig,
+    /// The `[fuzzy]` section.
+    pub fuzzy: FuzzyConfig,
     /// The `[phrases]` section.
     pub phrases: PhraseConfig,
     /// The `[data]` section.
@@ -515,6 +607,7 @@ impl Default for Config {
         Self {
             schema_version: CONFIG_SCHEMA_VERSION,
             scheme: SchemeConfig::default(),
+            fuzzy: FuzzyConfig::default(),
             engine: EngineConfig {
                 punct_mode: PunctMode::Chinese,
                 full_width: false,
@@ -523,6 +616,7 @@ impl Default for Config {
                 max_raw_len: MAX_RAW_LEN,
                 verify_dict_on_load: VerifyDictOnLoad::Full,
                 abbrev: false,
+                share_state: ShareState::Context,
             },
             ui: UiConfig {
                 client_preedit: false,

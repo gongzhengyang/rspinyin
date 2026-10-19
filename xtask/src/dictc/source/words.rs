@@ -214,7 +214,7 @@ pub(crate) fn load_words(
 /// Returns `None` when any character is missing from the L1 table, which is what
 /// makes a row unusable: without a reading for every character there is neither a
 /// baseline key nor an expansion.
-pub(super) fn compose_readings(
+pub(crate) fn compose_readings(
     word: &str,
     l1: &BTreeMap<char, Vec<String>>,
 ) -> Option<Vec<Vec<String>>> {
@@ -230,7 +230,7 @@ pub(super) fn compose_readings(
 }
 
 /// Builds the L3a baseline key: the first reading of each character.
-pub(super) fn baseline_key(readings: &[Vec<String>]) -> Option<String> {
+pub(crate) fn baseline_key(readings: &[Vec<String>]) -> Option<String> {
     let mut syllables = Vec::with_capacity(readings.len());
     for list in readings {
         syllables.push(list.first()?.clone());

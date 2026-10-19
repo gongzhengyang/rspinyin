@@ -1,4 +1,4 @@
-//! The binary dictionary container, version 1.
+//! The binary dictionary container, versions 1 and 2.
 //!
 //! Responsibility: own the on-disk layout of `base.dict` and the primitives the
 //! writer and the reader are both built from -- the 64-byte header, the section
@@ -15,7 +15,7 @@
 //! ```text
 //! offset  size  field
 //!      0     4  magic           b"RSPD"
-//!      4     2  format_version  1
+//!      4     2  format_version  1 (legacy) or 2 (BIGRAM optional)
 //!      6     2  flags           bit0: a BIGRAM section is present (v1: never)
 //!      8     4  header_size     64
 //!     12     4  section_count   6
@@ -59,8 +59,14 @@ use ime_types::DictError;
 /// Container magic, the first four bytes of every dictionary file.
 pub const MAGIC: [u8; 4] = *b"RSPD";
 
-/// Container format version this module reads and writes.
-pub const FORMAT_VERSION: u16 = 1;
+/// Earliest container format version this module reads.
+pub const FORMAT_VERSION_V1: u16 = 1;
+
+/// Container format version this module writes.
+pub const FORMAT_VERSION: u16 = 2;
+
+/// Latest container format version this module reads.
+pub const FORMAT_VERSION_MAX: u16 = FORMAT_VERSION;
 
 /// Size of the fixed header in bytes.
 pub const HEADER_SIZE: usize = 64;
@@ -84,8 +90,11 @@ pub const SECTION_ALIGN: u64 = 8;
 /// `flags` bit 0: a `BIGRAM` section is present. Always clear in version 1.
 pub const FLAG_BIGRAM_PRESENT: u16 = 0b0000_0001;
 
-/// Every bit of `flags` defined by version 1.
+/// Every bit of `flags` defined through version 2.
 pub const FLAG_MASK: u16 = FLAG_BIGRAM_PRESENT;
+
+/// Encoded size of one `BIGRAM` element: `u64 key, u16 prob_q12, u16 pad`.
+pub const BIGRAM_ENTRY_SIZE: usize = 12;
 
 /// Upper bound on `DictEntry::word_len`, in UTF-8 bytes (32 Han characters).
 pub const MAX_WORD_LEN: u16 = 96;
@@ -170,7 +179,7 @@ impl SectionKind {
     ];
 
     /// Returns the kind a raw `kind` field denotes, or `None` if it is not one of
-    /// the six kinds version 1 defines.
+    /// the six kinds the format defines.
     ///
     /// # Examples
     ///
@@ -206,8 +215,8 @@ impl SectionKind {
 /// The parsed 64-byte header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
-    /// Container format version; always [`FORMAT_VERSION`] for a file this crate
-    /// is willing to read.
+    /// Container format version, from [`FORMAT_VERSION_V1`] through
+    /// [`FORMAT_VERSION_MAX`].
     pub format_version: u16,
     /// Bit set of `FLAG_*`; unknown bits are rejected.
     pub flags: u16,
@@ -272,6 +281,42 @@ pub struct DictEntry {
     pub char_count: u8,
     /// Reserved padding, always zero; keeps the record 16 bytes wide.
     pub _pad: [u8; 3],
+}
+
+/// One bigram observation: a pair key and its conditional probability.
+///
+/// The record is encoded field by field, like every other container row. `pair_key`
+/// is `hash(previous) << 32 | hash(next)`, which gives the section a total sort
+/// order and makes lookup a binary search without allocating.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BigramRecord {
+    /// Hashed `(previous, next)` word pair.
+    pub pair_key: u64,
+    /// Conditional probability in Q12, at most [`PROB_Q12_MAX`].
+    pub prob_q12: u16,
+    /// Reserved; the encoder writes zero and the reader requires it.
+    pub _pad: u16,
+}
+
+impl BigramRecord {
+    /// Creates a record with the reserved field cleared.
+    pub fn new(pair_key: u64, prob_q12: u16) -> Self {
+        Self {
+            pair_key,
+            prob_q12,
+            _pad: 0,
+        }
+    }
+
+    /// Encodes one little-endian row.
+    pub fn encode(self) -> [u8; BIGRAM_ENTRY_SIZE] {
+        let mut row = [0; BIGRAM_ENTRY_SIZE];
+        row[0..8].copy_from_slice(&self.pair_key.to_le_bytes());
+        row[8..10].copy_from_slice(&self.prob_q12.to_le_bytes());
+        row[10..12].copy_from_slice(&self._pad.to_le_bytes());
+        row
+    }
 }
 
 /// Encoded width of [`DictEntry`], asserted at compile time below.
@@ -569,7 +614,7 @@ pub fn parse_header(bytes: &[u8]) -> Result<Header, DictError> {
         return Err(DictError::MagicMismatch);
     }
     let format_version = read_u16(bytes, 4, "format_version")?;
-    if format_version != FORMAT_VERSION {
+    if !(FORMAT_VERSION_V1..=FORMAT_VERSION_MAX).contains(&format_version) {
         return Err(DictError::FormatVersion {
             found: format_version,
         });

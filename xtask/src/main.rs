@@ -134,6 +134,12 @@ enum Command {
     /// Not boxed: the argument struct is a path, a list of identifiers and a module code,
     /// far smaller than the boxed variants above.
     TestdSuite(testd::suite::SuiteArgs),
+    /// Run the TSV decode smoke baseline, or regenerate its core band from the holdout
+    /// set.
+    ///
+    /// Not boxed: the argument struct is two paths and two flags, far smaller than the
+    /// boxed variants above.
+    TestdSmoke(testd::smoke::SmokeArgs),
     /// Read the frame mirror an armed test session published, assert on it, and
     /// optionally keep a private copy of the snapshot.
     ///
@@ -196,6 +202,7 @@ fn main() -> anyhow::Result<()> {
         Command::TestdClient(args) => testd::commit_readback::run(*args),
         Command::TestdEngine(args) => testd::engine::run(*args),
         Command::TestdSuite(args) => testd::suite::run(args),
+        Command::TestdSmoke(args) => testd::smoke::run(args),
         Command::TestMirror(args) => testd::mirror_cli::run(*args),
         Command::Capture(args) => testd::capture_cli::run(args),
     }

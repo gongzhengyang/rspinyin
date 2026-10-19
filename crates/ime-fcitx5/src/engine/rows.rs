@@ -322,6 +322,14 @@ const ROWS: &[Row] = &[
         accepts: Accepts::CtrlOnly,
         action: ctrl_delete_forget,
     },
+    // The pin chord: `Ctrl+P` pins or unpins the highlighted candidate for the input
+    // the user typed. The same fixed-chord discipline as the delete row above, and the
+    // same guards: it answers only while a composition has a highlight to act on.
+    Row {
+        keys: Keys::One(crate::engine::KEY_P),
+        accepts: Accepts::CtrlOnly,
+        action: ctrl_p_pin,
+    },
 ];
 
 /// The `Tab` row, whose two shapes `keys.highlight_keys` names separately.
@@ -627,6 +635,23 @@ fn ctrl_delete_forget(_sym: u32, _state: u32, _keys: &KeyBindings) -> Option<Key
     Some(KeyAction::ForgetHighlighted)
 }
 
+/// The `Ctrl+P` row: pin or unpin the highlighted candidate for this input.
+///
+/// The row names the key in every context, and the guards that keep it inside a
+/// composition are the arbitrator's and the session's, asked by the layers that hold a
+/// session: with nothing composing, or with no candidate under the highlight, the key
+/// travels on to the application instead of being swallowed by a row that could do
+/// nothing with it. The answer is fixed rather than read from `[keys]`, the same
+/// decision the delete chord makes: a management verb is the one gesture this table
+/// must never let a stray document silence.
+///
+/// # Panics
+///
+/// Never.
+fn ctrl_p_pin(_sym: u32, _state: u32, _keys: &KeyBindings) -> Option<KeyAction> {
+    Some(KeyAction::PinHighlighted)
+}
+
 /// The highlight move a binding names, or `None` when the configuration did not bind it.
 ///
 /// # Panics
@@ -725,6 +750,28 @@ mod tests {
         assert_eq!(
             translate_key(&press(crate::engine::KEY_BACKSPACE, CTRL), &keys),
             KeyAction::Ignore
+        );
+    }
+
+    #[test]
+    fn test_ctrl_p_is_the_fixed_pin_chord() {
+        // The same shape as the delete chord: Ctrl alone, and only Ctrl. The bare letter
+        // types -- `p` is in the letter row -- and Ctrl+Shift+P is the diagnostics
+        // chord's shape, so only one modifier set reaches the pin.
+        let keys = KeyBindings::default();
+        assert_eq!(
+            translate_key(&press(crate::engine::KEY_P, CTRL), &keys),
+            KeyAction::PinHighlighted
+        );
+        assert_eq!(
+            translate_key(&press(crate::engine::KEY_P, 0), &keys),
+            KeyAction::InputChar('p'),
+            "the bare letter types"
+        );
+        assert_eq!(
+            translate_key(&press(crate::engine::KEY_P, CTRL | SHIFT), &keys),
+            KeyAction::Ignore,
+            "Ctrl+Shift+P is the diagnostics chord's shape, not the pin's"
         );
     }
 }

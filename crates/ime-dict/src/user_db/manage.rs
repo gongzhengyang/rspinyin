@@ -59,18 +59,18 @@ pub struct UserRecord {
 /// The reason a removal did or did not happen, for the diagnostics surface.
 ///
 /// [`UserFreqSource::forget`] answers `true` for [`ForgetOutcome::Removed`] and `false` for
-/// the other three, because the frozen trait asks only whether a record went away. The
+/// the other two, because the frozen trait asks only whether a record went away. The
 /// distinction between "there was nothing there" and "the store is read-only" is what the
 /// host layer needs in order to report `dict/user-word-not-found` or `data/readonly-mode`,
-/// which is why the store also offers [`UserDb::forget_with_outcome`].
+/// which is why the store also offers [`UserDb::forget_with_outcome`]. A pinned record is
+/// not a separate outcome: the removal takes the pin with it, so forgetting a pinned word
+/// is a [`ForgetOutcome::Removed`] like any other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForgetOutcome {
     /// A record was removed.
     Removed,
     /// The key was never learned.
     NotFound,
-    /// The key is pinned; the user must unpin it first.
-    Pinned,
     /// The store is in read-only mode.
     Readonly,
 }
@@ -93,8 +93,9 @@ impl UserDb {
     /// that is the whole store and the answer is exact. A store past the ceiling keeps only
     /// the keys this session has touched, so a key it has not seen reports
     /// [`ForgetOutcome::NotFound`] although the tombstone still removes its row; the
-    /// alternative is a read transaction on the input path, which `ASM-04` forbids. The pin
-    /// check degrades the same way, and for the same reason.
+    /// alternative is a read transaction on the input path, which `ASM-04` forbids. The
+    /// pin cleanup's key search degrades the same way, and for the same reason: it walks
+    /// the loaded key map, which every open fills.
     pub fn forget_with_outcome(&self, key: &str) -> ForgetOutcome {
         self.inner.forget(key)
     }
@@ -125,10 +126,14 @@ impl Inner {
     /// Records a tombstone for `key` and reports what the store knew about it.
     ///
     /// The checks run in the order the outcome names them: a read-only store changes nothing
-    /// at all, a pinned record is protected, and everything else is tombstoned -- including
-    /// a key the store has never seen, because the delete the flush performs is idempotent
-    /// and a caller that forgets a word twice must not be told the second call did something
-    /// different from the first.
+    /// at all, and everything else is tombstoned -- including a key the store has never
+    /// seen, because the delete the flush performs is idempotent and a caller that forgets a
+    /// word twice must not be told the second call did something different from the first.
+    ///
+    /// A pinned word is removed like any other, and the pin goes with it: the word is
+    /// gone, and a pin on an absent word is a statement about nothing. Every input key
+    /// that named the word loses its row, so the removal leaves no pin the ranking could
+    /// still read and no key the toggle could still release.
     ///
     /// The tombstone set is bounded by [`PENDING_CAPACITY`], the same ceiling the delta map
     /// has, and a flush is started when it is reached. The batch size and the interval are
@@ -157,9 +162,6 @@ impl Inner {
             let pending = lock(&self.pending);
             pending.entries.contains_key(key) || cached
         };
-        if lock(&self.pinned).contains(key) {
-            return ForgetOutcome::Pinned;
-        }
         let due = {
             let mut pending = lock(&self.pending);
             // A key with an unflushed delta loses it: the user is saying the word is not
@@ -175,10 +177,46 @@ impl Inner {
             // the caller polls.
             self.request_flush();
         }
+        // The pin outlives the tombstone's in-memory moment by nothing: the set loses the
+        // word on this call, so the very next decode ranks the remaining candidates
+        // without it.
+        self.release_pins(key);
         if present {
             ForgetOutcome::Removed
         } else {
             ForgetOutcome::NotFound
+        }
+    }
+
+    /// Clears every pin that names `word`, in memory and in the pending write queues.
+    ///
+    /// The word-level set is what the ranking reads, so it goes first; the key rows go
+    /// with it, because a key row whose word answers nothing is a lie the toggle would
+    /// repeat. The three locks take their turns in separate scopes, the same discipline
+    /// [`super::source`] fixes for the toggle: none is held while another is taken.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    fn release_pins(&self, word: &str) {
+        if !lock(&self.pinned).remove(word) {
+            return;
+        }
+        let owners: Vec<Box<str>> = lock(&self.key_pins)
+            .iter()
+            .filter(|(_, pinned)| pinned.as_ref() == word)
+            .map(|(owner, _)| owner.clone())
+            .collect();
+        {
+            let mut pins = lock(&self.key_pins);
+            for owner in &owners {
+                pins.remove(owner.as_ref());
+            }
+        }
+        let mut pending = lock(&self.pending);
+        pending.pins.insert(Box::from(word), false);
+        for owner in owners {
+            pending.key_rows.insert(owner, None);
         }
     }
 

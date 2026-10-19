@@ -59,6 +59,18 @@ pub struct DagEdge {
     pub syllable: SyllableId,
     /// Whether the boundary after this syllable was pinned by the user.
     pub kind: EdgeKind,
+    /// Score penalty the edge carries, in the same Q8 unit the lattice's extension
+    /// edges carry.
+    ///
+    /// Zero for an edge the input spells exactly, and
+    /// [`FUZZY_PENALTY_Q8`](crate::fuzzy::FUZZY_PENALTY_Q8) for a fuzzy variant: the
+    /// variant covers the same bytes the input spells but names a different
+    /// syllable, and the penalty is what keeps the exact reading ahead of the
+    /// widened one at equal dictionary weight. The graph records the penalty rather
+    /// than applying it -- ranking is the sweep's -- and the exact edges always come
+    /// before the variants of the same span, so even a sweep that ignores the field
+    /// falls the right way on a tie.
+    pub penalty_q8: i32,
 }
 
 impl DagEdge {
@@ -124,6 +136,27 @@ impl SyllableDag {
     /// decoder answers with a pass-through candidate) can therefore keep reading the
     /// segmentation data after an error.
     pub fn build(&mut self, raw: &str) -> Result<(), DecodeError> {
+        self.build_for(raw, ime_types::DecodeFlags::empty())
+    }
+
+    /// Rebuilds the graph for `raw`, widening the spans the fuzzy classes in `flags`
+    /// select.
+    ///
+    /// The widening is a per-span companion edge, not a rewrite: an edge the input
+    /// spells exactly keeps its bytes, its syllable and its place in the edge order,
+    /// and a class the flags select adds one edge beside it that covers the same
+    /// bytes and names the equivalent syllable. With no class selected the two
+    /// builds answer byte-identical graphs, which is what keeps the all-off decode
+    /// identical to a build without the section.
+    ///
+    /// # Errors
+    ///
+    /// As [`SyllableDag::build`].
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn build_for(&mut self, raw: &str, flags: ime_types::DecodeFlags) -> Result<(), DecodeError> {
         if raw.is_empty() {
             self.reset();
             return Err(DecodeError::EmptyInput);
@@ -144,7 +177,7 @@ impl SyllableDag {
         // request can never produce more than `MAX_NORMALIZED_LEN` bytes.
         self.len = u16::try_from(len).unwrap_or(u16::MAX);
         self.prepare_nodes(len);
-        self.build_edges(&normalized);
+        self.build_edges(&normalized, flags);
         self.compute_reachability(len);
         self.normalized = normalized;
 
@@ -236,7 +269,7 @@ impl SyllableDag {
     }
 
     /// Fills the edge list of every node from the syllable table.
-    fn build_edges(&mut self, normalized: &str) {
+    fn build_edges(&mut self, normalized: &str, flags: ime_types::DecodeFlags) {
         let bytes = normalized.as_bytes();
         let len = bytes.len();
         // A syllable never spans a boundary marker, so node `i` may only reach as far
@@ -287,7 +320,24 @@ impl SyllableDag {
                     end: u16::try_from(edge_end).unwrap_or(u16::MAX),
                     syllable,
                     kind,
+                    penalty_q8: 0,
                 });
+                // The fuzzy classes widen the span in place: a variant syllable covers
+                // the bytes the input spells and names the equivalent syllable, so
+                // `zong` reaches the words `zhong` is stored under. The exact edge is
+                // pushed first, so the order alone keeps the exact reading ahead; the
+                // penalty is what keeps it ahead on the score. With no class selected
+                // the set holds the exact syllable alone and this loop adds nothing,
+                // which is what makes the closed-section decode identical to a build
+                // without the section.
+                for variant in crate::fuzzy::variants(syllable, flags).iter().skip(1) {
+                    self.edges[i].push(DagEdge {
+                        end: u16::try_from(edge_end).unwrap_or(u16::MAX),
+                        syllable: *variant,
+                        kind,
+                        penalty_q8: crate::fuzzy::FUZZY_PENALTY_Q8,
+                    });
+                }
             }
         }
     }

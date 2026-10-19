@@ -4,9 +4,14 @@
 //! directory and drives the clock through [`Clock`], so nothing here depends on a real
 //! XDG directory, on the wall clock, or on the state left by another test.
 
+use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
 use super::*;
+
+mod fallback;
+mod migration;
+mod pins;
 
 /// The keys the tests type: short, distinct, and never taken from a real dictionary, so
 /// that the store is exercised against literals only.
@@ -111,125 +116,6 @@ pub(super) fn open_in(dir: &Path, clock: TestClock) -> UserDb {
     UserDb::open_with(db_path(dir), Box::new(clock)).expect("opening the user store")
 }
 
-/// Creates the smallest schema-1 store a migration fixture needs.
-///
-/// The rows are arbitrary by design: they only need to prove that the upgrade preserves
-/// exactly what the old build persisted, rather than recreating it from test defaults.
-fn write_v1_store(path: &Path, rows: &[(&str, u32, u64)]) {
-    let database = Database::create(path).expect("creating the v1 fixture");
-    let mut txn = database.begin_write().expect("writing the v1 fixture");
-    {
-        let mut meta = txn.open_table(META).expect("opening the fixture metadata");
-        meta.insert(SCHEMA_KEY, SCHEMA_VERSION_V1)
-            .expect("stamping schema 1");
-        let mut words = txn
-            .open_table(USER_WORDS)
-            .expect("opening the fixture words");
-        for (key, commits, last_used_ms) in rows {
-            words
-                .insert(*key, (*commits, *last_used_ms))
-                .expect("inserting the fixture row");
-        }
-    }
-    txn.set_durability(Durability::Immediate);
-    txn.commit().expect("committing the v1 fixture");
-}
-
-#[test]
-fn test_user_db_migrates_v1_rows_once_and_preserves_their_values() {
-    let dir = temp_dir("migrate-v1");
-    write_v1_store(&db_path(&dir), &[("old", 7, 1_000), ("newer", 3, 2_000)]);
-
-    let db = UserDb::open_with(db_path(&dir), Box::new(TestClock::default()))
-        .expect("opening the v1 fixture");
-    assert!(db.schema_migrated(), "an upgrade open reports migration");
-    assert!(!db.is_readonly(), "a successful migration stays writable");
-    assert_eq!(db.record_count().expect("counting"), 2);
-    assert_eq!(db.freq("old"), 7);
-    assert_eq!(db.freq("newer"), 3);
-    drop(db);
-
-    let reopened = UserDb::open_with(db_path(&dir), Box::new(TestClock::default()))
-        .expect("reopening the migrated store");
-    assert!(
-        !reopened.schema_migrated(),
-        "the second open sees the current schema"
-    );
-    assert!(!reopened.is_readonly());
-    assert_eq!(reopened.record_count().expect("counting"), 2);
-
-    let txn = reopened
-        .inner
-        .db
-        .begin_read()
-        .expect("reading the migrated rows");
-    assert!(
-        txn.open_table(USER_WORDS).is_err(),
-        "a completed upgrade drops the v1 table"
-    );
-    let words = txn.open_table(USER_WORDS_V2).expect("opening the v2 rows");
-    let (commits, last_used_ms, tick, dee) = words
-        .get("old")
-        .expect("reading old")
-        .expect("the row survived migration")
-        .value();
-    assert_eq!((commits, last_used_ms, tick), (7, 1_000, 0));
-    assert_eq!(dee_q16(dee), 7 << 16);
-}
-
-#[test]
-fn test_user_db_migrates_an_empty_v1_store_without_writes() {
-    let dir = temp_dir("migrate-v1-empty");
-    write_v1_store(&db_path(&dir), &[]);
-    let db = UserDb::open_with(db_path(&dir), Box::new(TestClock::default()))
-        .expect("opening the empty fixture");
-    assert!(db.schema_migrated());
-    assert!(!db.is_readonly());
-    assert_eq!(db.record_count().expect("counting"), 0);
-    assert_eq!(db.freq("never-typed"), 0);
-}
-
-#[test]
-fn test_user_db_failed_v1_migration_degrades_readonly_and_can_retry() {
-    let dir = temp_dir("migrate-v1-failed");
-    let backup = dir.join("user.redb.v1");
-    write_v1_store(&db_path(&dir), &[("kept", 9, 3_000)]);
-    std::fs::copy(db_path(&dir), &backup).expect("copying the v1 backup");
-
-    inject_migration_failure();
-    let degraded = UserDb::open_with(db_path(&dir), Box::new(TestClock::default()))
-        .expect("a failed migration still opens read-only");
-    assert!(degraded.schema_migrated());
-    assert!(degraded.is_readonly());
-    assert_eq!(degraded.freq("kept"), 9);
-    degraded.record("kept", 0);
-    assert_eq!(
-        degraded.pending_len(),
-        0,
-        "a degraded store records nothing"
-    );
-    drop(degraded);
-
-    let mut restored = open_in(&dir, TestClock::default());
-    assert!(
-        restored.schema_migrated(),
-        "the untouched file migrates on retry"
-    );
-    assert!(!restored.is_readonly());
-    assert_eq!(restored.freq("kept"), 9);
-    restored.record("kept", 0);
-    restored.final_commit().expect("writing after recovery");
-    drop(restored);
-
-    let from_backup = dir.join("from-v1-backup.redb");
-    std::fs::copy(&backup, &from_backup).expect("restoring the raw v1 backup");
-    let db = UserDb::open_with(&from_backup, Box::new(TestClock::default()))
-        .expect("a raw v1 backup is a valid migration source");
-    assert!(db.schema_migrated());
-    assert!(!db.is_readonly());
-    assert_eq!(db.freq("kept"), 9);
-}
-
 /// Resident set size in bytes, read from `/proc/self/statm`.
 ///
 /// Linux reports the resident page count there; the page size is taken as 4096, which is
@@ -276,14 +162,74 @@ fn test_user_db_final_commit_survives_a_reopen() {
 fn test_user_db_decay_sinks_an_aged_word_below_a_fresh_one() {
     let dir = temp_dir("decay-order");
     let db = open_in(&dir, TestClock::default());
-    db.record("old", 0);
+    // Four commits each, so the comparison is between equal histories whose only
+    // difference is age: the accumulator floor is one commit, which a single-commit
+    // record never sinks below, and a pair of single-commit records would read as an
+    // even 1 < 1.
+    for _ in 0..4 {
+        db.record("old", 0);
+    }
     // Advancing the logical clock with unrelated commits ages the first word by
-    // usage, not wall time; two halvings are far enough to cross the integer floor.
+    // usage, not wall time; two halvings sink four uses to one while the fresh word
+    // keeps all four.
     for index in 0..300u32 {
         db.record(&format!("filler{index}"), 0);
     }
-    db.record("fresh", 0);
+    for _ in 0..4 {
+        db.record("fresh", 0);
+    }
+    // The loop crossed the batch size several times, so the flush thread has been
+    // draining while the records arrived. The reads below answer the map the last
+    // flush adopted, and a read that lands between a flush's drain and its adopt
+    // undercounts by one window -- which is the one window that can put the fresh
+    // word below the aged one. Committing first pins the read to a known generation.
+    let mut db = db;
+    db.final_commit().expect("flushing the whole batch");
     assert!(db.freq("old") < db.freq("fresh"));
+}
+
+#[test]
+fn test_user_db_idle_fold_advances_a_flushed_record_to_the_current_tick() {
+    let dir = temp_dir("idle-fold");
+    let mut db = UserDb::open_with_decay(
+        db_path(&dir),
+        Box::new(TestClock::default()),
+        DecayParams::new(u32::MAX, 1 << 16).expect("a long half-life disables decay"),
+    )
+    .expect("opening the user store");
+    db.record("old", 0);
+    db.final_commit().expect("flushing the old record");
+
+    // Unrelated pending records advance the shared logical clock without touching the
+    // flushed row, which gives the fold a real age to close.
+    for index in 0..4u32 {
+        db.record(&format!("filler{index}"), 0);
+    }
+    let now = db.inner.tick.load(Ordering::Relaxed);
+    let folded = db.inner.fold_forward().expect("folding forward");
+    assert_eq!(folded, 1, "only the flushed record had a stale tick");
+
+    let txn = db.inner.db.begin_read().expect("reading the folded row");
+    let words = txn.open_table(USER_WORDS_V2).expect("opening the rows");
+    let (_, _, tick, dee) = words
+        .get("old")
+        .expect("reading old")
+        .expect("the folded row survived")
+        .value();
+    drop(words);
+    drop(txn);
+    assert_eq!(tick, now, "the disk tick is current after the idle fold");
+    assert_eq!(dee_q16(dee), 1 << 16, "a long half-life keeps usage intact");
+
+    db.final_commit().expect("flushing the unrelated records");
+    drop(db);
+    let reopened = UserDb::open_with_decay(
+        db_path(&dir),
+        Box::new(TestClock::default()),
+        DecayParams::new(u32::MAX, 1 << 16).expect("a long half-life disables decay"),
+    )
+    .expect("reopening the user store");
+    assert_eq!(reopened.freq("old"), 1, "the fold preserves the frequency");
 }
 
 #[test]
@@ -819,111 +765,5 @@ fn test_user_db_freq_does_not_fall_across_a_flush() {
         db.committed_len(),
         Some(1),
         "the delta moved into the loaded counts"
-    );
-}
-
-#[test]
-fn test_user_db_miss_cache_exists_only_for_a_store_that_was_not_loaded() {
-    let dir = temp_dir("cache-presence");
-    let mut db = open_in(&dir, TestClock::default());
-    db.record("ni'hao", 0);
-    db.final_commit().expect("flushing");
-    drop(db);
-
-    let loaded = open_in(&dir, TestClock::default());
-    assert!(loaded.is_hydrated(), "the fixture store has to be loaded");
-    assert!(
-        !loaded.has_miss_cache(),
-        "a loaded store answers from memory and needs no cache"
-    );
-    // The store holds an exclusive lock on its file, so the handle has to go before the
-    // fallback one opens.
-    drop(loaded);
-
-    let fallback_clock = TestClock::default();
-    let opened = UserDb::open_with_hydrate_cap(db_path(&dir), Box::new(fallback_clock), 0);
-    let fallback = opened.expect("opening the user store");
-    assert!(!fallback.is_hydrated(), "a ceiling of zero loads nothing");
-    assert!(
-        fallback.has_miss_cache(),
-        "the fallback path is the one that needs the cache"
-    );
-}
-
-#[test]
-fn test_user_db_fallback_read_adds_the_delta_to_a_cached_value() {
-    // An entry holds what the *file* holds, and the delta is added on every read. Caching the
-    // total instead would freeze the answer at the first read, and the record path no longer
-    // bumps the cache -- it may not take a second lock -- so nothing would correct it.
-    let dir = temp_dir("fallback-delta");
-    let mut db = open_in(&dir, TestClock::default());
-    db.record("ni'hao", 0);
-    db.final_commit().expect("flushing");
-    drop(db);
-
-    let fallback_clock = TestClock::default();
-    let opened = UserDb::open_with_hydrate_cap(db_path(&dir), Box::new(fallback_clock), 0);
-    let db = opened.expect("opening the user store");
-    assert!(!db.is_hydrated(), "the fixture has to take the fallback");
-    assert_eq!(db.freq("ni'hao"), 1, "the first read comes from the store");
-    db.record("ni'hao", 0);
-    assert_eq!(
-        db.freq("ni'hao"),
-        2,
-        "the record is added to the value the cache remembers"
-    );
-}
-
-#[test]
-fn test_user_db_fallback_read_after_a_flush_sees_the_written_value() {
-    let dir = temp_dir("fallback-flush");
-    let mut db = open_in(&dir, TestClock::default());
-    db.record("ni'hao", 0);
-    db.final_commit().expect("flushing");
-    drop(db);
-
-    let fallback_clock = TestClock::default();
-    let opened = UserDb::open_with_hydrate_cap(db_path(&dir), Box::new(fallback_clock), 0);
-    let mut db = opened.expect("opening the user store");
-    assert!(!db.is_hydrated(), "the fixture has to take the fallback");
-    assert_eq!(db.freq("ni'hao"), 1, "the first read comes from the store");
-    db.record("ni'hao", 0);
-    db.final_commit().expect("flushing the record");
-    assert_eq!(
-        db.freq("ni'hao"),
-        2,
-        "the flush moved the delta into the file and brought the entry with it"
-    );
-}
-
-#[test]
-#[ignore = "soak measurement: only meaningful on an idle machine"]
-fn test_user_db_loading_stays_within_its_memory_ceiling() {
-    let dir = temp_dir("load-rss");
-    let mut db = open_in(&dir, TestClock::default());
-    let mut keys: Vec<String> = Vec::with_capacity(HYDRATE_CAP as usize);
-    for index in 0..HYDRATE_CAP {
-        keys.push(format!("soak{index}"));
-    }
-    for key in &keys {
-        db.record(key, 0);
-    }
-    db.final_commit().expect("flushing the soak run");
-    drop(db);
-
-    let before = resident_bytes();
-    assert!(
-        before > 0,
-        "the resident set cannot be read on this platform"
-    );
-    let db = open_in(&dir, TestClock::default());
-    let drift = resident_bytes().saturating_sub(before);
-    assert!(db.is_hydrated(), "a store at the ceiling is loaded");
-    assert_eq!(db.committed_len(), Some(HYDRATE_CAP as usize));
-    assert_eq!(db.freq("soak0"), 1, "the loaded counts answer");
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(
-        drift <= HYDRATE_RSS_CEILING,
-        "loading {HYDRATE_CAP} records added {drift} bytes"
     );
 }

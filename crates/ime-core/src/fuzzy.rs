@@ -91,6 +91,68 @@ pub const FUZZY_PENALTY_Q8: i32 = 12 << 8;
 const CLASS_BITS: u16 =
     (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8);
 
+/// Every bit the fuzzy namespace owns: the master switch and the eight classes.
+///
+/// The session keeps its decode request's fuzzy bits inside this mask, so a
+/// configuration reload that turns a class off clears its bit instead of leaving it
+/// set behind whatever the request held from the keystroke before.
+pub const FLAG_MASK: DecodeFlags = DecodeFlags::FUZZY
+    .union(DecodeFlags::FUZZY_ZH_Z)
+    .union(DecodeFlags::FUZZY_CH_C)
+    .union(DecodeFlags::FUZZY_SH_S)
+    .union(DecodeFlags::FUZZY_N_L)
+    .union(DecodeFlags::FUZZY_AN_ANG)
+    .union(DecodeFlags::FUZZY_EN_ENG)
+    .union(DecodeFlags::FUZZY_IN_ING)
+    .union(DecodeFlags::FUZZY_F_H);
+
+/// Projects the `[fuzzy]` section of a configuration onto the decode flags.
+///
+/// `enabled` is the section's master switch: on, it selects every class at once.
+/// `classes` carries the individual switches, and a `true` among them selects its
+/// class even with the master switch off, which is what lets a user turn one class
+/// on without taking the rest. The master [`DecodeFlags::FUZZY`] bit is set exactly
+/// when at least one class results -- the consistency the decode gate
+/// [`is_enabled`] requires -- and an empty selection projects to no flags at all,
+/// which decodes exactly as a build without the section does.
+///
+/// # Errors
+///
+/// Never.
+///
+/// # Panics
+///
+/// Never.
+///
+/// # Examples
+///
+/// ```
+/// use ime_core::fuzzy::projection;
+/// use ime_types::DecodeFlags;
+///
+/// let one = projection(false, DecodeFlags::FUZZY_ZH_Z);
+/// assert!(one.contains(DecodeFlags::FUZZY), "one class switches the master on");
+/// assert!(one.contains(DecodeFlags::FUZZY_ZH_Z));
+/// let all = projection(true, DecodeFlags::empty());
+/// assert!(
+///     all.contains(DecodeFlags::FUZZY_F_H),
+///     "the master switch selects every class"
+/// );
+/// assert_eq!(projection(false, DecodeFlags::empty()), DecodeFlags::empty());
+/// ```
+pub fn projection(enabled: bool, classes: DecodeFlags) -> DecodeFlags {
+    let mut selected = DecodeFlags::empty();
+    for class in CLASSES {
+        if enabled || classes.contains(class.flag) {
+            selected.insert(class.flag);
+        }
+    }
+    if selected.is_empty() {
+        return DecodeFlags::empty();
+    }
+    selected | DecodeFlags::FUZZY
+}
+
 /// Longest spelling a substitution can build.
 ///
 /// Twice the longest syllable in the table, which is more than a substitution can

@@ -445,6 +445,29 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_puts_a_pinned_word_first_through_the_frequency_cap() {
+        // `UserDb` answers `u32::MAX` for a word the user pinned: the value drives the
+        // scoring formula's logarithmic user term to its ceiling, so the pinned word
+        // lifts above a rival of the same key while every path score stays finite. The
+        // language model is set against the pin to prove the cap -- not the dictionary
+        // order -- moves the word; the gap the pin bridges is one the cap covers, which
+        // is the design's own reach: a pin outranks close rivals, not the whole list.
+        let lexicon = MockLexicon::with(&[("de", "的"), ("de", "得")]);
+        let mut lm = InMemoryLm::new();
+        lm.insert_unigram("得", -128);
+        lm.insert_unigram("的", -384);
+        assert_eq!(decode("de", &lexicon, &lm).candidates[0].text, "得");
+        let pinned = MockUserFreq::with(&[("的", u32::MAX)]);
+        let ranked = decode_user("de", &lexicon, &pinned, &lm);
+        assert_eq!(ranked.candidates[0].text, "的", "the pin lifts 的 past 得");
+        // Releasing the pin is the same key answering zero again, and the model's
+        // order returns.
+        let released = MockUserFreq::with(&[("的", 0)]);
+        let restored = decode_user("de", &lexicon, &released, &lm);
+        assert_eq!(restored.candidates[0].text, "得");
+    }
+
+    #[test]
     fn test_decode_ranks_by_the_language_model_between_two_readings() {
         let lexicon = MockLexicon::with(&[("xian", "先"), ("xi", "西"), ("an", "安")]);
         let mut split = InMemoryLm::new();

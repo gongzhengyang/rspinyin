@@ -123,6 +123,13 @@ type Drained = Vec<(Box<str>, Delta)>;
 /// The tombstones one flush takes out of the delta map.
 type Removed = Vec<Box<str>>;
 
+/// The pin changes one flush takes out of the delta map.
+type Pinned = Vec<(Box<str>, bool)>;
+
+/// The key-pin rows one flush takes out of the delta map: the input key, and the word
+/// its row names -- or `None` for a row to delete.
+type KeyRows = Vec<(Box<str>, Option<Box<str>>)>;
+
 /// How long an explicit flush waits for the flush thread to stand aside.
 ///
 /// The bound is what keeps a disk that has stopped answering from holding the owner's
@@ -269,9 +276,13 @@ impl Inner {
         // two clocks at different moments would date one batch from two instants.
         let now_nanos = self.clock.now_nanos();
         let now_ms = self.clock.now_ms();
-        let (drained, removed): (Drained, Removed) = {
+        let (drained, removed, pinned, key_rows): (Drained, Removed, Pinned, KeyRows) = {
             let mut pending = lock(&self.pending);
-            if pending.entries.is_empty() && pending.removed.is_empty() {
+            if pending.entries.is_empty()
+                && pending.removed.is_empty()
+                && pending.pins.is_empty()
+                && pending.key_rows.is_empty()
+            {
                 return Ok(CommitReport::default());
             }
             pending.last_flush_nanos = now_nanos;
@@ -279,10 +290,12 @@ impl Inner {
             for (key, delta) in pending.entries.drain() {
                 drained.push((key, delta.stamped(now_ms, now_nanos)));
             }
-            (drained, pending.removed.drain().collect())
+            let pinned = pending.pins.drain().collect();
+            let key_rows = pending.key_rows.drain().collect();
+            (drained, pending.removed.drain().collect(), pinned, key_rows)
         };
         let started = self.clock.now_nanos();
-        match self.write_batch(&drained, &removed, durability) {
+        match self.write_batch(&drained, &removed, &pinned, &key_rows, durability) {
             Ok(()) => {
                 let elapsed_us = self.clock.now_nanos().saturating_sub(started) / 1_000;
                 Ok(self.report(drained.len(), elapsed_us))
@@ -307,6 +320,8 @@ impl Inner {
         &self,
         drained: &[(Box<str>, Delta)],
         removed: &[Box<str>],
+        pinned: &[(Box<str>, bool)],
+        key_rows: &[(Box<str>, Option<Box<str>>)],
         durability: Durability,
     ) -> Result<(), String> {
         #[cfg(test)]
@@ -325,11 +340,36 @@ impl Inner {
             let mut meta = txn
                 .open_table(USER_META)
                 .map_err(|error| error.to_string())?;
+            let mut key_pins = txn
+                .open_table(USER_KEY_PINS)
+                .map_err(|error| error.to_string())?;
             for key in removed {
                 words
                     .remove(key.as_ref())
                     .map_err(|error| error.to_string())?;
                 meta.remove(key.as_ref())
+                    .map_err(|error| error.to_string())?;
+            }
+            // The pin's two rows land together: the flag the ranking reads, and the
+            // key association the toggle reads. A key row without its flag would rank
+            // nothing, and a flag without its key row could never be released by the
+            // key that owns it.
+            for (key, word) in key_rows {
+                match word {
+                    Some(word) => key_pins
+                        .insert(key.as_ref(), word.as_ref())
+                        .map_err(|error| error.to_string())?,
+                    None => key_pins
+                        .remove(key.as_ref())
+                        .map_err(|error| error.to_string())?,
+                };
+            }
+            for (key, is_pinned) in pinned {
+                let previous = meta
+                    .get(key.as_ref())
+                    .map_err(|error| error.to_string())?
+                    .map_or((0, 0), |guard| guard.value());
+                meta.insert(key.as_ref(), (previous.0, u64::from(*is_pinned)))
                     .map_err(|error| error.to_string())?;
             }
             for (key, delta) in drained {

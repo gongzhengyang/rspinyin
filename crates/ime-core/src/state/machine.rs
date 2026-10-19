@@ -147,6 +147,19 @@ pub struct Session {
     ctx: FrameContext,
     /// The word and weight a commit in flight should record once it lands.
     pending: Option<PendingCommit>,
+    /// The fuzzy-equivalence classes this session decodes with, latched from the
+    /// configuration beside the scheme.
+    ///
+    /// The latch runs while the session is idle, like the scheme's: a reload mid
+    /// composition changes the reading from the next composition on, for the same
+    /// reason the scheme's does -- re-reading the input under the caret would move
+    /// the candidate list the user is looking at. The value is already the projected
+    /// mask (master bit consistent with the class bits), so the decode request
+    /// assembles from it without consulting anything else.
+    fuzzy: ime_types::DecodeFlags,
+    /// Whether the session expands initial-letter abbreviations, latched beside the
+    /// fuzzy classes for the same reason.
+    abbrev: bool,
     /// Id the next composition will take.
     next_session_id: u64,
 }
@@ -201,6 +214,8 @@ pub enum SessionEvent {
     /// Like [`SessionEvent::PreeditCleared`], this is a row of the design's table
     /// rather than a variant of the card's sketch.
     CommitDone,
+    /// The host applied a pin toggle; the session re-decodes the unchanged input.
+    PinApplied,
 }
 
 impl Default for Session {
@@ -245,6 +260,8 @@ impl Session {
             preedit: empty_preedit(),
             ctx: FrameContext::default(),
             pending: None,
+            fuzzy: ime_types::DecodeFlags::empty(),
+            abbrev: false,
             next_session_id: next,
         }
     }
@@ -452,6 +469,14 @@ impl Session {
             SchemeId::FULL
         };
         self.request.flags.set(DecodeFlags::SHUANGPIN, rewritten);
+        self.request.flags.set(DecodeFlags::ABBREV, self.abbrev);
+        // The fuzzy classes arrive as the mask the projection latched with the scheme:
+        // removed first, so a reload that turned a class off clears its bit instead of
+        // leaving it set from the keystroke before, then inserted whole. With the mask
+        // empty this is a no-op, which is what keeps the all-off decode byte-identical
+        // to a build without the section.
+        self.request.flags.remove(crate::fuzzy::FLAG_MASK);
+        self.request.flags.insert(self.fuzzy);
         env.decoder.decode_into(
             &mut self.scratch,
             &self.request,
@@ -739,6 +764,11 @@ pub fn step(
 ) -> Effects {
     if sess.state == SessionState::Idle {
         sess.scheme.latch(cfg.scheme, cfg.keep_full_pinyin);
+        // The fuzzy classes latch beside the scheme, and are clamped to the mask the
+        // fuzzy namespace owns: a caller that hands over bits from somewhere else
+        // cannot leave them set in a request the segmentation layer reads.
+        sess.fuzzy = cfg.fuzzy & crate::fuzzy::FLAG_MASK;
+        sess.abbrev = cfg.abbrev;
     }
     let mut ctx = Ctx::new(cfg, env);
     sess.on_event(ev, &mut ctx);

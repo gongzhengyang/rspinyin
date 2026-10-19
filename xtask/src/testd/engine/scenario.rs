@@ -51,6 +51,13 @@ pub struct Scenario {
     /// about the scenario rather than one about a missing field.
     #[serde(default)]
     pub steps: Vec<Step>,
+    /// The fuzzy-equivalence classes the scenario decodes with, named as the
+    /// `[fuzzy]` section names them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fuzzy: Vec<String>,
+    /// Whether the scenario decodes with the abbreviation switch on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub abbrev: bool,
 }
 
 impl Scenario {
@@ -68,7 +75,43 @@ impl Scenario {
             name: name.into(),
             dictionary,
             steps,
+            fuzzy: Vec::new(),
+            abbrev: false,
         }
+    }
+
+    /// Decodes the scenario with the abbreviation switch on.
+    ///
+    /// # Returns
+    ///
+    /// The scenario, with the switch set.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn abbrev(mut self) -> Self {
+        self.abbrev = true;
+        self
+    }
+
+    /// Names the fuzzy-equivalence classes the scenario decodes with.
+    ///
+    /// The names are the `[fuzzy]` section's own keys (`zh_z`, `n_l`, ...), and each
+    /// one selects its class the way an individual `true` does: the master switch is
+    /// implied. A name the class table does not know is a load error, not a silent
+    /// miss -- a scenario that names a class nothing selects would otherwise pass for
+    /// the wrong reason.
+    ///
+    /// # Returns
+    ///
+    /// The scenario, with the classes set.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn fuzzy(mut self, classes: &[&str]) -> Self {
+        self.fuzzy = classes.iter().map(|name| String::from(*name)).collect();
+        self
     }
 }
 

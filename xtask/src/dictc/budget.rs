@@ -50,12 +50,13 @@ use crate::budget::{BUDGETS_FILE, read_budgets};
 /// alone the 400k-entry window. 190 per-mille (3.8 MiB) fits that window's worst case
 /// (~335k keys) with headroom, and `docs/dev/features.md` `ASM-05` states the same
 /// number.
-const SECTION_SHARES: [(SectionKind, u32); 5] = [
+const SECTION_SHARES: [(SectionKind, u32); 6] = [
     (SectionKind::StrPool, 200),
     (SectionKind::Entries, 325),
     (SectionKind::WordList, 100),
     (SectionKind::Fst, 190),
     (SectionKind::Unigram, 175),
+    (SectionKind::Bigram, 125),
 ];
 
 /// Share of the container ceiling the five payload sections may use together.
@@ -84,7 +85,7 @@ const ABSENT: &str = "—";
 pub struct SegmentBudgets {
     /// `BUDGET-SIZE-02`: the ceiling on the whole `base.dict` container.
     container_bytes: u64,
-    /// The ceiling on the five payload sections together.
+    /// The ceiling on the six payload sections together.
     payload_bytes: u64,
     /// The ceiling on each payload section.
     sections: BTreeMap<SectionKind, u64>,
@@ -135,7 +136,7 @@ impl SegmentBudgets {
         self.container_bytes
     }
 
-    /// The ceiling on the five payload sections together.
+    /// The ceiling on the six payload sections together.
     pub fn total(&self) -> u64 {
         self.payload_bytes
     }
@@ -368,6 +369,11 @@ pub fn account(compiled: &Compiled, budgets: &SegmentBudgets) -> Result<Ledger> 
         SectionKind::Unigram,
         Some(words),
         compiled.unigram.len() as u64,
+    )?;
+    ledger.record(
+        SectionKind::Bigram,
+        Some((compiled.bigram.len() / ime_dict::format::BIGRAM_ENTRY_SIZE) as u64),
+        compiled.bigram.len() as u64,
     )?;
     ledger.record(
         SectionKind::WordList,

@@ -106,6 +106,17 @@ impl Fixture {
         }
     }
 
+    /// Builds a fixture over `rows` alone, for the tests whose dictionary must hold
+    /// exactly the readings the case names.
+    pub(super) fn with_dictionary(rows: &'static [(&'static str, &'static str)]) -> Self {
+        Self {
+            lexicon: MockLexicon::with(rows),
+            user: RecordingUser::default(),
+            lm: InMemoryLm::new(),
+            decoder: Decoder::default(),
+        }
+    }
+
     /// Borrows the sources as the environment a step reads.
     pub(super) fn env(&self) -> SessionEnv<'_> {
         SessionEnv {
@@ -128,6 +139,7 @@ fn kind(effect: &Effect) -> &'static str {
         Effect::RecordUserFreq { .. } => "record-user-freq",
         Effect::AddPhrase { .. } => "add-phrase",
         Effect::ForgetUserWord { .. } => "forget-user-word",
+        Effect::ToggleUserPin { .. } => "toggle-user-pin",
         Effect::Diagnose(_) => "diagnose",
         Effect::SetClientPreedit(_) => "set-client-preedit",
         Effect::ModeFlash { .. } => "mode-flash",
@@ -191,6 +203,14 @@ pub(super) fn committed(effects: &[Effect]) -> Option<&str> {
 pub(super) fn recorded(effects: &[Effect]) -> Option<(&str, u16)> {
     effects.iter().find_map(|effect| match effect {
         Effect::RecordUserFreq { key, weight_hint } => Some((key.as_str(), *weight_hint)),
+        _ => None,
+    })
+}
+
+/// Returns the input key and word of the pin toggle the step asked for.
+pub(super) fn pin_toggle(effects: &[Effect]) -> Option<(&str, &str)> {
+    effects.iter().find_map(|effect| match effect {
+        Effect::ToggleUserPin { key, word } => Some((key.as_str(), word.as_str())),
         _ => None,
     })
 }

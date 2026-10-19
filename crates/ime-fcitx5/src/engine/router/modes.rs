@@ -40,8 +40,10 @@
 use std::borrow::Cow;
 
 use ime_core::passthrough::{PassthroughFlags, PunctMode, transform_committed};
+use ime_core::script::to_traditional;
 use ime_core::state::effects::ModeBit;
 use ime_dict::paths;
+use ime_dict::script::ScriptIndex;
 use ime_types::{KeyAction, StatusStrip};
 
 use crate::engine::host::Host;
@@ -197,6 +199,30 @@ fn strip_label(facts: NoticeFacts, mode_label: &'static str) -> &'static str {
     select_notice(facts).unwrap_or(mode_label)
 }
 
+/// The two output bits a fresh context starts from, as the configuration projects them.
+///
+/// The switches stay runtime state — the chords flip them while typing — and this value
+/// is only where they start: a reloaded document reaches the contexts created after it,
+/// and an in-flight session keeps its own bits (0.4 rule 10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutputProjection {
+    /// `[engine] full_width`: whether committed ASCII is widened.
+    pub full_width: bool,
+    /// `[engine] punct_mode = "chinese"`: whether committed marks are Chinese.
+    pub punct_full: bool,
+}
+
+impl Default for OutputProjection {
+    /// The shipped document's values, which is also what keeps the no-document path
+    /// and a fresh installation one behaviour.
+    fn default() -> Self {
+        Self {
+            full_width: false,
+            punct_full: true,
+        }
+    }
+}
+
 /// The mode bits the engine owns.
 ///
 /// The session does not hold them: the language switch *is* Fcitx5's input-method state,
@@ -212,24 +238,47 @@ pub(super) struct Modes {
     is_full_width: bool,
     /// Whether the punctuation the plugin commits is Chinese.
     is_punct_full: bool,
+    /// Whether the text the plugin commits is converted to traditional before it
+    /// leaves. The conversion itself reads an index this struct cannot hold -- the
+    /// bits stay `Copy`, and the index is one shared read-only table -- so the bits
+    /// say *whether* and the commit site says *through what*; the two meet at
+    /// [`Modes::transform_output`].
+    pub(super) is_traditional: bool,
+}
+
+impl Modes {
+    /// A context whose output bits start where the configuration says.
+    ///
+    /// The two bits are the only values the projection carries: Chinese mode is the
+    /// host's own answer (mirrored, never initialised here), and the script bit starts
+    /// off in every context because a toggle the user made is per-context state, not a
+    /// document default.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn from_projection(projection: OutputProjection) -> Self {
+        Self {
+            is_chinese: true,
+            is_full_width: projection.full_width,
+            is_punct_full: projection.punct_full,
+            is_traditional: false,
+        }
+    }
 }
 
 impl Default for Modes {
-    /// A freshly activated context: Chinese, half width, Chinese punctuation — the three
-    /// values the shipped configuration declares.
+    /// A freshly activated context under the shipped document: Chinese, half width,
+    /// Chinese punctuation.
     ///
     /// The two output bits are the `[engine]` section's own defaults (`punct_mode`
-    /// "chinese", `full_width` false). They live here rather than in a second projection
-    /// because the switches are runtime state — the user flips them while typing — and
-    /// the configuration only says where they start; this constructor is therefore the
-    /// one place the document's defaults and the engine's switches can drift, which is
-    /// why both sides of the alignment are named in one sentence.
+    /// "chinese", `full_width` false). A live context takes its initials from the
+    /// configuration projection through [`Modes::from_projection`] instead; this
+    /// constructor is the shipped-projection value under another name, and the test
+    /// that pins the projection to the built-in document is what keeps the two from
+    /// drifting.
     fn default() -> Self {
-        Self {
-            is_chinese: true,
-            is_full_width: false,
-            is_punct_full: true,
-        }
+        Self::from_projection(OutputProjection::default())
     }
 }
 
@@ -356,18 +405,36 @@ impl Modes {
     /// # Arguments
     ///
     /// * `text` — the text a commit effect is about to hand to the host.
+    /// * `script` — the variant table the script bit converts through, or `None` when
+    ///   this build holds no table. The bit and the table are asked for separately
+    ///   because only one of them is per-context state; a `None` beside a set bit is
+    ///   the degraded toggle's own do-nothing, and cannot arise in a live context
+    ///   because the toggle refuses to set the bit without a table.
     ///
     /// # Returns
     ///
     /// The text to commit. It borrows `text` whenever no character changes — the whole
     /// hot path, a commit of Chinese candidates included — so a commit the mode bits
-    /// cannot alter allocates nothing.
+    /// cannot alter allocates nothing. The traditional conversion is the one mode that
+    /// allocates, and only when the bit is set.
     ///
     /// # Panics
     ///
     /// Never.
-    pub(super) fn transform_output<'a>(&self, text: &'a str) -> Cow<'a, str> {
-        transform_committed(text, self.is_punct_full, self.is_full_width)
+    pub(super) fn transform_output<'a>(
+        &self,
+        text: &'a str,
+        script: Option<&ScriptIndex>,
+    ) -> Cow<'a, str> {
+        let text = transform_committed(text, self.is_punct_full, self.is_full_width);
+        if self.is_traditional {
+            Cow::from(match script {
+                Some(index) => to_traditional(&text, index),
+                None => text.into_owned(),
+            })
+        } else {
+            text
+        }
     }
 
     /// The passthrough policy's view of this context, as one value for `classify`.

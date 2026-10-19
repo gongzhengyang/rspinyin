@@ -17,7 +17,7 @@ pub use crate::reload::{ConfigStore, FILE_NAME, ReloadOutcome, default_path};
 pub use crate::schema::{
     AnimationConfig, Config, DEFAULT_BACKUP_KEEP, DEFAULT_PHRASE_ENTRIES, DataConfig,
     DiagnosticsConfig, DigitZero, Durability, EngineConfig, KeyName, KeysConfig, LogLevel,
-    MAX_BACKUP_KEEP, MAX_PHRASE_ENTRIES, PhraseConfig, PunctMode, Rgb, ThemeConfig, ThemeScheme,
-    UiConfig, VerifyDictOnLoad,
+    MAX_BACKUP_KEEP, MAX_PHRASE_ENTRIES, PhraseConfig, PunctMode, Rgb, ShareState, ThemeConfig,
+    ThemeScheme, UiConfig, VerifyDictOnLoad,
 };
 pub use crate::scheme::{CustomSchemeConfig, SchemeChoice, SchemeConfig};

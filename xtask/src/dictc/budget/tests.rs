@@ -17,14 +17,15 @@ use super::*;
 ///
 /// The sizes are passed as `[STRPOOL, ENTRIES, WORDLIST, FST, UNIGRAM]`, which is
 /// the order the size table lists them in.
-fn compiled(words: u64, sizes: [usize; 5]) -> Compiled {
-    let [strpool, entries, wordlist, fst, unigram] = sizes;
+fn compiled(words: u64, sizes: [usize; 6]) -> Compiled {
+    let [strpool, entries, wordlist, fst, unigram, bigram] = sizes;
     Compiled {
         entries: vec![0; entries],
         strpool: vec![0; strpool],
         unigram: vec![0; unigram],
         wordlist: vec![0; wordlist],
         fst: vec![0; fst],
+        bigram: vec![0; bigram],
         stats: Stats {
             words,
             ..Stats::default()
@@ -49,6 +50,7 @@ fn test_from_container_ceiling_reproduces_the_spec_table() {
     assert_eq!(budgets.section(SectionKind::WordList), Some(2_097_152));
     assert_eq!(budgets.section(SectionKind::Fst), Some(3_984_588));
     assert_eq!(budgets.section(SectionKind::Unigram), Some(3_670_016));
+    assert_eq!(budgets.section(SectionKind::Bigram), Some(2_621_440));
     assert_eq!(budgets.total(), 18_350_080);
 }
 
@@ -61,8 +63,8 @@ fn test_from_container_ceiling_of_zero_yields_zero_ceilings() {
     }
     assert_eq!(
         budgets.sections().len(),
-        5,
-        "a zero ceiling still names all five sections"
+        6,
+        "a zero ceiling still names all six sections"
     );
 }
 
@@ -152,19 +154,16 @@ fn test_sections_lists_the_table_rows_in_order() {
             SectionKind::WordList,
             SectionKind::Fst,
             SectionKind::Unigram,
+            SectionKind::Bigram,
         ],
         "the order is the order the size gate parses"
     );
 }
 
 #[test]
-fn test_section_of_an_unbudgeted_kind_is_none() {
+fn test_section_of_every_payload_kind_is_budgeted() {
     let budgets = small_budgets();
-    assert_eq!(
-        budgets.section(SectionKind::Bigram),
-        None,
-        "the bigram section is reserved and always empty in version 1"
-    );
+    assert_eq!(budgets.section(SectionKind::Bigram), Some(128_000));
     assert!(budgets.section(SectionKind::Fst).is_some());
 }
 
@@ -176,6 +175,7 @@ fn test_scope_label_matches_the_table_contract() {
     assert_eq!(Scope::Section(SectionKind::WordList).label(), "WordList");
     assert_eq!(Scope::Section(SectionKind::Fst).label(), "Fst");
     assert_eq!(Scope::Section(SectionKind::Unigram).label(), "Unigram");
+    assert_eq!(Scope::Section(SectionKind::Bigram).label(), "Bigram");
     assert_ne!(
         Scope::Section(SectionKind::StrPool).label(),
         SectionKind::StrPool.name(),
@@ -327,6 +327,7 @@ fn test_render_matches_the_stats_table_contract() {
         "WordList      4,567      90,000     102,400",
         "Fst               —     120,000     194,560",
         "Unigram       1,234     170,000     179,200",
+        "Bigram            —           0     128,000",
         "TOTAL             —     680,000     896,000",
     ]
     .join("\n");
@@ -338,15 +339,15 @@ fn test_render_matches_the_stats_table_contract() {
 }
 
 #[test]
-fn test_account_measures_the_five_payload_sections() {
-    // Sizes are [STRPOOL, ENTRIES, WORDLIST, FST, UNIGRAM].
+fn test_account_measures_the_six_payload_sections() {
+    // Sizes are [STRPOOL, ENTRIES, WORDLIST, FST, UNIGRAM, BIGRAM].
     let container = compiled(
         320_000,
-        [3_142_016, 5_120_000, 1_656_000, 2_310_144, 2_560_000],
+        [3_142_016, 5_120_000, 1_656_000, 2_310_144, 2_560_000, 0],
     );
     let ledger = account(&container, &small_budgets()).expect("accounting");
 
-    assert_eq!(ledger.usage().len(), 5);
+    assert_eq!(ledger.usage().len(), 6);
     assert_eq!(
         ledger
             .usage_of(SectionKind::Entries)
@@ -383,7 +384,7 @@ fn test_account_measures_the_five_payload_sections() {
 
 #[test]
 fn test_account_of_an_empty_compilation_is_within_budget() {
-    let container = compiled(0, [0, 0, 0, 0, 0]);
+    let container = compiled(0, [0, 0, 0, 0, 0, 0]);
     let ledger = account(&container, &small_budgets()).expect("accounting");
     assert_eq!(ledger.total_bytes(), 0);
     assert!(
@@ -395,7 +396,7 @@ fn test_account_of_an_empty_compilation_is_within_budget() {
 #[test]
 fn test_enforce_accepts_a_build_inside_the_budgets() {
     let root = repo_root().expect("the repository root");
-    let container = compiled(1_000, [1_000, 16_000, 4_000, 8_000, 8_000]);
+    let container = compiled(1_000, [1_000, 16_000, 4_000, 8_000, 8_000, 0]);
     let ledger = enforce(&root, &container).expect("a small build fits");
     assert_eq!(ledger.total_bytes(), 37_000);
     assert!(ledger.is_within());
@@ -408,7 +409,7 @@ fn test_enforce_fails_a_build_past_a_section_ceiling() {
     let cap = budgets
         .section(SectionKind::Fst)
         .expect("the fst has a ceiling");
-    let container = compiled(1, [0, 0, 0, cap as usize + 1, 0]);
+    let container = compiled(1, [0, 0, 0, cap as usize + 1, 0, 0]);
     let failure = enforce(&root, &container).expect_err("one byte past the ceiling must fail");
     let message = failure.to_string();
     assert!(

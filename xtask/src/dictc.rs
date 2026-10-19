@@ -24,22 +24,27 @@
 //! threshold, and the build fails when the measured key growth passes
 //! `--max-key-growth`.
 
+mod bigram;
 mod budget;
-mod build;
+// `pub(crate)` because the smoke baseline's fixture compiles its container through
+// the same `compile` the tool uses: a test evaluation that passes passes against
+// what `dictc` writes, and a hand-built section would prove only that the reader
+// agrees with the test.
+pub(crate) mod build;
 mod manifest;
-mod normalize;
+pub(crate) mod normalize;
 pub mod quality;
-mod source;
+pub(crate) mod source;
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 use clap::Args;
-use ime_dict::format::SectionKind;
-use ime_dict::format::collision_limit;
 use ime_dict::format::writer::DictWriter;
+use ime_dict::format::{BigramRecord, SectionKind, collision_limit};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -64,8 +69,12 @@ pub const DEFAULT_POLYPHONE: &str = "data/raw/polyphone.tsv";
 pub const DEFAULT_L1: &str = "data/raw/pinyin-data.tsv";
 /// Default L4 source: one word per row, word frequency in the second column.
 pub const DEFAULT_L4: &str = "data/raw/jieba-dict.tsv";
+/// Default L2 source: the two-character layer that replaces the input's.
+pub const DEFAULT_L2: &str = "data/raw/huayu.tsv";
 /// Default source allowlist.
 pub const DEFAULT_SOURCES: &str = "data/sources.toml";
+/// Optional corpus used to generate the bigram section; absence yields an empty v2.
+pub const DEFAULT_CORPUS: &str = "data/raw/corpus/zh-wikipedia.txt";
 
 /// Command-line surface of `xtask dictc`.
 #[derive(Debug, Args)]
@@ -88,9 +97,28 @@ pub struct DictcArgs {
     /// L4 source whose frequency ranking defines the expansion band.
     #[arg(long, default_value = DEFAULT_L4)]
     l4: PathBuf,
+    /// L2 source whose two-character layer replaces the input's: its weight and
+    /// reading win where both sources hold a word, and its words fill the gaps.
+    /// A path that does not exist leaves the input untouched, which is what a
+    /// checkout that has not fetched this source builds from.
+    #[arg(long, default_value = DEFAULT_L2)]
+    l2: PathBuf,
+    /// Two-character entries of the L2 source below this frequency are not
+    /// admitted at all. The remedy when the merged build outgrows its budget
+    /// is a tighter floor here, not a raised ceiling.
+    #[arg(long, default_value_t = 0)]
+    l2_min_freq: u32,
+    /// Reading-frequency floor, in percent of the character's top reading, a
+    /// stated reading must clear to survive the automatic polyphone check.
+    /// Rime-ice measures 5:100 on its own list.
+    #[arg(long, default_value_t = 5)]
+    polyphone_freq_ratio: u8,
     /// Source allowlist.
     #[arg(long, default_value = DEFAULT_SOURCES)]
     sources: PathBuf,
+    /// Corpus used for adjacent-word co-occurrence; omitted when not fetched.
+    #[arg(long, default_value = DEFAULT_CORPUS)]
+    corpus: PathBuf,
     /// Expand the N highest-frequency words of the L4 source; 0 disables L3b.
     ///
     /// The default is ADR-0000's production value: the top 50k words of the frequency
@@ -111,6 +139,12 @@ pub struct DictcArgs {
     /// Key-growth ceiling in percent; a larger growth fails the build.
     #[arg(long, default_value_t = 30.0)]
     max_key_growth: f64,
+    /// Highest number of bigram pairs the compiler will emit.
+    #[arg(long, default_value_t = 200_000)]
+    max_bigram_pairs: u32,
+    /// Minimum `count * PMI` a bigram pair needs to survive the cut.
+    #[arg(long, default_value_t = 1.0)]
+    min_bigram_score: f32,
     /// The constant every tail-band word receives after weight normalization:
     /// three-or-more character words, and two-character words below
     /// `--core-min-freq`.
@@ -189,6 +223,15 @@ pub fn run(args: DictcArgs) -> Result<()> {
     let l4_path = root.join(&args.l4);
     let polyphone_path = root.join(&args.polyphone);
     let input_path = root.join(&args.input);
+    // The L2 source is merged only when it is there: a checkout that has not
+    // fetched it builds the un-merged list, so the absence is ordinary state
+    // rather than a refusal -- but a file that IS there must be on the
+    // allowlist and match its pin before any of the build runs.
+    let l2_path = root.join(&args.l2);
+    let l2_fetched = l2_path.is_file();
+    if l2_fetched {
+        check_source(&allowlist, &l2_path)?;
+    }
     check_source(&allowlist, &l1_path)?;
     check_source(&allowlist, &l4_path)?;
     check_source(&allowlist, &polyphone_path)?;
@@ -200,18 +243,74 @@ pub fn run(args: DictcArgs) -> Result<()> {
     let l1 = load_l1(&l1_path)?;
     let band = build::band_threshold(&l4_path, args.expand_top, args.expand_min_weight)?;
     let parsed = Instant::now();
-    let (words, skips) = match args.synth {
+    let (mut words, skips) = match args.synth {
         Some(count) => (synth_words(count, &l1, band.threshold), Skips::default()),
         None => load_words(&input_path, &l1, band.threshold)?,
     };
     let polyphone = load_polyphone(&polyphone_path)?;
     let (corrections, unmatched) = apply_polyphone(&words, &polyphone);
+
+    // The two-character layer merge: the huayu entries win where both sources
+    // hold a word, jieba fills the gaps, and the automatic polyphone check then
+    // judges the readings the merge carried in against the list's own usage.
+    let mut auto_counts = build::PolyphoneAutoCounts::default();
+    if l2_fetched {
+        let (huayu_words, huayu_skips) = load_words(&l2_path, &l1, band.threshold)?;
+        println!(
+            "dictc: L2 two-character layer from {}: {} rows parsed, {} skipped",
+            l2_path.display(),
+            huayu_words.len(),
+            huayu_skips.total()
+        );
+        let merge_stats =
+            build::merge_two_char_layer(&mut words, huayu_words, args.l2_min_freq);
+        println!(
+            "dictc: L2 two-character layer (floor {}): {} weights overridden, {} words added",
+            args.l2_min_freq, merge_stats.overridden, merge_stats.added
+        );
+        let manual: BTreeSet<String> = corrections
+            .iter()
+            .map(|(word, _)| word.clone())
+            .collect();
+        auto_counts = build::apply_polyphone_rule(
+            &mut words,
+            &l1,
+            &manual,
+            build::PolyphoneRule {
+                freq_ratio_pct: args.polyphone_freq_ratio,
+            },
+        );
+        println!(
+            "dictc: polyphone auto-check (floor {}%): {} readings kept, {} words flattened, {} manual rows, {} examined",
+            args.polyphone_freq_ratio,
+            auto_counts.assigned,
+            auto_counts.flattened,
+            auto_counts.manual,
+            auto_counts.total
+        );
+    } else if !args.l2.as_os_str().is_empty() {
+        println!(
+            "dictc: L2 source {} is not fetched; building the un-merged word list",
+            l2_path.display()
+        );
+    }
     // The raw weights drive the container's within-key order (the signal the
     // quality harness measures); the normalization rules re-band only the
     // unigram channel, where words of different lengths compete. `compile`
     // carries the per-band audit out in its stats.
     let mut compiled = compile(&words, band, args.expand_cap, &corrections, normalize_rules)?;
     compiled.stats.polyphone_unmatched = unmatched;
+    let index = bigram::WordIndex::new(words.iter().map(|word| word.text.as_str()));
+    let corpus = fs::read_to_string(&args.corpus).unwrap_or_default();
+    let counts = bigram::count_cooccurrence(&corpus, &index);
+    let records = bigram::build_records(
+        counts,
+        bigram::BigramConfig {
+            max_pairs: args.max_bigram_pairs,
+            min_score: args.min_bigram_score,
+        },
+    );
+    compiled.bigram = records.into_iter().flat_map(BigramRecord::encode).collect();
     let built = Instant::now();
 
     // The section budgets are checked before anything is written: a container that is
@@ -224,6 +323,7 @@ pub fn run(args: DictcArgs) -> Result<()> {
     writer.add_section(SectionKind::StrPool, compiled.strpool)?;
     writer.add_section(SectionKind::Unigram, compiled.unigram)?;
     writer.add_section(SectionKind::WordList, compiled.wordlist)?;
+    writer.add_section(SectionKind::Bigram, compiled.bigram)?;
     let output_path = root.join(&args.output);
     writer.finish(&output_path)?;
     let written = Instant::now();
@@ -232,13 +332,17 @@ pub fn run(args: DictcArgs) -> Result<()> {
     // sources, at which layer, under which licence, and what the expansion band did. It
     // is the record that makes a compiled dictionary reproducible and auditable, so it is
     // written from the same values the container was built from rather than re-derived.
+    let mut sources = vec![
+        source_identity(&allowlist, &l1_path)?,
+        source_identity(&allowlist, &l4_path)?,
+        source_identity(&allowlist, &polyphone_path)?,
+        source_identity(&allowlist, &input_path)?,
+    ];
+    if l2_fetched {
+        sources.push(source_identity(&allowlist, &l2_path)?);
+    }
     let facts = manifest::BuildFacts {
-        sources: vec![
-            source_identity(&allowlist, &l1_path)?,
-            source_identity(&allowlist, &l4_path)?,
-            source_identity(&allowlist, &polyphone_path)?,
-            source_identity(&allowlist, &input_path)?,
-        ],
+        sources,
         expansion: manifest::ExpansionRecord {
             band_weight: band.threshold,
             band_rank: band.requested,
@@ -249,6 +353,12 @@ pub fn run(args: DictcArgs) -> Result<()> {
             band_words: compiled.stats.band_words,
             expanded_words: compiled.stats.expanded_words,
             added_keys: compiled.stats.expanded_keys,
+        },
+        polyphone_auto: manifest::PolyphoneAutoRecord {
+            assigned: auto_counts.assigned,
+            flattened: auto_counts.flattened,
+            manual: auto_counts.manual,
+            total: auto_counts.total,
         },
         keys: compiled.stats.keys,
     };

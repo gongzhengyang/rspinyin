@@ -37,6 +37,12 @@ url_for() {
         pinyin-data) echo "https://raw.githubusercontent.com/mozillazg/pinyin-data/master/pinyin.txt" ;;
         jieba-dict)  echo "https://raw.githubusercontent.com/fxsjy/jieba/master/jieba/dict.txt" ;;
         unihan)      echo "https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip" ;;
+        # One THUOCL file per domain; the domain set the normaliser merges lives in
+        # download_source, and the two must not drift apart.
+        thuocl:*)    echo "https://raw.githubusercontent.com/thunlp/THUOCL/master/data/THUOCL_${1#thuocl:}.txt" ;;
+        # The huayu attachment endpoint. The token that completes it is scraped from
+        # the thread page on every fetch; see download_huayu.
+        huayu)       echo "http://bbs.pinyin.thunisoft.com/forum.php?mod=attachment&aid=" ;;
         *) return 1 ;;
     esac
 }
@@ -97,6 +103,74 @@ download() {
     done
     echo "fetch: ${id}: download did not complete after 40 attempts" >&2
     return 1
+}
+
+# The thread that publishes the huayu word list, and the page the attachment
+# token is scraped from.
+readonly HUAYU_THREAD="http://bbs.pinyin.thunisoft.com/forum.php?mod=viewthread&tid=30049"
+
+# The attachment token of the first download link on the thread page.
+#
+# The page is GBK-encoded Discuz HTML, where the link itself is plain ASCII; the
+# separator may arrive raw or as its `&amp;` entity, and the token is URL-encoded
+# base64 that must be passed on exactly as written.
+attachment_aid() {
+    python3 - "$1" <<'PY'
+import re, sys
+html = open(sys.argv[1], "rb").read().decode("gbk", "replace")
+matches = re.findall(r"mod=attachment&(?:amp;)?aid=([A-Za-z0-9%+=]+)", html)
+if matches:
+    print(matches[0])
+PY
+}
+
+# The huayu word list is a forum attachment, and Discuz reissues the attachment
+# token per session: a stale or foreign token is answered with an error page
+# instead of the archive. The token is therefore scraped fresh on every attempt,
+# while the attachment itself has not changed since 2015 -- a new token is
+# invisible to the pin, because the digest covers the decoded word list, never
+# the page.
+download_huayu() {
+    local staging="$1" page aid zip_path attempt uwl_count
+    page="${staging}/thread.html"
+    zip_path="${staging}/huayu.zip"
+    for attempt in $(seq 1 10); do
+        curl --fail --location --silent --show-error --output "$page" "$HUAYU_THREAD" || true
+        aid="$(attachment_aid "$page")"
+        if [[ -z "$aid" ]]; then
+            echo "  attempt ${attempt}: no attachment token on the thread page"
+            continue
+        fi
+        curl --fail --location --silent --show-error \
+             --output "$zip_path" "$(url_for huayu)${aid}" || true
+        if [[ -s "$zip_path" ]] && unzip -t "$zip_path" >/dev/null 2>&1; then
+            uwl_count="$(unzip -Z1 "$zip_path" | grep -c '\.uwl$' || true)"
+            if [[ "$uwl_count" == 1 ]]; then
+                unzip -p "$zip_path" '*.uwl' > "${staging}/huayu.uwl"
+                return 0
+            fi
+            echo "  attempt ${attempt}: archive holds ${uwl_count} .uwl files, expected 1"
+        fi
+    done
+    echo "fetch: huayu: attachment download did not succeed" >&2
+    return 1
+}
+
+# Download every upstream artifact a source needs into `staging`. Most sources
+# are a single file named after the source; THUOCL publishes one file per domain
+# and the normaliser merges them -- this domain list and the normaliser's must
+# not drift apart -- and the huayu attachment needs the token scrape above.
+download_source() {
+    local id="$1" staging="$2" domain
+    case "$id" in
+        thuocl)
+            for domain in animal caijing car chengyu diming food IT law lishimingren medical poem; do
+                download "thuocl:${domain}" "${staging}/thuocl.${domain}" || return 1
+            done
+            ;;
+        huayu) download_huayu "$staging" ;;
+        *)     download "$id" "${staging}/${id}" ;;
+    esac
 }
 
 # pinyin.txt:  `U+4E00: yī,yī  # 一`  ->  `一<TAB>yī,yī`
@@ -170,6 +244,112 @@ print(f"  {len(out)} Han readings")
 PY
 }
 
+# THUOCL domain files: `词<TAB>词频` rows. Three defects make line-by-line
+# parsing too optimistic: the place-name file is a single tab-separated line
+# with a UTF-8 BOM, some animal names carry ASCII spaces inside the word, and
+# scattered rows have a damaged (`3?`, `125472s`) or missing frequency. Fields
+# are therefore walked pairwise within each line, inner spaces are removed from
+# words, the first occurrence of a word in a fixed file order wins, and rows
+# that still do not parse are dropped -- all deterministic, so the digest pins
+# the merge. The weight column is the raw corpus count; banding is the
+# compiler's business, not the fetch's.
+normalise_thuocl() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+from pathlib import Path
+
+DOMAINS = ["animal", "caijing", "car", "chengyu", "diming", "food",
+           "IT", "law", "lishimingren", "medical", "poem"]
+
+staging, out = Path(sys.argv[1]), sys.argv[2]
+rows = {}
+for domain in DOMAINS:
+    text = (staging / f"thuocl.{domain}").read_text(encoding="utf-8-sig")
+    for line in text.splitlines():
+        fields = line.split("\t")
+        for index in range(0, len(fields) - 1, 2):
+            word = fields[index].strip().replace(" ", "")
+            freq = fields[index + 1].strip()
+            if not word or not freq.isdigit():
+                continue
+            rows.setdefault(word, freq)
+with open(out, "w", encoding="utf-8") as fh:
+    for word, freq in rows.items():
+        fh.write(f"{word}\t{freq}\n")
+print(f"  {len(rows)} domain words from {len(DOMAINS)} THUOCL files")
+PY
+}
+
+# 野风系统词库.uwl: the huayu binary word list. The container layout follows the
+# published format analysis, validated against this very file: a 0xC00-byte
+# header (entry count at 0x44, section count at 0x48), then 1024-byte sections.
+# A section starts with a 16-byte header whose last word counts the bytes in
+# use; the body packs entries of a 4-byte head, 2-byte syllable codes and
+# UTF-16LE word text. The head's low 7 bits minus one is the word's byte length
+# and its top bit is the odd-syllable carry; the second byte's low nibble halves
+# into the syllable count. Each 16-bit code splits into a 5-bit initial index
+# and an 11-bit final index over the two fixed tables below. Final index 0 never
+# occurs in the file and stays an empty sentinel, so a future appearance fails
+# loudly downstream instead of decoding as a plausible syllable; `l`/`n` plus
+# the `v`/`ue` finals spell with `ü`, the canonical spelling the compiler's
+# syllable table stores. A section whose body stops parsing consistently is
+# abandoned whole, which is stable, and stable is what the digest needs.
+normalise_huayu() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+
+INITIALS = ["", "b", "c", "ch", "d", "f", "g", "h", "j", "k", "l", "m", "n",
+            "p", "q", "r", "s", "sh", "t", "w", "x", "y", "z", "zh"]
+FINALS = ["", "a", "ai", "an", "ang", "ao", "e", "ei", "en", "eng", "er", "i",
+          "ia", "ian", "iang", "iao", "ie", "in", "ing", "iong", "iu", "o",
+          "ong", "ou", "u", "ua", "uai", "uan", "uang", "ue", "ui", "un",
+          "uo", "v"]
+
+def syllable(initial, final):
+    if initial in ("l", "n") and final == "v":
+        return initial + "ü"
+    if initial in ("l", "n") and final == "ue":
+        return initial + "üe"
+    return initial + final
+
+data = open(sys.argv[1], "rb").read()
+sections = int.from_bytes(data[0x48:0x4C], "little")
+rows = []
+abandoned = 0
+for section in range(sections):
+    base = 0xC00 + section * 0x400
+    used = int.from_bytes(data[base + 12:base + 16], "little")
+    if used == 0 or used > 0x400 - 16:
+        continue
+    pos = base + 16
+    end = pos + used
+    while pos < end and pos + 4 <= end:
+        head_a = data[pos]
+        head_b = data[pos + 1]
+        freq = int.from_bytes(data[pos + 2:pos + 4], "little")
+        word_bytes = (head_a & 0x7F) - 1
+        syllables = (head_b & 0x0F) * 2 + (head_a >> 7)
+        pos += 4
+        if word_bytes <= 0 or syllables <= 0 or syllables > 12 \
+                or pos + syllables * 2 + word_bytes > end:
+            abandoned += 1
+            break
+        reading = []
+        for _ in range(syllables):
+            low, high = data[pos], data[pos + 1]
+            pos += 2
+            initial = INITIALS[low & 0x1F]
+            final = FINALS[(low >> 5) + (high << 3)]
+            reading.append(syllable(initial, final))
+        word = data[pos:pos + word_bytes].decode("utf-16-le", "replace")
+        pos += word_bytes
+        rows.append(f"{word}\t{' '.join(reading)}\t{freq}")
+with open(sys.argv[2], "w", encoding="utf-8") as fh:
+    fh.write("\n".join(rows) + "\n")
+print(f"  {len(rows)} words, {abandoned} sections abandoned on a bad entry")
+PY
+}
+
 fetch_one() {
     local id="$1" force="$2" staging
     if [[ "$force" != true ]] && cached_source_matches "$id"; then
@@ -182,7 +362,7 @@ fetch_one() {
     # unset and `set -u` turns the cleanup into a spurious failure.
     trap 'rm -rf "${staging:-}"; trap - RETURN' RETURN
 
-    download "$id" "${staging}/${id}"
+    download_source "$id" "$staging"
 
     # Normalise first, then digest: sources.toml pins `data/raw/<id>.tsv`, the file the
     # compiler actually consumes, not the intermediate download. Normalisation is
@@ -193,6 +373,8 @@ fetch_one() {
         pinyin-data) normalise_pinyin_data "${staging}/${id}" "$staged" ;;
         jieba-dict)  normalise_jieba       "${staging}/${id}" "$staged" ;;
         unihan)      normalise_unihan      "${staging}/${id}" "$staged" ;;
+        thuocl)      normalise_thuocl      "$staging" "$staged" ;;
+        huayu)       normalise_huayu       "${staging}/huayu.uwl" "$staged" ;;
     esac
 
     local actual expected
@@ -228,7 +410,7 @@ main() {
         esac
     done
     if [[ ${#ids[@]} -eq 0 ]]; then
-        ids=(pinyin-data jieba-dict unihan)
+        ids=(pinyin-data jieba-dict unihan thuocl huayu)
     fi
     # `--record` exists to measure what upstream serves today, so it must not accept the
     # cached copy it is about to re-measure.

@@ -12,12 +12,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use fst::Streamer;
 
-use ime_core::lm::{BIGRAM_MISS_PENALTY, InMemoryLm, UNIGRAM_MISS};
+use ime_core::lm::{BIGRAM_MISS_PENALTY, InMemoryLm, UNIGRAM_MISS, log2_q8};
 use ime_core::viterbi::Decoder;
 use ime_types::{DecodeRequest, LanguageModel, WordFlags};
 
 use crate::format::{
-    DictEntry, FLAG_TERM, PROB_Q12_MAX, hash_word, pack_fst_value,
+    BIGRAM_ENTRY_SIZE, BigramRecord, DictEntry, FLAG_TERM, PROB_Q12_MAX, hash_word, pack_fst_value,
     reader::{Reader, Verify},
     unpack_fst_value, writer,
 };
@@ -76,11 +76,30 @@ enum Broken {
 /// of contract; the checksums stay the writer's, so the loader accepts the container and a
 /// failure has to come from the loader's own bounds checks, not from the checksum gate.
 fn fixture_image(broken: Option<Broken>) -> Vec<u8> {
+    fixture_image_with_bigrams(broken, &[])
+}
+
+/// Builds the fixture's container image with an optional `BIGRAM` section.
+fn fixture_image_with_bigrams(broken: Option<Broken>, bigrams: &[(&str, &str, u16)]) -> Vec<u8> {
     let mut words: Vec<FixtureWord> = FIXTURE_WORDS.to_vec();
     let order = |(text, ..): &FixtureWord| (hash_word(text), *text);
     words.sort_by_key(order);
     let [entries, strpool, unigram] = word_sections(&words, broken);
     let [fst, wordlist] = index_sections(&words, broken);
+    let mut bigram = bigrams
+        .iter()
+        .map(|(prev, word, score)| {
+            BigramRecord::new(
+                u64::from(hash_word(prev)) << 32 | u64::from(hash_word(word)),
+                *score,
+            )
+        })
+        .collect::<Vec<_>>();
+    bigram.sort_by_key(|record| record.pair_key);
+    let bigram = bigram
+        .into_iter()
+        .flat_map(BigramRecord::encode)
+        .collect::<Vec<_>>();
 
     let mut writer = writer::DictWriter::new();
     for (kind, payload) in [
@@ -89,6 +108,7 @@ fn fixture_image(broken: Option<Broken>) -> Vec<u8> {
         (SectionKind::StrPool, strpool),
         (SectionKind::Unigram, unigram),
         (SectionKind::WordList, wordlist),
+        (SectionKind::Bigram, bigram),
     ] {
         writer.add_section(kind, payload).expect("section added");
     }
@@ -259,6 +279,33 @@ fn test_load_rejects_a_file_that_is_not_a_container() {
 }
 
 #[test]
+fn test_from_image_serves_lookups_without_touching_the_filesystem() {
+    // The image path skips the mapping entirely: the same fixture the loader accepts
+    // from a file is validated from bytes, and the words come back borrowed from the
+    // image the caller owns.
+    let image: &'static [u8] = Box::leak(fixture_image(None).into_boxed_slice());
+    let lexicon = FstLexicon::from_image(image).expect("loading the image");
+    assert_eq!(lexicon.entry_count(), FIXTURE_WORDS.len() as u32);
+    let words: Vec<WordRef<'_>> = lexicon.lookup("ni").expect("looking up ni").collect();
+    assert_eq!(words.len(), 2);
+    assert_eq!(words[0].text, "你");
+    assert_eq!(words[0].weight, 250_000);
+    assert_eq!(words[1].text, "泥");
+}
+
+#[test]
+fn test_from_image_rejects_bytes_that_are_not_a_container() {
+    // Long enough to hold a header, so the magic rejects it rather than the length
+    // check that runs first; the same container, never written to a file, still
+    // follows the same validation path.
+    let junk: &'static [u8] = Box::leak(vec![0xAB; 128].into_boxed_slice());
+    assert!(matches!(
+        FstLexicon::from_image(junk),
+        Err(DictError::MagicMismatch)
+    ));
+}
+
+#[test]
 fn test_load_rejects_a_container_whose_checksum_does_not_match() {
     let mut image = fixture_image(None);
     let last = image.len() - 1;
@@ -394,15 +441,6 @@ fn test_fallback_single_rejects_an_identifier_outside_the_syllable_table() {
 }
 
 #[test]
-fn test_prefix_reports_the_capability_as_not_yet_available() {
-    let lexicon = fixture("prefix");
-    assert!(matches!(
-        lexicon.prefix("ni", 4),
-        Err(ImeError::Unsupported)
-    ));
-}
-
-#[test]
 fn test_lookup_reports_a_value_that_leaves_its_section() {
     // Three levels, three ways to leave the section: the packed word-list range, the word
     // id inside it, and the record's text range. The range case comes in both shapes --
@@ -518,6 +556,67 @@ fn test_dict_lm_bigram_falls_back_to_the_unigram_minus_the_miss_penalty() {
         model.bigram("你", "没有"),
         UNIGRAM_MISS + BIGRAM_MISS_PENALTY
     );
+}
+
+#[test]
+fn test_dict_lm_bigram_hit_matches_the_in_memory_model_and_ranking() {
+    let hit_score = log2_q8(u32::from(3_u16 * 1024), u32::from(PROB_Q12_MAX));
+    let image = fixture_image_with_bigrams(None, &[("你", "中国", 3 * 1024)]);
+    let scratch = ScratchDict::new(&image, "dict-lm-bigram-hit");
+    let loaded = FstLexicon::load(scratch.path());
+    let lexicon = loaded.expect("loading the v2 fixture");
+    let dictionary = DictLm::new(&lexicon);
+    let mut memory = InMemoryLm::new();
+    for (text, ..) in FIXTURE_WORDS {
+        memory.insert_unigram(text, 0);
+    }
+    memory.insert_bigram("你", "中国", hit_score);
+
+    assert_eq!(lexicon.bigram_section().len(), BIGRAM_ENTRY_SIZE);
+    assert_eq!(dictionary.bigram("你", "中国"), hit_score);
+    for prev in ["你", "中", "没有"] {
+        for word in FIXTURE_WORDS.iter().map(|(text, ..)| *text).chain(["没有"]) {
+            assert_eq!(
+                dictionary.bigram(prev, word),
+                memory.bigram(prev, word),
+                "bigram({prev:?}, {word:?})"
+            );
+        }
+    }
+
+    let decoder = Decoder::default();
+    for (key, _) in FIXTURE_KEYS {
+        let raw = key.replace('\'', "");
+        let request = DecodeRequest::new(raw.as_str());
+        let served = decoder.decode(&request, &lexicon, &NoUserFreq, &dictionary);
+        let expected = decoder.decode(&request, &lexicon, &NoUserFreq, &memory);
+        assert_eq!(served, expected, "{key}");
+    }
+}
+
+#[test]
+fn test_dict_lm_debug_reports_bigrams_without_word_text() {
+    let image = fixture_image_with_bigrams(
+        None,
+        &[("你", "中国", 3 * 1024), ("你", "银行", PROB_Q12_MAX)],
+    );
+    let scratch = ScratchDict::new(&image, "dict-lm-bigram-debug");
+    let loaded = FstLexicon::load(scratch.path());
+    let model = DictLm::new(&loaded.expect("loading the v2 fixture"));
+    let rendered = format!("{model:?}");
+
+    assert!(rendered.contains("bigram_entries: 2"), "{rendered}");
+    assert!(!rendered.contains("中国"), "{rendered}");
+}
+
+#[test]
+fn test_dict_lm_v1_has_no_bigram_section_and_preserves_the_miss_path() {
+    let lexicon = fixture("dict-lm-v1-bigram-absent");
+    let model = DictLm::new(&lexicon);
+
+    assert!(lexicon.bigram_section().is_empty());
+    assert!(format!("{model:?}").contains("bigram_entries: 0"));
+    assert_eq!(model.bigram("你", "中国"), BIGRAM_MISS_PENALTY);
 }
 
 #[test]
@@ -663,4 +762,96 @@ fn test_lookup_matches_the_reader_over_the_development_dictionary() {
         keys += 1;
     }
     assert!(keys > 1_000, "found only {keys} keys");
+}
+
+#[test]
+fn test_prefix_streams_the_words_of_every_key_in_the_range() {
+    let lexicon = fixture("prefix-range");
+    let words: Vec<WordRef<'_>> = lexicon
+        .prefix("zhong", 10)
+        .expect("streaming the zhong range")
+        .collect();
+    assert_eq!(
+        texts(&words),
+        ["中", "中国", "中心"],
+        "the range holds every key that starts with the prefix, in key order"
+    );
+    assert_eq!(words[0].weight, 200_000, "a key's own order is preserved");
+}
+
+#[test]
+fn test_prefix_of_an_exact_key_answers_that_key_alone() {
+    let lexicon = fixture("prefix-exact");
+    let words: Vec<WordRef<'_>> = lexicon
+        .prefix("ni'hao", 10)
+        .expect("streaming the ni'hao range")
+        .collect();
+    assert_eq!(texts(&words), ["你好"]);
+}
+
+#[test]
+fn test_prefix_stops_at_the_first_key_outside_the_range() {
+    let lexicon = fixture("prefix-stop");
+    // `zhong'gu` names `zhong'guo` and nothing longer: the next key in order,
+    // `zhong'xin`, does not start with the prefix, and lexicographic order says
+    // nothing after it can.
+    let words: Vec<WordRef<'_>> = lexicon
+        .prefix("zhong'gu", 10)
+        .expect("streaming a range of one")
+        .collect();
+    assert_eq!(texts(&words), ["中国"]);
+
+    // A prefix below every key of its block still finds the block.
+    let words: Vec<WordRef<'_>> = lexicon
+        .prefix("yin", 10)
+        .expect("streaming the yin range")
+        .collect();
+    assert_eq!(texts(&words), ["银行", "银行"], "both readings of the word");
+}
+
+#[test]
+fn test_prefix_pushes_the_limit_down_into_the_walk() {
+    let lexicon = fixture("prefix-limit");
+    let words: Vec<WordRef<'_>> = lexicon
+        .prefix("zhong", 2)
+        .expect("streaming past the limit")
+        .collect();
+    assert_eq!(
+        texts(&words),
+        ["中", "中国"],
+        "the walk stops when the limit is spent, not when the range is"
+    );
+
+    // A limit of zero is an empty answer that never touches the index.
+    let none: Vec<WordRef<'_>> = lexicon.prefix("zhong", 0).expect("a zero limit").collect();
+    assert!(none.is_empty());
+}
+
+#[test]
+fn test_prefix_of_the_empty_string_is_the_whole_map_under_the_limit() {
+    let lexicon = fixture("prefix-empty");
+    let words: Vec<WordRef<'_>> = lexicon
+        .prefix("", 3)
+        .expect("streaming from the top")
+        .collect();
+    assert_eq!(
+        texts(&words),
+        ["你", "泥", "你好"],
+        "the first keys in order, cut at the limit"
+    );
+}
+
+#[test]
+fn test_prefix_of_a_prefix_no_key_starts_with_answers_nothing() {
+    let lexicon = fixture("prefix-miss");
+    let words: Vec<WordRef<'_>> = lexicon
+        .prefix("abc", 10)
+        .expect("a miss is an empty answer, not a failure")
+        .collect();
+    assert!(words.is_empty());
+}
+
+/// The texts of the words a read produced, in the order they arrived.
+fn texts<'a>(words: &[WordRef<'a>]) -> Vec<&'a str> {
+    words.iter().map(|word| word.text).collect()
 }

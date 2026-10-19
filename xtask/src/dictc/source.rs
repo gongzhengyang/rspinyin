@@ -35,7 +35,7 @@ use anyhow::{Result, anyhow};
 pub(crate) use self::polyphone::{apply_polyphone, load_polyphone};
 pub(crate) use self::reading::load_l1;
 pub(crate) use self::synth::synth_words;
-pub(crate) use self::words::load_words;
+pub(crate) use self::words::{baseline_key, compose_readings, load_words};
 
 /// The diagnostic a raw source that has not been fetched produces.
 ///
@@ -85,7 +85,7 @@ fn source_error(path: &Path, error: io::Error) -> anyhow::Error {
 mod tests;
 
 /// One parsed word, with the reading information the compiler needs.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Word {
     /// Word text.
     pub(crate) text: String,

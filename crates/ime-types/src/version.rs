@@ -31,7 +31,7 @@ pub const RSPINYIN_ABI_VERSION: u32 = 2;
 ///
 /// A file carrying a greater version is rejected by the reader, which then
 /// disables candidate display while leaving pass-through input working.
-pub const DICT_FORMAT_VERSION: u16 = 1;
+pub const DICT_FORMAT_VERSION: u16 = 2;
 
 /// Schema version of `config.toml`.
 ///
@@ -111,10 +111,10 @@ mod tests {
         // `RSPINYIN_ABI_VERSION` moved 1 -> 2 in ADR-0004, when the plugin split into two
         // cdylibs and the two UI-only slots left the engine's vtable, and
         // `CONFIG_SCHEMA_VERSION` 1 -> 2 in ADR-0005, which added the `[scheme]`,
-        // `[phrases]` and `[script]` sections. `DICT_FORMAT_VERSION` is still at its
-        // first version.
+        // `[phrases]` and `[script]` sections. `DICT_FORMAT_VERSION` moved 1 -> 2 in
+        // ADR-0015, which made the reserved BIGRAM section writable.
         assert_eq!(RSPINYIN_ABI_VERSION, 2);
-        assert_eq!(DICT_FORMAT_VERSION, 1);
+        assert_eq!(DICT_FORMAT_VERSION, 2);
         assert_eq!(CONFIG_SCHEMA_VERSION, 2);
     }
 }

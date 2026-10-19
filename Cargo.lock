@@ -5711,6 +5711,7 @@ dependencies = [
  "ime-dict",
  "ime-types",
  "png 0.18.1",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

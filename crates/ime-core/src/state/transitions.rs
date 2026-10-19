@@ -40,6 +40,7 @@ impl Session {
             SessionEvent::Reset => self.on_focus_lost(ctx),
             SessionEvent::PreeditCleared => self.on_preedit_cleared(),
             SessionEvent::CommitDone => self.on_commit_done(ctx),
+            SessionEvent::PinApplied => self.refresh_composing(ctx),
         }
     }
 
@@ -196,13 +197,7 @@ impl Session {
                 // revision so the window knows the older one is stale.
                 self.emit_frame(ctx.cfg, ctx);
             }
-            // The pin set does not exist yet, and reporting that through
-            // `dict/unsupported` is what the contract reserves that code for; the work that
-            // adds the pin set replaces this arm. A silent no-op here would look to the
-            // user like a key that does nothing, with no diagnostic to explain it.
-            KeyAction::PinHighlighted => {
-                ctx.push(Effect::Diagnose(ImeError::Unsupported));
-            }
+            KeyAction::PinHighlighted => self.toggle_pin(ctx),
             KeyAction::ForgetHighlighted => self.forget_highlighted(ctx),
             KeyAction::AddPhrase => self.add_phrase(ctx),
             // The host decides what `Ignore` means, and the session agrees: nothing.
@@ -364,6 +359,28 @@ impl Session {
             return;
         }
         ctx.push(Effect::AddPhrase { key, text });
+    }
+
+    /// Asks the host to toggle the highlighted candidate's pin for this input.
+    fn toggle_pin(&mut self, ctx: &mut Ctx<'_>) {
+        let Some(candidate) = self.highlighted_candidate() else {
+            return;
+        };
+        let word = String::from(candidate.text.as_str());
+        let key = self.buf.raw().to_ascii_lowercase();
+        if key.is_empty() {
+            return;
+        }
+        ctx.push(Effect::ToggleUserPin { key, word });
+    }
+
+    /// Refreshes a composition after the host has changed data it ranks with.
+    fn refresh_composing(&mut self, ctx: &mut Ctx<'_>) {
+        if self.state != SessionState::Composing {
+            return;
+        }
+        self.refresh(ctx.env);
+        self.emit_frame(ctx.cfg, ctx);
     }
 
     /// Takes the composition back without committing anything.

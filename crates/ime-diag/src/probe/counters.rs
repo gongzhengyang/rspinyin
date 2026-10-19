@@ -40,6 +40,7 @@
 //! | `decode.no-path` | the caller of a decode, on the decoder's no-path failure |
 //! | `dict.lookup.miss` | the caller of a dictionary lookup that found nothing |
 //! | `userdb.commit.slow` | the caller of a user-frequency commit that took too long |
+//! | `userdb.pin` | the host's effect executor, when a pin toggle reached the user's store |
 //! | `data.readonly-mode` | the path layer, when the data directory is unusable and the plugin degrades |
 //! | `config.invalid` | the configuration loader, on a document it rejected or repaired |
 //! | `ui.theme.blur-unavailable` | the theme layer, when the compositor negotiates no blur |
@@ -51,7 +52,7 @@
 ///
 /// A constant rather than `Counter::ALL.len()` so that it can be an array length;
 /// a test keeps the two in step.
-pub const COUNTER_COUNT: usize = 19;
+pub const COUNTER_COUNT: usize = 20;
 
 /// One diagnostic counter.
 ///
@@ -95,6 +96,10 @@ pub enum Counter {
     /// `userdb.commit.slow`: user-frequency commits that took longer than the write
     /// budget allows.
     UserDbCommitSlow,
+    /// `userdb.pin`: pin toggles the user's store took. A count of how often the
+    /// ranking's cap channel was exercised, which is what the diagnostic answer to
+    /// "why is this word always first" reads.
+    UserPin,
     /// `data.readonly-mode`: the data directory was unusable and the plugin degraded
     /// to read-only, the counter behind the `data/readonly-mode` code.
     DataReadonlyMode,
@@ -116,7 +121,7 @@ pub enum Counter {
 
 impl Counter {
     /// Every counter, in the order the boundary contract lists them.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::FrameCoalesced,
         Self::ControlDropped,
         Self::SelectTimeout,
@@ -130,6 +135,7 @@ impl Counter {
         Self::DecodeNoPath,
         Self::DictLookupMiss,
         Self::UserDbCommitSlow,
+        Self::UserPin,
         Self::DataReadonlyMode,
         Self::ConfigInvalid,
         Self::ThemeBlurUnavailable,
@@ -154,6 +160,7 @@ impl Counter {
             Self::DecodeNoPath => "decode.no-path",
             Self::DictLookupMiss => "dict.lookup.miss",
             Self::UserDbCommitSlow => "userdb.commit.slow",
+            Self::UserPin => "userdb.pin",
             Self::DataReadonlyMode => "data.readonly-mode",
             Self::ConfigInvalid => "config.invalid",
             Self::ThemeBlurUnavailable => "ui.theme.blur-unavailable",

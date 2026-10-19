@@ -172,7 +172,7 @@ fn test_recover_dict_quarantines_a_damaged_file_and_keeps_it() {
     let cases: [Corruption; 4] = [
         ("magic", |image| image[0] = b'X'),
         ("version", |image| {
-            image[4..6].copy_from_slice(&2u16.to_le_bytes());
+            image[4..6].copy_from_slice(&0u16.to_le_bytes());
         }),
         ("checksum", |image| {
             let last = image.len() - 1;

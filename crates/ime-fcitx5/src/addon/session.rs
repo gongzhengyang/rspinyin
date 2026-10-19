@@ -35,8 +35,10 @@ use ime_core::state::SessionEnv;
 use ime_core::viterbi::Decoder;
 use ime_dict::format::reader::Verify;
 use ime_dict::fst_index::{DictLm, FstLexicon};
+use ime_dict::script::ScriptIndex;
 use ime_types::{ImeError, LanguageModel, Lexicon, UserFreqSource};
 
+use crate::ffi::emit_diagnostic;
 use crate::privacy_impl::{AppBlacklist, ContextPrivacy};
 use crate::session_host;
 
@@ -50,6 +52,9 @@ use super::user_store::user_store;
 pub(super) mod sources;
 
 use self::sources::{Dictionary, LanguageModelSource, UserFrequency};
+
+/// Diagnostic reported once when a mapped dictionary has no BIGRAM model.
+const BIGRAM_ABSENT_CODE: &str = "dict/bigram/absent";
 
 /// The decoder every session steps through.
 ///
@@ -144,7 +149,14 @@ pub(super) fn load_lexicon() -> Result<(), ImeError> {
 /// Never.
 pub(super) fn install_session_host() -> Result<(), ImeError> {
     let environment = session_env(session_sources());
-    if !session_host::install(environment, privacy(), routing_config()) {
+    if session_host::install(environment, privacy(), routing_config()) {
+        // The variant table the script mode converts through: the built-in seed, which
+        // this build always carries. A container-sourced table replaces this call, not
+        // this wiring; a build whose table is missing holds
+        // [`ScriptState::Missing`](ime_fcitx5::engine::router) and the toggle reports
+        // `ui/script/unavailable` instead of flipping.
+        session_host::install_script(std::sync::Arc::new(ScriptIndex::seed()));
+    } else {
         report_step_failure("session-host", &"a session host was already installed");
     }
     Ok(())
@@ -230,6 +242,9 @@ pub(super) fn sources_for(dictionary: Option<&Path>) -> SessionSources {
     // The model borrows the mapping rather than the value: moving the lexicon into the
     // sources below relocates the struct, while every slice the model holds points into the
     // mapped file, which does not move.
+    if lexicon.bigram_section().is_empty() {
+        emit_diagnostic(BIGRAM_ABSENT_CODE);
+    }
     let lm = DictLm::new(&lexicon);
     // Marked with the mapping in place and before anything reads it, so that the growth
     // covers the pages the mapping faults in: `BUDGET-MEM-03`.

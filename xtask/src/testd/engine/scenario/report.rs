@@ -398,6 +398,23 @@ impl Divergence {
         }
     }
 
+    /// Builds the divergence a fuzzy class name the table does not know reports.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn class_name(name: String) -> Self {
+        Self {
+            step: 0,
+            action: String::from("<none>"),
+            expected: String::from("a fuzzy class name the class table defines"),
+            actual: format!("{name} selects nothing"),
+            reason: String::from(
+                "the scenario names a fuzzy class the engine's class table does not know",
+            ),
+        }
+    }
+
     /// Builds the divergence two runs of one scenario report.
     ///
     /// # Panics
