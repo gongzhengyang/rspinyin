@@ -130,6 +130,13 @@ type Pinned = Vec<(Box<str>, bool)>;
 /// its row names -- or `None` for a row to delete.
 type KeyRows = Vec<(Box<str>, Option<Box<str>>)>;
 
+/// The coined entries one flush takes out of the delta map: the composite `(key, word)`
+/// row key, and the word it enrols.
+type Coined = Vec<(Box<str>, Box<str>)>;
+
+/// The coined rows one flush takes out as removals, by their composite row key.
+type CoinedRemoved = Vec<Box<str>>;
+
 /// How long an explicit flush waits for the flush thread to stand aside.
 ///
 /// The bound is what keeps a disk that has stopped answering from holding the owner's
@@ -276,12 +283,21 @@ impl Inner {
         // two clocks at different moments would date one batch from two instants.
         let now_nanos = self.clock.now_nanos();
         let now_ms = self.clock.now_ms();
-        let (drained, removed, pinned, key_rows): (Drained, Removed, Pinned, KeyRows) = {
+        let (drained, removed, pinned, key_rows, coined, coined_removed): (
+            Drained,
+            Removed,
+            Pinned,
+            KeyRows,
+            Coined,
+            CoinedRemoved,
+        ) = {
             let mut pending = lock(&self.pending);
             if pending.entries.is_empty()
                 && pending.removed.is_empty()
                 && pending.pins.is_empty()
                 && pending.key_rows.is_empty()
+                && pending.coined.is_empty()
+                && pending.coined_removed.is_empty()
             {
                 return Ok(CommitReport::default());
             }
@@ -292,10 +308,27 @@ impl Inner {
             }
             let pinned = pending.pins.drain().collect();
             let key_rows = pending.key_rows.drain().collect();
-            (drained, pending.removed.drain().collect(), pinned, key_rows)
+            let coined = pending.coined.drain().collect();
+            let coined_removed = pending.coined_removed.drain().collect();
+            (
+                drained,
+                pending.removed.drain().collect(),
+                pinned,
+                key_rows,
+                coined,
+                coined_removed,
+            )
         };
         let started = self.clock.now_nanos();
-        match self.write_batch(&drained, &removed, &pinned, &key_rows, durability) {
+        match self.write_batch(
+            &drained,
+            &removed,
+            &pinned,
+            &key_rows,
+            &coined,
+            &coined_removed,
+            durability,
+        ) {
             Ok(()) => {
                 let elapsed_us = self.clock.now_nanos().saturating_sub(started) / 1_000;
                 Ok(self.report(drained.len(), elapsed_us))
@@ -322,6 +355,8 @@ impl Inner {
         removed: &[Box<str>],
         pinned: &[(Box<str>, bool)],
         key_rows: &[(Box<str>, Option<Box<str>>)],
+        coined: &[(Box<str>, Box<str>)],
+        coined_removed: &[Box<str>],
         durability: Durability,
     ) -> Result<(), String> {
         #[cfg(test)]
@@ -370,6 +405,28 @@ impl Inner {
                     .map_err(|error| error.to_string())?
                     .map_or((0, 0), |guard| guard.value());
                 meta.insert(key.as_ref(), (previous.0, u64::from(*is_pinned)))
+                    .map_err(|error| error.to_string())?;
+            }
+            // The coined rows land in the same transaction as everything else: one flush,
+            // one commit, and the durability window the frequency records live under is
+            // the one the coins live under too. An insert of an entry the file already
+            // holds adds one commit to what is stored, which is the confirmation the
+            // coin path recorded.
+            let mut lexicon = txn
+                .open_table(USER_LEXICON)
+                .map_err(|error| error.to_string())?;
+            for composite in coined_removed {
+                lexicon
+                    .remove(composite.as_ref())
+                    .map_err(|error| error.to_string())?;
+            }
+            for (composite, _word) in coined {
+                let previous = lexicon
+                    .get(composite.as_ref())
+                    .map_err(|error| error.to_string())?
+                    .map_or((0u32, 0u64), |guard| guard.value());
+                lexicon
+                    .insert(composite.as_ref(), (previous.0.saturating_add(1), previous.1))
                     .map_err(|error| error.to_string())?;
             }
             for (key, delta) in drained {

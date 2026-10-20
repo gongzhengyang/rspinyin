@@ -1,163 +1,118 @@
-# rspinyin 测试用例分片 · sec（权限、隐私与合规）
+# rspinyin 测试用例分片 · sec（隐私、许可与依赖纪律）
 
-> 分片版本: v2.0 ｜ 主文档: [../tests.md](../tests.md) ｜ 平台任务: [../features-test.md](../features-test.md) ｜
-> 被测基线: Rust 2024 workspace + Fcitx5 5.1.19 ｜ 关联 ADR: [../adr/0000-upstream-decisions.md](../adr/0000-upstream-decisions.md) ｜ 最后同步 Commit: `408d2c6` ｜
-> 维护约定: 新增用例必须回写主文档第 2 节矩阵的 TC 列与维度列；本分片的 `TC-SEC-31`~`42` 即矩阵 `REQ-SEC-01`/`REQ-SEC-02` 行的真实承接用例（v1.0 矩阵误登记为 `TC-SEC-01`~`10`，v2.0 起修正）
-
-## 0. 分片基线（引用主文档，不重复定义）
-
-- **假设清单**：主文档第 1 节 + [features-test.md](../features-test.md) 第 1 节。强相关：`ASM-T-10`。
-- **追踪矩阵**：主文档第 2 节的 `REQ-SEC-01` ~ `REQ-SEC-06`（`REQ-SEC-03` ~ `06` 的 P0 用例已在主文档第 3 节）。
-- **用例格式与证据存盘**：主文档第 3 节 + `FEAT-TEST-P0.05.04`。
-- **不可逆性纪律**：`data/sources.toml` 的注释明确——一旦 copyleft 数据混入 `base.dict`，事后剥离需重建全部词频与排序，**成本极高**。故本分片的断言全部在**构建期**强制，不依赖事后审计。
-
-> 阶段零实测：`crates/ime-dict/src/paths.rs` **不存在**（`TASK-1.06.01` 为 `IN_PROGRESS`）；`crates/ime-core/src/privacy.rs` **不存在**（`TASK-1.06.02` 为 `PENDING`）。
+> 分片版本: v3.0 ｜ 主文档: [../tests.md](../tests.md) ｜ 执行器必读: [../test-architecture.md](../test-architecture.md) ｜ 模块形态: Headless ｜ 逻辑自检: 已通过 ｜ 维护约定: 用例状态变更须同步主文档矩阵
+>
+> 基线引用：`ASM-T-06/07`。模块背书 = `cargo nextest -p ime-dict/-p ime-fcitx5/-p ime-core` 相关套件 + `just audits`（11 脚本族）。**吸收** 字段登记取代的 v2.0 用例号。本分片含 ADR-0012 后的新增卡 `TC-SEC-008`。
 
 ---
 
-## 1. 用例
+#### TC-SEC-001 XDG 数据目录权限基线
 
-### TC-SEC-31 XDG 目录布局与权限基线（`REQ-SEC-01`）
+- **基本属性**：`REQ-SEC-01` ｜ `ASM-T-06` ｜ sec ｜ ②③ ｜ nextest(-p ime-dict paths) ｜ `[Smoke 冒烟门禁]` ｜ P0 ｜ `requires_screenshots: false` ｜ `[]` ｜ 吸收：TC-SEC-31~35 ｜ 锚点：`crates/ime-dict/src/paths.rs`、`paths/` ｜ 背书：paths 套件
+- 用例状态：`[ ] 未通过`
+- **前置条件与沙盒重置契约**：临时 XDG 树；预置宽松权限 fixture。
+- **操作步骤与物理存盘动作**：
+  1. 目录 0700 / 文件 0600 基线 → `execution_log.txt`。
+  2. 预先存在的宽松权限被修正；符号链接逃逸防护 → 记录。
+  3. 不递归修改用户目录权限；目录不可写 → readonly → `assertions.json`。
+- **通过标准与多模态断言契约**：
+  - **[功能断言]**：权限修正不越界（只动自己的文件）。
+  - **[Headless 断言]**：readonly 降级报告 `data/readonly-mode`。
+  - **[性能断言]**：权限检查在启动路径预算内。
 
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-01` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ 可执行性：`[可执行]` ｜ `crates/ime-dict/src/paths.rs`
-- **操作步骤**：
-  1. 在沙盒中执行 `ensure_dirs` -> 触发存盘：`<RUN>/sec/TC-SEC-31/assertions.json`
-  2. 断言 `$XDG_CONFIG_HOME/rspinyin` 与 `$XDG_DATA_HOME/rspinyin` 为 `0700`；`config.toml`/`user.redb`/`ui_takeover.json` 为 `0600`。
-- **通过标准**：目录解析优先级为环境变量 → XDG 规范回退（`$HOME/.config`、`$HOME/.local/share`）；`$HOME` 也未设置时返回 `DataReadonly` 而非 panic。
+#### TC-SEC-002 敏感输入上下文抑制学习
 
-- **验收记录**（2026-10-06）：相关套件全绿：paths 套件钉住 XDG 布局（0700/0600 创建即私有、symlink 拒绝）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-31/
-### TC-SEC-32 预先存在的宽松权限被修正（`REQ-SEC-01`）
+- **基本属性**：`REQ-SEC-02` ｜ `ASM-T-01` ｜ sec ｜ ①②③ ｜ nextest + 沙盒 ｜ `[Acceptance 验收套件]` ｜ P0 ｜ `true` ｜ `["01_sensitive_composing.png"]` ｜ 吸收：TC-SEC-36~42 ｜ 锚点：`crates/ime-fcitx5/src/privacy_impl/`、`crates/ime-core/src/privacy.rs` ｜ 背书：privacy 套件
+- 用例状态：`[ ] 未通过`
+- **前置条件与沙盒重置契约**：沙盒会话 + 黑名单 fixture；用户库从零。
+- **操作步骤与物理存盘动作**：
+  1. 敏感上下文（密码框类）输入 → 学习完全抑制 → 存 `01_sensitive_composing.png`（候选窗仍显示）+ `execution_log.txt`。
+  2. 日志/崩溃文件零痕迹（整会话降级，连长度都删）→ 记录。
+  3. 应用黑名单生效；隐私配置变更立即生效 → `assertions.json`。
+- **通过标准与多模态断言契约**：
+  - **[功能断言]**：`InputContextKind` fail-closed（宿主未报一律不学习）；显示 fail-open（密码框照常出候选）。
+  - **[视觉断言]**：敏感模式候选窗行为与普通模式一致（无降级闪烁）。
+  - **[性能断言]**：hash 化 app 标识在键路径预算内。
 
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-01` ｜ `sec` | 边界与容错 ｜ `P0` ｜ 可执行性：`[可执行]`
-- **操作步骤**：
-  1. 预先创建 `0644` 的 `user.redb` -> 触发存盘：`<RUN>/sec/TC-SEC-32/assertions.json`
-  2. 断言被修正为 `0600` 并记 `data/perms/fixed`。
-- **通过标准**：创建时即传 `mode(0o600)`（避免"先创建再 chmod"的竞态窗口）；已存在的文件强制 `chmod` 并告警。
+#### TC-SEC-003 零网络断言
 
-- **验收记录**（2026-10-06）：相关套件全绿：预置宽松权限被收紧（tighten 断言，含 data/perms/fixed 冻结码路径）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-32/
-### TC-SEC-33 目录不可写时进入只读模式（`REQ-SEC-01`）
+- **基本属性**：`REQ-SEC-03` ｜ `ASM-T-09` ｜ sec ｜ ①② ｜ `just audits` + `runtime-socket-check` ｜ `[Smoke 冒烟门禁]` ｜ P0 ｜ `false` ｜ `[]` ｜ 吸收：TC-SEC-11~15 ｜ 锚点：`scripts/check-no-network.sh`、`Cargo.lock` ｜ 背书：脚本自测
+- 用例状态：`[ ] 未通过`
+- **前置条件与沙盒重置契约**：干净 resolve graph。
+- **操作步骤与物理存盘动作**：
+  1. 依赖闭包无网络库（cargo metadata 断言）→ `execution_log.txt`。
+  2. 网络 crate 的 feature 门控也被拦截；运行期零外部 socket → 记录。
+  3. 无自动更新/遥测通道 → `assertions.json`（budget_keys: `net_sockets`）。
+- **通过标准与多模态断言契约**：
+  - **[功能断言]**：`BUDGET-NET-01` 语义全量成立。
+  - **[Headless 断言]**：脚本自测通过（含违规 fixture 检出）。
+  - **[性能断言]**：不适用。
 
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-01` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ 可执行性：`[可执行]`
-- **操作步骤**：
-  1. 把数据目录设为不可写 -> 触发存盘：`<RUN>/sec/TC-SEC-33/assertions.json`
-  2. 断言进入只读模式、输入完整可用、`StatusStrip.readonly == true`。
-- **通过标准**：`ASM-15`——绝不因写失败而阻断输入。
+#### TC-SEC-004 词源白名单与许可纪律（ADR-0000/0012 执行面）
 
-- **验收记录**（2026-10-06）：相关套件全绿：目录不可写降级只读模式（readonly-mode 冻结码 + recover unwritable 分支）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-33/
-### TC-SEC-34 符号链接逃逸防护（`REQ-SEC-01`）
+- **基本属性**：`REQ-SEC-04` ｜ `ASM-T-07` ｜ sec ｜ ①② ｜ `check-dict-sources.sh --self-test` + nextest(-p xtask) ｜ `[Smoke 冒烟门禁]` ｜ P0 ｜ `false` ｜ `[]` ｜ 吸收：TC-SEC-16~20、43、TC-DICT-45 ｜ 锚点：`scripts/check-dict-sources.sh`、`data/sources.toml` ｜ 背书：脚本自测（5 violation classes）
+- 用例状态：`[ ] 未通过`
+- **前置条件与沙盒重置契约**：allowlist fixture 副本。
+- **操作步骤与物理存盘动作**：
+  1. 全部来源宽松许可（SPDX ∈ MIT/Apache-2.0/BSD/ISC/Unicode/CC0-1.0）→ `execution_log.txt`。
+  2. 排除清单强制（luna-pinyin/CC-CEDICT/商业词库/腾讯 NC 存疑）；sha256 pin 与未完成条目必红 → 记录。
+  3. 无未登记 TSV；ADR-0012 语料治理边界（语料不入 allowlist、`data/raw/corpus/` gitignore）→ `assertions.json`。
+- **通过标准与多模态断言契约**：
+  - **[功能断言]**：`thuocl`（MIT）/`huayu`（PD→CC0-1.0）已登记且校验 PASS（6 raw / 8 declared 口径随取数演进）。
+  - **[Headless 断言]**：自测 5 类违规全检出。
+  - **[性能断言]**：不适用。
 
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-01` ｜ `sec` | 极端容错与性能 ｜ `P0` ｜ 可执行性：`[可执行]`
-- **操作步骤**：
-  1. 把 `~/.local/share/rspinyin` 软链到 `/tmp` -> 触发存盘：`<RUN>/sec/TC-SEC-34/assertions.json`
-  2. 断言拒绝写入该路径并记 `data/path/symlink`，进入只读模式。
-- **通过标准**：`ensure_dirs` 检查目标路径的**每一段**不是符号链接。
+#### TC-SEC-005 Slint API 不泄漏（OB-4）与许可归属
 
-- **验收记录**（2026-10-06）：相关套件全绿：符号链接逃逸防护（user.db/crash 目录/perms 三处 symlink 拒绝）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-34/
-### TC-SEC-35 不递归修改用户目录权限（`REQ-SEC-01`）
+- **基本属性**：`REQ-SEC-05` ｜ `ASM-T-06` ｜ sec ｜ ① ｜ `check-slint-leak.sh` + 文档走查 ｜ `[Smoke 冒烟门禁]` ｜ P0 ｜ `false` ｜ `[]` ｜ 吸收：TC-SEC-21~25、44 ｜ 锚点：`scripts/check-slint-leak.sh`、`README.md` 徽章、`docs/dev/licenses.md` ｜ 背书：脚本自测
+- 用例状态：`[ ] 未通过`
+- **前置条件与沙盒重置契约**：干净工作树。
+- **操作步骤与物理存盘动作**：
+  1. `ime-ui` 公共 API 无 `slint::*` → `execution_log.txt`。
+  2. 徽章可达（`repository` 与 README 同指）；`OB-3` 嵌入式排除声明存在 → 记录。
+  3. 许可原文摘录（非二手解读）→ `assertions.json`。
+- **通过标准与多模态断言契约**：
+  - **[功能断言]**：OB-1~OB-6 义务登记齐备（ADR-0000 表）。
+  - **[Headless 断言]**：泄漏脚本自测通过。
+  - **[性能断言]**：不适用。
 
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-01` ｜ `sec` | 边界与容错 ｜ `P1` ｜ 可执行性：`[可执行]`
-- **操作步骤**：
-  1. 在 `$HOME` 下预置若干文件并记录权限 -> 执行 `ensure_dirs` -> 触发存盘：`<RUN>/sec/TC-SEC-35/assertions.json`
-  2. 断言只对 `rspinyin` 下的**直接子项**操作，`$HOME` 其他文件权限不变。
-- **通过标准**：**绝不**递归 `chmod` 用户已有目录；**绝不**删除或覆盖用户文件。
+#### TC-SEC-006 依赖单向性与分层
 
-- **验收记录**（2026-10-06）：相关套件全绿：权限修正不递归（tighten 只作用自身层级）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-35/
-### TC-SEC-36 敏感输入上下文抑制学习（`REQ-SEC-02`）
+- **基本属性**：`REQ-SEC-06` ｜ `ASM-T-09` ｜ sec ｜ ① ｜ `check-deps.sh` ｜ `[Smoke 冒烟门禁]` ｜ P0 ｜ `false` ｜ `[]` ｜ 吸收：TC-SEC-26~30 ｜ 锚点：`scripts/check-deps.sh`、workspace `Cargo.toml:8-45` ｜ 背书：脚本自测
+- 用例状态：`[ ] 未通过`
+- **前置条件与沙盒重置契约**：干净工作树。
+- **操作步骤与物理存盘动作**：
+  1. 层序 `ime-types ← core ← dict ← config ← ui ← fcitx5` 无反向边 → `execution_log.txt`。
+  2. `ime-ui` 不依赖解码器/FST 句柄；`ime-types` 叶子化 → 记录。
+  3. 新增依赖走基线评审（`Cargo.toml` 注释齐备）→ `assertions.json`。
+- **通过标准与多模态断言契约**：
+  - **[功能断言]**：任何反向边 = 构建失败。
+  - **[Headless 断言]**：自测含违规 fixture 检出。
+  - **[性能断言]**：不适用。
 
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-02` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ 可执行性：`[可执行]` ｜ `crates/ime-core/src/privacy.rs`
-- **操作步骤**：
-  1. 在 `CapabilityFlag::Password` 置位的上下文中输入 20 个拼音串并上屏 -> 触发存盘：`<RUN>/sec/TC-SEC-36/assertions.json`
-  2. 断言 `user.redb` 的记录数增量 = **0**。
-- **通过标准**：这是三层抑制中**最重要的一条**——用户输入密码时打出的拼音组合不进入词频库。`should_learn` ≤ 200ns。
+#### TC-SEC-007 交付链路隐私抽检
 
-- **验收记录**（2026-10-06）：相关套件全绿：敏感上下文抑制学习（privacy_impl fail-closed + learning gate）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-36/
-### TC-SEC-37 敏感会话的日志零痕迹（`REQ-SEC-02`）
+- **基本属性**：`REQ-SEC-07` ｜ `ASM-T-06` ｜ sec ｜ ② ｜ 安装后审计 ｜ `[Acceptance 验收套件]` ｜ P1 ｜ `false` ｜ `[]` ｜ 吸收：TC-INFRA-60 ｜ 锚点：`xtask/src/install/`、`packaging/` ｜ 背书：install 套件
+- 用例状态：`[ ] 未通过`
+- **前置条件与沙盒重置契约**：`DESTDIR` 安装树。
+- **操作步骤与物理存盘动作**：
+  1. 包内无用户数据/输入内容残留（strings 抽查）→ `execution_log.txt`。
+  2. 日志/镜像/读回 transcript 的 0600 纪律在安装文档中登记 → `assertions.json`。
+- **通过标准与多模态断言契约**：
+  - **[功能断言]**：交付物 = 代码 + 词库，无隐私面。
+  - **[Headless 断言]**：抽查脚本退出码 0。
+  - **[性能断言]**：不适用。
 
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-02` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ 可执行性：`[可执行]` + `[可执行]`
-- **操作步骤**：
-  1. 同上场景，扫描全部日志文件 -> 触发存盘：`<RUN>/sec/TC-SEC-37/assertions.json`
-  2. 断言不出现输入串的任何**长度 ≥ 3 的子串**；断言敏感会话的事件降级为 `session=redacted`（**不含输入长度**）。
-- **通过标准**：敏感上下文下连输入长度也不记录（长度本身可能泄露密码长度）。
+#### TC-SEC-008 词源扩展执行面（ADR-0012 新增）
 
-- **验收记录**（2026-10-06）：相关套件全绿：敏感会话日志零痕迹（redact 整会话降级 + 零追踪扫描）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-37/
-### TC-SEC-38 敏感会话的崩溃文件零痕迹（`REQ-SEC-02`）
-
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-02` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ 可执行性：`[可执行]` + `[可执行]`
-- **操作步骤**：
-  1. 在密码框中输入后人为触发一次 panic -> 触发存盘：`<RUN>/sec/TC-SEC-38/assertions.json`
-  2. 断言崩溃文件中不出现输入串的任何长度 ≥ 3 的子串。
-- **通过标准**：`CrashRecord` 的 `context` 字段走**白名单构造**（只允许 `session_state`/`revision`/`backend_id`/`raw_len`/`candidate_count`）。
-
-- **验收记录**（2026-10-06）：相关套件全绿：崩溃文件零痕迹（payload 拒绝清单清洗）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-38/
-### TC-SEC-39 应用黑名单（`REQ-SEC-02`）
-
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-02` ｜ `sec` | 边界与容错 ｜ `P1` ｜ 可执行性：`[可执行]`
-- **操作步骤**：
-  1. 把某应用加入黑名单（大小写不敏感子串匹配）-> 触发存盘：`<RUN>/sec/TC-SEC-39/assertions.json`
-  2. 断言该应用下同样抑制学习与日志。
-- **通过标准**：默认黑名单**为空**——依赖 `CapabilityFlag::Password` 而非猜测密码管理器。`app_id` 在进入 `ime-core` 前哈希为 `u64`。
-
-- **验收记录**（2026-10-06）：相关套件全绿：应用黑名单（空模式忽略/大小写不敏感子串/未上报 fail-closed）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-39/
-### TC-SEC-40 `CapabilityFlag` 局限的如实声明（`REQ-SEC-02`）
-
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-02` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ 可执行性：`[可执行]` ｜ `docs/dev/privacy.md`
-- **操作步骤**：
-  1. 检查 `privacy.md` -> 触发存盘：`<RUN>/sec/TC-SEC-40/assertions.json`
-  2. 断言含数据流向图、存储位置、权限、以及**`CapabilityFlag::Password` 是"尽力而为"信号的明确声明**（未设置该标志的密码框我们无法识别）。
-- **通过标准**：不给用户"绝对安全"的错觉。
-
-- **验收记录**（2026-10-06）：相关套件全绿：CapabilityFlag 局限如实声明（无程序名→标识 unknown + 哈希标识）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-40/
-### TC-SEC-41 敏感模式下候选框仍显示（`REQ-SEC-02` 深化）
-
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-02` ｜ `sec` | 全状态防御与骨架屏 ｜ `P1` ｜ 可执行性：`[可执行]`
-- **操作步骤**：
-  1. 在密码框中输入 -> 触发存盘：`<RUN>/sec/TC-SEC-41/01_default.png`
-  2. 断言候选框**显示**（用户需要看到自己打的是什么）。
-- **通过标准**：`should_show_ui` 默认 `true`；企业环境可通过 `[privacy] disable_ui_on_password = true` 改为完全透传。
-
-- **验收记录**（2026-10-06）：相关套件全绿：敏感模式候选框仍显示（learning gate 只拦学习不拦显示）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-41/
-### TC-SEC-42 隐私配置变更立即生效（`REQ-SEC-02` 深化）
-
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-02` ｜ `sec` | 边界与容错 ｜ `P1` ｜ 可执行性：`[可执行]`
-- **操作步骤**：
-  1. 运行中修改黑名单 -> 触发存盘：`<RUN>/sec/TC-SEC-42/assertions.json`
-  2. 断言下一个 `KeyEvent` 即生效（无需重启）。
-- **通过标准**：隐私配置的变更不要求重启。
-
-- **验收记录**（2026-10-06）：相关套件全绿：隐私配置变更立即生效（privacy 重配置断言）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-42/
-### TC-SEC-43 词源白名单的排除清单强制（`REQ-SEC-04` 深化）
-
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-04` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ 可执行性：`[可执行]`
-- **操作步骤**：
-  1. 检查 `data/sources.toml` 的注释与内容 -> 触发存盘：`<RUN>/sec/TC-SEC-43/assertions.json`
-  2. 断言排除清单被显式登记：`luna-pinyin`(LGPL-3.0)、CC-CEDICT(CC BY-SA 4.0)、商业词库、研究用途词表、THUOCL（许可未核实）。
-- **通过标准**：注释中明确"Excluded by ADR-0000; do not add"。
-
-- **验收记录**（2026-10-06）：相关套件全绿：排除清单强制（luna-pinyin 反例探针拒绝并点名 LGPL-3.0）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-43/
-### TC-SEC-44 许可归属徽章与 `OB-1`~`OB-6` 登记（`REQ-SEC-05` 深化）
-
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-05` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ 可执行性：`[可执行]`
-- **操作步骤**：
-  1. 检查 README 双语徽章 + `licenses.md` 的六项义务登记 -> 触发存盘：`<RUN>/sec/TC-SEC-44/assertions.json`
-  2. 断言徽章与 `https://slint.dev` 链接可达；断言 `OB-1`~`OB-6` 逐条含条款依据、核对方式、复核结论。
-- **通过标准**：**必须直接读取 Slint 发行包内的许可原文**（`LICENSES/LicenseRef-Slint-Royalty-free-2.0.txt`），不得只引用二手解读（ADR-0000 的免责声明）。
-
-- **验收记录**（2026-10-06）：相关套件全绿：徽章与 OB-1~6 登记（双 README 徽章 + slint.dev 200 + licenses.md 六行登记）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-44/
-### TC-SEC-45 `strip` 与 `panic = "abort"` 的禁止（`REQ-SEC-06` 深化）
-
-- **基本属性**：`[x] 已通过` ｜ `REQ-SEC-06` ｜ `sec` | 全状态防御与骨架屏 ｜ `P0` ｜ 可执行性：`[可执行]`
-- **操作步骤**：
-  1. 检查 `Cargo.toml` 的 `[profile.release]` -> 触发存盘：`<RUN>/sec/TC-SEC-45/assertions.json`
-  2. 断言**不含** `strip`（任何形式）与 `panic = "abort"`。
-- **通过标准**：`strip = true` 与 `strip = "symbols"` 都会让 rustc 传 `--strip-all`，丢弃 `fcitx_addon_factory_instance`（`ADR-0002`）；`panic = "abort"` 会破坏 FFI 边界的 `catch_unwind`（`features.md` 2.2.3）。剥离改在**打包时**进行，并在 `nm -D` 校验后交付。
-
----
-
-## 2. 分片出口准则
-
-1. `REQ-SEC-01` 与 `REQ-SEC-02` 的 10 条用例在 `TASK-1.06.01` / `TASK-1.06.02` 落地后转为 `[可执行]`。
-2. `TC-SEC-37`/`TC-SEC-38` 的零痕迹断言同时依赖 `TASK-1.08.01`（日志）与 `TASK-1.08.02`（崩溃），三者需协同验收。
-3. `TC-SEC-44` 的 `OB-1` 徽章必须在 Phase 1 出口前落地（否则带病发布）。
-4. 主文档矩阵的 `REQ-SEC-01`、`REQ-SEC-02` 行可执行性列更新为 `✅`。
-
-- **验收记录**（2026-10-06）：相关套件全绿：strip 与 panic=abort 禁止（Cargo.toml 无该配置 + nm -D 工厂符号可见）；证据包 results/runs/run-20261006-034915/sec/TC-SEC-45/
+- **基本属性**：`REQ-SEC-04` ｜ `ASM-T-07` ｜ sec ｜ ①② ｜ `check-dict-sources.sh` + `git check-ignore` ｜ `[Smoke 冒烟门禁]` ｜ P1 ｜ `false` ｜ `[]` ｜ 吸收：无（新增，覆盖 2026-10-14 ADR-0012 裁决面）｜ 锚点：`data/sources.toml:105-137`、`docs/dev/adr/0012-corpus-and-word-sources.md` ｜ 背书：校验器 PASS（6 raw / 8 declared）
+- 用例状态：`[ ] 未通过`
+- **前置条件与沙盒重置契约**：当前 allowlist。
+- **操作步骤与物理存盘动作**：
+  1. `thuocl`/`huayu` 条目字段齐备且 sha256 空（未取数态合法）→ `execution_log.txt`。
+  2. 文件落盘后 CI 必红直到 hash 回填（fixture 演练）→ 记录。
+  3. 语料治理：`data/raw/corpus/` 被 gitignore；语料 URL/sha256 回填 ADR-0012 登记表（W-5）→ `assertions.json`。
+- **通过标准与多模态断言契约**：
+  - **[功能断言]**：`NOTICE`/`licenses.md` 的署名条目随取数落地（W-3/W-6，未取数时为登记在案的待办而非缺陷）。
+  - **[Headless 断言]**：腾讯词向量维持排除（ADR-0012 W-4）。
+  - **[性能断言]**：不适用。

@@ -153,7 +153,7 @@ pub(super) fn recover_stores() -> Result<(), ImeError> {
     // sequence — so the store is adopted under the policy it names. An environment with no
     // configuration directory leaves the built-in defaults in force, which is what a fresh
     // installation runs with.
-    let data = with_config_store(|store| store.current().data).unwrap_or_default();
+    let data = with_config_store(|store| store.current().data.clone()).unwrap_or_default();
     let directory = backup_dir(&paths.data_dir);
     match recover_store(&paths.user_db, &directory) {
         Ok(outcome) => emit_notice(restore_notice(outcome)),

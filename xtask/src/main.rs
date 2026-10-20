@@ -32,6 +32,12 @@ struct Cli {
 /// Available build-time tools.
 #[derive(Debug, clap::Subcommand)]
 enum Command {
+    /// Dictionary helpers: stage a compiled container for a hot swap.
+    Dict {
+        /// The staging helper itself.
+        #[command(subcommand)]
+        command: DictCommand,
+    },
     /// Compile raw dictionary sources into the binary dictionary format.
     ///
     /// Boxed because the argument struct is far larger than the other variants, and the
@@ -153,9 +159,20 @@ enum Command {
     Capture(testd::capture_cli::CaptureArgs),
 }
 
+/// Subcommands under `xtask dict`.
+#[derive(Debug, clap::Subcommand)]
+enum DictCommand {
+    /// Copy a compiled container into the staged location and print the follow-up steps:
+    /// the `[data] dict_staged_path` key to set and the reload that triggers the swap.
+    Stage(dictc::stage::StageArgs),
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Dict { command } => match command {
+            DictCommand::Stage(args) => dictc::stage::run(args),
+        },
         Command::Dictc(args) => dictc::run(*args),
         Command::Quality(args) => dictc::quality::run(*args),
         Command::Tune(args) => tune::run(*args),

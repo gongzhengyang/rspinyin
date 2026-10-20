@@ -157,6 +157,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "380962b3d93b99642e50b9febf72c071e97e8b32d86eae9cf4ef582bb960ae6e"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "arg_enum_proc_macro"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2143,6 +2152,7 @@ dependencies = [
 name = "ime-dict"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "crc32fast",
  "criterion",
  "fst",
@@ -2158,6 +2168,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "criterion",
+ "fst",
  "ime-config",
  "ime-core",
  "ime-diag",
@@ -5706,6 +5717,7 @@ dependencies = [
  "clap",
  "crc32fast",
  "fst",
+ "ime-config",
  "ime-core",
  "ime-diag",
  "ime-dict",

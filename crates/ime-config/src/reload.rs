@@ -127,6 +127,13 @@ verify_dict_on_load = "full"
 # effect on reload: the switch latches with the scheme, so a change answers the next
 # composition and never re-reads one in progress.
 abbrev = false
+# Correct one-step typing slips -- a keyboard-neighbour substitution or an adjacent
+# transposition -- for an input no exact spelling covers, so that `zhegn` still
+# reaches the word spelled `zheng`. Off by default: a corrected candidate rides a
+# heavy penalty and is marked in its annotation, and an input that spells a word is
+# never corrected at all. Takes effect on reload: the switch latches with the scheme,
+# so a change answers the next composition and never re-reads one in progress.
+correction = false
 # "context" keeps one session per input context; "program" shares one session across
 # every input context of the same application, so the Chinese/English mode and the
 # other mode bits survive a window switch inside one application. Applications are
@@ -231,6 +238,11 @@ backup_enabled = true
 # How many backup generations are kept, 1..=32. The oldest is removed once a new one
 # has landed. Takes effect at the next fcitx5 restart.
 backup_keep = 3
+# The dictionary file the next reload swaps in whole: the reload validates the file
+# completely, swaps it for the live one without touching the composition in progress,
+# and clears this key. A file the validation rejects is reported as
+# dict/swap/rejected and the key stands for you to fix. Empty means nothing to swap.
+dict_staged_path = ""
 
 [diagnostics]
 # "error" | "warn" | "info" | "debug" | "trace". Takes effect on reload.
@@ -300,6 +312,7 @@ struct PartialEngine {
     max_raw_len: Option<u8>,
     verify_dict_on_load: Option<String>,
     abbrev: Option<bool>,
+    correction: Option<bool>,
     share_state: Option<String>,
 }
 
@@ -373,6 +386,7 @@ struct PartialData {
     backup_keep: Option<u8>,
     decay_half_life_ticks: Option<i64>,
     decay_floor: Option<i64>,
+    dict_staged_path: Option<String>,
 }
 
 /// The `[diagnostics]` table of a document.
@@ -594,6 +608,7 @@ fn merge_engine(partial: Option<PartialEngine>, config: &mut Config, warnings: &
         warnings,
     );
     engine.abbrev = partial.abbrev.unwrap_or(engine.abbrev);
+    engine.correction = partial.correction.unwrap_or(engine.correction);
     take_enum(partial.share_state, &mut engine.share_state, warnings);
 }
 
@@ -736,6 +751,12 @@ fn merge_data(partial: Option<PartialData>, config: &mut Config, warnings: &mut 
     }
     if let Some(floor) = partial.decay_floor {
         config.data.decay_floor = floor;
+    }
+    // The staged path is copied as written: it names a file, and judging the file is
+    // the swap's business, not the reader's. An empty value is the shipped state, not
+    // an error.
+    if let Some(staged) = partial.dict_staged_path {
+        config.data.dict_staged_path = staged;
     }
 }
 

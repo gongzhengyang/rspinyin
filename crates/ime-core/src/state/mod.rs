@@ -122,6 +122,14 @@ pub struct SessionConfig {
     /// Off by default: an abbreviation is ambiguous by nature, and a user who never
     /// asked for one must not have it answered ahead of the full spelling.
     pub abbrev: bool,
+    /// `engine.correction`: whether a one-step typing slip is corrected for an input
+    /// no exact spelling covers, so that `zhegn` reaches a word spelled `zheng`.
+    ///
+    /// Off by default, for the same reason the abbreviation switch is: a corrected
+    /// reading is what the user meant only by accident, and the penalty that keeps
+    /// it below everything the input spells is the engine's business, not the
+    /// configuration's.
+    pub correction: bool,
 }
 
 impl Default for SessionConfig {
@@ -137,6 +145,7 @@ impl Default for SessionConfig {
             keep_full_pinyin: true,
             fuzzy: ime_types::DecodeFlags::empty(),
             abbrev: false,
+            correction: false,
         }
     }
 }

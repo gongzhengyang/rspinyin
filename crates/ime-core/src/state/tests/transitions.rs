@@ -15,9 +15,9 @@ use ime_types::{DecodeFlags, KeyAction};
 
 use crate::fuzzy;
 use crate::state::SessionConfig;
-use crate::state::machine::{Effect, Session, SessionEvent, SessionState, step};
+use crate::state::machine::{CONTEXT_KEY_BUDGET, Effect, Session, SessionEvent, SessionState, step};
 
-use super::{Fixture, composing, frame_of, highlighted, kinds, pin_toggle};
+use super::{Fixture, composing, committed, frame_of, highlighted, kinds, pin_toggle};
 
 /// A live composition on `raw`, with the fixture that decoded it kept alive beside it.
 fn composing_on(raw: &str) -> (Session, Fixture) {
@@ -536,5 +536,316 @@ fn test_abbrev_switch_expands_the_initial_reading() {
         texts,
         ["nh"],
         "with the switch off the input is echoed, not expanded: {texts:?}"
+    );
+}
+
+#[test]
+fn test_context_rerank_moves_the_next_composition_toward_the_committed_word() {
+    // 银行 ends the previous sentence; `yh` in the next one reads as 银行 and 预算
+    // at the same weight, and the context is what tells them apart: the candidate
+    // the model continues from the committed word moves to the front of the page.
+    let rows: &'static [(&'static str, &'static str)] = &[
+        ("yin'hang", "银行"),
+        ("yu'suan", "预算"),
+        ("y'h", "银行"),
+        ("y'h", "预算"),
+    ];
+    let fixture = Fixture::with_dictionary_and_bigram(
+        rows,
+        &[("银行", -256), ("预算", -256)],
+        "银行",
+        "银行",
+        -64,
+    );
+    let cfg = SessionConfig {
+        abbrev: true,
+        ..SessionConfig::default()
+    };
+    let env = fixture.env();
+    let mut session = Session::new();
+    // First composition: `yinhang`, one reading, committed as it stands.
+    for ch in "yinhang".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+    }
+    assert_eq!(session.decoded().candidates[0].text, "银行");
+    let effects = session.handle_key(KeyAction::SelectIndex(1), &cfg, &env);
+    assert_eq!(committed(&effects), Some("银行"), "the commit lands");
+    let _ = step(&mut session, SessionEvent::CommitDone, &cfg, &env);
+    assert_eq!(session.context(), Some("银行"));
+
+    // Second composition: `yh`, the two candidates tied, the context decides.
+    let _ = session.handle_key(KeyAction::InputChar('y'), &cfg, &env);
+    let _ = session.handle_key(KeyAction::InputChar('h'), &cfg, &env);
+    let texts: Vec<&str> = session
+        .decoded()
+        .candidates
+        .iter()
+        .map(|candidate| candidate.text.as_str())
+        .collect();
+    assert_eq!(
+        texts.first(),
+        Some(&"银行"),
+        "the continuation of the committed word leads: {texts:?}"
+    );
+    assert!(
+        texts.contains(&"预算"),
+        "the other reading stays on the page: {texts:?}"
+    );
+}
+
+#[test]
+fn test_context_rerank_leaves_a_list_no_band_can_hold_alone() {
+    // The same committed word, but the two readings are a whole band apart in the
+    // base scores: the near-tie run is one candidate long, and context does not
+    // reach past it. The base ranking's own first choice stays first.
+    let rows: &'static [(&'static str, &'static str)] = &[
+        ("yin'hang", "银行"),
+        ("yu'suan", "预算"),
+        ("y'h", "银行"),
+        ("y'h", "预算"),
+    ];
+    let fixture = Fixture::with_dictionary_and_bigram(
+        rows,
+        &[("银行", -2048), ("预算", -256)],
+        "银行",
+        "银行",
+        -64,
+    );
+    let cfg = SessionConfig {
+        abbrev: true,
+        ..SessionConfig::default()
+    };
+    let env = fixture.env();
+    let mut session = Session::new();
+    for ch in "yinhang".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+    }
+    let effects = session.handle_key(KeyAction::SelectIndex(1), &cfg, &env);
+    assert_eq!(committed(&effects), Some("银行"));
+    let _ = step(&mut session, SessionEvent::CommitDone, &cfg, &env);
+    let _ = session.handle_key(KeyAction::InputChar('y'), &cfg, &env);
+    let _ = session.handle_key(KeyAction::InputChar('h'), &cfg, &env);
+    let texts: Vec<&str> = session
+        .decoded()
+        .candidates
+        .iter()
+        .map(|candidate| candidate.text.as_str())
+        .collect();
+    assert_eq!(
+        texts.first(),
+        Some(&"预算"),
+        "a real score gap is not context's to override: {texts:?}"
+    );
+}
+
+#[test]
+fn test_context_rerank_retires_after_its_key_budget() {
+    // Five keystrokes are served by the context; the sixth finds it gone. A pure
+    // session has no clock, so staleness is counted in the currency the input
+    // arrives in.
+    let mut session = Session::new();
+    session.set_context(String::from("银行"));
+    for _ in 0..CONTEXT_KEY_BUDGET {
+        session.age_context();
+        assert_eq!(
+            session.context(),
+            Some("银行"),
+            "the context serves its budget"
+        );
+    }
+    session.age_context();
+    assert_eq!(session.context(), None, "the budget spent, it retires");
+}
+
+#[test]
+fn test_context_rerank_dies_with_a_cancelled_composition() {
+    // The context survives the composition that set it -- that is its point -- but
+    // a composition the user took back says nothing about what they mean next, and
+    // Escape takes the context with it.
+    let rows: &'static [(&'static str, &'static str)] = &[("yin'hang", "银行")];
+    let fixture = Fixture::with_dictionary(rows);
+    let cfg = SessionConfig::default();
+    let env = fixture.env();
+    let mut session = Session::new();
+    for ch in "yinhang".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+    }
+    let _ = session.handle_key(KeyAction::SelectIndex(1), &cfg, &env);
+    let _ = step(&mut session, SessionEvent::CommitDone, &cfg, &env);
+    assert_eq!(session.context(), Some("银行"));
+    // A new composition, then Escape: the composition is taken back and the
+    // context with it.
+    let _ = session.handle_key(KeyAction::InputChar('y'), &cfg, &env);
+    assert_eq!(session.context(), Some("银行"));
+    let _ = session.handle_key(KeyAction::Escape, &cfg, &env);
+    assert_eq!(session.context(), None, "a cancelled composition takes it");
+}
+
+#[test]
+fn test_correction_switch_reads_a_one_step_slip() {
+    // `zhegn` has no exact cut; the correction pass widens the misspelled span
+    // onto `zheng`, and the word the dictionary stores there becomes a candidate.
+    let words: &'static [(&'static str, &'static str)] = &[("zheng", "真诚")];
+    let fixture = Fixture::with_dictionary(words);
+    let on = SessionConfig {
+        correction: true,
+        ..SessionConfig::default()
+    };
+    let env = fixture.env();
+    let mut session = Session::new();
+    for ch in "zhegn".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &on, &env);
+    }
+    let decoded = session.decoded();
+    let texts: Vec<&str> = decoded
+        .candidates
+        .iter()
+        .map(|candidate| candidate.text.as_str())
+        .collect();
+    assert!(texts.contains(&"真诚"), "the slip reaches the word: {texts:?}");
+    // The corrected candidate says why it is there: the annotation carries the
+    // spelling the user typed, which the correction edge stands for. A candidate
+    // the input spells exactly -- the pass-through echo here -- stays quiet.
+    let corrected = decoded
+        .candidates
+        .iter()
+        .find(|candidate| candidate.text == "真诚")
+        .expect("the assertion above held");
+    assert_eq!(
+        corrected.annotation.as_deref(),
+        Some("纠错：zhegn"),
+        "the annotation carries the original spelling: {corrected:?}"
+    );
+
+    // Off is the shipped switch, and off is the contract: the same keystrokes
+    // answer the pass-through candidate alone, because nothing about them spells
+    // a word.
+    let env = fixture.env();
+    let mut session = Session::new();
+    for ch in "zhegn".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &SessionConfig::default(), &env);
+    }
+    let decoded = session.decoded();
+    assert!(decoded.degraded, "the default decodes nothing: {decoded:?}");
+    assert_eq!(
+        decoded.candidates.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(),
+        ["zhegn"],
+        "the input is echoed, not corrected"
+    );
+}
+
+#[test]
+fn test_correction_annotates_a_word_that_hides_the_slip_inside() {
+    // The slip sits inside a word: `awnba` reads as `wan'ba`, and the word that
+    // covers the widened span goes on past it. The candidate still says why it is
+    // there -- the penalty rides on the word's edge wherever the widened span sits,
+    // and the annotation rides on the penalty.
+    let words: &'static [(&'static str, &'static str)] = &[("wan'ba", "完把")];
+    let fixture = Fixture::with_dictionary(words);
+    let on = SessionConfig {
+        correction: true,
+        ..SessionConfig::default()
+    };
+    let env = fixture.env();
+    let mut session = Session::new();
+    for ch in "awnba".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &on, &env);
+    }
+    let decoded = session.decoded();
+    let texts: Vec<&str> = decoded
+        .candidates
+        .iter()
+        .map(|candidate| candidate.text.as_str())
+        .collect();
+    assert_eq!(
+        texts.first(),
+        Some(&"完把"),
+        "the corrected reading wins: {texts:?}"
+    );
+    let top = decoded.candidates.first().expect("the assertion above held");
+    assert_eq!(
+        top.annotation.as_deref(),
+        Some("纠错：awnba"),
+        "the word over the interior slip is annotated: {top:?}"
+    );
+}
+
+#[test]
+fn test_correction_switch_leaves_a_spelled_input_unmoved() {
+    // The miss gate is the whole guarantee: an input that spells a word never
+    // enters the correction pass, so with the bit on it decodes -- and ranks --
+    // exactly as it does with the bit off.
+    let words: &'static [(&'static str, &'static str)] =
+        &[("zheng", "真诚"), ("ni'hao", "你好"), ("xian", "西安")];
+    let fixture = Fixture::with_dictionary(words);
+    let on = SessionConfig {
+        correction: true,
+        ..SessionConfig::default()
+    };
+    let env = fixture.env();
+    for raw in ["zheng", "nihao", "ni'hao", "xian"] {
+        let mut off_session = Session::new();
+        let mut on_session = Session::new();
+        for ch in raw.chars() {
+            let _ = off_session.handle_key(KeyAction::InputChar(ch), &SessionConfig::default(), &env);
+            let _ = on_session.handle_key(KeyAction::InputChar(ch), &on, &env);
+        }
+        let off: Vec<&str> = off_session
+            .decoded()
+            .candidates
+            .iter()
+            .map(|candidate| candidate.text.as_str())
+            .collect();
+        let on_texts: Vec<&str> = on_session
+            .decoded()
+            .candidates
+            .iter()
+            .map(|candidate| candidate.text.as_str())
+            .collect();
+        assert_eq!(off, on_texts, "{raw:?} changed under the correction bit");
+        // The same holds for the annotation: an input the miss gate let through
+        // uncorrected is annotated with nothing, with the bit on or off.
+        assert!(
+            on_session
+                .decoded()
+                .candidates
+                .iter()
+                .all(|candidate| candidate.annotation.is_none()),
+            "{raw:?} grew an annotation under the correction bit"
+        );
+    }
+}
+
+#[test]
+fn test_correction_rides_below_abbreviation_at_equal_weight() {
+    // Both switches on, one input readable both ways: `nh` reads as the
+    // abbreviation of `ni'hao` and, corrected, as the exact syllables `n` and
+    // `n`. The penalty ladder must keep the narrower tolerance ahead.
+    let words: &'static [(&'static str, &'static str)] =
+        &[("n'h", "你好"), ("ni'hao", "你好"), ("n'n", "尼尼")];
+    let fixture = Fixture::with_dictionary(words);
+    let both = SessionConfig {
+        abbrev: true,
+        correction: true,
+        ..SessionConfig::default()
+    };
+    let env = fixture.env();
+    let mut session = Session::new();
+    let _ = session.handle_key(KeyAction::InputChar('n'), &both, &env);
+    let _ = session.handle_key(KeyAction::InputChar('h'), &both, &env);
+    let texts: Vec<&str> = session
+        .decoded()
+        .candidates
+        .iter()
+        .map(|candidate| candidate.text.as_str())
+        .collect();
+    assert!(
+        texts.contains(&"尼尼"),
+        "the corrected reading is a candidate: {texts:?}"
+    );
+    assert_eq!(
+        texts.first(),
+        Some(&"你好"),
+        "the abbreviation outranks the correction: {texts:?}"
     );
 }

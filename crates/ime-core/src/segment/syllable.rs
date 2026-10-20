@@ -137,11 +137,46 @@ pub static SYLLABLES: &[&str] = &[
     "ê",
 ];
 
+/// The first-byte index of [`SYLLABLES`]: `bounds[b]` is where the entries whose
+/// first byte is `b` begin, and `bounds[b + 1]` where they end.
+///
+/// Computed once at compile time from the table itself, so a re-sorted or re-worded
+/// table re-derives its own index and the two cannot disagree. Almost every lookup
+/// the decoder makes is answered inside one initial's block, and the blocks are what
+/// this table names; a first byte no syllable starts with names an empty range,
+/// which turns the failed lookup into one bounds comparison.
+///
+/// All 26 ASCII letters carry entries, and the two umlaut spellings (`ü`, `ê`)
+/// share their first UTF-8 byte, so the multi-byte entries form the one non-ASCII
+/// block at the top of the table -- which is where the sorted order already put
+/// them.
+const fn first_byte_bounds() -> [u16; 256 + 1] {
+    let mut counts = [0u16; 256];
+    let mut index = 0;
+    while index < SYLLABLES.len() {
+        let first = SYLLABLES[index].as_bytes()[0];
+        counts[first as usize] += 1;
+        index += 1;
+    }
+    let mut bounds = [0u16; 256 + 1];
+    let mut byte = 0;
+    while byte < 256 {
+        bounds[byte + 1] = bounds[byte] + counts[byte];
+        byte += 1;
+    }
+    bounds
+}
+
+/// [`SYLLABLES`]'s first-byte index; see [`first_byte_bounds`].
+static FIRST_BYTE_BOUNDS: [u16; 256 + 1] = first_byte_bounds();
+
 /// Looks one already-normalized syllable up in the table.
 ///
 /// The argument must be in canonical spelling (see the module documentation);
-/// callers that start from raw user input normalize it first. The lookup is a
-/// binary search over [`SYLLABLES`], so it costs about nine comparisons.
+/// callers that start from raw user input normalize it first. The lookup narrows
+/// [`SYLLABLES`] to the block the first byte names before it binary-searches, so a
+/// hit costs a handful of comparisons and a miss on a byte no syllable starts with
+/// costs one.
 ///
 /// # Examples
 ///
@@ -153,10 +188,19 @@ pub static SYLLABLES: &[&str] = &[
 /// assert!(lookup("x").is_none());
 /// ```
 pub fn lookup(s: &str) -> Option<SyllableId> {
-    SYLLABLES
+    let bytes = s.as_bytes();
+    let first = usize::from(*bytes.first()?);
+    let start = usize::from(FIRST_BYTE_BOUNDS[first]);
+    let end = usize::from(FIRST_BYTE_BOUNDS[first + 1]);
+    if start == end {
+        return None;
+    }
+    // The slice is the block the first byte names, so the found offset is relative
+    // to it and the identifier is the offset back into the whole table.
+    SYLLABLES[start..end]
         .binary_search(&s)
         .ok()
-        .and_then(|index| u16::try_from(index).ok())
+        .and_then(|at| u16::try_from(at + start).ok())
         .map(SyllableId::new)
 }
 

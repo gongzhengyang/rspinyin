@@ -281,10 +281,11 @@ pub fn on_config_reload() -> RoutingConfig {
             };
             // The sections the engine applies itself ride along, so they are read from the
             // document that was adopted rather than fetched again after the lock is
-            // released. Both are `Copy`, so the snapshot is two small values.
+            // released. `DiagnosticsConfig` is `Copy`; the data section is a clone of two
+            // small strings and a few flags.
             let applied = match &outcome {
                 ReloadOutcome::Updated { .. } => {
-                    Some((store.current().diagnostics, store.current().data))
+                    Some((store.current().diagnostics, store.current().data.clone()))
                 }
                 ReloadOutcome::Unchanged | ReloadOutcome::Kept { .. } => None,
             };
@@ -308,6 +309,11 @@ pub fn on_config_reload() -> RoutingConfig {
     if let Some((diag, data)) = applied {
         diagnostics::apply_diagnostics_config(&diag);
         user_store::apply_data_config(&data);
+        // The staged container the adopted document names, if any, is swapped in here,
+        // after the document is in force: the write-back that clears the key then races
+        // against exactly the file the user saved, and a swap that does not pass its
+        // validation leaves the live dictionary serving.
+        super::session::apply_staged_dictionary(&data);
     }
     install_routing_config(routing);
     routing

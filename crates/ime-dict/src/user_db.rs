@@ -20,6 +20,8 @@
 //!   tick           &str -> u64   the global logical clock, one row
 //!   user_meta      &str -> (u64 created_ms, u64 pinned)      one row per record that has one
 //!   user_key_pins  &str -> &str   the word pinned under an input key, one row per pin
+//!   user_lexicon   &str -> (u32 commits, u64 last_used_ms)   one row per coined entry;
+//!                  the row key is `<syllable key>\u{1}<word>`, so one pair is one row
 //!   meta           &str -> u64                               schema_version
 //! ```
 //!
@@ -107,7 +109,7 @@ mod source;
 use self::cache::MissCache;
 use self::evict::{Sweep, start_sweep};
 use self::flush::{Delta, FLUSH_SETTLE_TIMEOUT_MS, FlushThread, Pending};
-use self::hydrate::{load_committed, load_pins};
+use self::hydrate::{load_coined, load_committed, load_pins};
 use self::records::{Stored, StoredRow, WordsView, dee_q16};
 use self::schema::{SchemaOutcome, dee_bits, prepare_path, prepare_schema, read_tick};
 
@@ -246,6 +248,14 @@ const USER_META: TableDefinition<&str, (u64, u64)> = TableDefinition::new("user_
 /// knowing which word to move requires the association. Both tables are written by the
 /// same flush, so they cannot disagree.
 const USER_KEY_PINS: TableDefinition<&str, &str> = TableDefinition::new("user_key_pins");
+/// The user's coined words: one row per `(key, word)` pair, the key spelling the syllable
+/// string the word was coined under and the word its text, joined with the unit separator
+/// so one composite row key names one entry. The value carries the commit count and the
+/// last-used stamp in unix milliseconds.
+///
+/// The table is additive within schema 2: an older build that does not know it ignores it,
+/// because `redb` keeps tables an open does not name, so the version stays where it was.
+const USER_LEXICON: TableDefinition<&str, (u32, u64)> = TableDefinition::new("user_lexicon");
 /// Store-wide markers; version 2 holds the schema version.
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 
@@ -268,6 +278,11 @@ struct PendingState {
     /// Key-pin rows waiting for the next flush: the input key, and the word its row
     /// should name -- or `None` for a row to delete.
     key_rows: HashMap<Box<str>, Option<Box<str>>>,
+    /// Coined entries waiting for the next flush: the composite `(key, word)` row key,
+    /// and the word it enrols.
+    coined: HashMap<Box<str>, Box<str>>,
+    /// Coined rows the user asked to forget, by their composite row key.
+    coined_removed: HashSet<Box<str>>,
     /// Monotonic nanoseconds of the last flush, so that the interval trigger measures
     /// typing time rather than wall-clock time.
     last_flush_nanos: u64,
@@ -337,6 +352,16 @@ struct Inner {
     v1_readonly: bool,
     /// Deltas recorded but not yet flushed.
     pending: Mutex<PendingState>,
+    /// The coined words this store knows, mapped from the word's text to the composite
+    /// row keys that hold it.
+    ///
+    /// The map is what `forget` and `is_user_word` read instead of a table scan: a
+    /// keystroke on the decode path may not open a read transaction, and the forget that
+    /// removes a coined word must find its rows without one. Filled at open from the file
+    /// and kept in step by the record and flush paths, exactly as the committed counts
+    /// are; empty for a store past its hydrate cap, where the coin rows stay file-only
+    /// and the word-level operations answer from the file's absence.
+    coined_words: Mutex<HashMap<Box<str>, Vec<Box<str>>>>,
     /// The keys the user pinned, which eviction leaves alone.
     ///
     /// Only the pinned keys are held, so an ordinary store pays for an empty set. The flags
@@ -553,6 +578,10 @@ impl UserDb {
             Some(loaded) => (loaded.records, (loaded.pinned, loaded.key_pins)),
             None => (HashMap::new(), load_pins(&db, &path, v1_readonly)),
         };
+        // The coined words ride their own small load: a read transaction at open, where a
+        // read transaction is the caller's own call and not a keystroke's. The map is what
+        // `forget` and `is_user_word` consult so that neither has to scan the file later.
+        let coined_words = load_coined(&db, &path);
         // A v1 store served read-only carries no clock at all -- its migration, the
         // only thing that would have written one, failed. Zero is the clock a fresh
         // store starts with, and a read-only store never advances it.
@@ -568,6 +597,7 @@ impl UserDb {
             committed: Mutex::new(records),
             pinned: Mutex::new(pins.0),
             key_pins: Mutex::new(pins.1),
+            coined_words: Mutex::new(coined_words),
             tick: AtomicU64::new(tick),
             schema_migrated: matches!(schema, SchemaOutcome::Migrated | SchemaOutcome::V1Degraded),
             v1_readonly,

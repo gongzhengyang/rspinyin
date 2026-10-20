@@ -12,8 +12,10 @@
 pub mod entry;
 pub mod format;
 pub mod fst_index;
+pub mod hot_swap;
 pub mod mmap;
 pub mod paths;
 pub mod recover;
 pub mod script;
 pub mod user_db;
+pub mod user_lexicon;

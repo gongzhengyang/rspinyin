@@ -68,6 +68,14 @@ use crate::viterbi::{DecodeScratch, Decoder};
 pub use crate::state::effects::{AnchorHint, Effect, Effects, MAX_EFFECTS};
 pub use crate::state::frame::FrameContext;
 
+/// How many key events a context word serves before it goes stale.
+///
+/// The re-rank it drives is a statement about the sentence the user just finished;
+/// five keystrokes into a new composition that statement has worn thin, and the
+/// sixth retires it. A handful, not a ceiling: the number exists so the context
+/// cannot outlive its usefulness, not to meter it precisely.
+pub const CONTEXT_KEY_BUDGET: u8 = 5;
+
 /// Where a session is in its life.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
@@ -160,6 +168,24 @@ pub struct Session {
     /// Whether the session expands initial-letter abbreviations, latched beside the
     /// fuzzy classes for the same reason.
     abbrev: bool,
+    /// Whether the session corrects one-step typing slips, latched beside the
+    /// abbreviation switch for the same reason.
+    correction: bool,
+    /// The word the user's last landed commit ended with, and the one piece of
+    /// context that crosses compositions.
+    ///
+    /// It is read once per refresh, to re-order the near-tie head of a fresh
+    /// candidate list, and it is session memory and nothing else: it never reaches
+    /// an effect, a log line or the frame (the privacy rule the candidate and commit
+    /// texts already live under), and it dies with the session.
+    context_word: Option<String>,
+    /// How many key events have passed since [`Session::context_word`] was set.
+    ///
+    /// Context grows stale as the user types on: past a handful of keystrokes the
+    /// composition it describes is no longer the sentence the user is in, and the
+    /// re-rank it would drive is a guess. The count is what retires it, in the one
+    /// currency a pure session is paid in -- keystrokes, not seconds.
+    context_keys: u8,
     /// Id the next composition will take.
     next_session_id: u64,
 }
@@ -171,12 +197,25 @@ pub(super) struct PendingCommit {
     pub(super) key: String,
     /// How strongly to weigh the record; see `Session::weight_hint`.
     pub(super) weight_hint: u16,
+    /// The word pairs of the committed reading that the commit can coin, in `(key, text)`
+    /// form; empty when there is nothing to coin.
+    ///
+    /// Captured when the commit was asked for, from the workspace's own record of the
+    /// reading, and reported only once the host confirms the commit landed -- a commit the
+    /// host refused must not teach the dictionary a word that was not on the screen, which
+    /// is the same rule [`PendingCommit::key`] already lives under.
+    pub(super) coins: Vec<(String, String)>,
 }
 
 /// Everything the session reads that it does not own.
 ///
 /// Grouped into one struct rather than threaded through [`step`] as four parameters,
 /// which also gives the tests a single place to swap in their in-memory doubles.
+///
+/// `Copy` because every field is a shared reference: a host that rebuilds the environment
+/// per key -- the dictionary side of a hot swap, say -- copies the parts it keeps and
+/// fills the parts it re-reads, without the borrow of the old environment surviving.
+#[derive(Clone, Copy)]
 pub struct SessionEnv<'a> {
     /// The decoder, built once and shared by every session.
     pub decoder: &'a Decoder,
@@ -262,6 +301,9 @@ impl Session {
             pending: None,
             fuzzy: ime_types::DecodeFlags::empty(),
             abbrev: false,
+            correction: false,
+            context_word: None,
+            context_keys: 0,
             next_session_id: next,
         }
     }
@@ -380,6 +422,64 @@ impl Session {
         self.pending = pending;
     }
 
+    /// The word pairs of the candidate at `index` that a commit could coin.
+    ///
+    /// The pairs live in the workspace, which holds the reading of the candidate list the
+    /// highlight moves over; this is the read side the commit path captures them through,
+    /// so that a keystroke after the capture -- which would decode a new input into the
+    /// same buffers -- cannot change what the commit reports.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn coin_pairs_for(&self, index: usize) -> Vec<(String, String)> {
+        self.scratch.coin_pairs(index)
+    }
+
+    /// Remembers `word` as the context the next compositions decode with.
+    ///
+    /// This is the one place context is born: a commit the host confirmed landed.
+    /// The keystroke count beside it restarts, so the whole budget of stale-ness is
+    /// the new composition's, not the finished one's.
+    pub(super) fn set_context(&mut self, word: String) {
+        self.context_word = Some(word);
+        self.context_keys = 0;
+    }
+
+    /// Forgets the context word.
+    ///
+    /// Every path that ends a composition without a commit runs through here: a
+    /// composition the user took back says nothing about what they mean next, which
+    /// is exactly what the context claims to know.
+    pub(super) fn clear_context(&mut self) {
+        self.context_word = None;
+        self.context_keys = 0;
+    }
+
+    /// Retires the context word once the keystrokes it was allowed have passed.
+    ///
+    /// The budget is five key events. A pure session has no clock -- touching one
+    /// would break the determinism the tests replay -- so staleness is counted in
+    /// keystrokes, which is the currency the input arrives in anyway; the wall-clock
+    /// expiry the design sketches is host-side business, reachable through
+    /// [`SessionEvent::Reset`] when a host wants it.
+    pub(super) fn age_context(&mut self) {
+        if self.context_word.is_some() {
+            self.context_keys = self.context_keys.saturating_add(1);
+            if self.context_keys > CONTEXT_KEY_BUDGET {
+                self.clear_context();
+            }
+        }
+    }
+
+    /// Returns the context word, for the tests that pin its life cycle.
+    ///
+    /// The field is session-private by design; the tests read it through this door.
+    #[cfg(test)]
+    pub(super) fn context(&self) -> Option<&str> {
+        self.context_word.as_deref()
+    }
+
     /// Allocates the id of a new composition and advances the counter behind it.
     pub(super) fn start_new_id(&mut self) {
         self.id = SessionId::new(self.next_session_id);
@@ -470,6 +570,10 @@ impl Session {
         };
         self.request.flags.set(DecodeFlags::SHUANGPIN, rewritten);
         self.request.flags.set(DecodeFlags::ABBREV, self.abbrev);
+        // The correction switch rides the same rule as its siblings: the bit is
+        // set from the latch every keystroke, so a reload that turned it off
+        // clears it instead of leaving it set behind the keystroke before.
+        self.request.flags.set(DecodeFlags::CORRECTION, self.correction);
         // The fuzzy classes arrive as the mask the projection latched with the scheme:
         // removed first, so a reload that turned a class off clears its bit instead of
         // leaving it set from the keystroke before, then inserted whole. With the mask
@@ -484,6 +588,18 @@ impl Session {
             env.user_freq,
             env.lm,
         );
+        // The context re-rank is the session's own post-pass, and it runs before the
+        // repairs below read the list: the order the user sees, the order the
+        // highlight reconciles against and the order the preedit's page carries are
+        // one and the same. The context word is this session's memory of the last
+        // commit and nothing else, so with none -- a first composition, or one whose
+        // context expired -- the call is never made and the list is the decode's own.
+        // The workspace runs it rather than the session, because the drafts the
+        // candidates came from have to be permuted by the same moves, and those are
+        // the workspace's own type.
+        if let Some(context) = self.context_word.as_deref() {
+            self.scratch.rerank_with_context(Some(context), env.lm);
+        }
         self.paging
             .reconcile(prev, &self.scratch.result().candidates);
         if rewritten {
@@ -769,6 +885,7 @@ pub fn step(
         // cannot leave them set in a request the segmentation layer reads.
         sess.fuzzy = cfg.fuzzy & crate::fuzzy::FLAG_MASK;
         sess.abbrev = cfg.abbrev;
+        sess.correction = cfg.correction;
     }
     let mut ctx = Ctx::new(cfg, env);
     sess.on_event(ev, &mut ctx);

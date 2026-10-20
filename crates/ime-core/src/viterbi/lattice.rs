@@ -126,18 +126,27 @@ pub struct LatticeEdge<'dict> {
     pub source: CandidateSource,
     /// The word, borrowed from the dictionary's mapping.
     pub word: WordRef<'dict>,
+    /// The key the word was looked up under, as a byte range into the lattice's key
+    /// arena: the canonical spelling the walk built -- syllable texts joined with the
+    /// separator -- which is what a later lookup of the same word will spell. An edge the
+    /// extension walks added names no key in this arena: its range is empty, and the one
+    /// reader of the ranges treats that as nothing to coin from.
+    pub key: (u32, u16),
     /// Score penalty the edge carries, in the Q16.16 unit the sweep ranks with.
     ///
-    /// Zero for an edge the exact walk produced, and the penalty of the extension that
-    /// found it -- [`ABBREV_PENALTY_Q8`](crate::segment::abbrev::ABBREV_PENALTY_Q8) for an
-    /// abbreviated one -- so that a full spelling outranks an abbreviation at equal
-    /// dictionary weight. The lattice records the penalty rather than applying it: the
-    /// score of an edge is the sweep's to compute, and this is the one term of that score
-    /// the lattice knows and the sweep cannot derive from the word and its predecessor.
-    /// The order the edges sit in is a second, weaker guarantee -- the exact walk's edges
-    /// come before the abbreviation walk's, so a tie falls the right way even on a sweep
-    /// that ignores this field -- and the penalty is what makes the outcome a matter of
-    /// the score rather than of the order.
+    /// Zero for an edge the exact walk produced, and the heaviest penalty of the
+    /// spans the word covers for an extended one -- [`ABBREV_PENALTY_Q8`](crate::segment::abbrev::ABBREV_PENALTY_Q8)
+    /// for an abbreviated one, the fuzzy penalty for a fuzzy variant, the correction
+    /// penalty for a corrected span at any position of the word -- so that a full
+    /// spelling outranks a widened reading at equal dictionary weight, wherever in
+    /// the word the widening sits. The lattice records the penalty rather than
+    /// applying it: the score of an edge is the sweep's to compute, and this is the
+    /// one term of that score the lattice knows and the sweep cannot derive from the
+    /// word and its predecessor. The order the edges sit in is a second, weaker
+    /// guarantee -- the exact walk's edges come before the abbreviation walk's, so a
+    /// tie falls the right way even on a sweep that ignores this field -- and the
+    /// penalty is what makes the outcome a matter of the score rather than of the
+    /// order.
     pub penalty_q8: i32,
 }
 
@@ -330,6 +339,15 @@ pub struct LatticeOptions<'a> {
     /// it holds are handed back to the next call, so a decode that keeps one of these
     /// stops allocating after the first input of a given shape.
     pub readings: &'a mut Readings,
+    /// The key arena the build writes the canonical spelling of every looked-up key into,
+    /// and the edges name ranges into.
+    ///
+    /// Cleared by the build, so a range names this build's bytes and nothing earlier.
+    /// The arena belongs to the caller's workspace rather than to the lattice on purpose:
+    /// a lattice is built per decode and dropped with the call, and a buffer of its own
+    /// here would put a second allocation back on the key path the workspace had already
+    /// paid once for.
+    pub keys: &'a mut Vec<u8>,
 }
 
 /// Builds the lattice of `dag`: every word stored under the key of every span of
@@ -376,10 +394,12 @@ pub fn build_lattice_into<'dict>(
     lattice.starts.clear();
     lattice.lookup_failed = false;
     lattice.abbrev_truncated = false;
+    options.keys.clear();
     let LatticeOptions {
         fallback_single,
         flags,
         readings,
+        keys,
     } = options;
     let mut builder = Builder {
         lexicon,
@@ -392,6 +412,7 @@ pub fn build_lattice_into<'dict>(
         stack: SmallVec::new(),
         flags,
         readings,
+        keys,
         live_node: false,
         live: [false; MAX_LATTICE_NODES],
         extension_edges: 0,
@@ -416,6 +437,15 @@ struct Frame {
     syllables: u8,
     /// Length of the key that spells the partial path.
     key_len: usize,
+    /// The heaviest penalty any edge of the partial path carries.
+    ///
+    /// A word that covers several spans is one lattice edge, and its penalty has
+    /// to be the reading's, not its last syllable's: a corrected or fuzzy reading
+    /// whose widened span sits inside the word -- `wan` in `wan'ba` -- would
+    /// otherwise lose the penalty the graph charged it and rank as if the input
+    /// spelled it. The maximum is the fold, because the penalties are a ladder:
+    /// an exact span carries zero, and every widened span carries more than it.
+    penalty_q8: i32,
 }
 
 /// One one-syllable span of the node being walked, and whether the dictionary had
@@ -468,6 +498,9 @@ struct Builder<'a, 'lattice, 'buf> {
     flags: DecodeFlags,
     /// The enumeration buffer the abbreviation walk hands to `readings_into`.
     readings: &'buf mut Readings,
+    /// The key arena the span and fallback edges name ranges into; lent by the options
+    /// for the same reason the readings buffer is.
+    keys: &'buf mut Vec<u8>,
     /// Whether the node being walked is one a path reaches.
     live_node: bool,
     /// `live[i]` is set once an edge leaving a reachable node reaches node `i`.
@@ -502,6 +535,7 @@ impl Builder<'_, '_, '_> {
             node,
             syllables: 0,
             key_len: 0,
+            penalty_q8: 0,
         });
         let mut keys = 0usize;
         'walk: while let Some(frame) = self.stack.pop() {
@@ -534,6 +568,10 @@ impl Builder<'_, '_, '_> {
         if text.is_empty() {
             return;
         }
+        // The word this span may complete carries the heaviest penalty of the path
+        // it covers, not the last span's: the reading widened in the middle is as
+        // widened as one widened at the end.
+        let penalty_q8 = frame.penalty_q8.max(edge.penalty_q8);
         self.key_len = frame.key_len;
         if frame.syllables > 0 {
             self.key[self.key_len] = b'\'';
@@ -549,7 +587,7 @@ impl Builder<'_, '_, '_> {
         self.key_len += text.len();
         let key_len = self.key_len;
         let syllables = frame.syllables.saturating_add(1);
-        let covered = self.words(edge, key_len, syllables);
+        let covered = self.words(edge, penalty_q8, frame.key_len, key_len, syllables);
         if frame.syllables == 0 {
             self.singles.push(Single {
                 end: edge.end,
@@ -565,13 +603,26 @@ impl Builder<'_, '_, '_> {
                 node: edge.end,
                 syllables,
                 key_len,
+                penalty_q8,
             });
         }
     }
 
     /// Records the words the key of the last span spells, and answers whether the
     /// dictionary had any.
-    fn words(&mut self, edge: DagEdge, key_len: usize, syllables: u8) -> bool {
+    ///
+    /// `key_base` is where the span's own key starts in the walk's buffer: the bytes
+    /// `[key_base..key_len]` are the canonical spelling of this span alone, separators
+    /// included, and they are copied into the lattice's arena once per span so a path
+    /// reader after the build can spell the same key again.
+    fn words(
+        &mut self,
+        edge: DagEdge,
+        penalty_q8: i32,
+        key_base: usize,
+        key_len: usize,
+        syllables: u8,
+    ) -> bool {
         // The reference is copied out first: the dictionary outlives this builder,
         // so the words it hands back stay valid while the lattice is filled.
         let lexicon = self.lexicon;
@@ -586,6 +637,15 @@ impl Builder<'_, '_, '_> {
             self.lattice.lookup_failed = true;
             return false;
         };
+        // The span's own key enters the arena once, before the edges that name it: the
+        // edges carry ranges, and the bytes are the walk's own spelling of the key --
+        // the one a later decode will look the same word up under.
+        let key_start = self.keys.len();
+        self.keys.extend_from_slice(&self.key[key_base..key_len]);
+        let key_range = (
+            u32::try_from(key_start).unwrap_or(u32::MAX),
+            u16::try_from(key_len.saturating_sub(key_base)).unwrap_or(u16::MAX),
+        );
         let mut covered = false;
         for word in words.take(WORDS_PER_KEY) {
             covered = true;
@@ -596,10 +656,12 @@ impl Builder<'_, '_, '_> {
                 characters: chars::count_characters(word.text),
                 source,
                 word,
-                // The graph's own penalty rides along: zero for an edge the input
-                // spells, the fuzzy penalty for a variant, so the exact reading
-                // outranks the widened one at equal dictionary weight.
-                penalty_q8: edge.penalty_q8,
+                key: key_range,
+                // The heaviest penalty of the spans the word covers, which the
+                // walk folded into `penalty_q8`: zero for a reading the input
+                // spells, the widened span's penalty for one it does not -- at
+                // whatever position of the word the widened span sits.
+                penalty_q8,
             });
         }
         if covered {
@@ -622,6 +684,15 @@ impl Builder<'_, '_, '_> {
             if single.covered {
                 continue;
             }
+            // The fallback edge's key is the one syllable's own spelling, which enters the
+            // arena once per fallback span the same way a span key does.
+            let spelling = syllable::syllable_at(single.syllable).unwrap_or_default();
+            let key_start = self.keys.len();
+            self.keys.extend_from_slice(spelling.as_bytes());
+            let key_range = (
+                u32::try_from(key_start).unwrap_or(u32::MAX),
+                u16::try_from(spelling.len()).unwrap_or(u16::MAX),
+            );
             match lexicon.fallback_single(single.syllable, FALLBACK_SINGLES) {
                 Ok(words) => {
                     for word in words.take(FALLBACK_SINGLES) {
@@ -632,6 +703,7 @@ impl Builder<'_, '_, '_> {
                             characters: chars::count_characters(word.text),
                             source,
                             word,
+                            key: key_range,
                             penalty_q8: single.penalty_q8,
                         });
                         self.reach(single.end);

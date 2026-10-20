@@ -395,6 +395,15 @@ pub struct EngineConfig {
     /// configuration's half of the engine's `DecodeFlags::ABBREV` switch; the decoder
     /// reads no configuration, so the host layer turns this flag into that bit.
     pub abbrev: bool,
+    /// `correction`: whether a one-step typing slip is corrected for an input no exact
+    /// spelling covers, so that `zhegn` reaches a word spelled `zheng`.
+    ///
+    /// Off by default: a corrected candidate is what the user asked for only by
+    /// accident, so it rides a heavy penalty and never displaces a reading the input
+    /// spells. The key is the configuration's half of the engine's
+    /// `DecodeFlags::CORRECTION` switch (ADR-0014); the decoder reads no
+    /// configuration, so the host layer turns this flag into that bit.
+    pub correction: bool,
     /// `share_state`: how sessions are shared across input contexts.
     pub share_state: ShareState,
 }
@@ -616,6 +625,7 @@ impl Default for Config {
                 max_raw_len: MAX_RAW_LEN,
                 verify_dict_on_load: VerifyDictOnLoad::Full,
                 abbrev: false,
+                correction: false,
                 share_state: ShareState::Context,
             },
             ui: UiConfig {
@@ -664,6 +674,7 @@ impl Default for Config {
                 backup_keep: DEFAULT_BACKUP_KEEP,
                 decay_half_life_ticks: DEFAULT_DECAY_HALF_LIFE_TICKS,
                 decay_floor: 1 << 16,
+                dict_staged_path: String::new(),
             },
             diagnostics: DiagnosticsConfig {
                 level: LogLevel::Info,

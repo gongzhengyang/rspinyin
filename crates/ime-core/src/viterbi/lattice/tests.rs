@@ -12,11 +12,16 @@ use super::*;
 ///
 /// The abbreviation suite's tests pass the flag instead; every test here pins what the
 /// exact walk produces, which is what the abbreviation edges are added beside.
-fn options(readings: &mut Readings, fallback_single: bool) -> LatticeOptions<'_> {
+fn options<'a>(
+    readings: &'a mut Readings,
+    keys: &'a mut Vec<u8>,
+    fallback_single: bool,
+) -> LatticeOptions<'a> {
     LatticeOptions {
         fallback_single,
         flags: DecodeFlags::empty(),
         readings,
+        keys,
     }
 }
 
@@ -25,7 +30,14 @@ fn lattice_of<'a>(raw: &str, lexicon: &'a MockLexicon) -> Lattice<'a> {
     let mut dag = SyllableDag::new();
     assert!(dag.build(raw).is_ok(), "building {raw:?}");
     let mut readings = Readings::new();
-    build_lattice(&dag, lexicon, &NoUser, options(&mut readings, true))
+    let mut keys: Vec<u8> = Vec::new();
+    let mut keys: Vec<u8> = Vec::new();
+    build_lattice(
+        &dag,
+        lexicon,
+        &NoUser,
+        options(&mut readings, &mut keys, true),
+    )
 }
 
 /// Returns the texts of the edges leaving `node`.
@@ -121,7 +133,8 @@ fn test_build_lattice_without_the_fallback_switch_leaves_spans_uncovered() {
     let mut dag = SyllableDag::new();
     assert!(dag.build("nihao").is_ok());
     let mut readings = Readings::new();
-    let lattice = build_lattice(&dag, &lexicon, &NoUser, options(&mut readings, false));
+    let mut keys: Vec<u8> = Vec::new();
+    let lattice = build_lattice(&dag, &lexicon, &NoUser, options(&mut readings, &mut keys, false));
     assert_eq!(texts(&lattice, 0), vec!["你"]);
     assert!(lattice.edges_from(2).is_empty());
 }
@@ -174,7 +187,8 @@ fn test_build_lattice_of_an_empty_graph_has_no_edges() {
     let lexicon = MockLexicon::with(&[]);
     let dag = SyllableDag::new();
     let mut readings = Readings::new();
-    let lattice = build_lattice(&dag, &lexicon, &NoUser, options(&mut readings, true));
+    let mut keys: Vec<u8> = Vec::new();
+    let lattice = build_lattice(&dag, &lexicon, &NoUser, options(&mut readings, &mut keys, true));
     assert!(lattice.is_empty());
     assert_eq!(lattice.len(), 0);
     assert_eq!(lattice.node_count(), 1);
@@ -203,11 +217,20 @@ fn test_lattice_edge_stays_within_its_size_budget() {
     // `&str` is a pointer and a length, plus the weight, the syllable count and the
     // flags -- and the penalty is another four. The assertion is therefore the width this
     // build actually has, which is what stops a field from being added unnoticed.
+    //
+    // The one field beyond the original shape is the key range the coining path reads:
+    // eight bytes naming where the edge's canonical key spelling sits in the arena, so
+    // that a commit after the decode can spell the same key a fresh lookup would. The
+    // range is what makes the user-lexicon entry land under the key the next decode
+    // actually looks up, which is why it rides the edge rather than being rebuilt from
+    // the input -- a rebuilt spelling would be wrong for every input typed without its
+    // separators.
     let width = core::mem::size_of::<LatticeEdge<'_>>();
     let word = core::mem::size_of::<WordRef<'_>>();
     assert!(
-        width <= 40,
-        "an edge is {width} bytes; the borrowed word is {word} of them and the penalty 4"
+        width <= 48,
+        "an edge is {width} bytes; the borrowed word is {word} of them, the penalty 4, \
+         and the key range 8"
     );
     // The borrowed word is the floor: no edge is narrower than the word it holds.
     assert!(width > word);
@@ -244,13 +267,14 @@ fn test_build_lattice_into_replaces_the_contents_and_keeps_the_buffer() {
     let mut dag = SyllableDag::new();
     assert!(dag.build("nihao").is_ok());
     let mut readings = Readings::new();
+    let mut keys: Vec<u8> = Vec::new();
     let mut lattice = Lattice::with_capacity(usize::from(dag.len()) + 1, true);
     build_lattice_into(
         &mut lattice,
         &dag,
         &lexicon,
         &NoUser,
-        options(&mut readings, true),
+        options(&mut readings, &mut keys, true),
     );
     assert_eq!(texts(&lattice, 0), vec!["你", "你好"]);
     let grown = lattice.edges.capacity();
@@ -262,7 +286,7 @@ fn test_build_lattice_into_replaces_the_contents_and_keeps_the_buffer() {
         &dag,
         &lexicon,
         &NoUser,
-        options(&mut readings, true),
+        options(&mut readings, &mut keys, true),
     );
     assert_eq!(texts(&lattice, 0), vec!["中"]);
     assert_eq!(lattice.node_count(), usize::from(dag.len()) + 1);
@@ -279,13 +303,14 @@ fn test_build_lattice_into_clears_a_refusal_of_the_previous_build() {
     let mut dag = SyllableDag::new();
     assert!(dag.build("nihao").is_ok());
     let mut readings = Readings::new();
+    let mut keys: Vec<u8> = Vec::new();
     let mut lattice = Lattice::default();
     build_lattice_into(
         &mut lattice,
         &dag,
         &lexicon,
         &NoUser,
-        options(&mut readings, true),
+        options(&mut readings, &mut keys, true),
     );
     assert!(lattice.lookup_failed(), "the second syllable is refused");
     let mut whole = SyllableDag::new();
@@ -295,7 +320,7 @@ fn test_build_lattice_into_clears_a_refusal_of_the_previous_build() {
         &whole,
         &lexicon,
         &NoUser,
-        options(&mut readings, true),
+        options(&mut readings, &mut keys, true),
     );
     assert!(
         !lattice.lookup_failed(),
@@ -312,4 +337,48 @@ fn test_build_lattice_leaves_the_abbreviation_flag_clear_without_the_switch() {
     let lattice = lattice_of("nihao", &lexicon);
     assert!(!lattice.abbrev_truncated());
     assert!(!lattice.lookup_failed());
+}
+
+#[test]
+fn test_build_lattice_carries_a_correction_penalty_that_sits_inside_a_word() {
+    // `awnba` spells nothing; the correction pass widens `awn` onto `wan`, and the
+    // word the dictionary stores under `wan'ba` covers the widened span with more
+    // word after it. The word's edge carries the correction penalty -- not the zero
+    // of the exact span it ends with -- because a reading widened in the middle is
+    // as widened as one widened at the end, and the penalty is what keeps it below
+    // everything the input spells and what the annotation is read off of. The one
+    // exact span the word also covers keeps its zero.
+    let lexicon = MockLexicon::with(&[("wan", "完"), ("ba", "把"), ("wan'ba", "完把")]);
+    let mut dag = SyllableDag::new();
+    assert!(
+        dag.build_for("awnba", DecodeFlags::default() | DecodeFlags::CORRECTION)
+            .is_ok(),
+        "the miss opens the correction gate"
+    );
+    let mut readings = Readings::new();
+    let mut keys: Vec<u8> = Vec::new();
+    let lattice = build_lattice(&dag, &lexicon, &NoUser, options(&mut readings, &mut keys, true));
+    let correction = crate::segment::correct::CORRECTION_PENALTY_Q8;
+    // The single corrected syllable.
+    let wan = lattice
+        .edges_from(0)
+        .iter()
+        .find(|edge| usize::from(edge.end) == 3)
+        .expect("the corrected syllable is an edge");
+    assert_eq!(wan.penalty_q8, correction);
+    assert_eq!(wan.syllables, 1);
+    // The word whose interior span is the corrected one.
+    let word = lattice
+        .edges_from(0)
+        .iter()
+        .find(|edge| usize::from(edge.end) == 5 && edge.syllables == 2)
+        .expect("the word over the corrected span is an edge");
+    assert_eq!(word.penalty_q8, correction);
+    // The exact span that follows the correction.
+    let ba = lattice
+        .edges_from(3)
+        .iter()
+        .find(|edge| usize::from(edge.end) == 5)
+        .expect("the exact span after the correction is an edge");
+    assert_eq!(ba.penalty_q8, 0);
 }

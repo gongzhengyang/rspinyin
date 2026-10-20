@@ -16,6 +16,7 @@ use std::collections::BinaryHeap;
 use super::*;
 
 use super::cache::lock_cache;
+use super::hydrate::COMPOSITE_SEPARATOR;
 use super::flush::Delta;
 
 // The parent module imports `Ordering` for its atomics; this module orders records. An
@@ -100,6 +101,39 @@ impl UserDb {
         self.inner.forget(key)
     }
 
+    /// Enrols one coined word: `key` is the syllable string the word was coined under,
+    /// `word` its text.
+    ///
+    /// The entry joins the pending write queue the flush thread drains, under the same
+    /// batching window every other write takes, and enters the in-memory word map the
+    /// word-level operations read. A read-only store enrols nothing and answers `false`,
+    /// which is what the caller's "read-only does not coin" rule checks.
+    ///
+    /// # Returns
+    ///
+    /// Whether the store took the enrolment.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn record_coin(&self, key: &str, word: &str) -> bool {
+        self.inner.record_coin(key, word)
+    }
+
+    /// Reads every coined row back: `(key, word, commits)`, in row-key order.
+    ///
+    /// This is the export side of the coin table, and the hydrate source the in-memory
+    /// user lexicon is built from at assembly: a read transaction at open or on an
+    /// explicit export call, never on a keystroke. Rows still waiting in the pending
+    /// queue are not in the file yet and are not listed; the in-memory lexicon already
+    /// holds them, which is why the two halves never disagree for long.
+    ///
+    /// # Errors
+    /// Returns [`ImeError::DictUnavailable`] when the read transaction fails.
+    pub fn coined_rows(&self) -> Result<Vec<(String, String, u32)>, ImeError> {
+        self.inner.coined_rows()
+    }
+
     /// Lists learned words, `limit` of them starting at `offset`, most recently used first.
     ///
     /// The order is `last_used_unix` descending with the key ascending as the tie-break, so
@@ -140,10 +174,90 @@ impl Inner {
     /// deliberately *not* consulted here: they are the record path's policy, and a removal
     /// is not urgent -- the tombstone already hides the word, and the next flush the user's
     /// typing earns writes it, as does the shutdown flush.
+    /// Records the enrolment of one coined word, and answers whether the store took it.
+    ///
+    /// The word enters the in-memory map -- so `forget` and `is_user_word` can find its
+    /// rows without a scan -- and the pending queue the next flush writes, under the same
+    /// batching window the frequency records live in. A read-only store enrols nothing,
+    /// which is what the caller's "read-only does not coin" rule checks.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn record_coin(&self, key: &str, word: &str) -> bool {
+        if self.readonly.load(std::sync::atomic::Ordering::Acquire) {
+            return false;
+        }
+        let composite: Box<str> = format!("{key}{COMPOSITE_SEPARATOR}{word}").into();
+        {
+            let mut coined = lock(&self.coined_words);
+            coined
+                .entry(Box::from(word))
+                .or_default()
+                .push(composite.clone());
+        }
+        let due = {
+            let mut pending = lock(&self.pending);
+            // A removal waiting for the same row is taken back: coining again is the
+            // opposite statement, and the later one wins, exactly as a record takes a
+            // tombstone back.
+            pending.coined_removed.remove(composite.as_ref());
+            pending.coined.insert(composite, Box::from(word));
+            pending.coined.len() >= PENDING_CAPACITY
+        };
+        if due {
+            self.request_flush();
+        }
+        true
+    }
+
+    /// Reads the coined table whole, in row-key order.
+    ///
+    /// # Errors
+    /// Returns [`ImeError::DictUnavailable`] when the read transaction fails.
+    pub(super) fn coined_rows(&self) -> Result<Vec<(String, String, u32)>, ImeError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|error| store_error(&self.path, &error))?;
+        let table = txn
+            .open_table(USER_LEXICON)
+            .map_err(|error| store_error(&self.path, &error))?;
+        let mut rows = Vec::new();
+        let walk = table.iter().map(|walk| walk);
+        if let Ok(mut iter) = walk {
+            while let Some(Ok((row_key, row))) = iter.next() {
+                let composite = row_key.value();
+                let (commits, _last_used) = row.value();
+                let Some((key, word)) = composite.split_once(COMPOSITE_SEPARATOR) else {
+                    continue;
+                };
+                rows.push((String::from(key), String::from(word), commits));
+            }
+        }
+        Ok(rows)
+    }
+
+    /// The composite row keys one word was coined under, as the in-memory map holds them.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn coined_composites(&self, word: &str) -> Vec<Box<str>> {
+        lock(&self.coined_words)
+            .get(word)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub(super) fn forget(&self, key: &str) -> ForgetOutcome {
         if self.readonly.load(std::sync::atomic::Ordering::Acquire) {
             return ForgetOutcome::Readonly;
         }
+        // The coin rows the word holds are found before any lock work: they are what
+        // makes the removal answer "removed" for a word the frequency tables never
+        // learned.
+        let coined = self.coined_composites(key);
         // The lock order the module fixes: `committed` before `pending`; `cache` and
         // `pinned` are leaves, never held while another lock is taken.
         let present = if self.is_hydrated {
@@ -168,8 +282,18 @@ impl Inner {
             // theirs, and a count recorded before that is not evidence to the contrary.
             pending.entries.remove(key);
             pending.removed.insert(Box::from(key));
+            // The word's own coin rows go with it, so the next flush removes what the
+            // coin path wrote and nothing the word did not hold.
+            for composite in &coined {
+                pending.coined_removed.insert(composite.clone());
+            }
             pending.removed.len() >= PENDING_CAPACITY
         };
+        // The in-memory coin map loses the word now: the very next `is_user_word` must
+        // answer for the table as it stands, not as the last flush left it.
+        if !coined.is_empty() {
+            lock(&self.coined_words).remove(key);
+        }
         if due {
             // The write is the flush thread's, for the reason `record`'s is: a tombstone
             // reaches the disk in a write transaction, and this runs inside a key callback.

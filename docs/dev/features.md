@@ -810,6 +810,9 @@ pub enum ConfigError {
 | `budget/memory-unmeasured` | `xtask budget --memory` | 快照里缺少该窗口的读数或基线（内核读不到 `/proc`，或探针没在该窗口打点）。**缺读数按失败处理，不按 0 通过** | 是（同上；消息点名缺失的字段与需要的打点调用） |
 | `budget/alloc-exceeded` | `xtask budget --alloc` | 稳态解码的堆分配次数超过 `budgets.json` 的 `alloc_count.decode_steady` 上限（`BUDGET-ALLOC-01`） | 是（`xtask` 的退出码与违规清单，不经 `ImeError`；读 `target/alloc-report.txt`） |
 | `budget/alloc-unmeasured` | `xtask budget --alloc` | 报告里缺少该记录（解码测试没有跑，或少写了一条记录）。**缺读数按失败处理，不按 0 通过** | 是（同上；消息点名缺失的记录名与产出它的测试） |
+| `dict/bigram/absent` | `ime-fcitx5` 的词库装配步 | 映射的容器没有 BIGRAM 段（或 flag 未置位），`DictLm` 保持 miss 降级；每进程一次 | 是（常量 `BIGRAM_ABSENT_CODE`） |
+| `dict/swap/applied` | `ime-fcitx5` 的配置重载路径 | `[data] dict_staged_path` 命名的暂存容器通过了全量校验并已原子换入；触发键随后由回写通道清空 | 是（常量 `DICT_SWAP_APPLIED_CODE`） |
+| `dict/swap/rejected` | `ime-fcitx5` 的配置重载路径 | 暂存容器校验失败（或没有在役词库可换）：旧库继续服务，触发键保留供用户修正，损坏文件被移到 `.corrupt.<时间戳>` 隔离名下 | 是（常量 `DICT_SWAP_REJECTED_CODE`） |
 
 **FFI 层的诊断码（v1.3 新增登记）**：`TASK-1.04.01` 的 C ABI 边界在 `ime-fcitx5` 内直接产生一批诊断码。它们**不是** `ImeError` 的变体（跨 FFI 边界的失败无法用 Rust 错误类型表达），但同样遵循 `领域/动作/原因` 的稳定字符串约定，写入崩溃/诊断通道，且不得改写：
 

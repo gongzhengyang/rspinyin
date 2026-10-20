@@ -13,6 +13,12 @@
 //! thing that makes it slower to run than the rest, because one iteration is already
 //! thousands of decodes.
 //!
+//! `decode/correction-off`, `decode/correction-on-hit` and `decode/correction-on-miss`
+//! are the spelling-correction switch's three modes on the reuse case: the mainline
+//! decode, the same input with the bit set -- which the miss gate is to leave
+//! untouched -- and a one-slip misspelling of it, which is the shape the correction
+//! pass's own budget is stated for.
+//!
 //! `decode/viterbi` and `decode/viterbi_into` measure the same walk through the two entry
 //! points, on the input the latency budget is stated for: the first builds a workspace per
 //! decode, the second keeps one and decodes into it. The difference between them is what the
@@ -104,6 +110,20 @@ const SESSION_SEED: &str = "jintiantianqizhenbucuohao";
 /// long and the case measures a keystroke rather than a diagnostic.
 const SESSION_KEYS: &str = "womenmingt";
 
+/// The slipped spelling the on-miss case decodes: the reuse case with the first two
+/// letters of its seventh syllable transposed, `wan` → `awn`.
+///
+/// The transposition has to be exactly this one for the case to be a miss at all: no
+/// syllable starts with `wn`, so the misspelled span admits no exact reading and the
+/// miss gate opens -- while the region's other one-letter reading, the interjection
+/// `a`, dead-ends because nothing follows it. Of the span's one-step corrections only
+/// `wan` itself is a syllable, and the word the corpus carries for it is the word the
+/// exact spelling decodes to, so the case measures the correction pass on a real miss
+/// whose reading is the exact one. The preflight in [`bench_correction`] holds this
+/// constant against the case table, so editing one spelling without the other fails
+/// the run instead of measuring a different slip.
+const MISS_INPUT: &str = "womenmingtianqugongyuanawnbazhongguoxue";
+
 /// Runs every case of this benchmark target.
 ///
 /// The dictionary and the model are built once, before any measurement, and the
@@ -129,10 +149,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     bench_decode(&mut criterion, &dictionary, &model);
     bench_decode_reuse(&mut criterion, &dictionary, &model);
     bench_fuzzy(&mut criterion, &dictionary, &model);
+    bench_correction(&mut criterion, &dictionary, &model);
+    bench_context_rerank(&mut criterion, &dictionary, &model);
     bench_allocations(&mut criterion, &dictionary, &model);
     bench_session(&mut criterion, &dictionary, &model);
     bench_holdout(&mut criterion, &dictionary, &model);
     bench_segment(&mut criterion);
+    bench_correction_build(&mut criterion);
     bench_lattice(&mut criterion, &dictionary);
     bench_edge_score(&mut criterion, &dictionary, &model);
     bench_unigram(&mut criterion, &dictionary, &model);
@@ -266,6 +289,205 @@ fn bench_fuzzy(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &In
     group.finish();
 }
 
+/// Times the spelling-correction switch's three modes against the reuse case.
+///
+/// Three modes, one claim: the switch costs an exact hit nothing, and a miss is what
+/// its own budget is stated for. `correction-off` is the mainline decode;
+/// `correction-on-hit` is the same input with the bit set, which the miss gate is
+/// supposed to leave byte-identical; `correction-on-miss` is the slipped spelling of
+/// [`MISS_INPUT`], the shape the correction pass's exclusive budget is stated for.
+///
+/// The preflight refuses to measure before the claims hold on the case table's own
+/// inputs: the slip is exactly one transposition of the exact spelling, the exact
+/// build of the miss has no path at all, the corrected build answers it, and the
+/// corrected miss decodes for real -- a full reading of the input whose winning path
+/// crossed a correction edge, the annotation being the record of that. (The exact
+/// spelling's own decode is deliberately not held up as the expected reading: it has
+/// cuts through the interjections that the misspelled input has lost, so the two
+/// candidate lists are legitimately different, and only the on-hit pair has to agree.)
+///
+/// # Panics
+///
+/// When a preflight claim does not hold, because a number measured past it would be
+/// a number for a shape the switch's budget was not stated for.
+fn bench_correction(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &InMemoryLm) {
+    let Some(case) = CASES.iter().find(|case| case.name == REUSE_CASE) else {
+        return;
+    };
+    // The slip is one adjacent transposition of the exact spelling -- the `wa` of
+    // its seventh syllable exchanged for `aw`, the two bytes everything else in the
+    // preflight depends on -- which is what makes the on-hit and on-miss numbers
+    // comparable at all.
+    assert_eq!(
+        &case.raw[23..25],
+        "wa",
+        "the exact spelling carries `wa` where the slip carries `aw`: {case:?}"
+    );
+    assert_eq!(
+        &MISS_INPUT[23..25],
+        "aw",
+        "the slip is the `wa` → `aw` transposition"
+    );
+    assert_eq!(
+        case.raw.len(),
+        MISS_INPUT.len(),
+        "the slip preserves the length of the exact spelling"
+    );
+    let differing = case
+        .raw
+        .bytes()
+        .zip(MISS_INPUT.bytes())
+        .filter(|(exact, slipped)| exact != slipped)
+        .count();
+    assert_eq!(
+        differing, 2,
+        "the slip is one adjacent transposition: {case:?} against {MISS_INPUT:?}"
+    );
+    // The miss gate is the whole design: an input that cuts exactly never enters the
+    // correction pass, so the gate has to open on the miss and only on the miss.
+    let mut dag = SyllableDag::new();
+    assert!(
+        dag.build(MISS_INPUT).is_err(),
+        "the miss input must not cut exactly, or the gate never opens"
+    );
+    assert!(
+        dag.build_for(MISS_INPUT, DecodeFlags::default() | DecodeFlags::CORRECTION)
+            .is_ok(),
+        "the correction pass must find a reading for the miss input"
+    );
+    // Both corrected decodes answer with a real reading: the exact hit decodes to
+    // the same first candidate with the bit on, and the miss is not the pass-through
+    // echo but a full reading of the input whose winning path crossed a correction
+    // edge -- which the annotation is the record of.
+    let decoder = Decoder::default();
+    let user = NoUser;
+    let off = DecodeRequest::new(case.raw);
+    let mut on_hit = DecodeRequest::new(case.raw);
+    on_hit.flags.insert(DecodeFlags::CORRECTION);
+    let on_miss = {
+        let mut request = DecodeRequest::new(MISS_INPUT);
+        request.flags.insert(DecodeFlags::CORRECTION);
+        request
+    };
+    let exact_top = top_text(&decoder, &off, dictionary, &user, model);
+    assert_eq!(
+        top_text(&decoder, &on_hit, dictionary, &user, model),
+        exact_top,
+        "an exact hit must decode to the same reading with the bit on"
+    );
+    let miss_result = decoder.decode(&on_miss, dictionary, &user, model);
+    assert!(
+        !miss_result.degraded && miss_result.candidates.len() > 1,
+        "the corrected miss is a real decode, not the pass-through echo: {miss_result:?}"
+    );
+    let miss_top = miss_result.candidates.first();
+    assert_eq!(
+        miss_top.map(|candidate| candidate.consumed_syllables),
+        Some(u16::try_from(case.syllables).unwrap_or(u16::MAX)),
+        "the corrected miss reads the whole input"
+    );
+    assert_eq!(
+        miss_top.and_then(|candidate| candidate.annotation.as_deref()),
+        Some(
+            format!(
+                "{}{MISS_INPUT}",
+                ime_core::segment::correct::CORRECTION_ANNOTATION_PREFIX
+            )
+            .as_str()
+        ),
+        "the winning path crossed a correction edge, and the annotation says so"
+    );
+    let mut group = criterion.benchmark_group("decode");
+    group.bench_function("correction-off", |bencher| {
+        bencher.iter_batched(
+            || off.clone(),
+            |request| {
+                let result = decoder.decode(black_box(&request), dictionary, &user, model);
+                black_box(result.candidates.len())
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.bench_function("correction-on-hit", |bencher| {
+        bencher.iter_batched(
+            || on_hit.clone(),
+            |request| {
+                let result = decoder.decode(black_box(&request), dictionary, &user, model);
+                black_box(result.candidates.len())
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.bench_function("correction-on-miss", |bencher| {
+        bencher.iter_batched(
+            || on_miss.clone(),
+            |request| {
+                let result = decoder.decode(black_box(&request), dictionary, &user, model);
+                black_box(result.candidates.len())
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.finish();
+}
+
+/// The text of one decode's first candidate, for the preflight comparisons.
+fn top_text(
+    decoder: &Decoder,
+    request: &DecodeRequest,
+    dictionary: &SyntheticDict,
+    user: &dyn UserFreqSource,
+    model: &InMemoryLm,
+) -> String {
+    decoder
+        .decode(request, dictionary, user, model)
+        .candidates
+        .first()
+        .map(|candidate| candidate.text.clone())
+        .unwrap_or_default()
+}
+
+/// Times the context re-rank on the reuse case's own candidate list.
+///
+/// This is the post-pass the session runs once per decode when it holds a context
+/// word: one band walk over the head of the list and one bigram lookup per
+/// candidate inside it. The list and the model are built in the setup half, so the
+/// measurement is the re-rank alone -- the number the context switch's exclusive
+/// budget is stated for. The context word is a word the list holds, so the model
+/// has continuations to find; a word it has none for would measure an early exit.
+fn bench_context_rerank(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &InMemoryLm) {
+    let Some(case) = CASES.iter().find(|case| case.name == REUSE_CASE) else {
+        return;
+    };
+    let request = DecodeRequest::new(case.raw);
+    let decoder = Decoder::default();
+    let user = NoUser;
+    let result = decoder.decode(&request, dictionary, &user, model);
+    let list = result.candidates.clone();
+    // The context is the text of the list's own head, which the model holds
+    // unigrams for -- the shape of the word a landed commit leaves behind.
+    let context = list
+        .first()
+        .map(|candidate| candidate.text.clone())
+        .unwrap_or_default();
+    let mut group = criterion.benchmark_group("decode");
+    group.bench_function("context_rerank", |bencher| {
+        bencher.iter_batched(
+            || list.clone(),
+            |mut candidates| {
+                ime_core::viterbi::context::rerank_with_context(
+                    &mut candidates,
+                    Some(&context),
+                    model,
+                );
+                black_box(candidates.len())
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.finish();
+}
+
 /// Times the two entry points against each other, on the input the latency budget is stated
 /// for.
 ///
@@ -363,6 +585,30 @@ fn bench_segment(criterion: &mut Criterion) {
             |raw| dag.build(black_box(raw)).is_ok(),
             BatchSize::SmallInput,
         );
+    });
+    group.finish();
+}
+
+/// Times the correction pass's expansion on its own, against the same miss input.
+///
+/// The exclusive cost the correction switch's budget is stated for is the expansion:
+/// the walk that asks every non-exact span of a missed input for its one-step
+/// corrections. `correction-base` is the exact build of the miss, which fails fast
+/// and is what a closed switch would pay; `correction-miss` is the same build with
+/// the bit set, which fails, expands and re-checks. The difference between the two
+/// means is the expansion's own cost, the number the budget is written against --
+/// the `decode/correction-*` trio, in contrast, reports a whole decode, where the
+/// wider graph's lattice and sweep costs ride along.
+fn bench_correction_build(criterion: &mut Criterion) {
+    let mut dag = SyllableDag::new();
+    let base = DecodeFlags::default();
+    let miss = DecodeFlags::default() | DecodeFlags::CORRECTION;
+    let mut group = criterion.benchmark_group("segment");
+    group.bench_function("correction-base", |bencher| {
+        bencher.iter(|| dag.build_for(black_box(MISS_INPUT), base).is_err())
+    });
+    group.bench_function("correction-miss", |bencher| {
+        bencher.iter(|| dag.build_for(black_box(MISS_INPUT), miss).is_ok())
     });
     group.finish();
 }
@@ -620,6 +866,7 @@ fn bench_lattice(criterion: &mut Criterion, dictionary: &SyntheticDict) {
     assert!(dag.build(case.raw).is_ok(), "the case input is segmentable");
     let user = NoUser;
     let mut readings = Readings::new();
+    let mut keys = Vec::new();
     let mut group = criterion.benchmark_group("lattice");
     group.throughput(Throughput::Elements(1));
     group.bench_function("build", |bencher| {
@@ -634,6 +881,7 @@ fn bench_lattice(criterion: &mut Criterion, dictionary: &SyntheticDict) {
                         fallback_single: true,
                         flags: DecodeFlags::empty(),
                         readings: &mut readings,
+                        keys: &mut keys,
                     },
                 );
                 black_box(lattice.len())

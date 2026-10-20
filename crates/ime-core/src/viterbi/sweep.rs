@@ -406,12 +406,17 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
     /// candidate of the best path follows them. Nothing is deduplicated or ordered here --
     /// [`finish`] does that -- so the drafts keep the generation order that breaks the
     /// score ties.
-    pub(super) fn collect_into(&self, terminal: usize, out: &mut Vec<Draft>) {
+    pub(super) fn collect_into(&self, terminal: usize, out: &mut Vec<Draft>, spans: &mut Vec<WordSpan>) {
+        // The span arena serves exactly one collect: the ranges the drafts carry name
+        // entries of it, so a stale span from the decode before would be read as this
+        // decode's. The key ranges the spans carry name the build's own arena, which the
+        // next build clears -- the same lifetime the draft list itself has.
+        spans.clear();
         let live = self.lens.get(terminal).copied().unwrap_or(0);
         let mut written = 0usize;
         for slot in 0..live {
             let score = self.slot(terminal, slot).score;
-            if self.write_path(terminal, slot, score, out, written) {
+            if self.write_path(terminal, slot, score, out, written, spans) {
                 written = written.saturating_add(1);
             }
         }
@@ -420,7 +425,7 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
         // turn a stale path into a candidate for an input that has no reading at all.
         if live > 0 {
             let best = self.slot(terminal, 0).score;
-            if self.write_first_word(terminal, 0, best, out, written) {
+            if self.write_first_word(terminal, 0, best, out, written, spans) {
                 written = written.saturating_add(1);
             }
         }
@@ -442,6 +447,7 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
         score: i32,
         out: &mut Vec<Draft>,
         position: usize,
+        spans: &mut Vec<WordSpan>,
     ) -> bool {
         let mut edges = [0u32; MAX_NODES];
         let count = self.chain(node, slot, &mut edges);
@@ -457,6 +463,8 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
         draft.score = score;
         draft.source = CandidateSource::Dict;
         draft.syllables = 0;
+        draft.corrected = false;
+        draft.words = WordSpans::EMPTY;
         // No `reserve` here, deliberately. The slot's text is the same text it held on the
         // last decode of this input, so the capacity it already carries is enough, and a
         // reserve sized from `count * BYTES_PER_WORD` would ask for *four bytes a word*
@@ -464,16 +472,38 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
         // only by reallocating. That is how a hint built to save a steady-state decode
         // becomes the one thing allocating in it; `push_str` grows a fresh slot on its own
         // and leaves a reused one alone.
+        //
+        // The word spans are recorded on the same walk, appended to the arena the caller
+        // lent; the key ranges are the edges' own -- the build's arena outlives the
+        // collect within the decode, which is the same lifetime the drafts themselves
+        // have. No buffer is written here beyond the text the slot already owns and the
+        // arena the caller keeps.
+        let mut spelled = 0u16;
+        let spans_start = spans.len();
         for index in edges[..count].iter().rev() {
             let Some(edge) = self.sources.lattice.edge_at(*index as usize) else {
                 return false;
             };
+            let spelled_end =
+                spelled.saturating_add(u16::try_from(edge.word.text.len()).unwrap_or(u16::MAX));
+            spans.push(WordSpan {
+                text: (spelled, spelled_end),
+                key: edge.key,
+            });
+            spelled = spelled_end;
             draft.text.push_str(edge.word.text);
             draft.syllables = draft.syllables.saturating_add(u16::from(edge.syllables));
             if edge.source == CandidateSource::UserDict {
                 draft.source = CandidateSource::UserDict;
             }
+            if edge.penalty_q8 == crate::segment::correct::CORRECTION_PENALTY_Q8 {
+                draft.corrected = true;
+            }
         }
+        draft.words = WordSpans {
+            start: u32::try_from(spans_start).unwrap_or(u32::MAX),
+            len: u16::try_from(spans.len().saturating_sub(spans_start)).unwrap_or(u16::MAX),
+        };
         true
     }
 
@@ -494,6 +524,7 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
         score: i32,
         out: &mut Vec<Draft>,
         position: usize,
+        spans: &mut Vec<WordSpan>,
     ) -> bool {
         let mut edges = [0u32; MAX_NODES];
         let count = self.chain(node, slot, &mut edges);
@@ -514,6 +545,19 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
         draft.source = edge.source;
         draft.syllables = u16::from(edge.syllables);
         draft.score = score;
+        draft.corrected = edge.penalty_q8 == crate::segment::correct::CORRECTION_PENALTY_Q8;
+        // A single-word path covers one span that starts at the root; the pair reader
+        // refuses lists this short, so the entry is bookkeeping rather than a coining
+        // source.
+        let arena_base = spans.len();
+        spans.push(WordSpan {
+            text: (0, u16::try_from(edge.word.text.len()).unwrap_or(u16::MAX)),
+            key: edge.key,
+        });
+        draft.words = WordSpans {
+            start: u32::try_from(arena_base).unwrap_or(u32::MAX),
+            len: 1,
+        };
         true
     }
 
@@ -556,19 +600,74 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
     }
 }
 
+/// Where one word of a path sits: the byte range its characters occupy in the draft's
+/// text, and the byte range its key occupies in the normalized input.
+///
+/// The pair list a commit coins from is read off these ranges after the decode, which is
+/// why they are recorded here rather than resolved to strings during the sweep: the ranges
+/// cost two `u16` pairs per word, are cleared and refilled in buffers the draft already
+/// owns, and name bytes of the normalized input the workspace holds for exactly as long as
+/// the candidate list it produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WordSpan {
+    /// Byte range in [`Draft::text`] the word's characters occupy.
+    pub(super) text: (u16, u16),
+    /// Byte range of the word's key in the workspace's key arena: the canonical
+    /// spelling the lattice walk built -- syllable texts joined with the separator --
+    /// which is what a later lookup of the same word spells. Empty for an edge whose
+    /// reading is not a key of its own, which the pair reader refuses.
+    pub(super) key: (u32, u16),
+}
+
+/// Where a draft's word spans sit in the workspace's span arena.
+///
+/// A plain Copy range rather than a `Vec` per draft, because the drafts beyond the merge's
+/// keep-list are dropped and refilled on every decode: a buffer of their own would be
+/// re-allocated on every steady-state decode, and the allocation budget counts them. The
+/// arena the ranges name is cleared at the start of every collect and refilled by the same
+/// walk that writes the drafts, so a range is valid for exactly as long as the draft list
+/// it belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WordSpans {
+    /// Arena index the draft's first span sits at.
+    start: u32,
+    /// How many spans the draft's path recorded.
+    len: u16,
+}
+
+impl WordSpans {
+    /// The range of a draft with no spans: the empty path, and the value every fresh
+    /// slot starts with.
+    pub(crate) const EMPTY: Self = Self { start: 0, len: 0 };
+}
+
 /// One candidate before it is numbered: what it spells, what it scored, and the two fields
 /// the window reads.
 #[derive(Debug)]
-pub(super) struct Draft {
+pub(crate) struct Draft {
     /// The text the candidate commits.
-    text: String,
+    pub(crate) text: String,
     /// Where the candidate came from.
-    source: CandidateSource,
+    pub(crate) source: CandidateSource,
     /// Syllables it consumes.
-    syllables: u16,
+    pub(crate) syllables: u16,
     /// Q16.16 score. The ordering is decided on this integer, never on the `f32` that is
     /// written into the candidate.
-    score: i32,
+    pub(crate) score: i32,
+    /// Whether the path behind the draft used a spelling-correction edge.
+    ///
+    /// The edge is recognized by its penalty, the one mark a correction edge
+    /// carries through the lattice -- the same mark an abbreviation and a fuzzy
+    /// variant are told apart by. A candidate whose path needed no correction is
+    /// annotated with nothing.
+    pub(crate) corrected: bool,
+    /// Where each word of the path sits, as a range into the sweep's span arena.
+    ///
+    /// Refilled per decode by the same walk that writes the text; a single-word path
+    /// records its one word, which is what makes "fewer than two" the coining guard, and a
+    /// corrected path's spans are recorded too and ignored by the only reader, which
+    /// refuses to coin from a spelling the user did not type.
+    pub(crate) words: WordSpans,
 }
 
 impl Draft {
@@ -581,7 +680,41 @@ impl Draft {
             source: CandidateSource::Dict,
             syllables: 0,
             score: 0,
+            corrected: false,
+            words: WordSpans::EMPTY,
         }
+    }
+
+    /// The word spans of the path this draft came from, in path order, read out of the
+    /// arena they were recorded in.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(crate) fn words<'spans>(&self, spans: &'spans [WordSpan]) -> &'spans [WordSpan] {
+        let start = usize::try_from(self.words.start).unwrap_or(usize::MAX);
+        spans
+            .get(start..)
+            .and_then(|spans| spans.get(..usize::from(self.words.len)))
+            .unwrap_or(&[])
+    }
+
+    /// Whether the path used a spelling-correction edge.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn corrected(&self) -> bool {
+        self.corrected
+    }
+
+    /// The text the candidate commits.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn text(&self) -> &str {
+        &self.text
     }
 }
 
@@ -634,6 +767,7 @@ fn merge_into(target: &mut Draft, other: &Draft) {
     let dictionary = |source: CandidateSource| {
         matches!(source, CandidateSource::Dict | CandidateSource::UserDict)
     };
+    target.corrected |= other.corrected;
     if dictionary(target.source) && dictionary(other.source) && target.source != other.source {
         target.source = CandidateSource::UserDict;
         target.score = target.score.saturating_add(other.score);
@@ -643,6 +777,11 @@ fn merge_into(target: &mut Draft, other: &Draft) {
         target.score = other.score;
         target.source = other.source;
         target.syllables = other.syllables;
+        // The winning reading's own cut travels with it: the two drafts spell the same
+        // text, but not necessarily out of the same words, and the pairs a commit coins
+        // from are the winner's pairs. The range is a `Copy`, so the winner's spans are
+        // adopted by value out of the shared arena.
+        target.words = other.words;
     }
 }
 
@@ -651,7 +790,17 @@ fn merge_into(target: &mut Draft, other: &Draft) {
 /// Every candidate is written through the slot it already occupies, which is what keeps the
 /// text buffers: a decode that produced the same number of candidates as the last one
 /// allocates nothing here, because each text is overwritten in place rather than replaced.
-pub(super) fn result_of_into(out: &mut DecodeResult, drafts: &[Draft], degraded: bool) {
+/// A draft whose path used a correction edge is annotated with [`CORRECTION_ANNOTATION_PREFIX`]
+/// and the spelling the user typed, so the window can say why the candidate is there; an
+/// exact reading is annotated with nothing, and borrows nothing.
+///
+/// [`CORRECTION_ANNOTATION_PREFIX`]: crate::segment::correct::CORRECTION_ANNOTATION_PREFIX
+pub(super) fn result_of_into(
+    out: &mut DecodeResult,
+    drafts: &[Draft],
+    degraded: bool,
+    normalized: &str,
+) {
     for (position, draft) in drafts.iter().enumerate() {
         // The display number is the position, 1-based: the window draws it next to the
         // number key that selects the candidate.
@@ -666,7 +815,17 @@ pub(super) fn result_of_into(out: &mut DecodeResult, drafts: &[Draft], degraded:
                 slot.index = index;
                 slot.text.clear();
                 slot.text.push_str(&draft.text);
-                slot.annotation = None;
+                if draft.corrected {
+                    // The slot's own buffer is reused, so a steady-state corrected
+                    // decode reallocates nothing; the allocation happens once, the
+                    // first time a slot carries an annotation at all.
+                    write_correction_annotation(
+                        slot.annotation.get_or_insert_with(String::new),
+                        normalized,
+                    );
+                } else {
+                    slot.annotation = None;
+                }
                 slot.source = draft.source;
                 slot.score = score;
                 slot.consumed_syllables = draft.syllables;
@@ -674,7 +833,11 @@ pub(super) fn result_of_into(out: &mut DecodeResult, drafts: &[Draft], degraded:
             None => out.candidates.push(Candidate {
                 index,
                 text: draft.text.clone(),
-                annotation: None,
+                annotation: draft.corrected.then(|| {
+                    let mut text = String::new();
+                    write_correction_annotation(&mut text, normalized);
+                    text
+                }),
                 source: draft.source,
                 score,
                 consumed_syllables: draft.syllables,
@@ -686,6 +849,17 @@ pub(super) fn result_of_into(out: &mut DecodeResult, drafts: &[Draft], degraded:
     // decode found.
     out.candidates.truncate(drafts.len());
     out.degraded = degraded;
+}
+
+/// Fills `text` with the annotation a corrected candidate carries: the Chinese prefix and
+/// the spelling the user typed, whose slip the path corrected.
+///
+/// The buffer is cleared first, so a candidate slot's own `String` can be reused across
+/// decodes, and the format has exactly one definition.
+fn write_correction_annotation(text: &mut String, normalized: &str) {
+    text.clear();
+    text.push_str(crate::segment::correct::CORRECTION_ANNOTATION_PREFIX);
+    text.push_str(normalized);
 }
 
 /// Tests for the sweep, in a file of their own because this one is at its line budget.

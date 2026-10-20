@@ -24,6 +24,7 @@
 //!   dictionary compiler uses them to validate the keys it writes.
 
 pub mod abbrev;
+pub mod correct;
 pub mod dag;
 pub mod syllable;
 

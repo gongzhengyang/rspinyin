@@ -288,3 +288,81 @@ fn test_digit_zero_spelling_round_trips_through_the_closed_set() {
         assert_eq!(DigitZero::try_from(spelling).expect("in the set"), value);
     }
 }
+
+#[test]
+fn test_write_data_clears_the_staged_path_and_preserves_the_rest() {
+    let path = scratch("data-clear").join(FILE_NAME);
+    // The [data] table sits between two other sections whose bytes must travel
+    // through the write untouched, comments included.
+    let original = concat!(
+        "# header comment\n",
+        "[engine]\n",
+        "# engine comment\n",
+        "max_raw_len = 48\n",
+        "\n",
+        "[data]\n",
+        "# data comment\n",
+        "durability = \"immediate\"\n",
+        "dict_staged_path = \"/tmp/base.dict\"\n",
+        "\n",
+        "[theme]\n",
+        "scheme = \"light\"\n",
+    );
+    write_text(&path, original);
+    let previous = parsed(original).data;
+    let mut new = previous.clone();
+    new.dict_staged_path = String::new();
+
+    write_data(&path, &previous, &new).expect("the write lands");
+
+    // The staged path is gone and nothing else moved. The comment that sat inside
+    // the [data] region belongs to the table and goes with the rendered block --
+    // the same rule the [keys] rewrite states -- while the sections around it, their
+    // comments and the blank-line layout all travel through.
+    let written = read_text(&path);
+    assert!(
+        written.contains("dict_staged_path = \"\""),
+        "the staged path is cleared: {written}"
+    );
+    assert!(
+        !written.contains("# data comment\n"),
+        "the replaced region's comment goes with the block: {written}"
+    );
+    assert!(written.contains("durability = \"immediate\"\n"));
+    assert!(written.contains("# engine comment\n"), "engine comment survives: {written}");
+    assert!(written.contains("scheme = \"light\"\n"));
+    // What the file holds is what the caller asked for, value for value.
+    let (reparsed, warnings) = Config::from_document(&written).expect("the document parses");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(reparsed.data, new);
+}
+
+#[test]
+fn test_write_data_races_when_the_table_changed_after_the_load() {
+    let path = scratch("data-race").join(FILE_NAME);
+    let original = "[data]\ndurability = \"eventual\"\n";
+    write_text(&path, original);
+    let previous = parsed(original).data;
+    // The file changed under the caller: the durability the re-read finds is not the
+    // one the caller loaded, so the write refuses and the file stands.
+    let changed = "[data]\ndurability = \"immediate\"\n";
+    write_text(&path, changed);
+
+    let mut new = previous.clone();
+    new.dict_staged_path = String::new();
+    let result = write_data(&path, &previous, &new);
+
+    match result {
+        Err(WritebackError::Race { .. }) => {}
+        other => panic!("expected a race, got {other:?}"),
+    }
+    assert_eq!(read_text(&path), changed, "the file is untouched");
+}
+
+#[test]
+fn test_durability_spelling_round_trips_through_the_closed_set() {
+    for value in [Durability::Eventual, Durability::Immediate] {
+        let spelling = durability_spelling(value);
+        assert_eq!(Durability::try_from(spelling).expect("in the set"), value);
+    }
+}

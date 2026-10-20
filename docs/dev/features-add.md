@@ -62,7 +62,7 @@
 | `GAP-07` | `IMP-08` | 操作效率 | 简繁 commit 接线 + 输出模式默认值投影 | rime-ice traditionalize 开关 + 状态区联动 | `script.rs`/`ScriptIndex` 齐备未接；`router/modes.rs:221-230` 硬编码默认（纠偏 X-2）；`ui/script/unavailable` 无上报方（X-10） | P1 |
 | `GAP-08` | `IMP-15` | 数据组织 | 词源扩充：华宇野风（PD）+ THUOCL（MIT）+ 多音字自动校验 | rime-ice 词库上游 + `polyphone.go` 纪律（K-6） | `data/sources.toml` 仅 6 源；两字词为分词统计频；L3c 依赖手工 polyphone.tsv | P1 |
 | `GAP-09` | `IMP-12` | 操作效率 | 会话共享粒度（per-program opt-in） | fcitx5-rime `RimeSessionPool` 三档 + 快照/重建（K-5） | 每 IC 独立 `Context`（`ime-fcitx5/src/engine/`）；无程序级池 | P1 |
-| `GAP-10` | 工程暗线 | 数据驱动解码冒烟（TSV key_sequence→expected_text） | rime-ice smoke（`rime_api_console` 驱动，K-6） | `xtask testd-engine` 基建在，无用例集与期望文本基线 | P1 |
+| `GAP-10` | `IMP-19` | 工程暗线 | ~~数据驱动解码冒烟~~ **已交付（纠偏 X-11）**：`xtask testd-smoke` + `tests/smoke/cases.tsv`（211 例）+ `just ci` `smoke` 层均已落地 | rime-ice smoke（K-6） | `xtask/src/testd/smoke.rs`、`tests/smoke/cases.tsv`、`justfile:322` | 已闭环 |
 | `GAP-11` | `IMP-10` | 核心业务深度 | 拼写纠错（邻位替换 + 键序颠倒 + correction 重罚） | librime `NearSearchCorrector` + credibility −log0.01（K-4） | 无 corrector 文件；fuzzy 扩边基建可复用 | P2 |
 | `GAP-12` | `IMP-11` | 核心业务深度 | 上文重排（上一 commit 词作 bigram 上下文） | librime `contextual_translation`（每轮 ≤32 重打分） | 解码无跨 commit 上下文；依赖 GAP-03 | P2 |
 | `GAP-13` | `IMP-05` | 数据组织 | 重码治理（智能截断 + 溢出表） | librime TailIndex/`extra_code`（简化版） | `MAX_WORDS_PER_KEY=32` 硬截断丢词 | P2 |
@@ -168,7 +168,7 @@ sources.toml ──► L1..L5 管线        SyllableDag ──► build_lattice 
 | `GAP-07` | `IMP-08` | Track A | 简繁 commit 接线 + 输出模式默认值投影 | `TASK-2.03.01`, `TASK-2.03.02` | `./features-add-phase2.md` |
 | `GAP-08` | `IMP-15` | Track C | 词源扩充（华宇/THUOCL）+ 多音字自动校验 | `TASK-2.04.01`, `TASK-2.04.02` | `./features-add-phase2.md` |
 | `GAP-09` | `IMP-12` | Track B | 会话共享粒度（per-program opt-in） | `TASK-2.05.01` | `./features-add-phase2.md` |
-| `GAP-10` | `IMP-19` | Track C | 数据驱动解码冒烟基线 | `TASK-2.06.01` | `./features-add-phase2.md` |
+| `GAP-10` | `IMP-19` | Track C | ~~数据驱动解码冒烟基线~~ 已交付（纠偏 X-11） | `TASK-2.06.01`（`[x]`） | `./features-add-phase2.md` |
 | `GAP-11` | `IMP-10` | Track A | 拼写纠错（邻位 + 键序颠倒） | `TASK-3.01.01` | `./features-add-phase3.md` |
 | `GAP-12` | `IMP-11` | Track A | 上文重排 | `TASK-3.02.01` | `./features-add-phase3.md` |
 | `GAP-13` | `IMP-05` | Track C | 重码治理（智能截断 + 溢出表） | `TASK-3.03.01` | `./features-add-phase3.md` |

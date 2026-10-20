@@ -15,12 +15,12 @@
 //! a plausible one all the same.
 //!
 //! Every case the design names has to have produced a number, whether or not a
-//! threshold is bound to it. Three of the nine -- the sixty-four-byte decode, the
-//! segmentation graph and the language-model edge score -- are measured and not
-//! asserted, because the design states no threshold for any of them. Requiring their
-//! output is what keeps "the run measured all nine" a claim the gate checks rather
-//! than one a report makes: a case that quietly stopped being registered would
-//! otherwise pass, having nothing bound to it.
+//! threshold is bound to it. Several -- the sixty-four-byte decode, the segmentation
+//! graph, the language-model edge score and the correction switch's three modes --
+//! are measured and not asserted, because no threshold in the design document names
+//! them. Requiring their output is what keeps "the run measured all the cases" a
+//! claim the gate checks rather than one a report makes: a case that quietly stopped
+//! being registered would otherwise pass, having nothing bound to it.
 //!
 //! Criterion reports a mean and a spread rather than a percentile, and the budgets
 //! are stated at P99, so a case is compared at `mean + 3 sigma`. The message says
@@ -66,10 +66,10 @@ pub(crate) const SIGMAS: f64 = 3.0;
 /// of at most twelve syllables, and the sixty-four-byte case spells twenty-six, so
 /// asserting it against that budget would be asserting something the budget does not
 /// claim; it is measured, reported as unasserted, and left to the day a budget
-/// covers it. `segment/dag_build` and `lm/edge_score` are unasserted for the same
+/// covers it. `segment/dag_build` and `lm/edge_score` are unbound for the same
 /// reason: the design names them as cases and states no threshold for either.
 ///
-/// The three are still required to produce a number; see [`DESIGN_CASES`].
+/// The unbound cases are still required to produce a number; see [`DESIGN_CASES`].
 const CASE_BINDINGS: &[CaseBinding] = &[
     CaseBinding("decode/2syl", "latency_ms.decode_p99", BenchUnit::Millis),
     CaseBinding("decode/4syl", "latency_ms.decode_p99", BenchUnit::Millis),
@@ -143,6 +143,20 @@ pub(super) const DESIGN_CASES: &[&str] = &[
     // companion is measured for regression evidence but has no separate threshold.
     "decode/user_decay_cold",
     "decode/user_decay_warm",
+    // The correction switch's three modes are measured and not asserted: the pass's
+    // own ceiling is stated by its feature card rather than by the budget table, and
+    // this gate resolves every threshold against the design document, so the numbers
+    // are recorded in the card's acceptance record instead of asserted here. The
+    // segment pair beside them is the expansion's own cost -- the exclusive number
+    // the card's budget is written against -- read as the difference of the two.
+    "decode/correction-off",
+    "decode/correction-on-hit",
+    "decode/correction-on-miss",
+    // The context re-rank is the same shape: its exclusive ceiling is stated by its
+    // feature card, and the number is recorded in the card's acceptance record.
+    "decode/context_rerank",
+    "segment/correction-base",
+    "segment/correction-miss",
 ];
 
 /// The unit a case's threshold is written in.

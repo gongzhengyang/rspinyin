@@ -22,8 +22,12 @@ use ime_diag::crash;
 use ime_diag::crash::context::CrashContextKey;
 use ime_diag::crash::record::{CRASH_DIR_MODE, CRASH_FILE_MODE};
 use ime_diag::probe::{MemorySnapshot, ProbeSnapshot, SNAPSHOT_FILE_NAME};
+use ime_dict::format::{
+    DictEntry, PROB_Q12_MAX, SectionKind, hash_word, pack_fst_value,
+};
+use ime_dict::format::writer::DictWriter;
 use ime_dict::paths::{BaseDirs, MAX_PATH_BYTES, READONLY_CODE};
-use ime_types::{CandidateSource, DecodeRequest, ImeError, UiCommand};
+use ime_types::{CandidateSource, DecodeRequest, ImeError, Lexicon as _, UiCommand};
 
 use crate::engine::host::Host;
 use crate::engine::router::RoutingConfig;
@@ -41,7 +45,8 @@ use super::super::diagnostics::{
 use super::super::layout::{layout, prepare_data_dirs_in};
 use super::super::probes;
 use super::super::session::{
-    SessionSources, install_session_host, load_lexicon, session_env, sources_for,
+    MISSING_DICTIONARY, MISSING_LANGUAGE_MODEL, SessionSources, install_session_host,
+    lexicon_slot, load_lexicon, session_env, sources_for,
 };
 use super::super::user_store::take_user_store;
 use super::super::{lock, on_config_reload, routing_config};
@@ -394,9 +399,9 @@ fn test_sources_for_without_a_dictionary_answers_a_pass_through_candidate() {
 
     let decoded = Decoder::default().decode(
         &DecodeRequest::new("ni'hao"),
-        sources.lexicon(),
+        &MISSING_DICTIONARY,
         sources.user_freq(),
-        sources.lm(),
+        &MISSING_LANGUAGE_MODEL,
     );
 
     let candidate = decoded
@@ -423,9 +428,9 @@ fn test_sources_for_with_a_damaged_dictionary_degrades_the_same_way() {
 
     let decoded = Decoder::default().decode(
         &DecodeRequest::new("ni"),
-        sources.lexicon(),
+        &MISSING_DICTIONARY,
         sources.user_freq(),
-        sources.lm(),
+        &MISSING_LANGUAGE_MODEL,
     );
     assert_eq!(
         decoded.candidates.first().map(|entry| entry.text.as_str()),
@@ -441,9 +446,9 @@ fn test_sources_for_with_no_data_directory_degrades_the_same_way() {
 
     let decoded = Decoder::default().decode(
         &DecodeRequest::new("ni"),
-        sources.lexicon(),
+        &MISSING_DICTIONARY,
         sources.user_freq(),
-        sources.lm(),
+        &MISSING_LANGUAGE_MODEL,
     );
     assert_eq!(
         decoded.candidates.first().map(|entry| entry.text.as_str()),
@@ -463,7 +468,7 @@ fn test_session_host_over_the_empty_dictionary_commits_what_was_typed() {
         Box::leak(Box::new(sources_for(Some(dir.join("base.dict").as_path()))));
 
     assert!(
-        session_host::install(session_env(sources), privacy(), RoutingConfig::default()),
+        session_host::install(session_env(sources), privacy(), RoutingConfig::default(), None),
         "the slot was empty, so this install wins"
     );
 
@@ -507,7 +512,8 @@ fn test_load_lexicon_and_install_session_host_wire_the_process_host() {
         !session_host::install(
             session_env(leaked_sources()),
             privacy(),
-            RoutingConfig::default()
+            RoutingConfig::default(),
+            None,
         ),
         "a second install is refused rather than replacing the router a key may be in"
     );
@@ -576,4 +582,175 @@ fn test_on_config_reload_without_a_store_reports_and_keeps_the_table() {
     let before = routing_config();
 
     assert_eq!(on_config_reload(), before);
+}
+
+// ── the staged-dictionary reload path ──────────────────────────────────────────────
+//
+// The slot these tests install is a process-wide `OnceLock` with no reset, so they lean on
+// the mandated one-process-per-test runner like the session-host slot tests do; a plain
+// single-process `cargo test` run would make the two swapping tests race for it. The
+// rejection tests are written to hold whichever container is live, so only the success
+// test cares.
+
+/// Encodes a one-word container image: `key` resolves to `text`, scored by the unigram
+/// table. The sections are the public format's own encoders, so the bytes are what a real
+/// compile produces.
+fn container_image(key: &str, text: &str) -> Vec<u8> {
+    let mut strpool = Vec::new();
+    strpool.extend_from_slice(text.as_bytes());
+    let entry = DictEntry::new(0, u16::try_from(text.len()).expect("small fixture"), 1, 0, 1);
+    let entries = entry.encode().to_vec();
+    let mut unigram = Vec::new();
+    unigram.extend_from_slice(&hash_word(text).to_le_bytes());
+    unigram.extend_from_slice(&PROB_Q12_MAX.to_le_bytes());
+    unigram.extend_from_slice(&0u16.to_le_bytes());
+    let packed = pack_fst_value(0, 1).expect("packing one word");
+    let mut fst_builder = fst::MapBuilder::memory();
+    fst_builder.insert(key.as_bytes(), packed).expect("one key");
+    let fst = fst_builder.into_inner().expect("finishing the FST");
+    let mut wordlist = Vec::new();
+    wordlist.extend_from_slice(&0u32.to_le_bytes());
+
+    let mut writer = DictWriter::new();
+    for (kind, payload) in [
+        (SectionKind::Fst, fst),
+        (SectionKind::Entries, entries),
+        (SectionKind::StrPool, strpool),
+        (SectionKind::Unigram, unigram),
+        (SectionKind::WordList, wordlist),
+    ] {
+        writer.add_section(kind, payload).expect("section added");
+    }
+    writer.encode().expect("encoding the container")
+}
+
+/// Loads the configuration document `text` at a scratch path, as the `config` step would.
+fn load_config_document(dir: &Path, text: &str) {
+    let path = config_document(dir, text);
+    load_config_at(Some(path.as_path())).expect("the step never fails");
+}
+
+/// The staged-path half of a configuration document, spelled once.
+fn staged_document(staged: &Path) -> String {
+    format!("[data]\ndict_staged_path = \"{}\"\n", staged.display())
+}
+
+#[test]
+fn test_apply_staged_dictionary_swaps_a_valid_container_and_clears_the_key() {
+    let dir = scratch_dir("staged-swap");
+    let live = dir.join("live.dict");
+    let staged = dir.join("staged.dict");
+    fs::write(&live, container_image("ni", "你")).expect("writing the live container");
+    fs::write(&staged, container_image("de", "地")).expect("writing the staged container");
+
+    // The process starts on the live container, which is what puts the slot in place.
+    sources_for(Some(live.as_path()));
+    let slot = lexicon_slot().expect("a start that mapped a container installed the slot");
+    assert!(
+        slot.load().lexicon().lookup("ni").expect("looking up").count() > 0,
+        "the live container is the one serving"
+    );
+
+    // The user's edit: the document in force names the staged file, and the reload adopts
+    // it — which is the trigger the swap hangs on.
+    load_config_document(&dir, "[data]\ndict_staged_path = \"\"\n");
+    let edited = staged_document(&staged);
+    fs::write(dir.join("config.toml"), &edited).expect("saving the edit");
+
+    on_config_reload();
+
+    assert_eq!(slot.load().path(), staged, "the slot serves the staged container");
+    assert!(
+        slot.load().lexicon().lookup("de").expect("looking up").count() > 0,
+        "a decode through the slot reads the new container"
+    );
+    assert!(
+        slot.load().lexicon().lookup("ni").expect("looking up").count() == 0,
+        "and no longer the old one"
+    );
+    // The served swap is written back: the key is empty in the file the user saved, so the
+    // next reload attempts nothing. The write-back renders the whole `[data]` table, which
+    // is its documented shape, so the assertion is on the value and on what a re-read
+    // parses to, not on the bytes.
+    let written = fs::read_to_string(dir.join("config.toml")).expect("reading the file back");
+    assert!(
+        written.contains("dict_staged_path = \"\""),
+        "the key is cleared: {written}"
+    );
+    let (reparsed, warnings) = Config::from_document(&written).expect("the document parses");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(reparsed.data.dict_staged_path.is_empty());
+}
+
+#[test]
+fn test_apply_staged_dictionary_rejects_a_damaged_file_and_keeps_the_key() {
+    let dir = scratch_dir("staged-reject");
+    let live = dir.join("live.dict");
+    let staged = dir.join("staged.dict");
+    fs::write(&live, container_image("ni", "你")).expect("writing the live container");
+    // The candidate is not a container at all, which the validation refuses.
+    fs::write(&staged, b"not a dictionary").expect("writing the damaged file");
+
+    sources_for(Some(live.as_path()));
+    let slot = lexicon_slot().expect("a start that mapped a container installed the slot");
+    let serving = slot.load().path().to_path_buf();
+
+    load_config_document(&dir, "[data]\ndict_staged_path = \"\"\n");
+    fs::write(dir.join("config.toml"), staged_document(&staged))
+        .expect("saving the edit");
+
+    on_config_reload();
+
+    // The live dictionary keeps serving, unchanged.
+    assert_eq!(slot.load().path(), serving, "the rejected swap changes nothing");
+    // The damaged bytes were moved aside, so they cannot sit in the staged path.
+    assert!(!staged.exists(), "the staged path is empty");
+    let quarantined: Vec<PathBuf> = fs::read_dir(&dir)
+        .expect("reading the scratch directory")
+        .filter_map(|entry| Some(entry.expect("an entry").path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(".corrupt."))
+        })
+        .collect();
+    assert_eq!(quarantined.len(), 1, "one quarantined sibling: {quarantined:?}");
+    // The key stays, for the user to correct: the file still names the staged path.
+    let written = fs::read_to_string(dir.join("config.toml")).expect("reading the file back");
+    assert_eq!(written, staged_document(&staged), "{written}");
+}
+
+#[test]
+fn test_apply_staged_dictionary_without_a_container_rejects_and_keeps_the_key() {
+    let dir = scratch_dir("staged-no-slot");
+    let staged = dir.join("not-there.dict");
+
+    // No container mapped in this process: the reload reaches a swap with no slot to
+    // serve it, which is refused with the same code and the same kept key.
+    load_config_document(&dir, "[data]\ndict_staged_path = \"\"\n");
+    fs::write(dir.join("config.toml"), staged_document(&staged))
+        .expect("saving the edit");
+
+    on_config_reload();
+
+    let written = fs::read_to_string(dir.join("config.toml")).expect("reading the file back");
+    assert_eq!(written, staged_document(&staged), "the key stays: {written}");
+    assert!(!staged.exists(), "a missing candidate leaves nothing to quarantine");
+}
+
+#[test]
+fn test_apply_staged_dictionary_with_an_empty_path_attempts_nothing() {
+    let dir = scratch_dir("staged-empty");
+    // The document in force names a staged file; the edit the reload adopts clears it.
+    // The empty path is the value the write-back itself leaves behind, so adopting it
+    // must attempt no swap and touch nothing.
+    let staged = dir.join("elsewhere.dict");
+    load_config_document(&dir, &staged_document(&staged));
+    fs::write(dir.join("config.toml"), "[data]\ndict_staged_path = \"\"\n")
+        .expect("saving the edit");
+
+    on_config_reload();
+
+    let written = fs::read_to_string(dir.join("config.toml")).expect("reading the file back");
+    assert_eq!(written, "[data]\ndict_staged_path = \"\"\n", "{written}");
 }

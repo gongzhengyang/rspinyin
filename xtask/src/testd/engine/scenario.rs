@@ -58,6 +58,9 @@ pub struct Scenario {
     /// Whether the scenario decodes with the abbreviation switch on.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub abbrev: bool,
+    /// Whether the scenario decodes with the spelling-correction switch on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub correction: bool,
 }
 
 impl Scenario {
@@ -77,6 +80,7 @@ impl Scenario {
             steps,
             fuzzy: Vec::new(),
             abbrev: false,
+            correction: false,
         }
     }
 
@@ -91,6 +95,20 @@ impl Scenario {
     /// Never panics.
     pub fn abbrev(mut self) -> Self {
         self.abbrev = true;
+        self
+    }
+
+    /// Decodes the scenario with the spelling-correction switch on.
+    ///
+    /// # Returns
+    ///
+    /// The scenario, with the switch set.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn correction(mut self) -> Self {
+        self.correction = true;
         self
     }
 

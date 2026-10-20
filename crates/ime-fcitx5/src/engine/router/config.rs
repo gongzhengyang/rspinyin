@@ -140,6 +140,7 @@ impl RoutingConfig {
         session.fuzzy =
             ime_core::fuzzy::projection(config.fuzzy.enabled, config.fuzzy.class_flags());
         session.abbrev = config.engine.abbrev;
+        session.correction = config.engine.correction;
         let routing = Self {
             keys,
             session,

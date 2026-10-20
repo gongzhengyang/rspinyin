@@ -1,9 +1,11 @@
-//! The four trait objects a session decodes against, and their degraded stand-ins.
+//! The degraded stand-ins a session decodes against when no container is mapped, and the
+//! user's frequency source.
 //!
-//! Responsibility: wrap the concrete sources this plugin loads — the mapped dictionary, the
-//! language model read out of its unigram table, the user's frequency store — in the three
-//! frozen traits the decoder reads, and answer the same traits when a source could not be
-//! loaded at all.
+//! Responsibility: answer the two frozen traits the decoder reads when the process started
+//! without a dictionary, and wrap the user's frequency store in the third. The mapped
+//! container itself is not a value of this module: the live one is owned by the hot-swap
+//! slot in [`super`], which the router re-reads at every step, and a start that mapped
+//! nothing holds the stand-ins below.
 //!
 //! Boundaries: this module decides nothing about *when* a source is loaded or what a
 //! failure means; it only makes a missing source a value the decoder can run on. The
@@ -19,129 +21,93 @@
 //!
 //! # Concurrency
 //!
-//! All three types are `Send + Sync` and reentrant. [`Dictionary::Mapped`] and
-//! [`LanguageModelSource::Mapped`] read immutable mapped memory and take no lock;
-//! [`UserFrequency::Store`] takes the store's own lock, which is the lock the shutdown
-//! flush also takes and which no caller holds across another call.
+//! All three types are `Send + Sync` and reentrant. The stand-ins hold no state at all and
+//! read nothing; [`UserFrequency::Store`] takes the store's own lock, which is the lock the
+//! shutdown flush also takes and which no caller holds across another call.
 
 use std::io::Write;
 use std::sync::Arc;
 
 use ime_core::lm::{BIGRAM_MISS_PENALTY, UNIGRAM_MISS};
-use ime_dict::fst_index::{DictLm, FstLexicon};
 use ime_types::{ImeError, LanguageModel, Lexicon, SyllableId, UserFreqSource, WordIter, WordRef};
 
 use super::super::lock;
 use super::super::user_store::UserStore;
 
-/// The dictionary a session decodes against.
+/// The empty dictionary of a start with no container: every lookup answers nothing.
 ///
-/// The mapped lexicon is boxed so that the two variants of this enum stay the same size:
-/// a value that carried the whole lexicon inline would be one every `SessionSources` pays
-/// for, and the indirection costs one dereference per lookup against an FST walk.
-pub(super) enum Dictionary {
-    /// The compiled dictionary, mapped read-only and verified at load.
-    Mapped(Box<FstLexicon>),
-    /// No dictionary at all: every lookup answers nothing.
-    ///
-    /// The decoder turns that into one candidate holding the input unchanged, which is what
-    /// the user gets to commit.
-    Missing,
-}
+/// The decoder turns that into one candidate holding the input unchanged, which is what
+/// the user gets to commit.
+pub(in crate::addon) struct MissingDictionary;
 
-impl Lexicon for Dictionary {
-    /// Reads the words of `key`, or nothing at all when no dictionary is mapped.
+impl Lexicon for MissingDictionary {
+    /// Answers nothing: there are no words to read.
     ///
     /// # Panics
     ///
     /// Never.
-    fn lookup(&self, key: &str) -> Result<WordIter<'_>, ImeError> {
-        match self {
-            Self::Mapped(lexicon) => lexicon.lookup(key),
-            Self::Missing => Ok(WordIter::from_slice(&[])),
-        }
+    fn lookup(&self, _key: &str) -> Result<WordIter<'_>, ImeError> {
+        Ok(WordIter::from_slice(&[]))
     }
 
-    /// Prefix enumeration, which neither variant serves yet.
+    /// Prefix enumeration, which no start without a container serves.
     ///
     /// # Errors
     ///
-    /// [`ImeError::Unsupported`] with a dictionary, because the mapped lexicon answers the
-    /// same code until the phase that implements it lands.
+    /// [`ImeError::Unsupported`], the same code a mapped lexicon answers: prefix
+    /// enumeration is a later phase either way.
     ///
     /// # Panics
     ///
     /// Never.
-    fn prefix(&self, prefix: &str, limit: usize) -> Result<WordIter<'_>, ImeError> {
-        match self {
-            Self::Mapped(lexicon) => lexicon.prefix(prefix, limit),
-            // Prefix enumeration is a later phase even with a dictionary, so an absent one
-            // answers the same code the mapped one does.
-            Self::Missing => Err(ImeError::Unsupported),
-        }
+    fn prefix(&self, _prefix: &str, _limit: usize) -> Result<WordIter<'_>, ImeError> {
+        Err(ImeError::Unsupported)
     }
 
-    /// Reads the single-character words of one syllable, or nothing at all.
-    ///
-    /// # Errors
-    ///
-    /// As the mapped lexicon's, which reports a syllable identifier outside its table.
+    /// Answers nothing: there are no single-character words to read.
     ///
     /// # Panics
     ///
     /// Never.
-    fn fallback_single(&self, syl: SyllableId, limit: usize) -> Result<WordIter<'_>, ImeError> {
-        match self {
-            Self::Mapped(lexicon) => lexicon.fallback_single(syl, limit),
-            Self::Missing => Ok(WordIter::from_slice(&[])),
-        }
+    fn fallback_single(&self, _syl: SyllableId, _limit: usize) -> Result<WordIter<'_>, ImeError> {
+        Ok(WordIter::from_slice(&[]))
     }
 }
 
-/// The language model a session scores with.
-///
-/// Boxed for the same reason the dictionary is, and more urgently: the model carries a
-/// sixteen-kilobyte score table, so an inline variant would make every value of this enum
-/// that size and every construction copy it.
-pub(super) enum LanguageModelSource {
-    /// The unigram table of the mapped dictionary, read out of its mapping.
-    Mapped(Box<DictLm>),
-    /// No table at all: every word answers the miss value.
-    Missing,
-}
+/// The model of a start with no container: every word answers the miss path.
+pub(in crate::addon) struct MissingLanguageModel;
 
-impl LanguageModel for LanguageModelSource {
-    /// The word's unigram score in Q8.8, or the floor when no table is mapped.
+impl LanguageModel for MissingLanguageModel {
+    /// The floor: no word is known.
     ///
     /// # Panics
     ///
     /// Never.
-    fn unigram(&self, word: &str) -> i32 {
-        match self {
-            Self::Mapped(model) => model.unigram(word),
-            Self::Missing => UNIGRAM_MISS,
-        }
+    fn unigram(&self, _word: &str) -> i32 {
+        UNIGRAM_MISS
     }
 
-    /// The word's conditional score, which is the miss path with no table.
+    /// The miss path of the mapped model, value for value.
     ///
     /// # Panics
     ///
     /// Never.
-    fn bigram(&self, prev: &str, word: &str) -> i32 {
-        match self {
-            Self::Mapped(model) => model.bigram(prev, word),
-            // The miss path of the mapped model, value for value: a word the table does not
-            // hold and a table that holds nothing have to score identically, so that the
-            // degraded start ranks the candidates the same way a dictionary full of
-            // unknown words would.
-            Self::Missing => UNIGRAM_MISS.saturating_add(BIGRAM_MISS_PENALTY),
-        }
+    fn bigram(&self, _prev: &str, _word: &str) -> i32 {
+        // A word the table does not hold and a table that holds nothing have to score
+        // identically, so that the degraded start ranks the candidates the same way a
+        // dictionary full of unknown words would.
+        UNIGRAM_MISS.saturating_add(BIGRAM_MISS_PENALTY)
     }
 }
+
+/// The empty dictionary of the process, for the environment of a degraded start.
+pub(in crate::addon) static MISSING_DICTIONARY: MissingDictionary = MissingDictionary;
+
+/// The model of the process, for the environment of a degraded start.
+pub(in crate::addon) static MISSING_LANGUAGE_MODEL: MissingLanguageModel = MissingLanguageModel;
 
 /// The user's own frequencies, as the decoder's source.
-pub(super) enum UserFrequency {
+pub(in crate::addon) enum UserFrequency {
     /// The store the process adopted, behind the lock its shutdown flush also takes.
     Store(Arc<UserStore>),
     /// No store: nothing is read and nothing is learned.

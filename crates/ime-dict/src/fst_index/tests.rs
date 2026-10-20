@@ -56,8 +56,10 @@ const FIXTURE_KEYS: [(&str, &[&str]); 7] = [
 ///
 /// The variants are named after the field that is wrong rather than after the word the
 /// fixture uses, because the same corruption is asserted through several keys.
+/// `pub(crate)` because the hot-swap suite stages its damaged candidates through the
+/// same corruption vocabulary.
 #[derive(Clone, Copy, Debug)]
-enum Broken {
+pub(crate) enum Broken {
     /// `ni`'s packed value points past the end of the word list.
     ListRange,
     /// `ni`'s packed range starts inside the word list and its count runs past the end,
@@ -80,7 +82,14 @@ fn fixture_image(broken: Option<Broken>) -> Vec<u8> {
 }
 
 /// Builds the fixture's container image with an optional `BIGRAM` section.
-fn fixture_image_with_bigrams(broken: Option<Broken>, bigrams: &[(&str, &str, u16)]) -> Vec<u8> {
+///
+/// `pub(crate)` because the hot-swap suite builds its staged candidates through the
+/// same fixture: a swap test that encoded its own container would prove only that two
+/// encoders agree with each other.
+pub(crate) fn fixture_image_with_bigrams(
+    broken: Option<Broken>,
+    bigrams: &[(&str, &str, u16)],
+) -> Vec<u8> {
     let mut words: Vec<FixtureWord> = FIXTURE_WORDS.to_vec();
     let order = |(text, ..): &FixtureWord| (hash_word(text), *text);
     words.sort_by_key(order);

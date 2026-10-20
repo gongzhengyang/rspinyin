@@ -411,16 +411,19 @@
 
 #### TASK-2.06.01 数据驱动解码冒烟基线（TSV key_sequence→expected_text）
 
+> **纠偏（2026-10-20）**：阶段零复核发现本卡交付物**已随 `74afea9` 落地**——`xtask/src/testd/smoke.rs`（TSV 驱动器，@first/@contains/@regex 三形态）+ `tests/smoke/cases.tsv`（211 例，core 带从留出集派生）+ `justfile` 的 `smoke:` 档（`just ci` 已含）。本卡转 `[x]`；后续对冒烟基线的扩充随各功能卡（1.01.02/1.03.02/2.04.02）的 DoD 一并交付，不再单列。
+
 - **基本属性**：
-  - 绑定差距与改进项：`GAP-10` / `IMP-19`（并服务 GAP-01/02/03/08 的质量回归）｜ 关联设计假设：`ASM-A-02`
+  - 绑定差距与改进项：`GAP-10` / `IMP-19` ｜ 关联设计假设：`ASM-A-02`
   - 优先级与复杂度：`P1 效率进阶` ｜ 中 ｜ 预估工时： 2 人天
-  - 前置依赖：`无`（基建 `xtask testd-engine` 已存在；越早落地，后续质量卡的回归越便宜）
+  - 前置依赖：`无`
   - 关键路径：`否`
   - 并行通道：`Track C Infra·DevOps`
-  - 对标参考锚点 (Benchmark Reference)：rime-ice `others/script/smoke/`——TSV 数据驱动（`case_id/schema/key_sequence/expected_text`，支持 `@today:<格式>` 与 `@regex:` 断言）基于 `rime_api_console`（[rime-ice.md](../compare/rime-ice.md) §8）；本项目对应基建 `xtask testd-engine`（无 fcitx5 纯内存重放）与 `testd/commit_readback.rs` 读回通道
-  - 本项目代码落地锚点 (Code Anchor)：新增 `tests/smoke/cases.tsv`（用例集）与 `xtask/src/testd/smoke.rs`（TSV 驱动器，调 `testd-engine` 重放）；修改 `xtask/src/main.rs`（子命令接线）
+  - 对标参考锚点 (Benchmark Reference)：rime-ice `others/script/smoke/` TSV 数据驱动冒烟（[rime-ice.md](../compare/rime-ice.md) §8）
+  - 本项目代码落地锚点 (Code Anchor)：`xtask/src/testd/smoke.rs`、`tests/smoke/cases.tsv`（211 行）、`justfile` `smoke:` 档（:322-342）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 验收记录：驱动器 + 211 例 TSV + `just ci` 的 `smoke` 层均已入线（`74afea9`，`RSPINYIN_REQUIRE_SMOKE_DICT=1` 时缺词典即红）；本记录由 2026-10-20 规划期复核补登。
 - **目标与价值**：分层（1.01）、衰减（1.02）、bigram（1.03）、词源（2.04）都在改排序——没有「期望文本」基线，每次改动只能靠 top1 百分比间接感知。rime-ice 的 TSV 冒烟把「这批键必须出这批字」变成一行一个用例的可读资产；`xtask testd-engine` 纯内存重放基建已在，缺的只是驱动器与首批用例集（目标 ≥200 例）。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：用例格式（对齐 rime-ice 心智模型、贴本项目词库纪律）：

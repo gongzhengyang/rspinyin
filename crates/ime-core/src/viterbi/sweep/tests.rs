@@ -56,6 +56,8 @@ fn ranked_drafts(count: usize) -> Vec<Draft> {
             source: CandidateSource::Dict,
             syllables: 1,
             score: i32::try_from(count - index).expect("the test counts are small"),
+            corrected: false,
+            words: WordSpans::EMPTY,
         })
         .collect()
 }
@@ -63,6 +65,88 @@ fn ranked_drafts(count: usize) -> Vec<Draft> {
 /// The scores of a draft list, in the order the merge left them.
 fn scores(drafts: &[Draft]) -> Vec<i32> {
     drafts.iter().map(|draft| draft.score).collect()
+}
+
+/// The empty result a freeze writes into, as a decode's first call finds it.
+fn empty_result() -> DecodeResult {
+    DecodeResult {
+        candidates: Vec::new(),
+        segments: Vec::new(),
+        degraded: false,
+    }
+}
+
+/// One draft with the fields the annotation tests read, and no correction mark.
+fn plain_draft(text: &str, score: i32) -> Draft {
+    Draft {
+        text: String::from(text),
+        source: CandidateSource::Dict,
+        syllables: 2,
+        score,
+        corrected: false,
+        words: WordSpans::EMPTY,
+    }
+}
+
+#[test]
+fn test_result_of_into_annotates_a_corrected_draft_and_leaves_an_exact_one_quiet() {
+    let drafts = vec![
+        Draft {
+            corrected: true,
+            ..plain_draft("真诚", 100)
+        },
+        plain_draft("整好", 90),
+    ];
+    let mut out = empty_result();
+    result_of_into(&mut out, &drafts, false, "zhegn");
+    assert_eq!(
+        out.candidates[0].annotation.as_deref(),
+        Some("纠错：zhegn"),
+        "a corrected candidate names the spelling the user typed"
+    );
+    assert_eq!(
+        out.candidates[1].annotation, None,
+        "an exact candidate is annotated with nothing"
+    );
+}
+
+#[test]
+fn test_result_of_into_rewrites_a_slot_annotation_across_decodes() {
+    let corrected = vec![Draft {
+        corrected: true,
+        ..plain_draft("真诚", 100)
+    }];
+    let mut out = empty_result();
+    // First decode: the corrected candidate seeds the slot's annotation buffer.
+    result_of_into(&mut out, &corrected, false, "zhegn");
+    assert_eq!(out.candidates[0].annotation.as_deref(), Some("纠错：zhegn"));
+    // Second decode of a different slip: the slot must follow the new spelling
+    // rather than keep the previous input's annotation behind it.
+    result_of_into(&mut out, &corrected, false, "zhoeng");
+    assert_eq!(out.candidates[0].annotation.as_deref(), Some("纠错：zhoeng"));
+    // Third decode, exact input, same candidate count: the slot that held an
+    // annotation now holds an exact reading, and the annotation is gone.
+    let exact = vec![plain_draft("真诚", 100)];
+    result_of_into(&mut out, &exact, false, "zheng");
+    assert_eq!(out.candidates[0].annotation, None);
+}
+
+#[test]
+fn test_finish_merges_a_corrected_twin_into_one_annotated_candidate() {
+    // The same text reached twice -- once over a correction edge, once exactly --
+    // folds into one candidate that keeps the better score and the correction mark:
+    // the mark says the text was reachable past a slip, whatever the best path was.
+    let mut drafts = vec![
+        Draft {
+            corrected: true,
+            ..plain_draft("真诚", 50)
+        },
+        plain_draft("真诚", 90),
+    ];
+    finish(&mut drafts, DEFAULT_MAX_CANDIDATES);
+    assert_eq!(drafts.len(), 1, "the twins fold into one candidate");
+    assert!(drafts[0].corrected, "the correction mark survives the merge");
+    assert_eq!(drafts[0].score, 90, "the better score wins the fold");
 }
 
 #[test]

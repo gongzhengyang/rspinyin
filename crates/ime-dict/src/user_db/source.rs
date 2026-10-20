@@ -113,11 +113,13 @@ impl UserFreqSource for UserDb {
         }
     }
 
-    fn is_user_word(&self, _key: &str) -> bool {
-        // Version 1 stores frequencies only: a key is a word the user typed, not a word
-        // the user coined. The table that marks a coined word, and the write path that
-        // fills it, arrive with the Phase 2 user-word support.
-        false
+    fn is_user_word(&self, key: &str) -> bool {
+        // The answer is the coin table's, from memory: the word → rows map the open
+        // filled and the coin path keeps in step. A word the user has only typed often
+        // is a frequency entry, not a coined one, and answers `false` -- the question is
+        // about words that exist because the user made them, which is what the delete
+        // flow and the candidate labels ask.
+        !self.inner.coined_composites(key).is_empty()
     }
 
     fn forget(&self, key: &str) -> bool {

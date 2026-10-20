@@ -54,8 +54,9 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use ime_core::privacy::InputContextKind;
-use ime_dict::script::ScriptIndex;
 use ime_core::state::SessionEnv;
+use ime_dict::hot_swap::LexiconSlot;
+use ime_dict::script::ScriptIndex;
 use ime_types::{Anchor, UiEvent};
 
 use crate::engine::host::Host;
@@ -472,6 +473,9 @@ fn with_sessions<T>(fallback: T, read: impl FnOnce(&mut SessionHost) -> T) -> T 
 ///   it: the sources are process-wide, like the user store.
 /// * `privacy` — the per-context decisions the commit path asks before it learns.
 /// * `config` — the configuration in force, as the routing layer reads it.
+/// * `lexicon` — the slot the dictionary is re-read through at every step, when the start
+///   mapped a container. `None` leaves the router decoding against `env`'s own dictionary
+///   for the whole of its life, which is the degraded start's shape and every test's.
 ///
 /// # Returns
 ///
@@ -480,12 +484,21 @@ fn with_sessions<T>(fallback: T, read: impl FnOnce(&mut SessionHost) -> T) -> T 
 /// # Panics
 ///
 /// Never.
-pub fn install(env: SessionEnv<'static>, privacy: ContextPrivacy, config: RoutingConfig) -> bool {
+pub fn install(
+    env: SessionEnv<'static>,
+    privacy: ContextPrivacy,
+    config: RoutingConfig,
+    lexicon: Option<&'static LexiconSlot>,
+) -> bool {
     let mut slot = lock_sessions();
     if slot.is_some() {
         return false;
     }
-    *slot = Some(SessionHost::new(KeyRouter::new(env, privacy, config)));
+    let router = match lexicon {
+        Some(slot) => KeyRouter::new(env, privacy, config).with_lexicon_slot(slot),
+        None => KeyRouter::new(env, privacy, config),
+    };
+    *slot = Some(SessionHost::new(router));
     true
 }
 

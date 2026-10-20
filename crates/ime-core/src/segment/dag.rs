@@ -179,6 +179,15 @@ impl SyllableDag {
         self.prepare_nodes(len);
         self.build_edges(&normalized, flags);
         self.compute_reachability(len);
+        // Correction expands only where the exact query missed (ADR-0014): an
+        // input the exact-and-fuzzy build can cut never enters the pass, so with
+        // the bit clear -- and on every exact hit with it set -- the graph is
+        // byte-identical to a build without the switch, and a correctly typed
+        // input costs nothing for the tolerance it does not need.
+        if !self.has_path() && crate::segment::correct::is_enabled(flags) {
+            self.add_correction_edges(&normalized);
+            self.compute_reachability(len);
+        }
         self.normalized = normalized;
 
         if self.has_path() {
@@ -336,6 +345,74 @@ impl SyllableDag {
                         syllable: *variant,
                         kind,
                         penalty_q8: crate::fuzzy::FUZZY_PENALTY_Q8,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Widens the graph with correction edges, after the exact build found no path.
+    ///
+    /// Every span the exact pass could not name a syllable for is asked for its
+    /// one-step corrections; each legal one becomes an edge covering the same
+    /// bytes and naming the corrected syllable, carrying
+    /// [`CORRECTION_PENALTY_Q8`](crate::segment::correct::CORRECTION_PENALTY_Q8).
+    /// The walk is the exact pass's own -- the same span limits, the same
+    /// forced-marker handling -- so a corrected edge ends where the exact edge it
+    /// stands in for would have ended, and the preedit's byte offsets keep
+    /// pointing at the bytes the user typed.
+    fn add_correction_edges(&mut self, normalized: &str) {
+        let bytes = normalized.as_bytes();
+        let len = bytes.len();
+        // A syllable never spans a boundary marker, so node `i` may only reach as
+        // far as the next marker; one reverse scan fills the whole limit table.
+        let mut limits = [0u16; MAX_NODES];
+        let mut next_marker = u16::try_from(len).unwrap_or(u16::MAX);
+        for i in (0..len).rev() {
+            limits[i] = next_marker;
+            if bytes[i] == b'\'' {
+                next_marker = u16::try_from(i).unwrap_or(u16::MAX);
+            }
+        }
+
+        for (i, &limit_end) in limits.iter().enumerate().take(len) {
+            let starts_syllable = match normalized.get(i..) {
+                Some(rest) => rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == 'ê'),
+                None => false,
+            };
+            if !starts_syllable {
+                continue;
+            }
+            let limit = usize::from(limit_end);
+            for length in 1..=MAX_SYLLABLE_LEN {
+                let end = i + length;
+                if end > limit {
+                    break;
+                }
+                let Some(text) = normalized.get(i..end) else {
+                    continue;
+                };
+                // A span the exact pass named a syllable for is not a misspelling;
+                // correcting it would put a wider tolerance on a reading the input
+                // already spells.
+                if syllable::lookup(text).is_some() {
+                    continue;
+                }
+                for corrected in crate::segment::correct::corrections_of(text) {
+                    let forced = end < len && bytes[end] == b'\'';
+                    // The marker belongs to no syllable, so the edge reaches past
+                    // it, exactly as an exact edge at the same span would.
+                    let edge_end = if forced { end + 1 } else { end };
+                    let kind = if forced {
+                        EdgeKind::Forced
+                    } else {
+                        EdgeKind::Normal
+                    };
+                    self.edges[i].push(DagEdge {
+                        end: u16::try_from(edge_end).unwrap_or(u16::MAX),
+                        syllable: corrected,
+                        kind,
+                        penalty_q8: crate::segment::correct::CORRECTION_PENALTY_Q8,
                     });
                 }
             }

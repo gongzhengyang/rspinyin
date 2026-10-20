@@ -10,7 +10,11 @@
 use super::{DEFAULT_BACKUP_KEEP, DEFAULT_DECAY_HALF_LIFE_TICKS, Durability, LogLevel};
 
 /// The `[data]` section.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Not `Copy`: `dict_staged_path` is a path a user typed, and a section that holds one
+/// text holds a heap value. Every hand-off of the section past this change is a clone,
+/// which is a reload-path cost of one allocation and nothing the decode path touches.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataConfig {
     /// `durability`: how user-frequency writes reach the disk. Defaults to
     /// [`Durability::Eventual`], the variant [`Durability`] marks as its default.
@@ -31,14 +35,24 @@ pub struct DataConfig {
     pub decay_half_life_ticks: u32,
     /// `decay_floor`: the user accumulator floor in Q16.16.
     pub decay_floor: i64,
+    /// `dict_staged_path`: the dictionary file a reload should swap in, or empty when
+    /// there is none.
+    ///
+    /// The hot-swap trigger: a reload that finds the key naming a readable container
+    /// validates it whole and swaps it for the live one, then writes the key back
+    /// empty -- the path is a one-shot instruction, not a setting. A swap the
+    /// validation rejects leaves the key standing for the user to fix, and reports
+    /// `dict/swap/rejected`.
+    pub dict_staged_path: String,
 }
 
 impl Default for DataConfig {
     /// The shipped defaults: eventual writes, backups on, [`DEFAULT_BACKUP_KEEP`]
     /// generations kept, and decay enabled at the librime-equivalent half-life with a
-    /// one-use accumulator floor.
+    /// one-use accumulator floor. The staged path is empty: nothing to swap until a
+    /// user or a tool writes a path there.
     ///
-    /// Written out rather than derived, because two of the three keys are not
+    /// Written out rather than derived, because two of the four scalar keys are not
     /// zero-valued: a derived default would turn the copies off and ask for no
     /// generations at all.
     fn default() -> Self {
@@ -48,6 +62,7 @@ impl Default for DataConfig {
             backup_keep: DEFAULT_BACKUP_KEEP,
             decay_half_life_ticks: DEFAULT_DECAY_HALF_LIFE_TICKS,
             decay_floor: 1 << 16,
+            dict_staged_path: String::new(),
         }
     }
 }

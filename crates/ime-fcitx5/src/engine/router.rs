@@ -66,11 +66,13 @@
 //! command and returns.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use ime_config::ShareState;
 use ime_core::passthrough::{PassthroughDecision, classify};
 use ime_core::privacy::InputContextKind;
 use ime_core::state::{SessionEnv, SessionEvent, SessionState};
+use ime_dict::hot_swap::{LexiconBundle, LexiconSlot};
 use ime_dict::script::ScriptIndex;
 use ime_types::{Anchor, KeyAction, UiEvent};
 
@@ -133,6 +135,38 @@ struct StepCtx<'a, 'b> {
     badge: &'b mut BadgeState,
 }
 
+/// The environment one step runs against, over a possibly swapped-in dictionary.
+///
+/// `bundle` is the slot's current container, fetched once by the caller and held bound for
+/// the step's whole run: the environment's dictionary and model read the mapping that
+/// `Arc` keeps alive, so the words a lookup in this step hands back stay readable however
+/// many swaps land afterwards. `None` — a router with no slot — leaves `env` as it stands,
+/// which is the whole story for a router over a degraded start or a test's own sources.
+///
+/// The fetch is the entire cost the hot swap asks of the key path: one atomic read per
+/// step, and nothing per lookup.
+///
+/// # Panics
+///
+/// Never.
+fn step_env<'a, 'b>(
+    env: SessionEnv<'a>,
+    bundle: Option<&'b Arc<LexiconBundle>>,
+) -> SessionEnv<'b>
+where
+    'a: 'b,
+{
+    match bundle {
+        Some(bundle) => SessionEnv {
+            decoder: env.decoder,
+            lexicon: bundle.lexicon(),
+            user_freq: env.user_freq,
+            lm: bundle.lm(),
+        },
+        None => env,
+    }
+}
+
 /// The engine's routing state: a session per input context, pooled by the tier in force.
 ///
 /// The host thread owns one of these for the lifetime of the addon. It is created with
@@ -142,7 +176,18 @@ struct StepCtx<'a, 'b> {
 /// parked. See [`PoolKey`].
 pub struct KeyRouter<'a> {
     /// The decoder, the dictionary, the user's frequencies and the language model.
+    ///
+    /// The dictionary and the model of a process that installed a hot-swap slot are read
+    /// from the slot at every step instead; this value still holds the references the slot
+    /// replaces (the degraded stand-ins), which are what a router without a slot decodes
+    /// against.
     env: SessionEnv<'a>,
+    /// The slot the dictionary and its model are re-read through at every step, when the
+    /// sources behind [`KeyRouter::env`] can be replaced live. `Some` only for the process
+    /// router the startup sequence builds over a mapped container; a router without one —
+    /// a test router, or a router over a degraded start — decodes against [`KeyRouter::env`]
+    /// as it stands.
+    lexicon_slot: Option<&'a LexiconSlot>,
     /// The per-context privacy decisions and the gate every commit's learning goes
     /// through.
     privacy: ContextPrivacy,
@@ -199,6 +244,7 @@ impl<'a> KeyRouter<'a> {
     pub fn new(env: SessionEnv<'a>, privacy: ContextPrivacy, config: RoutingConfig) -> Self {
         Self {
             env,
+            lexicon_slot: None,
             privacy,
             config,
             phrases: phrases::handle(),
@@ -208,6 +254,20 @@ impl<'a> KeyRouter<'a> {
             next_session_base: 1,
             badge: BadgeState::new(),
         }
+    }
+
+    /// Hands the router the slot the dictionary is re-read through at every step.
+    ///
+    /// The process router's builder calls this once, right after [`KeyRouter::new`], with
+    /// the slot the `lexicon` step installed; a router built without it decodes against its
+    /// environment's own dictionary for the whole of its life.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn with_lexicon_slot(mut self, slot: &'a LexiconSlot) -> Self {
+        self.lexicon_slot = Some(slot);
+        self
     }
 
     /// Installs `index` as the variant table the script mode converts through.
@@ -342,8 +402,10 @@ impl<'a> KeyRouter<'a> {
     ///
     /// Never.
     pub fn deactivate(&mut self, ic: u64, host: &mut dyn Host) {
+        let bundle = self.lexicon_slot.map(LexiconSlot::load);
+        let env = step_env(self.env, bundle.as_ref());
         let mut step = StepCtx {
-            env: &self.env,
+            env: &env,
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
@@ -404,8 +466,10 @@ impl<'a> KeyRouter<'a> {
     ///
     /// Never.
     pub fn reset(&mut self, ic: u64, host: &mut dyn Host) {
+        let bundle = self.lexicon_slot.map(LexiconSlot::load);
+        let env = step_env(self.env, bundle.as_ref());
         let mut step = StepCtx {
-            env: &self.env,
+            env: &env,
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
@@ -467,8 +531,10 @@ impl<'a> KeyRouter<'a> {
     ///
     /// Never.
     pub fn focus_out(&mut self, ic: u64, host: &mut dyn Host) {
+        let bundle = self.lexicon_slot.map(LexiconSlot::load);
+        let env = step_env(self.env, bundle.as_ref());
         let mut step = StepCtx {
-            env: &self.env,
+            env: &env,
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
@@ -661,8 +727,10 @@ impl<'a> KeyRouter<'a> {
     ///
     /// Never.
     pub fn ui_event(&mut self, ic: u64, event: UiEvent, host: &mut dyn Host) -> bool {
+        let bundle = self.lexicon_slot.map(LexiconSlot::load);
+        let env = step_env(self.env, bundle.as_ref());
         let mut step = StepCtx {
-            env: &self.env,
+            env: &env,
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
@@ -729,8 +797,10 @@ impl<'a> KeyRouter<'a> {
             self.pool.clear();
         }
         self.config = config;
+        let bundle = self.lexicon_slot.map(LexiconSlot::load);
+        let env = step_env(self.env, bundle.as_ref());
         let mut step = StepCtx {
-            env: &self.env,
+            env: &env,
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
@@ -781,8 +851,10 @@ impl<'a> KeyRouter<'a> {
         event: SessionEvent,
         host: &mut dyn Host,
     ) -> bool {
+        let bundle = self.lexicon_slot.map(LexiconSlot::load);
+        let env = step_env(self.env, bundle.as_ref());
         let mut step = StepCtx {
-            env: &self.env,
+            env: &env,
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,

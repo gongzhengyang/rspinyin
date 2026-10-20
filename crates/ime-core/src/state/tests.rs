@@ -117,6 +117,31 @@ impl Fixture {
         }
     }
 
+    /// Builds a fixture over `rows` whose model carries the unigrams and the one
+    /// bigram row the case names, for the context tests.
+    ///
+    /// The re-rank is the only reader of the bigram, so a fixture that names it
+    /// names exactly the continuation the case is about.
+    pub(super) fn with_dictionary_and_bigram(
+        rows: &'static [(&'static str, &'static str)],
+        unigrams: &[(&str, i32)],
+        bigram_prev: &str,
+        bigram_word: &str,
+        bigram_score: i32,
+    ) -> Self {
+        let mut lm = InMemoryLm::new();
+        for (word, score) in unigrams {
+            lm.insert_unigram(word, *score);
+        }
+        lm.insert_bigram(bigram_prev, bigram_word, bigram_score);
+        Self {
+            lexicon: MockLexicon::with(rows),
+            user: RecordingUser::default(),
+            lm,
+            decoder: Decoder::default(),
+        }
+    }
+
     /// Borrows the sources as the environment a step reads.
     pub(super) fn env(&self) -> SessionEnv<'_> {
         SessionEnv {
@@ -137,6 +162,7 @@ fn kind(effect: &Effect) -> &'static str {
         Effect::Hide(_) => "hide",
         Effect::Commit(_) => "commit",
         Effect::RecordUserFreq { .. } => "record-user-freq",
+        Effect::CoinUserWords { .. } => "coin-user-words",
         Effect::AddPhrase { .. } => "add-phrase",
         Effect::ForgetUserWord { .. } => "forget-user-word",
         Effect::ToggleUserPin { .. } => "toggle-user-pin",

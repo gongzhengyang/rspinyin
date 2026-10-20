@@ -17,6 +17,7 @@ use super::super::{Lattice, LatticeOptions, MAX_TOTAL_EDGES, WORDS_PER_KEY, buil
 /// walk exists for, and the lattice is built over the graph either way.
 fn lattice_of<'a, L: Lexicon>(raw: &str, lexicon: &'a L, flags: DecodeFlags) -> Lattice<'a> {
     let mut readings = Readings::new();
+    let mut keys = Vec::new();
     let mut dag = SyllableDag::new();
     let _ = dag.build(raw);
     build_lattice(
@@ -27,6 +28,7 @@ fn lattice_of<'a, L: Lexicon>(raw: &str, lexicon: &'a L, flags: DecodeFlags) -> 
             fallback_single: true,
             flags,
             readings: &mut readings,
+            keys: &mut keys,
         },
     )
 }

@@ -46,6 +46,10 @@ impl Session {
 
     /// Routes one key by the state the session is in.
     fn on_key(&mut self, action: KeyAction, ctx: &mut Ctx<'_>) {
+        // The context ages with the keys it serves, whatever the key is: a
+        // composition six keystrokes in decodes without it, because the sentence it
+        // described is no longer the one the user is in.
+        self.age_context();
         if self.temp_english {
             self.on_key_temp_english(action);
             return;
@@ -290,9 +294,15 @@ impl Session {
         };
         let text = String::from(candidate.text.as_str());
         let weight_hint = Session::weight_hint(candidate);
+        // The pairs the reading offers to coining are captured now, from the workspace's
+        // record of the candidate the highlight is on: every keystroke after this decodes a
+        // new input into the same buffers, and what the commit reports must be what the
+        // user is looking at.
+        let coins = self.coin_pairs_for(usize::from(self.paging.highlight));
         self.set_pending(Some(PendingCommit {
             key: text.clone(),
             weight_hint,
+            coins,
         }));
         self.state = SessionState::Committing;
         ctx.push(Effect::Commit(text));
@@ -387,6 +397,9 @@ impl Session {
     fn cancel(&mut self, ctx: &mut Ctx<'_>) {
         self.state = SessionState::Cancelling;
         self.clear_input();
+        // A composition the user took back says nothing about what they mean next,
+        // which is exactly what the context word claims to know.
+        self.clear_context();
         ctx.push(Effect::SetClientPreedit(None));
         ctx.push(Effect::Hide(HideReason::Cancelled));
     }
@@ -394,6 +407,10 @@ impl Session {
     /// Ends the composition and hides the window, committing nothing.
     fn end_session(&mut self, reason: HideReason, ctx: &mut Ctx<'_>) {
         self.clear_session();
+        // The context dies with the composition that could have used it: whatever
+        // ended this session -- focus above all -- broke the thread the next input
+        // would continue.
+        self.clear_context();
         ctx.push(Effect::SetClientPreedit(None));
         ctx.push(Effect::Hide(reason));
     }
@@ -493,6 +510,11 @@ impl Session {
                 // records the `session/commit-on-focus-out` line for this, which is a
                 // host-side concern and not something a pure step can emit.
                 self.clear_session();
+                // The commit landed into a window that is going away, so the context
+                // it would have given the next composition goes with it: focus loss
+                // is the one event that ends a thread of input without the user
+                // finishing it.
+                self.clear_context();
                 ctx.push(Effect::SetClientPreedit(None));
             }
             // A cancellation has already hidden the window and cleared the preedit,
@@ -519,10 +541,23 @@ impl Session {
         let landed = self.state == SessionState::Committing;
         self.clear_session();
         if let Some(pending) = pending.filter(|_| landed) {
+            // The context the next compositions decode with is born here, at the
+            // commit the host confirmed landed: the word the commit put on the
+            // screen. A single-word candidate is exactly the key the model's bigram
+            // table continues from; a whole-sentence commit stores its whole text,
+            // which no bigram entry is keyed by, so its context is inert rather
+            // than wrong. The word is session memory alone -- it reaches no effect
+            // and no log line, and it dies with the session.
+            self.set_context(pending.key.clone());
             ctx.push(Effect::RecordUserFreq {
                 key: pending.key,
                 weight_hint: pending.weight_hint,
             });
+            // The pairs the reading confirmed follow the same landed-only rule as the
+            // frequency record: a commit the host refused teaches nothing.
+            if !pending.coins.is_empty() {
+                ctx.push(Effect::CoinUserWords { pairs: pending.coins });
+            }
         }
         ctx.push(Effect::SetClientPreedit(None));
     }

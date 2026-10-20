@@ -502,7 +502,7 @@ fn test_data_backup_keep_bounds() {
     for keep in [1, MAX_BACKUP_KEEP] {
         let config = tweaked(|c| c.data.backup_keep = keep);
         assert!(config.validate().is_empty(), "the range is inclusive");
-        let expected = config.data;
+        let expected = config.data.clone();
         let (repaired, warnings) = config.repaired();
         assert!(warnings.is_empty());
         assert_eq!(repaired.data, expected);

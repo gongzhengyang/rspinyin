@@ -105,7 +105,15 @@ pub const MAX_SYL_COUNT: u8 = 16;
 /// Upper bound on the number of words stored under one key. Surplus words are
 /// dropped by the compiler and reported; the FST value reserves 24 bits for the
 /// count, so the limit is a ranking decision rather than a format limit.
-pub const MAX_WORDS_PER_KEY: u32 = 32;
+///
+/// Raised from 32 by the truncation audit: 181 keys of the compiled dictionary ran
+/// past 32 -- the polyphonic single-syllable giants (`ji` wanted 199, `yi` 240),
+/// and the strongest word a cut dropped carried a mid-band weight (1743 against the
+/// corpus's head), which is a candidate a reader could have been shown. The count
+/// field holds 24 bits and the read path takes the head of each list, so the ceiling
+/// is a writer strategy and nothing else; the container cost of the words it
+/// restored is measured, not assumed.
+pub const MAX_WORDS_PER_KEY: u32 = 64;
 
 /// Width in bits of the word count inside a packed FST value.
 pub const FST_COUNT_BITS: u32 = 24;

@@ -34,13 +34,15 @@ const MODULE_FIELD: &str = "模块与类别";
 
 /// Reads the case metadata out of a case document.
 ///
-/// One entry per `### TC-<module>-<number>` heading, in document order, with the module and the
+/// One entry per `TC-<module>-<number>` heading, in document order, with the module and the
 /// environment requirement taken from the case's own attribute block. A case that declares no
 /// requirement keeps [`EnvRequirement::Undeclared`], which is what makes an undeclared case run
 /// nowhere rather than everywhere.
 ///
-/// A heading whose identifier is not shaped like a case identifier -- the suite's own template
-/// placeholder among them -- opens no entry.
+/// The heading's depth is the suite's typography, not the gate's business: the suite has
+/// spelled its cases at more than one depth across its revisions, and a gate that required one
+/// would go blind on the other rather than say so. A heading whose identifier is not shaped like
+/// a case identifier -- the suite's own template placeholder among them -- opens no entry.
 ///
 /// # Panics
 ///
@@ -123,15 +125,20 @@ fn field_value(line: &str, name: &str) -> Option<String> {
 
 /// The case identifier a heading line opens, when it opens one.
 ///
-/// A heading whose first token is not shaped like a case identifier -- the suite's own template
-/// placeholder among them -- opens none, so a placeholder never enters a batch as a case.
+/// The heading is recognized by its opening run of `#` marks at any depth, so a suite
+/// revision that moves its cases one level deeper keeps parsing. A heading whose first
+/// token is not shaped like a case identifier -- the suite's own template placeholder
+/// among them -- opens none, so a placeholder never enters a batch as a case.
 ///
 /// # Panics
 ///
 /// Never.
 fn case_heading(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("### ")?;
-    let id = rest.split_whitespace().next()?;
+    let hashes = line.bytes().take_while(|&byte| byte == b'#').count();
+    if hashes == 0 {
+        return None;
+    }
+    let id = line[hashes..].split_whitespace().next()?;
     let shaped =
         id.starts_with("TC-") && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-');
     shaped.then(|| id.to_owned())

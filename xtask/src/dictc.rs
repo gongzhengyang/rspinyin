@@ -35,6 +35,8 @@ mod manifest;
 pub(crate) mod normalize;
 pub mod quality;
 pub(crate) mod source;
+pub mod stage;
+mod truncation;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -44,7 +46,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, ensure};
 use clap::Args;
 use ime_dict::format::writer::DictWriter;
-use ime_dict::format::{BigramRecord, SectionKind, collision_limit};
+use ime_dict::format::{BigramRecord, MAX_WORDS_PER_KEY, SectionKind, collision_limit};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -453,6 +455,23 @@ fn report(
             .map(|(word, keys)| format!("{word}={keys}"))
             .collect();
         println!("dictc: L3b sample, word=keys: {}", sample.join(" "));
+    }
+    // The truncation audit: what the per-key word ceiling cost this build. The
+    // total and the heaviest loss are the two numbers a cap decision reads; the
+    // quoted keys are the head of the ranked report, heaviest loss first.
+    if stats.truncated_keys > 0 {
+        println!(
+            "dictc: truncation audit: {} key(s) cut at the {}-word ceiling, worst dropped weight {}",
+            stats.truncated_keys, MAX_WORDS_PER_KEY, stats.worst_dropped_weight
+        );
+        for (key, wanted, weight) in &stats.truncated_worst {
+            println!("dictc:   {key}: wanted {wanted}, best dropped weight {weight}");
+        }
+    } else {
+        println!(
+            "dictc: truncation audit: no key reached the {}-word ceiling",
+            MAX_WORDS_PER_KEY
+        );
     }
     if skips.total() > 0 {
         println!(

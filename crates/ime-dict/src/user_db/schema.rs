@@ -8,7 +8,7 @@ use redb::{Database, Durability, ReadableTable};
 
 use super::{
     DIR_MODE, FILE_MODE, META, META_TICK, SCHEMA_KEY, SCHEMA_VERSION, SCHEMA_VERSION_V1, TICK_KEY,
-    USER_KEY_PINS, USER_META, USER_WORDS, USER_WORDS_V2, store_error,
+    USER_KEY_PINS, USER_LEXICON, USER_META, USER_WORDS, USER_WORDS_V2, store_error,
 };
 
 #[cfg(test)]
@@ -94,6 +94,8 @@ fn stamp_schema(path: &Path, db: &Database) -> Result<(), ImeError> {
         txn.open_table(USER_META)
             .map_err(|error| store_error(path, &error))?;
         txn.open_table(USER_KEY_PINS)
+            .map_err(|error| store_error(path, &error))?;
+        txn.open_table(USER_LEXICON)
             .map_err(|error| store_error(path, &error))?;
         let mut tick = txn
             .open_table(META_TICK)
@@ -220,6 +222,8 @@ fn ensure_tables(path: &Path, db: &Database) -> Result<(), ImeError> {
     txn.open_table(USER_META)
         .map_err(|error| store_error(path, &error))?;
     txn.open_table(USER_KEY_PINS)
+        .map_err(|error| store_error(path, &error))?;
+    txn.open_table(USER_LEXICON)
         .map_err(|error| store_error(path, &error))?;
     txn.open_table(META_TICK)
         .map_err(|error| store_error(path, &error))?;

@@ -31,6 +31,12 @@ use super::source::{Word, baseline_key, compose_readings};
 /// table states wins the tie inside that word's own candidate list.
 const POLYPHONE_WEIGHT_FACTOR: u32 = 4;
 
+/// How many of the audit's cut keys the build log quotes.
+///
+/// The report ranks every cut key; the log carries the head of it, which is where
+/// the decision-relevant losses live, and the tool prints the total beside them.
+const TRUNCATED_EXAMPLES: usize = 5;
+
 /// Weight floor used when the frequency source is unavailable, so the band still
 /// selects the head of the list instead of silently expanding everything.
 const FALLBACK_BAND_THRESHOLD: u32 = 100;
@@ -293,6 +299,13 @@ pub(crate) struct Stats {
     pub(crate) polyphone_unmatched: u64,
     /// (key, word) pairs dropped because the key was already at its word ceiling.
     pub(crate) truncated_pairs: u64,
+    /// Keys the word ceiling cut, from the truncation audit.
+    pub(crate) truncated_keys: u64,
+    /// The heaviest word any key's cut dropped, or zero when nothing was cut.
+    pub(crate) worst_dropped_weight: u32,
+    /// The first few cut keys as `(key, wanted, best dropped weight)`, heaviest
+    /// loss first, so the audit can be read without a second tool.
+    pub(crate) truncated_worst: Vec<(String, u32, u32)>,
     /// Pairs of distinct words whose hashes agree. The read path resolves them by
     /// text; the count is reported because a count far past the birthday bound is
     /// what a broken hash looks like.
@@ -452,6 +465,20 @@ pub(crate) fn compile(
             stats.polyphone_keys += 1;
         }
     }
+
+    // The truncation audit reads the map whole, before the ceiling cuts it: once
+    // the surplus words are dropped they no longer exist, and this report is what
+    // turns the ceiling from a number into a decision.
+    let truncated = super::truncation::audit(&keys, MAX_WORDS_PER_KEY);
+    stats.truncated_keys = truncated.len() as u64;
+    stats.worst_dropped_weight = truncated
+        .first()
+        .map_or(0, |row| row.best_dropped_weight);
+    stats.truncated_worst = truncated
+        .iter()
+        .take(TRUNCATED_EXAMPLES)
+        .map(|row| (row.key.clone(), row.wanted, row.best_dropped_weight))
+        .collect();
 
     let mut wordlist = Vec::new();
     let mut fst_builder = fst::MapBuilder::memory();

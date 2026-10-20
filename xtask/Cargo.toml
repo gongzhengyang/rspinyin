@@ -26,6 +26,7 @@ regex.workspace = true                                                 # testd �
 ime-types.workspace = true
 ime-core.workspace = true
 ime-dict.workspace = true
+ime-config.workspace = true                                           # dict stage: 打印配置文件路径与暂存键的提示
 ime-diag = { workspace = true, features = ["uiframe"] }                                              # budget --report: reads the probe snapshot the plugin writes
 
 [lints]

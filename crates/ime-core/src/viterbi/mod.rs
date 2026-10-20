@@ -76,6 +76,7 @@
 //! assert!(result.degraded);
 //! ```
 
+pub mod context;
 pub mod decoder;
 pub mod kbest;
 pub mod lattice;

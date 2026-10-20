@@ -300,6 +300,28 @@ impl FstLexicon {
         self.entry_count
     }
 
+    /// Counts the container's keys that store at least `cap` words.
+    ///
+    /// This is the compiled artifact's own truncation census: a key at the ceiling
+    /// is a key the compiler may have cut, and how many of them there are is what
+    /// tells a raised ceiling from one no key reaches. One streamed pass over the
+    /// FST's values, reading nothing else; the writer never stores more than the
+    /// ceiling, so a key over it is a corrupt container saying so.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn keys_at_cap(&self, cap: u32) -> u64 {
+        let mut stream = self.fst.range().into_stream();
+        let mut at_cap = 0u64;
+        while let Some((_, packed)) = stream.next() {
+            if unpack_fst_value(packed).1 >= cap {
+                at_cap = at_cap.saturating_add(1);
+            }
+        }
+        at_cap
+    }
+
     /// Returns the `UNIGRAM` section, which is the table a language model scores with.
     ///
     /// Exposed as bytes rather than as a typed slice: reinterpreting a borrowed buffer as
@@ -584,7 +606,7 @@ fn section(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 mod word_buf_tests;

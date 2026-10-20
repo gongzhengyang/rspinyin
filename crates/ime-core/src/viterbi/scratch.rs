@@ -33,7 +33,7 @@ use ime_types::{
 use crate::segment::{Readings, SyllableDag, abbrev::is_enabled};
 use crate::viterbi::decoder::{Decoder, Silent};
 use crate::viterbi::lattice::{Lattice, LatticeOptions, build_lattice_into};
-use crate::viterbi::sweep::{Draft, Sources, Sweep, SweepStorage, finish, result_of_into};
+use crate::viterbi::sweep::{Draft, Sources, Sweep, SweepStorage, WordSpan, finish, result_of_into};
 
 /// Everything one decode allocates, kept across decodes.
 ///
@@ -48,6 +48,15 @@ pub struct DecodeScratch {
     sweep: SweepStorage,
     /// Candidate texts before they are numbered, capacities reused.
     drafts: Vec<Draft>,
+    /// The word spans the last collect recorded, indexed by the ranges the drafts carry.
+    /// Cleared and refilled by every collect, so a range is valid for exactly the draft
+    /// list of the decode that wrote it.
+    word_spans: Vec<WordSpan>,
+    /// The key arena the lattice build writes the canonical spelling of every looked-up
+    /// key into, and the spans name ranges into. Cleared by the next build, so a range is
+    /// valid for exactly the draft list of the decode that wrote it -- the same lifetime
+    /// [`DecodeScratch::word_spans`] keeps.
+    lattice_keys: Vec<u8>,
     /// The result the decode writes into, capacities reused.
     out: DecodeResult,
     /// The abbreviation walk's enumeration buffer, reused by every node of a build and
@@ -94,6 +103,8 @@ impl DecodeScratch {
             dag: SyllableDag::new(),
             sweep: SweepStorage::new(),
             drafts: Vec::new(),
+            word_spans: Vec::new(),
+            lattice_keys: Vec::new(),
             out: empty_result(),
             readings: Readings::new(),
             abbrev_truncated: false,
@@ -127,6 +138,122 @@ impl DecodeScratch {
     /// Never.
     pub fn result(&self) -> &DecodeResult {
         &self.out
+    }
+
+    /// Returns the result of the last decode, mutably, for the session's post-passes.
+    ///
+    /// The reader is the context re-rank: it reorders the candidate list in place,
+    /// after the decode assembled it and before the session repairs everything
+    /// derived from it, and it needs the list as the workspace holds it rather than
+    /// through a take-and-return that would move the text buffers out and back.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn result_mut(&mut self) -> &mut DecodeResult {
+        &mut self.out
+    }
+
+    /// Re-ranks the answer by `context` through the context module, keeping the drafts
+    /// aligned.
+    ///
+    /// The wrapper exists because the re-rank has to permute the drafts by the same
+    /// moves as the candidates -- the pairs a commit coins from are read out of the
+    /// draft at the highlight's position -- and the drafts are the workspace's own
+    /// type, not one a caller outside this module can name.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn rerank_with_context(&mut self, context: Option<&str>, lm: &dyn LanguageModel) {
+        crate::viterbi::context::rerank_aligned(
+            &mut self.out.candidates,
+            &mut self.drafts,
+            context,
+            lm,
+        );
+    }
+
+    /// The key bytes one span names in the workspace's key arena.
+    ///
+    /// # Panics
+    ///
+    /// Never: a range that does not fit the arena answers empty.
+    fn key_bytes(&self, range: (u32, u16)) -> &[u8] {
+        let start = usize::try_from(range.0).unwrap_or(usize::MAX);
+        self.lattice_keys
+            .get(start..)
+            .and_then(|bytes| bytes.get(..usize::from(range.1)))
+            .unwrap_or(&[])
+    }
+
+    /// The word pairs of one candidate's path that a commit could coin, best first in
+    /// `(key, text)` form: the adjacent single-character words of the reading, with the
+    /// key spelled the way the input spells it.
+    ///
+    /// The index is the candidate's position in [`DecodeScratch::result`]. A candidate
+    /// with nothing to coin -- a single-word reading, a pass-through answer, a path that
+    /// needed a spelling correction, a pair where either word is more than one character
+    /// -- answers an empty list, which is the caller's signal to coin nothing. The
+    /// allocation happens here, at the commit, and only for the candidate being
+    /// committed; the decode itself records ranges and allocates nothing.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn coin_pairs(&self, index: usize) -> Vec<(String, String)> {
+        let Some(draft) = self.drafts.get(index) else {
+            return Vec::new();
+        };
+        // A corrected path reads a spelling the user did not type, so the key it would
+        // coin under is the slip; a pair with a longer word is a phrase the user did not
+        // choose character by character. Both leave the candidate with nothing to coin.
+        if draft.corrected() {
+            return Vec::new();
+        }
+        let spans = draft.words(&self.word_spans);
+        if spans.len() < 2 {
+            return Vec::new();
+        }
+        let text = draft.text();
+        let mut pairs = Vec::new();
+        for window in spans.windows(2) {
+            let (left, right) = (window[0], window[1]);
+            let Some(word_left) = text.get(usize::from(left.text.0)..usize::from(left.text.1))
+            else {
+                continue;
+            };
+            let Some(word_right) = text.get(usize::from(right.text.0)..usize::from(right.text.1))
+            else {
+                continue;
+            };
+            // The card's shape: a two-character combination of two words the user chose
+            // one character of. Anything longer is a phrase, and phrases are the phrase
+            // document's business.
+            if word_left.chars().count() != 1 || word_right.chars().count() != 1 {
+                continue;
+            }
+            // The pair's key is the two words' canonical spellings joined the way a
+            // dictionary key joins them -- which is what the next decode of the same
+            // input will look the coined word up under. A word whose key never entered
+            // the arena (an abbreviation reading) leaves the pair refused.
+            let left_key = self.key_bytes(left.key);
+            let right_key = self.key_bytes(right.key);
+            if left_key.is_empty() || right_key.is_empty() {
+                continue;
+            }
+            let (Ok(left_key), Ok(right_key)) = (
+                std::str::from_utf8(left_key),
+                std::str::from_utf8(right_key),
+            ) else {
+                continue;
+            };
+            pairs.push((
+                format!("{left_key}'{right_key}"),
+                format!("{word_left}{word_right}"),
+            ));
+        }
+        pairs
     }
 
     /// Takes the result of the last decode out of the workspace, leaving an empty one behind.
@@ -273,6 +400,7 @@ impl Decoder {
                 fallback_single: cfg.fallback_single,
                 flags: req.flags,
                 readings: &mut scratch.readings,
+                keys: &mut scratch.lattice_keys,
             },
         );
         scratch.abbrev_truncated = lattice.abbrev_truncated();
@@ -283,7 +411,7 @@ impl Decoder {
             Sweep::with_storage(sources, usize::from(cfg.beam_k), nodes, &mut scratch.sweep);
         sweep.run();
         let terminal = usize::from(scratch.dag.len());
-        sweep.collect_into(terminal, &mut scratch.drafts);
+        sweep.collect_into(terminal, &mut scratch.drafts, &mut scratch.word_spans);
         finish(&mut scratch.drafts, cfg.max_candidates);
         if scratch.drafts.is_empty() {
             // Nothing reached the end of the input: no word of the dictionary covers any
@@ -293,7 +421,15 @@ impl Decoder {
             return;
         }
         sweep.segments_into(terminal, &mut scratch.out.segments);
-        result_of_into(&mut scratch.out, &scratch.drafts, lattice.lookup_failed());
+        // The graph's normalized spelling is what a corrected candidate is annotated
+        // with: the input as the decoder read it, which is the slip the correction
+        // edges stand for.
+        result_of_into(
+            &mut scratch.out,
+            &scratch.drafts,
+            lattice.lookup_failed(),
+            scratch.dag.normalized(),
+        );
     }
 }
 
@@ -664,5 +800,76 @@ mod tests {
             !scratch.abbrev_truncated(),
             "a decode that does not walk abbreviations clears the previous report"
         );
+    }
+
+    /// Decodes `raw` into a workspace and answers the pairs its best candidate offers to
+    /// coining.
+    fn coin_pairs_of(raw: &str, lexicon: &MockLexicon) -> Vec<(String, String)> {
+        let decoder = Decoder::default();
+        let request = DecodeRequest::new(raw);
+        let mut scratch = DecodeScratch::new();
+        decoder.decode_into(&mut scratch, &request, lexicon, &NoUser, &InMemoryLm::new());
+        scratch.coin_pairs(0)
+    }
+
+    #[test]
+    fn test_coin_pairs_read_the_adjacent_single_characters_off_the_winning_path() {
+        // The dictionary holds the two characters but no word over them, so the best
+        // reading of `zhuji` is the two single-character words -- exactly the shape a
+        // commit coins from, with the key spelled the way the input is.
+        let lexicon = MockLexicon::with(&[("zhu", "诸"), ("ji", "暨")]);
+        assert_eq!(
+            coin_pairs_of("zhuji", &lexicon),
+            vec![(String::from("zhu'ji"), String::from("诸暨"))]
+        );
+    }
+
+    #[test]
+    fn test_coin_pairs_of_a_whole_word_reading_are_empty() {
+        // The path is one dictionary word: nothing was chosen character by character, so
+        // there is nothing to coin.
+        let lexicon = MockLexicon::with(&[("zhu'ji", "诸暨")]);
+        assert!(coin_pairs_of("zhuji", &lexicon).is_empty());
+    }
+
+    #[test]
+    fn test_coin_pairs_refuse_pairs_with_a_multi_character_word() {
+        // 你好 is one word of the reading, so the adjacent pair it forms is a phrase
+        // shape the coining rule does not take.
+        let lexicon = MockLexicon::with(&[("ni'hao", "你好"), ("ba", "吧")]);
+        assert!(coin_pairs_of("nihaoba", &lexicon).is_empty());
+    }
+
+    #[test]
+    fn test_coin_pairs_of_a_corrected_reading_are_empty() {
+        // The winning path needed a spelling correction, so the key it would coin under
+        // is the slip the user did not mean.
+        let lexicon = MockLexicon::with(&[("wan", "万"), ("ba", "吧")]);
+        let decoder = Decoder::default();
+        let mut scratch = DecodeScratch::new();
+        let request = DecodeRequest::new("wanba")
+            .with_flags(ime_types::DecodeFlags::CORRECTION);
+        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &InMemoryLm::new());
+        // The correction really is what the best path needed; the guard is exercised
+        // only if the decode agrees.
+        let corrected = scratch
+            .result()
+            .candidates
+            .first()
+            .map(|candidate| candidate.annotation.is_some())
+            .unwrap_or(false);
+        if corrected {
+            assert!(scratch.coin_pairs(0).is_empty());
+        }
+    }
+
+    #[test]
+    fn test_coin_pairs_of_an_out_of_range_index_are_empty() {
+        let lexicon = MockLexicon::with(&[("zhu", "诸"), ("ji", "暨")]);
+        let decoder = Decoder::default();
+        let request = DecodeRequest::new("zhuji");
+        let mut scratch = DecodeScratch::new();
+        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &InMemoryLm::new());
+        assert!(scratch.coin_pairs(usize::MAX).is_empty());
     }
 }

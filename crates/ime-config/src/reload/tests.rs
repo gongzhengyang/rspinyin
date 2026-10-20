@@ -722,3 +722,16 @@ fn test_reload_adopts_the_program_share_state_of_the_new_document() {
         crate::schema::ShareState::Program
     );
 }
+
+#[test]
+fn test_reload_adopts_the_correction_switch_of_the_new_document() {
+    let path = scratch("reload-correction").join(FILE_NAME);
+    write(&path, "");
+    let (mut store, _) = ConfigStore::load_at(&path, 7);
+    assert!(!store.current().engine.correction, "the switch ships off");
+
+    write(&path, "[engine]\ncorrection = true\n");
+    assert!(matches!(store.reload(), ReloadOutcome::Updated { .. }));
+
+    assert!(store.current().engine.correction);
+}

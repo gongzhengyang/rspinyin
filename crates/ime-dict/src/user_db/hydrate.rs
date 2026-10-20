@@ -279,3 +279,44 @@ impl Inner {
         }
     }
 }
+
+/// Reads the coined-word table into the word → composite-row-keys map the word-level
+/// operations consult.
+///
+/// The map is filled at open, beside the counts: a keystroke that asks whether a word is
+/// the user's may not open a read transaction, and the forget that removes a coined word
+/// must find its rows without one. A store whose coin table cannot be read opens with an
+/// empty map, which makes the word-level operations answer from the file's absence --
+/// the same degradation a count read takes.
+pub(super) fn load_coined(db: &Database, path: &Path) -> HashMap<Box<str>, Vec<Box<str>>> {
+    let _ = path;
+    let Ok(txn) = db.begin_read() else {
+        return HashMap::new();
+    };
+    let Ok(table) = txn.open_table(USER_LEXICON) else {
+        // A store written before the coin table existed has none; that is the empty
+        // table, not a failure.
+        return HashMap::new();
+    };
+    let mut coined: HashMap<Box<str>, Vec<Box<str>>> = HashMap::new();
+    let walk = table.iter().map(|walk| walk);
+    if let Ok(mut rows) = walk {
+        while let Some(Ok((row_key, row))) = rows.next() {
+            let composite: Box<str> = Box::from(row_key.value());
+            let (commits, _last_used) = row.value();
+            let _ = commits;
+            // The composite row key is `<key>\u{1}<word>`; the word is the part after the
+            // separator. A row whose key carries none is not one this build wrote, and is
+            // kept under an empty word rather than splitting the map's shape.
+            let word = composite
+                .split_once(COMPOSITE_SEPARATOR)
+                .map(|(_, word)| Box::from(word))
+                .unwrap_or_default();
+            coined.entry(word).or_default().push(composite);
+        }
+    }
+    coined
+}
+
+/// The separator that joins the syllable key and the word in a coined row's composite key.
+pub(super) const COMPOSITE_SEPARATOR: char = '\u{1}';

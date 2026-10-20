@@ -657,12 +657,12 @@ fn test_install_refuses_a_second_session_host() {
         "the sweep before the test emptied the slot"
     );
     assert!(
-        install(sources(), privacy(), RoutingConfig::default()),
+        install(sources(), privacy(), RoutingConfig::default(), None),
         "the first install takes the slot"
     );
     assert!(is_installed());
     assert!(
-        !install(sources(), privacy(), RoutingConfig::default()),
+        !install(sources(), privacy(), RoutingConfig::default(), None),
         "a second install is refused: the router already there may be running a key"
     );
     assert_eq!(shutdown(), 0, "nothing was activated, so nothing was live");
@@ -673,7 +673,7 @@ fn test_install_refuses_a_second_session_host() {
 fn test_installed_host_routes_a_key_and_reports_what_was_live() {
     let _slot = lock_slot_for_tests();
     let _ = shutdown();
-    assert!(install(sources(), privacy(), RoutingConfig::default()));
+    assert!(install(sources(), privacy(), RoutingConfig::default(), None));
     let mut host = RecordingHost::default();
     assert!(activate(IC), "activation reports a live session");
     key_event(IC, &press(KEY_N), &mut host);
@@ -738,7 +738,7 @@ fn test_callbacks_without_an_installed_host_claim_nothing() {
 fn test_deactivate_through_the_slot_ends_the_composition() {
     let _slot = lock_slot_for_tests();
     let _ = shutdown();
-    assert!(install(sources(), privacy(), RoutingConfig::default()));
+    assert!(install(sources(), privacy(), RoutingConfig::default(), None));
     let mut host = RecordingHost::default();
     activate(IC);
     key_event(IC, &press(KEY_N), &mut host);
@@ -761,7 +761,7 @@ fn test_deactivate_through_the_slot_ends_the_composition() {
 fn test_reset_through_the_slot_keeps_the_session() {
     let _slot = lock_slot_for_tests();
     let _ = shutdown();
-    assert!(install(sources(), privacy(), RoutingConfig::default()));
+    assert!(install(sources(), privacy(), RoutingConfig::default(), None));
     let mut host = RecordingHost::default();
     activate(IC);
     key_event(IC, &press(KEY_N), &mut host);
@@ -777,7 +777,7 @@ fn test_reset_through_the_slot_keeps_the_session() {
 fn test_focus_through_the_slot_ends_the_composition_and_keeps_the_context() {
     let _slot = lock_slot_for_tests();
     let _ = shutdown();
-    assert!(install(sources(), privacy(), RoutingConfig::default()));
+    assert!(install(sources(), privacy(), RoutingConfig::default(), None));
     let mut host = RecordingHost::default();
     activate(IC);
     key_event(IC, &press(KEY_N), &mut host);

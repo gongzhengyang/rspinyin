@@ -762,6 +762,14 @@ pub fn run(args: QualityArgs) -> Result<()> {
         cases.len(),
         holdout.display()
     );
+    // The container's own truncation census: a key at the ceiling is a key the
+    // compiler may have cut, and the count is what tells a raised ceiling from one
+    // no key reaches -- the compiled half of the audit the build prints.
+    println!(
+        "quality: {} key(s) at the {}-word ceiling",
+        lexicon.keys_at_cap(ime_dict::format::MAX_WORDS_PER_KEY),
+        ime_dict::format::MAX_WORDS_PER_KEY
+    );
     let rates = measure(&cases, &lexicon)?;
     let mut layers = BTreeMap::new();
     for source in ReadingSource::ALL {

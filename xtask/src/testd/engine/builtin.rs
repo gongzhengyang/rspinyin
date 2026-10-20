@@ -52,6 +52,7 @@ pub fn scenarios() -> Vec<Scenario> {
         ranking_follows_the_language_model(),
         fuzzy_widens_to_the_canonical_family(),
         abbrev_reaches_the_full_spelling(),
+        correction_reads_a_one_step_slip(),
         falls_back_to_single_characters(),
         fills_a_page_and_the_next(),
     ];
@@ -329,6 +330,33 @@ fn abbrev_reaches_the_full_spelling() -> Scenario {
         ],
     )
     .abbrev()
+}
+
+/// One misspelled input that the correction switch reads onto its intended spelling.
+///
+/// `zhegn` is `zheng` with the last two letters transposed, which is the shape one
+/// slipping finger makes, and it spells no syllable: without the switch every
+/// keystroke of it is echoed back as the pass-through candidate, and with the switch
+/// the misspelled span widens onto `zheng` on the last letter, so the word the
+/// dictionary stores there becomes the candidate. The intermediate keystrokes stay
+/// echoes even with the switch on: `z`, `zh` and `zheg` are not one edit from any
+/// syllable the dictionary holds a word for, so the widening has nothing to reach
+/// and the pass-through is all the engine answers -- which is what makes the last
+/// step the only place the switch could have had an effect.
+fn correction_reads_a_one_step_slip() -> Scenario {
+    let spec = dictionary(&[("zheng", &["正"][..])]);
+    Scenario::new(
+        "engine-correction-reads-a-one-step-slip",
+        spec,
+        vec![
+            key('z', candidates("z", 1, &[])),
+            key('h', candidates("zh", 1, &[])),
+            key('e', candidates("zhe", 1, &[])),
+            key('g', candidates("zheg", 1, &[])),
+            key('n', candidates("正", 1, &[])),
+        ],
+    )
+    .correction()
 }
 
 /// One input whose readings fill more than one page of the window.

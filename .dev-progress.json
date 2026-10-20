@@ -12,7 +12,7 @@
   "last_run": {
     "skill": "dev-rust-single",
     "mode": "single-agent",
-    "updated_at": "2026-10-16T00:00:00Z"
+    "updated_at": "2026-10-20T06:35:40Z"
   },
   "tasks": [
     {
@@ -129,31 +129,35 @@
       "id": "TASK-3.01.01",
       "file": "./docs/dev/features-add-phase3.md",
       "title": "拼写纠错（邻位替换 + 键序颠倒）",
-      "status": "IN_PROGRESS"
+      "status": "READY_FOR_FINAL_GATE",
+      "evidence": "ADR-0014(CORRECTION=1<<14, miss-only); segment/correct.rs(NEIGHBORS+corrections_of+tests); dag.rs miss-gate add_correction_edges; syllable.rs first-byte bucket lookup; lattice.rs Frame penalty fold (interior widened span rides its penalty); sweep.rs Draft.corrected + annotation '纠错：<normalized>'; config chain engine.correction -> SessionConfig -> machine flag injection; benches/decode.rs decode/correction-off 804us on-hit 775us on-miss 1.70ms + segment/correction-base 5.9us miss 166.9us (expansion ~161us <= 0.30ms ASM-A-02); testd scenario engine-correction-reads-a-one-step-slip(zhegn->正); tests: ime-types+ime-core 644/644, xtask 1214/1214, ime-config 124/124, doctests 48; xtask quality top1 73.8% (baseline, not lower)"
     },
     {
       "id": "TASK-3.02.01",
       "file": "./docs/dev/features-add-phase3.md",
       "title": "上文重排（上一 commit 词作 bigram 上下文）",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "evidence": "viterbi/context.rs rerank_with_context (band 1<<8 Q16.16 real units = card-sketch deviation registered: card constant self-contradicted its comment; 1 Q8.8 unit keeps real gaps out) + CONTEXT_RERANK_CANDIDATES=32; 7 unit tests (band flip/band-out/identity/stable/bound/100-run); scratch.result_mut; machine context_word + CONTEXT_KEY_BUDGET=5 keystroke expiry (wall-clock timeout deviation: pure session has no clock, Reset reachable); transitions: born at CommitDone, dies at cancel/end_session/focus-lost; refresh post-pass before reconcile; 4 state tests (银行->yh flip, band-out unchanged, expiry, escape clears); bench decode/context_rerank 2.11us <= 0.05ms; privacy: context only in state layer (grep audit clean); tests ime-core 596/596, xtask 1214/1214, doctests green; quality top1 73.8% unchanged; testd cross-sentence case deviation: harness has no commit channel (scenarios start after routing), covered by state-level two-phase test"
     },
     {
       "id": "TASK-3.03.01",
       "file": "./docs/dev/features-add-phase3.md",
       "title": "重码治理：截断审计与自适应上限",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "evidence": "dictc/truncation.rs TruncatedKey+audit(WordMap, cap) ranked by best_dropped_weight (4 unit tests); BuildStats.truncated_keys/worst_dropped_weight/truncated_worst; dictc report prints audit summary+top5; ime-dict FstLexicon::keys_at_cap + quality prints 'keys at the N-word ceiling'. DECISION = strategy A, cap 32->64 (format const, zero format change): audit data 181 keys cut at 32 (ji wanted 199, worst dropped weight 1743); at 64: 49 keys cut, worst 444. MEASURES: size 16.77->16.79MiB same-sources (+~21KB) < 20MB red line; quality top1 73.8% / 2-char 88.3% unchanged; decode holdout 235.7ms<=3s, 12syl 776us (~= 804us at 32, lattice reads 8/key so no regression); double compile at 64 identical sha256 a90462e0; budget --validate 28/28; nextest xtask+ime-dict 1503/1503"
     },
     {
       "id": "TASK-3.03.02",
       "file": "./docs/dev/features-add-phase3.md",
       "title": "词库热替换（staged 文件 + 配置重载触发）",
-      "status": "PENDING"
+      "status": "READY_FOR_FINAL_GATE",
+      "evidence": "ime-dict: hot_swap.rs (LexiconBundle = FstLexicon+DictLm+path as one Arc; LexiconSlot over arc-swap ArcSwap, try_swap = Verify::Full load then atomic store, same-thread contract documented) + 4 tests (serves/rejects-damaged/rejects-missing/readers-keep-bundle). fst_index tests share fixture_image_with_bigrams + Broken pub(crate). MAX_WORDS_PER_KEY is strategy-only. ime-config: ConfigStore::path() accessor; write_data re-exported (writeback + 3 tests green). ime-core: SessionEnv derives Clone+Copy. ime-fcitx5: LEXICON_SLOT OnceLock installed by sources_for on a mapped container; SessionSources now user-freq only; sources.rs Mapped variants replaced by MISSING_DICTIONARY/MISSING_LANGUAGE_MODEL statics (env holds stand-ins; router fetches slot per step). router.rs: lexicon_slot field + with_lexicon_slot + step_env() free fn; 6 StepCtx sites fetch the bundle once per step (one atomic read on the key path). session_host::install takes the slot. addon/config.rs on_config_reload adopts data.clone() and calls apply_staged_dictionary: try_swap -> Ok: dict/swap/applied + write_data clears the key (race-checked); Err: dict/swap/rejected + key kept + damaged file quarantined to <path>.corrupt.<secs>. Degraded start (no slot) refuses swaps. features.md 2.2.4: dict/bigram/absent backfilled + dict/swap/applied + dict/swap/rejected rows. xtask: `dict stage <file>` (0700 dir/0600 file + next-steps hint; smoke-tested). Tests: ime-dict 292 green, ime-fcitx5 496 green incl. keymap_matrix + 4 new staged-dictionary wiring tests (swap+clear, damaged-reject+quarantine+key-kept, no-slot-reject, empty-noop). audit/deny offline: advisories/bans/licenses/sources all ok, arc-swap zero findings. Host-block: full-verify swap measured 1.09ms on the real 15.62MiB container (card budget 10ms). Deviations to register at stage 5: two-phase fast/slow validation dropped on measurement; dict/swap/applied added as a second new code (success line the card asks for); X11 walkthrough + 1h soak pending (environment has no live session)."
     },
     {
       "id": "TASK-3.04.01",
       "file": "./docs/dev/features-add-phase3.md",
       "title": "用户造词写路径（链式词库 + 句内成分回写）",
-      "status": "PENDING"
+      "status": "IN_PROGRESS"
     },
     {
       "id": "TASK-3.05.01",

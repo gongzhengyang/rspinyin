@@ -170,6 +170,10 @@ impl Builder<'_, '_, '_> {
                 characters: count_characters(word.text),
                 source,
                 word,
+                // The reading this edge came from is initials, not a key of its own; the
+                // empty range says so, and the one reader of key ranges -- the coining
+                // path -- refuses pairs it cannot spell as dictionary keys.
+                key: (0, 0),
                 penalty_q8: ABBREV_PENALTY_Q8,
             });
             self.extension_edges = self.extension_edges.saturating_add(1);

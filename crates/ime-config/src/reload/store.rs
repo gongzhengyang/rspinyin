@@ -131,6 +131,19 @@ impl ConfigStore {
         &self.current
     }
 
+    /// The file the configuration is read from and reloaded from.
+    ///
+    /// The one path a caller that writes a value back through the writeback channel aims
+    /// at: the file the user's editor saved is the file this store adopted, so the
+    /// write-back races against exactly the document in force.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// The binding table in force: the `[keys]` section of [`ConfigStore::current`] as the
     /// routing layer reads it.
     ///

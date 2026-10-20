@@ -47,6 +47,21 @@ pub enum Effect {
         /// How strongly to weigh it.
         weight_hint: u16,
     },
+    /// Enrol the word pairs the committed reading confirms as the user's own.
+    ///
+    /// The pairs are the adjacent single-character words of the reading the user just
+    /// committed -- the two-character combinations the user effectively chose by accepting
+    /// the candidate they composed -- and the host enrols them into its own lexicon, where
+    /// they outrank the system dictionary's words of the same key from the next decode on.
+    /// Like the frequency record beside it, the effect fires only after the host confirmed
+    /// the commit landed, and it carries only the pairs the capture found: a single-word
+    /// reading, a pass-through answer and a path that needed a spelling correction coin
+    /// nothing. The pairs travel as `(key, text)` so the host needs nothing but its own
+    /// lexicon's entry shape.
+    CoinUserWords {
+        /// The pairs to enrol, in `(key, text)` form.
+        pairs: Vec<(String, String)>,
+    },
     /// Drop one word from the user's learned frequencies.
     ///
     /// The session has already taken the word out of the candidate list it is showing: the

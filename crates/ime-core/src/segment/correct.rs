@@ -81,6 +81,16 @@ pub const CORRECTION_PENALTY_Q8: i32 = 998 << 8;
 // other constant invariants of this workspace.
 const _: () = assert!(CORRECTION_PENALTY_Q8 > crate::fuzzy::FUZZY_PENALTY_Q8);
 
+/// The annotation a corrected candidate carries, ahead of the spelling the user
+/// typed.
+///
+/// The annotation channel is how a candidate says why it is there: this prefix and
+/// the input as normalized are what a corrected candidate is annotated with, so the
+/// window can show the original spelling a candidate was reached past and a reader
+/// of the channel can tell a corrected reading from an exact one. User-facing copy,
+/// so it is Chinese like the rest of the window's text.
+pub const CORRECTION_ANNOTATION_PREFIX: &str = "纠错：";
+
 // QWERTY adjacency, one row per letter in alphabet order: the neighbours a
 // finger can slip to from each key, up-row and down-row and along the row. The
 // table is data, not control flow -- the same discipline as the key router's
@@ -113,9 +123,9 @@ pub(crate) static NEIGHBORS: [&[u8]; 26] = [
     b"yhji", // u
     b"cfgb", // v
     b"qase", // w
-    b"zsc", // x
+    b"zscd", // x
     b"tghu", // y
-    b"ax", // z
+    b"axs", // z
 ];
 
 /// Returns the neighbour row of one ASCII letter, or `None` for a byte that is

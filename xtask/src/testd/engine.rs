@@ -114,6 +114,8 @@ struct Session<'a> {
     fuzzy: DecodeFlags,
     /// Whether every request carries the abbreviation switch.
     abbrev: bool,
+    /// Whether every request carries the spelling-correction switch.
+    correction: bool,
     /// The input buffer, kept across steps the way a session keeps it.
     buffer: InputBuffer,
     /// The segmentation graph of the current input, kept so a step allocates nothing.
@@ -136,6 +138,7 @@ impl<'a> Session<'a> {
         failure_codes: Vec<String>,
         fuzzy: DecodeFlags,
         abbrev: bool,
+        correction: bool,
     ) -> Self {
         Self {
             decoder: Decoder::default(),
@@ -143,6 +146,7 @@ impl<'a> Session<'a> {
             failure_codes,
             fuzzy,
             abbrev,
+            correction,
             buffer: InputBuffer::new(),
             dag: SyllableDag::new(),
         }
@@ -224,6 +228,7 @@ impl<'a> Session<'a> {
         // single switch with no partial state to accumulate.
         request.flags.insert(self.fuzzy);
         request.flags.set(DecodeFlags::ABBREV, self.abbrev);
+        request.flags.set(DecodeFlags::CORRECTION, self.correction);
         let result = self.decoder.decode(
             &request,
             self.sources.lexicon,
@@ -362,6 +367,7 @@ fn trace(scenario: &Scenario, sources: &Sources<'_>) -> Result<Vec<StepPrint>, D
         scenario.dictionary.failure_codes(),
         fuzzy_flags(scenario)?,
         scenario.abbrev,
+        scenario.correction,
     );
     let mut prints = Vec::with_capacity(scenario.steps.len());
     for (index, step) in scenario.steps.iter().enumerate() {

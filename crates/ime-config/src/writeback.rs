@@ -48,7 +48,7 @@ use std::path::{Path, PathBuf};
 
 use ime_types::ImeError;
 
-use crate::schema::{Config, DigitZero, KeyName, KeysConfig};
+use crate::schema::{Config, DataConfig, DigitZero, Durability, KeyName, KeysConfig};
 
 /// The stable code a refused write carries when the file no longer holds the values the
 /// caller loaded.
@@ -177,7 +177,7 @@ fn rewrite(
     previous: &KeysConfig,
     rendered: &str,
 ) -> Result<(), WritebackError> {
-    let span = locate_keys_table(text);
+    let span = locate_table(text, "keys");
     if let Err(reason) = region_matches_previous(text, span, previous) {
         return Err(WritebackError::Race { reason });
     }
@@ -321,6 +321,97 @@ fn suffixed(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Replaces the `[data]` table of the configuration file at `path` with one rendered
+/// from `new`, preserving every other byte of the file.
+///
+/// The hot swap's write-back: clearing `dict_staged_path` once a staged dictionary has
+/// been swapped in, so the next reload does not swap the same file again. The race
+/// discipline is [`write_keys`]' own -- the region must still resolve to `previous`
+/// before anything is written.
+///
+/// # Parameters
+///
+/// - `path`: the configuration file. A missing file is created, holding only the
+///   rendered `[data]` table.
+/// - `previous`: the `[data]` values the caller loaded from `path`, as the loader
+///   produced them.
+/// - `new`: the section to write; the swap clears `dict_staged_path` on a clone of
+///   `previous` and passes that.
+///
+/// # Errors
+///
+/// As [`write_keys`].
+///
+/// # Panics
+///
+/// Never: every failure is a returned error.
+pub fn write_data(path: &Path, previous: &DataConfig, new: &DataConfig) -> Result<(), WritebackError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(WritebackError::Io(error)),
+    };
+    let rendered = render_data(new);
+    match text {
+        Some(text) => rewrite_data(path, &text, previous, &rendered),
+        None => create(path, &rendered),
+    }
+}
+
+/// Rewrites the `[data]` region of `text` and puts the result back at `path`.
+fn rewrite_data(
+    path: &Path,
+    text: &str,
+    previous: &DataConfig,
+    rendered: &str,
+) -> Result<(), WritebackError> {
+    let span = locate_table(text, "data");
+    if let Err(reason) = region_matches_previous_data(text, span, previous) {
+        return Err(WritebackError::Race { reason });
+    }
+    let composed = match span {
+        Some(span) => compose_replacement(text, span, rendered),
+        None => compose_append(text, rendered),
+    };
+    if let Err(error) = Config::from_document(&composed) {
+        return Err(WritebackError::Refused {
+            reason: format!(
+                "the document this write would produce does not parse, so the [data] \
+                 region was not where this module expected it and nothing was written: \
+                 {error}"
+            ),
+        });
+    }
+    replace_file(path, &composed).map_err(WritebackError::from)
+}
+
+/// Verifies the `[data]` region about to be replaced still resolves to the values the
+/// caller loaded, as [`region_matches_previous`] does for `[keys]`.
+fn region_matches_previous_data(
+    text: &str,
+    span: Option<KeysSpan>,
+    previous: &DataConfig,
+) -> Result<(), String> {
+    let Some(span) = span else {
+        if *previous == Config::default().data {
+            return Ok(());
+        }
+        return Err(String::from(
+            "the file has no [data] table, so it no longer holds the values this session \
+             loaded",
+        ));
+    };
+    let fragment = &text[span.start..span.end];
+    let (parsed, _) = Config::from_document(fragment)
+        .map_err(|error| format!("the [data] table no longer parses: {error}"))?;
+    if parsed.data != *previous {
+        return Err(String::from(
+            "the [data] table no longer holds the values this session loaded",
+        ));
+    }
+    Ok(())
+}
+
 /// Verifies the region about to be replaced still resolves to the values the caller
 /// loaded, which is what makes a write refuse rather than clobber a user's edit.
 ///
@@ -358,21 +449,24 @@ fn region_matches_previous(
     Ok(())
 }
 
-/// The byte range of the `[keys]` table in a document: from the header line through the
-/// last non-blank line before the next header.
+/// The byte range of one table in a document: from the header line through the last
+/// non-blank line before the next header.
+///
+/// The name is the `[keys]` scan's, because that is the table it was written for; the
+/// `[data]` rewrite reuses the scan and names nothing of its own.
 #[derive(Clone, Copy)]
 struct KeysSpan {
     start: usize,
     end: usize,
 }
 
-/// Finds the `[keys]` table in `text`.
+/// Finds the table `name` names in `text`.
 ///
-/// The span starts at the `[keys]` header line and runs through the last non-blank line
+/// The span starts at the table's header line and runs through the last non-blank line
 /// before the next header of any kind, or through the end of the file: the blank lines
 /// that separate one section from the next belong to the spacing and are kept out of
 /// the span, which is what keeps a rewrite from tightening a user's layout.
-fn locate_keys_table(text: &str) -> Option<KeysSpan> {
+fn locate_table(text: &str, name: &str) -> Option<KeysSpan> {
     let mut span: Option<KeysSpan> = None;
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
@@ -381,7 +475,7 @@ fn locate_keys_table(text: &str) -> Option<KeysSpan> {
         offset = end;
         match span.as_mut() {
             None => {
-                if is_keys_table_header(line) {
+                if is_table_header_of(line, name) {
                     span = Some(KeysSpan { start, end });
                 }
             }
@@ -403,16 +497,16 @@ fn is_table_header(line: &str) -> bool {
     header_of(line).is_some()
 }
 
-/// Whether the line opens the `[keys]` table.
+/// Whether the line opens the table `name` names.
 ///
 /// Only the plain spelling is recognised: a quoted, escaped or array-of-tables header
 /// names the table in a form the shipped document never uses, and refusing it costs a
 /// write while misreading it could cost a table.
-fn is_keys_table_header(line: &str) -> bool {
-    let Some((name, is_array)) = header_of(line) else {
+fn is_table_header_of(line: &str, name: &str) -> bool {
+    let Some((found, is_array)) = header_of(line) else {
         return false;
     };
-    !is_array && name == "keys"
+    !is_array && found == name
 }
 
 /// Parses the table header a line opens, answering with the key path as written, quotes
@@ -501,6 +595,39 @@ fn render_names(names: &[KeyName]) -> String {
         .map(|name| format!("\"{}\"", name.as_str()))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Renders the `[data]` table for `data`, in the order the shipped template states
+/// them, in the spellings the loader accepts, and always ending with a newline so
+/// whatever follows it starts on a fresh line.
+fn render_data(data: &DataConfig) -> String {
+    format!(
+        "[data]\n\
+         durability = \"{}\"\n\
+         backup_enabled = {}\n\
+         backup_keep = {}\n\
+         decay_half_life_ticks = {}\n\
+         decay_floor = {}\n\
+         dict_staged_path = \"{}\"\n",
+        durability_spelling(data.durability),
+        data.backup_enabled,
+        data.backup_keep,
+        data.decay_half_life_ticks,
+        data.decay_floor,
+        data.dict_staged_path,
+    )
+}
+
+/// The spelling `data.durability` writes a value with.
+///
+/// The closed set in `crate::schema` owns the spellings and its `TryFrom` accepts them;
+/// this is the reverse direction it does not generate, the same shape
+/// [`digit_zero_spelling`] is.
+fn durability_spelling(value: Durability) -> &'static str {
+    match value {
+        Durability::Eventual => "eventual",
+        Durability::Immediate => "immediate",
+    }
 }
 
 /// Replaces the span with `rendered`, keeping the text before and after it verbatim.
