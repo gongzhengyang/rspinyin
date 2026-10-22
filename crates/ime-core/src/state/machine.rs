@@ -56,6 +56,7 @@ use ime_types::{
     StatusStrip, UiEvent, UiFrame, UserFreqSource,
 };
 
+use crate::confusable::ConfusableTable;
 use crate::input::InputBuffer;
 use crate::preedit::build_preedit_into;
 use crate::segment::SyllableDag;
@@ -63,6 +64,7 @@ use crate::state::SessionConfig;
 use crate::state::outcome::{clear_result, empty_preedit, renumber, write_boundaries};
 use crate::state::paging::Paging;
 use crate::state::scheme::SchemeSession;
+use crate::symbols::SymbolTable;
 use crate::viterbi::{DecodeScratch, Decoder};
 
 pub use crate::state::effects::{AnchorHint, Effect, Effects, MAX_EFFECTS};
@@ -114,7 +116,7 @@ pub struct Session {
     /// read side of it. The workspace is borrowed mutably for the length of a decode,
     /// which is exactly the concurrency the decoder promises -- decoding is serial per
     /// session.
-    scratch: DecodeScratch,
+    pub(super) scratch: DecodeScratch,
     /// The candidate list of the refresh before the last one, parked outside the
     /// workspace.
     ///
@@ -123,7 +125,7 @@ pub struct Session {
     /// what lets that borrow and the decode exist at the same time without copying the
     /// text. The buffers it carries go back into the workspace before the next decode,
     /// so the decode writes into storage that is already sized.
-    previous: DecodeResult,
+    pub(super) previous: DecodeResult,
     /// The request the last decode was built from, refilled per keystroke rather than
     /// built again, which is what keeps a keystroke from allocating the input string.
     request: DecodeRequest,
@@ -149,7 +151,7 @@ pub struct Session {
     pub temp_english: bool,
     /// The preedit of the current input, rebuilt on every change and reused as a
     /// buffer so that a keystroke does not reallocate it.
-    preedit: Preedit,
+    pub(super) preedit: Preedit,
     /// Where the window goes and what its status strip says. The engine writes this
     /// whenever the host tells it the cursor moved or a mode bit changed.
     ctx: FrameContext,
@@ -171,6 +173,21 @@ pub struct Session {
     /// Whether the session corrects one-step typing slips, latched beside the
     /// abbreviation switch for the same reason.
     correction: bool,
+    /// Whether the session offers an English candidate for an input no pinyin
+    /// reading cuts, latched beside the correction switch for the same reason.
+    english: bool,
+    /// Whether the session attaches the hint annotations -- the standard reading of
+    /// a widened edge and the correct form of a confusable hit -- to its candidates,
+    /// latched from `ui.show_annotation` for the same reason its siblings latch: a
+    /// reload mid composition must not change what the user is looking at, and with
+    /// the switch off the whole hint chain short-circuits at the decode.
+    hints: bool,
+    /// Whether the composition on screen is the symbol panel's: the input starts
+    /// with `v` and names a category of the symbol table, so the candidate list
+    /// was assembled from the table rather than decoded. The one reader is the
+    /// commit path, which records nothing for a panel candidate -- a symbol is
+    /// chosen, not spelled, and no frequency is learned from choosing it.
+    pub(super) symbol_mode: bool,
     /// The word the user's last landed commit ended with, and the one piece of
     /// context that crosses compositions.
     ///
@@ -225,6 +242,19 @@ pub struct SessionEnv<'a> {
     pub user_freq: &'a dyn UserFreqSource,
     /// The language model the ranking is scored with.
     pub lm: &'a dyn LanguageModel,
+    /// The English lexicon the mixed-English switch reads, when the process
+    /// assembled one. `None` — a build without the container, or a degraded
+    /// start — decodes exactly as a build before the switch existed.
+    pub english: Option<&'a dyn Lexicon>,
+    /// The confusable table the wrong-word hint reads, when the process loaded
+    /// one. `None` — no data file, or a request with the annotations switch off —
+    /// leaves every candidate's annotation exactly as a build before the hint
+    /// channel produced it.
+    pub confusables: Option<&'a ConfusableTable>,
+    /// The symbol table the v-mode panel serves its categories from, when the
+    /// process loaded one. `None` — no data file — leaves an input that starts
+    /// with `v` decoding exactly as a build before the panel existed.
+    pub symbols: Option<&'a SymbolTable>,
 }
 
 /// What the session is reacting to.
@@ -302,6 +332,9 @@ impl Session {
             fuzzy: ime_types::DecodeFlags::empty(),
             abbrev: false,
             correction: false,
+            english: false,
+            hints: false,
+            symbol_mode: false,
             context_word: None,
             context_keys: 0,
             next_session_id: next,
@@ -375,6 +408,42 @@ impl Session {
     /// # Panics
     ///
     /// Never panics.
+    /// Returns the workspace's answer, mutably, for the one post-pass that
+    /// assembles a candidate list without decoding: the symbol panel's.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn decoded_mut(&mut self) -> &mut DecodeResult {
+        self.scratch.result_mut()
+    }
+
+    /// Empties the workspace's segmentation graph, keeping its buffers.
+    ///
+    /// The symbol panel's refresh runs no decode, so no graph may describe the
+    /// input: the preedit builder answers an empty graph with the raw, which is
+    /// exactly what the panel's composition shows.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn clear_decode_graph(&mut self) {
+        self.scratch.clear_dag();
+    }
+
+    /// Returns whether the composition on screen is the symbol panel's.
+    ///
+    /// The host's arbiter reads it to route the digit keys: inside the panel a
+    /// digit keys the code, and outside it selects, which is what the keymap has
+    /// always meant by a digit.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn is_symbol_mode(&self) -> bool {
+        self.symbol_mode
+    }
+
     pub fn decoded(&self) -> &DecodeResult {
         self.scratch.result()
     }
@@ -552,6 +621,17 @@ impl Session {
         self.scratch.recycle(parked);
         self.request.raw.clear();
         self.request.raw.push_str(self.buf.raw());
+        // The v-mode gate runs before the rewrite, because the panel serves what
+        // the user typed, not what a layout would have spelled: a raw that names
+        // a category of the symbol table -- or the bare `v`, the panel's entry --
+        // is answered from the table, and every other input decodes as before.
+        if let Some(table) = env.symbols {
+            if self.symbol_table_serves(table) {
+                self.refresh_symbols(table);
+                return;
+            }
+        }
+        self.symbol_mode = false;
         let rewritten = self.rewrite_input();
         // Read after the rewrite rather than before: `rewrite_input` takes the whole
         // session mutably, so a borrow of the previous candidate taken first would have to
@@ -573,7 +653,9 @@ impl Session {
         // The correction switch rides the same rule as its siblings: the bit is
         // set from the latch every keystroke, so a reload that turned it off
         // clears it instead of leaving it set behind the keystroke before.
-        self.request.flags.set(DecodeFlags::CORRECTION, self.correction);
+        self.request
+            .flags
+            .set(DecodeFlags::CORRECTION, self.correction);
         // The fuzzy classes arrive as the mask the projection latched with the scheme:
         // removed first, so a reload that turned a class off clears its bit instead of
         // leaving it set from the keystroke before, then inserted whole. With the mask
@@ -581,12 +663,22 @@ impl Session {
         // to a build without the section.
         self.request.flags.remove(crate::fuzzy::FLAG_MASK);
         self.request.flags.insert(self.fuzzy);
+        // The mixed-English switch rides the same rule as its siblings: the bit is
+        // set from the latch every keystroke, so a reload that turned it off
+        // clears it instead of leaving it set behind the keystroke before.
+        self.request.flags.set(DecodeFlags::ENGLISH, self.english);
+        // The hint channel short-circuits here rather than inside the decode: with
+        // the switch off the table is `None` all the way down, which is the whole
+        // cost of the switch being off.
+        let hints = if self.hints { env.confusables } else { None };
         env.decoder.decode_into(
             &mut self.scratch,
             &self.request,
             env.lexicon,
             env.user_freq,
             env.lm,
+            env.english,
+            hints,
         );
         // The context re-rank is the session's own post-pass, and it runs before the
         // repairs below read the list: the order the user sees, the order the
@@ -886,6 +978,8 @@ pub fn step(
         sess.fuzzy = cfg.fuzzy & crate::fuzzy::FLAG_MASK;
         sess.abbrev = cfg.abbrev;
         sess.correction = cfg.correction;
+        sess.english = cfg.english;
+        sess.hints = cfg.show_annotation;
     }
     let mut ctx = Ctx::new(cfg, env);
     sess.on_event(ev, &mut ctx);

@@ -29,6 +29,14 @@ user.redb*
 /data/raw/*.tsv
 !/data/raw/base.tsv
 !/data/raw/polyphone.tsv
+# The mixed-English word list and the confusable table are curated in this
+# repository rather than fetched: they are project-owned derived sources
+# (data/sources.toml, kind="derived"), and a checkout without them cannot
+# rebuild eng.dict or serve the wrong-word hints.
+!/data/raw/melt-eng.tsv
+!/data/raw/confusable.tsv
+# The symbol-panel categories are curated here for the same reason.
+!/data/raw/symbols.tsv
 
 # The zh-Wikipedia corpus is fetched for bigram generation only (ADR-0012).
 # It never enters the repository or a release payload; only statistics are compiled.

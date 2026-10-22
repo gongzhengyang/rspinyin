@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use ime_types::{LanguageModel, Lexicon};
 
-use crate::fst_index::tests::fixture_image_with_bigrams;
 use crate::format::reader::Verify;
+use crate::fst_index::tests::fixture_image_with_bigrams;
 use crate::hot_swap::{LexiconBundle, LexiconSlot};
 
 /// A scratch directory for one test, named after the test and the process id.
@@ -31,7 +31,10 @@ fn staged(path: &Path, bytes: &[u8]) -> PathBuf {
 
 /// The bundle the slot starts on, over a container of the test's own.
 fn bundle_in(dir: &Path, label: &str) -> (PathBuf, LexiconBundle) {
-    let path = staged(&dir.join(format!("{label}.dict")), &fixture_image_with_bigrams(None, &[]));
+    let path = staged(
+        &dir.join(format!("{label}.dict")),
+        &fixture_image_with_bigrams(None, &[]),
+    );
     let bundle = LexiconBundle::load(&path, Verify::Full).expect("the container loads");
     (path, bundle)
 }
@@ -43,11 +46,18 @@ fn test_try_swap_serves_the_staged_container_after_it_validates() {
     let slot = LexiconSlot::new(live);
     // The staged candidate is a different file: a copy under its own name, so the
     // swap is a real change of container and not a re-read of the live one.
-    let candidate = staged(&dir.join("staged.dict"), &fixture_image_with_bigrams(None, &[]));
+    let candidate = staged(
+        &dir.join("staged.dict"),
+        &fixture_image_with_bigrams(None, &[]),
+    );
 
     let swapped = slot.try_swap(&candidate).expect("the candidate validates");
 
-    assert_eq!(swapped.path(), candidate, "the live bundle is the staged one");
+    assert_eq!(
+        swapped.path(),
+        candidate,
+        "the live bundle is the staged one"
+    );
     assert_eq!(slot.load().path(), candidate, "the slot serves it");
     // The model swapped with the container: a word the new unigram table scores is
     // answered by the new model, not by the old one's table. The fixture scores 你
@@ -106,7 +116,10 @@ fn test_readers_keep_their_bundle_alive_across_a_swap() {
     let (live_path, live) = bundle_in(&dir, "live");
     let slot = LexiconSlot::new(live);
     let held: Arc<LexiconBundle> = slot.load();
-    let candidate = staged(&dir.join("next.dict"), &fixture_image_with_bigrams(None, &[]));
+    let candidate = staged(
+        &dir.join("next.dict"),
+        &fixture_image_with_bigrams(None, &[]),
+    );
 
     slot.try_swap(&candidate).expect("the swap lands");
 

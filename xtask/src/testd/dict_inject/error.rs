@@ -171,4 +171,18 @@ pub enum FixtureError {
         /// What the loader did.
         actual: String,
     },
+
+    /// The generator could not build the fixture it was asked for.
+    ///
+    /// The compile pipeline refuses a degenerate word list the way it refuses a production
+    /// build -- a hash collision past the bound, a section that cannot be written -- and the
+    /// refusal names the fixture, so a case reports its own data as broken rather than
+    /// dressing the refusal up as a result.
+    #[error("the {fixture} fixture could not be generated: {reason}")]
+    Generation {
+        /// The fixture that failed to build.
+        fixture: &'static str,
+        /// Why the compile pipeline refused it.
+        reason: String,
+    },
 }

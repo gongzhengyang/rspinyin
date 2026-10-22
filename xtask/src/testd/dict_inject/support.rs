@@ -18,7 +18,7 @@ use ime_dict::format::{
     DictEntry, PROB_Q12_MAX, SectionKind, hash_word, pack_fst_value, writer::DictWriter,
 };
 
-use super::DictFixture;
+use super::MutatedContainer;
 
 /// Serial number for scratch directories; tests in one binary run in parallel threads, and
 /// nextest runs several binaries at once.
@@ -135,12 +135,12 @@ pub(super) fn source() -> Source {
 }
 
 /// Writes [`source`]'s container into `scratch` and builds a fixture over a copy of it.
-pub(super) fn fixture(scratch: &Scratch) -> (DictFixture, Source) {
+pub(super) fn fixture(scratch: &Scratch) -> (MutatedContainer, Source) {
     let source = source();
     let origin = scratch.path("base.dict");
     fs::write(&origin, &source.image).expect("writing the source container");
     let fixture =
-        DictFixture::from_compiled(&origin, &scratch.path("copy.dict")).expect("copying it");
+        MutatedContainer::from_compiled(&origin, &scratch.path("copy.dict")).expect("copying it");
     (fixture, source)
 }
 

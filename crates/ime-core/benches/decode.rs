@@ -249,7 +249,8 @@ fn bench_fuzzy(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &In
     // Every class at once, which is the widest the section can project: the master
     // switch plus the eight class bits, the mask the projection computes for
     // `[fuzzy] enabled = true`.
-    on.flags.insert(ime_core::fuzzy::projection(true, DecodeFlags::empty()));
+    on.flags
+        .insert(ime_core::fuzzy::projection(true, DecodeFlags::empty()));
     let mut abbrev = DecodeRequest::new(case.raw);
     abbrev.flags.insert(DecodeFlags::ABBREV);
     let mut group = criterion.benchmark_group("decode");
@@ -521,7 +522,15 @@ fn bench_decode_reuse(criterion: &mut Criterion, dictionary: &SyntheticDict, mod
         bencher.iter_batched(
             || request.clone(),
             |request| {
-                decoder.decode_into(&mut scratch, black_box(&request), dictionary, &user, model);
+                decoder.decode_into(
+                    &mut scratch,
+                    black_box(&request),
+                    dictionary,
+                    &user,
+                    model,
+                    None,
+                    None,
+                );
                 black_box(scratch.result().candidates.len())
             },
             BatchSize::SmallInput,
@@ -675,6 +684,9 @@ fn bench_session(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &
         lexicon: dictionary,
         user_freq: &user,
         lm: model,
+        english: None,
+        confusables: None,
+        symbols: None,
     };
     let mut group = criterion.benchmark_group("session");
     group.bench_function("keystroke", |bencher| {
@@ -747,13 +759,21 @@ fn bench_alloc_decode(criterion: &mut Criterion, dictionary: &SyntheticDict, mod
     };
     let request = DecodeRequest::new(case.raw);
     let mut scratch = DecodeScratch::new();
-    decoder.decode_into(&mut scratch, &request, dictionary, &user, model);
+    decoder.decode_into(&mut scratch, &request, dictionary, &user, model, None, None);
     let mut group = criterion.benchmark_group("alloc");
     group.bench_function("decode", |bencher| {
         let mut seen: Option<usize> = None;
         bencher.iter(|| {
             let before = (alloc_count::allocations(), alloc_count::bytes());
-            decoder.decode_into(&mut scratch, black_box(&request), dictionary, &user, model);
+            decoder.decode_into(
+                &mut scratch,
+                black_box(&request),
+                dictionary,
+                &user,
+                model,
+                None,
+                None,
+            );
             black_box(scratch.result().candidates.len());
             let counted = (
                 alloc_count::allocations() - before.0,
@@ -791,6 +811,9 @@ fn bench_alloc_keystroke(
         lexicon: dictionary,
         user_freq: &user,
         lm: model,
+        english: None,
+        confusables: None,
+        symbols: None,
     };
     let mut group = criterion.benchmark_group("alloc");
     group.bench_function("keystroke", |bencher| {
@@ -882,6 +905,7 @@ fn bench_lattice(criterion: &mut Criterion, dictionary: &SyntheticDict) {
                         flags: DecodeFlags::empty(),
                         readings: &mut readings,
                         keys: &mut keys,
+                        english: None,
                     },
                 );
                 black_box(lattice.len())

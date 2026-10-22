@@ -1,0 +1,32 @@
+# ADD-shard example scenario: the fuzzy equivalence classes on (TC-ADD-007's subject).
+#
+# `zishi` is spelled with the initials-only syllable `zi`, and the `zh_z` class widens
+# it onto `zhi`, where the two-word key holds its candidates. No exact-path word exists,
+# so the widened path is the only one that serves any.
+
+name = "add-fuzzy-on"
+fuzzy = ["zh_z"]
+
+[[dictionary.words]]
+key = "zhi'shi"
+texts = ["知识", "支持"]
+
+[[steps]]
+action = "input-char:z"
+expect = { candidates = { first = "z", count = 1, contains = [] } }
+
+[[steps]]
+action = "input-char:i"
+expect = { candidates = { first = "zi", count = 1, contains = [] } }
+
+[[steps]]
+action = "input-char:s"
+expect = { candidates = { first = "zis", count = 1, contains = [] } }
+
+[[steps]]
+action = "input-char:h"
+expect = { candidates = { first = "zish", count = 1, contains = [] } }
+
+[[steps]]
+action = "input-char:i"
+expect = { candidates = { first = "知识", count = 2, contains = ["支持"] } }

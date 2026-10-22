@@ -83,6 +83,19 @@ pub const MAX_VARIANTS: usize = 8;
 /// only a few per cent likelier than the exact one still wins.
 pub const FUZZY_PENALTY_Q8: i32 = 12 << 8;
 
+/// Answers whether a penalty marks an edge the exact walk did not produce: a fuzzy
+/// variant or a spelling correction.
+///
+/// The two are the readings a standard reading is a fact about -- the key a widened
+/// word was looked up under is how the word really reads, which is what the hint
+/// channel annotates and what the lattice records the full key of. An abbreviation
+/// edge is deliberately left out: typing initials is the user's own choice rather
+/// than a slip, and there is no reading to hint at that the input does not spell
+/// more fully elsewhere.
+pub fn is_widened(penalty_q8: i32) -> bool {
+    penalty_q8 == FUZZY_PENALTY_Q8 || penalty_q8 == crate::segment::correct::CORRECTION_PENALTY_Q8
+}
+
 /// Raw bits of every class in [`CLASSES`], `1 << 1` through `1 << 8`.
 ///
 /// Written as bit positions rather than folded over the table because a `const`

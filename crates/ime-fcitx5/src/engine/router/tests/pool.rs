@@ -27,6 +27,7 @@ fn program_report(name: &'static str) -> ContextReport<'static> {
         program: Some(name),
         password: false,
         sensitive: false,
+        preedit: false,
     }
 }
 
@@ -50,9 +51,9 @@ fn test_program_share_carries_the_script_bit_across_two_input_contexts() {
     let fixture = Fixture::new("share-script");
     let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
     let mut router = program_router(&fixture, handle);
-    router.use_script(std::sync::Arc::new(ime_dict::script::ScriptIndex::from_pairs(
-        &[("你", "妳")],
-    )));
+    router.use_script(std::sync::Arc::new(
+        ime_dict::script::ScriptIndex::from_pairs(&[("你", "妳")]),
+    ));
     let mut host = RecordingHost::default();
 
     // The first window: the user flips to traditional and commits once.
@@ -87,7 +88,11 @@ fn test_program_share_carries_temporary_english_across_a_window_switch() {
     // With nothing composing the step produces no effect -- the documented shape of the
     // one action whose whole work is a session flag -- so the assertion is the flag
     // itself, which is the thing a window switch has to carry.
-    router.step_session(IC, SessionEvent::Key(KeyAction::EnterTempEnglish), &mut host);
+    router.step_session(
+        IC,
+        SessionEvent::Key(KeyAction::EnterTempEnglish),
+        &mut host,
+    );
     assert_eq!(
         router.session(IC).map(|session| session.temp_english),
         Some(true),
@@ -108,9 +113,9 @@ fn test_program_share_keeps_two_programs_apart() {
     let fixture = Fixture::new("share-isolation");
     let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
     let mut router = program_router(&fixture, handle);
-    router.use_script(std::sync::Arc::new(ime_dict::script::ScriptIndex::from_pairs(
-        &[("你", "妳")],
-    )));
+    router.use_script(std::sync::Arc::new(
+        ime_dict::script::ScriptIndex::from_pairs(&[("你", "妳")]),
+    ));
     let mut host = RecordingHost::default();
 
     router.activate_reported(IC, program_report("editor"));
@@ -137,9 +142,9 @@ fn test_program_share_never_pools_an_unknown_application() {
     let fixture = Fixture::new("share-unknown");
     let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
     let mut router = program_router(&fixture, handle);
-    router.use_script(std::sync::Arc::new(ime_dict::script::ScriptIndex::from_pairs(
-        &[("你", "妳")],
-    )));
+    router.use_script(std::sync::Arc::new(
+        ime_dict::script::ScriptIndex::from_pairs(&[("你", "妳")]),
+    ));
     let mut host = RecordingHost::default();
 
     router.activate_reported(IC, ContextReport::Unreported);
@@ -172,9 +177,9 @@ fn test_program_share_parks_only_the_last_live_state_of_a_program() {
     let fixture = Fixture::new("share-last-live");
     let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
     let mut router = program_router(&fixture, handle);
-    router.use_script(std::sync::Arc::new(ime_dict::script::ScriptIndex::from_pairs(
-        &[("你", "妳")],
-    )));
+    router.use_script(std::sync::Arc::new(
+        ime_dict::script::ScriptIndex::from_pairs(&[("你", "妳")]),
+    ));
     let mut host = RecordingHost::default();
 
     // Two windows of one program live at once. The first flips to traditional; the
@@ -207,9 +212,9 @@ fn test_policy_switch_finishes_live_contexts_and_closes_the_parked_ones() {
     let fixture = Fixture::new("share-switch");
     let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
     let mut router = program_router(&fixture, handle);
-    router.use_script(std::sync::Arc::new(ime_dict::script::ScriptIndex::from_pairs(
-        &[("你", "妳")],
-    )));
+    router.use_script(std::sync::Arc::new(
+        ime_dict::script::ScriptIndex::from_pairs(&[("你", "妳")]),
+    ));
     let mut host = RecordingHost::default();
 
     // One window parks a traditional state; the next adopts it, and the adoption is
@@ -258,9 +263,9 @@ fn test_context_tier_ends_a_context_whole() {
     let fixture = Fixture::new("tier-context-whole");
     let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
     let mut router = fixture.router(handle);
-    router.use_script(std::sync::Arc::new(ime_dict::script::ScriptIndex::from_pairs(
-        &[("你", "妳")],
-    )));
+    router.use_script(std::sync::Arc::new(
+        ime_dict::script::ScriptIndex::from_pairs(&[("你", "妳")]),
+    ));
     let mut host = RecordingHost::default();
 
     router.activate_reported(IC, ordinary_report());

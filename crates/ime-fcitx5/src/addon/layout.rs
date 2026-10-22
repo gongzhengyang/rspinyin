@@ -37,6 +37,56 @@ use super::report_step_failure;
 /// creates.
 const DICTIONARY_FILE: &str = "base.dict";
 
+/// The name the compiled English lexicon is installed under inside the data directory.
+///
+/// Compiled from the same pipeline as [`DICTIONARY_FILE`] by `xtask dictc eng`; absent is
+/// the ordinary case for an install that predates the mixed-English switch, and the
+/// switch answers with the pass-through degradation it started with.
+const ENGLISH_DICTIONARY_FILE: &str = "eng.dict";
+
+/// The path the compiled English lexicon is read from, or `None` when the layout is
+/// unknown.
+///
+/// # Panics
+///
+/// Never.
+pub(super) fn english_dictionary_path() -> Option<PathBuf> {
+    layout().map(|paths| paths.data_dir.join(ENGLISH_DICTIONARY_FILE))
+}
+
+/// The name the confusable table is installed under inside the data directory.
+///
+/// The document the wrong-word hint channel reads, compiled from the same allowlisted
+/// pipeline as the raw list in `data/raw/confusable.tsv`; absent is the ordinary case
+/// for an install that predates the channel, and the channel answers with the
+/// no-hint degradation it started with.
+const CONFUSABLE_DATA_FILE: &str = "confusable.tsv";
+
+/// The path the confusable table is read from, or `None` when the layout is unknown.
+///
+/// # Panics
+///
+/// Never.
+pub(super) fn confusable_path() -> Option<PathBuf> {
+    layout().map(|paths| paths.data_dir.join(CONFUSABLE_DATA_FILE))
+}
+
+/// The name the symbol table is installed under inside the data directory.
+///
+/// The document the v-mode panel serves its categories from; absent is the ordinary
+/// case for an install that predates the panel, and an input that starts with `v`
+/// decodes exactly as it did before the panel existed.
+const SYMBOL_DATA_FILE: &str = "symbols.tsv";
+
+/// The path the symbol table is read from, or `None` when the layout is unknown.
+///
+/// # Panics
+///
+/// Never.
+pub(super) fn symbols_path() -> Option<PathBuf> {
+    layout().map(|paths| paths.data_dir.join(SYMBOL_DATA_FILE))
+}
+
 /// The name of the probe snapshot inside the data directory.
 ///
 /// Taken from `ime-diag` rather than spelled again here: the file the plugin writes and the

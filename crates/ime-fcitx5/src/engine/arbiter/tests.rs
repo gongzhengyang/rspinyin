@@ -189,6 +189,9 @@ impl Fixture {
             lexicon: &self.lexicon,
             user_freq: &self.user,
             lm: &self.lm,
+            english: None,
+            confusables: None,
+            symbols: None,
         }
     }
 

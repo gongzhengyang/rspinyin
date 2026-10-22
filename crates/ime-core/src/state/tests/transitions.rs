@@ -11,13 +11,17 @@
 //! Driven entirely from the in-memory doubles next door. No dictionary file, no
 //! clock, no environment, no display server.
 
-use ime_types::{DecodeFlags, KeyAction};
+use ime_types::{CandidateSource, DecodeFlags, KeyAction};
 
+use crate::confusable::ConfusableTable;
 use crate::fuzzy;
-use crate::state::SessionConfig;
-use crate::state::machine::{CONTEXT_KEY_BUDGET, Effect, Session, SessionEvent, SessionState, step};
+use crate::state::machine::{
+    CONTEXT_KEY_BUDGET, Effect, Session, SessionEvent, SessionState, step,
+};
+use crate::state::{ImSwitchPolicy, SessionConfig};
+use crate::symbols::SymbolTable;
 
-use super::{Fixture, composing, committed, frame_of, highlighted, kinds, pin_toggle};
+use super::{Fixture, committed, composing, frame_of, highlighted, kinds, pin_toggle};
 
 /// A live composition on `raw`, with the fixture that decoded it kept alive beside it.
 fn composing_on(raw: &str) -> (Session, Fixture) {
@@ -681,6 +685,334 @@ fn test_context_rerank_dies_with_a_cancelled_composition() {
     assert_eq!(session.context(), None, "a cancelled composition takes it");
 }
 
+/// A two-category panel table, the shape the walkthroughs run against.
+fn symbol_fixture() -> SymbolTable {
+    SymbolTable::parse("1\t数字\t０１２３４５\nx\t箭头\t←↑→\n").expect("rows are usable")
+}
+
+#[test]
+fn test_v_prefix_serves_the_category_as_candidates() {
+    // `v1` opens the digit category: the symbols arrive as ordinary candidates,
+    // labelled with the category's name, and the preedit is the keystrokes as
+    // typed.
+    let words: &'static [(&'static str, &'static str)] = &[("zhishi", "知识")];
+    let fixture = Fixture::with_dictionary(words);
+    let table = symbol_fixture();
+    let env = fixture.env_with_symbols(&table);
+    let cfg = SessionConfig::default();
+    let mut session = Session::new();
+    for ch in "v1".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+    }
+    let decoded = session.decoded();
+    let texts: Vec<&str> = decoded
+        .candidates
+        .iter()
+        .map(|candidate| candidate.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        ["０", "１", "２", "３", "４", "５"],
+        "file order is display order"
+    );
+    assert_eq!(decoded.candidates[0].source, CandidateSource::Symbol);
+    assert_eq!(decoded.candidates[0].annotation.as_deref(), Some("数字"));
+    assert_eq!(
+        session.preedit.text, "v1",
+        "the panel shows the keystrokes as typed"
+    );
+}
+
+#[test]
+fn test_v_panel_commits_the_highlight_without_learning() {
+    // A selection commits the symbol and nothing else: no frequency is recorded
+    // for a candidate the user chose from a panel rather than spelled. The
+    // selecting key is Space -- inside the panel the number keys key the code,
+    // which is what `v1` is made of -- so the walkthrough highlights first and
+    // commits second.
+    let words: &'static [(&'static str, &'static str)] = &[("zhishi", "知识")];
+    let fixture = Fixture::with_dictionary(words);
+    let table = symbol_fixture();
+    let env = fixture.env_with_symbols(&table);
+    let cfg = SessionConfig::default();
+    let mut session = Session::new();
+    for ch in "v1".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+    }
+    let _ = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
+    let effects = session.handle_key(KeyAction::SelectIndex(1), &cfg, &env);
+    // A digit that arrives while the commit is in flight is the application's,
+    // as every key of the committing state is.
+    assert!(
+        committed(&effects).is_none(),
+        "the committing state answers no key of its own"
+    );
+}
+
+#[test]
+fn test_v_panel_digit_keys_the_code_instead_of_selecting() {
+    // Inside the panel the number keys build the code -- `v1` is made of them --
+    // and the one candidate interaction they give up is selection: Space and the
+    // highlight keys still select. So the digit that would have selected the
+    // first candidate extends the input instead, and the category stays served.
+    let words: &'static [(&'static str, &'static str)] = &[("zhishi", "知识")];
+    let fixture = Fixture::with_dictionary(words);
+    let table = symbol_fixture();
+    let env = fixture.env_with_symbols(&table);
+    let cfg = SessionConfig::default();
+    let mut session = Session::new();
+    for ch in "v1".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+    }
+    let effects = session.handle_key(KeyAction::SelectIndex(1), &cfg, &env);
+    assert_eq!(session.buf.raw(), "v11", "the digit joined the code");
+    assert!(
+        committed(&effects).is_none(),
+        "no candidate was selected by it"
+    );
+    assert_eq!(
+        session.decoded().candidates.len(),
+        6,
+        "the category is still served"
+    );
+    // Space selects, unchanged.
+    let effects = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
+    assert_eq!(
+        committed(&effects),
+        Some("０"),
+        "space commits the highlight"
+    );
+    assert!(
+        session.take_pending().is_none(),
+        "a panel candidate is chosen, not spelled"
+    );
+}
+
+#[test]
+fn test_v_prefix_before_pinyin_falls_through_to_the_decode() {
+    // `vzhishi` names no category, so it goes where it always went: the decode,
+    // whose normalizer turns the `v` into the umlaut it stands for and answers
+    // the unsegmentable rest with the pass-through echo. The panel changes
+    // nothing about an input it does not serve.
+    let words: &'static [(&'static str, &'static str)] = &[("zhishi", "知识")];
+    let fixture = Fixture::with_dictionary(words);
+    let table = symbol_fixture();
+    let env = fixture.env_with_symbols(&table);
+    let cfg = SessionConfig::default();
+    let mut session = Session::new();
+    for ch in "vzhishi".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+    }
+    let decoded = session.decoded();
+    assert_eq!(
+        decoded.candidates[0].text, "vzhishi",
+        "the input the panel does not serve is echoed, as before it existed"
+    );
+    assert_eq!(decoded.candidates[0].source, CandidateSource::Passthrough);
+    assert!(
+        decoded
+            .candidates
+            .iter()
+            .all(|candidate| candidate.source != CandidateSource::Symbol),
+        "no panel candidate exists for an input no category names"
+    );
+}
+
+#[test]
+fn test_digit_joins_the_input_only_behind_a_v() {
+    // `ni1` composes as `ni`: the digit is not the panel's, so it is refused and
+    // the key travels to the application, exactly as before the panel existed.
+    // Behind a `v`, the same digit joins the input and opens the panel.
+    let words: &'static [(&'static str, &'static str)] = &[("ni", "伱")];
+    let fixture = Fixture::with_dictionary(words);
+    let table = symbol_fixture();
+    let env = fixture.env_with_symbols(&table);
+    let cfg = SessionConfig::default();
+    let mut session = Session::new();
+    for ch in "ni".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+    }
+    let _ = session.handle_key(KeyAction::InputChar('1'), &cfg, &env);
+    assert_eq!(
+        session.buf.raw(),
+        "ni",
+        "the digit never joined a pinyin input"
+    );
+    assert_eq!(session.decoded().candidates[0].text, "伱");
+    // The panel's own input takes the digit.
+    let mut panel = Session::new();
+    for ch in "v".chars() {
+        let _ = panel.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+    }
+    let _ = panel.handle_key(KeyAction::InputChar('1'), &cfg, &env);
+    assert_eq!(panel.buf.raw(), "v1", "the digit joins a panel input");
+    assert_eq!(
+        panel.decoded().candidates.len(),
+        6,
+        "the digit category is served"
+    );
+}
+
+#[test]
+fn test_bare_v_opens_an_empty_panel_and_a_letter_falls_through() {
+    // The bare `v` is the panel's entry: the mode is on, the list is empty, and
+    // the preedit shows the keystroke. A letter that names no category hands the
+    // composition back to the ordinary decode.
+    let words: &'static [(&'static str, &'static str)] = &[("a", "啊")];
+    let fixture = Fixture::with_dictionary(words);
+    let table = symbol_fixture();
+    let env = fixture.env_with_symbols(&table);
+    let cfg = SessionConfig::default();
+    let mut session = Session::new();
+    let _ = session.handle_key(KeyAction::InputChar('v'), &cfg, &env);
+    assert!(session.symbol_mode, "the bare v opens the panel");
+    assert!(
+        session.decoded().candidates.is_empty(),
+        "nothing to serve yet"
+    );
+    assert_eq!(session.preedit.text, "v");
+    let _ = session.handle_key(KeyAction::InputChar('a'), &cfg, &env);
+    assert!(
+        !session.symbol_mode,
+        "a code no category names falls back to the decode"
+    );
+    assert_eq!(
+        session.decoded().candidates[0].text,
+        "va",
+        "the input the panel gave up is echoed, as before it existed"
+    );
+}
+
+#[test]
+fn test_im_switch_clear_takes_the_composition_back_and_commits_nothing() {
+    // The shipped policy is exactly a focus loss: the composing text goes, the
+    // window hides, and no commit reaches the application.
+    let words: &'static [(&'static str, &'static str)] = &[("nihao", "你好")];
+    let fixture = Fixture::with_dictionary(words);
+    let env = fixture.env();
+    let cfg = SessionConfig::default();
+    let mut session = Session::new();
+    for ch in "nihao".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+    }
+    let effects = step(&mut session, SessionEvent::Reset, &cfg, &env);
+    assert!(
+        committed(&effects).is_none(),
+        "the clear policy commits nothing"
+    );
+    assert!(
+        kinds(&effects).contains(&"hide"),
+        "the window goes away with the composition"
+    );
+    assert!(session.take_pending().is_none());
+}
+
+#[test]
+fn test_im_switch_commit_raw_commits_the_typed_input_on_reset() {
+    // The policy a user who switches away mid-word asks for: the raw input
+    // reaches the application through the ordinary commit effect -- whose
+    // host-side execution applies the conversion chain -- and the composition
+    // is finished in the same step, because a switch-away reset brings no
+    // commit confirmation back.
+    let words: &'static [(&'static str, &'static str)] = &[("nihao", "你好")];
+    let fixture = Fixture::with_dictionary(words);
+    let env = fixture.env();
+    let cfg = SessionConfig {
+        on_im_switch: ImSwitchPolicy::CommitRaw,
+        ..SessionConfig::default()
+    };
+    let mut session = Session::new();
+    for ch in "nihao".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+    }
+    let effects = step(&mut session, SessionEvent::Reset, &cfg, &env);
+    assert_eq!(committed(&effects), Some("nihao"), "the raw input commits");
+    assert!(
+        session.take_pending().is_none(),
+        "nothing is learned from a switch-away commit"
+    );
+    assert!(
+        kinds(&effects).contains(&"set-client-preedit"),
+        "the client preedit area is emptied in the same step"
+    );
+}
+
+#[test]
+fn test_im_switch_commit_raw_commits_nothing_when_nothing_is_composing() {
+    // A reset with an empty input has nothing to keep: the policy degrades to
+    // the clear the shipped behaviour already is.
+    let words: &'static [(&'static str, &'static str)] = &[("nihao", "你好")];
+    let fixture = Fixture::with_dictionary(words);
+    let env = fixture.env();
+    let cfg = SessionConfig {
+        on_im_switch: ImSwitchPolicy::CommitRaw,
+        ..SessionConfig::default()
+    };
+    let mut session = Session::new();
+    let effects = step(&mut session, SessionEvent::Reset, &cfg, &env);
+    assert!(
+        committed(&effects).is_none(),
+        "an empty input commits nothing"
+    );
+}
+
+#[test]
+fn test_confusable_hint_attaches_to_the_candidate_that_spells_a_wrong_form() {
+    // The table holds `按奈` for `按捺`; the candidate that spells the wrong form
+    // says so in its annotation, and a candidate that spells nothing the table
+    // holds stays quiet. The hints latch rides `ui.show_annotation`, whose
+    // default is on, so a plain configuration is the on case.
+    let words: &'static [(&'static str, &'static str)] = &[("an'nai", "按奈")];
+    let fixture = Fixture::with_dictionary(words);
+    let table = ConfusableTable::parse("按奈\t按捺\n").expect("rows are usable");
+    let env = fixture.env_with(&table);
+    let cfg = SessionConfig::default();
+    let mut session = Session::new();
+    for ch in "an'nai".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+    }
+    let decoded = session.decoded();
+    let top = decoded
+        .candidates
+        .first()
+        .expect("the dictionary holds the reading");
+    assert_eq!(top.text, "按奈");
+    assert_eq!(
+        top.annotation.as_deref(),
+        Some("字:→按捺"),
+        "the wrong form names the correct one: {top:?}"
+    );
+}
+
+#[test]
+fn test_show_annotation_off_leaves_the_hints_out_of_the_candidates() {
+    // With the switch off the whole channel short-circuits at the decode: the
+    // table is attached to the environment, and the candidate still carries no
+    // annotation, because the lookup is never made.
+    let words: &'static [(&'static str, &'static str)] = &[("an'nai", "按奈")];
+    let fixture = Fixture::with_dictionary(words);
+    let table = ConfusableTable::parse("按奈\t按捺\n").expect("rows are usable");
+    let env = fixture.env_with(&table);
+    let cfg = SessionConfig {
+        show_annotation: false,
+        ..SessionConfig::default()
+    };
+    let mut session = Session::new();
+    for ch in "an'nai".chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
+    }
+    let decoded = session.decoded();
+    let top = decoded
+        .candidates
+        .first()
+        .expect("the dictionary holds the reading");
+    assert_eq!(top.text, "按奈");
+    assert_eq!(
+        top.annotation, None,
+        "the switch is off, so the channel never ran: {top:?}"
+    );
+}
+
 #[test]
 fn test_correction_switch_reads_a_one_step_slip() {
     // `zhegn` has no exact cut; the correction pass widens the misspelled span
@@ -702,7 +1034,10 @@ fn test_correction_switch_reads_a_one_step_slip() {
         .iter()
         .map(|candidate| candidate.text.as_str())
         .collect();
-    assert!(texts.contains(&"真诚"), "the slip reaches the word: {texts:?}");
+    assert!(
+        texts.contains(&"真诚"),
+        "the slip reaches the word: {texts:?}"
+    );
     // The corrected candidate says why it is there: the annotation carries the
     // spelling the user typed, which the correction edge stands for. A candidate
     // the input spells exactly -- the pass-through echo here -- stays quiet.
@@ -713,8 +1048,8 @@ fn test_correction_switch_reads_a_one_step_slip() {
         .expect("the assertion above held");
     assert_eq!(
         corrected.annotation.as_deref(),
-        Some("纠错：zhegn"),
-        "the annotation carries the original spelling: {corrected:?}"
+        Some("音:zheng｜纠错：zhegn"),
+        "the annotation carries the standard reading and the original spelling: {corrected:?}"
     );
 
     // Off is the shipped switch, and off is the contract: the same keystrokes
@@ -728,7 +1063,11 @@ fn test_correction_switch_reads_a_one_step_slip() {
     let decoded = session.decoded();
     assert!(decoded.degraded, "the default decodes nothing: {decoded:?}");
     assert_eq!(
-        decoded.candidates.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(),
+        decoded
+            .candidates
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>(),
         ["zhegn"],
         "the input is echoed, not corrected"
     );
@@ -762,10 +1101,13 @@ fn test_correction_annotates_a_word_that_hides_the_slip_inside() {
         Some(&"完把"),
         "the corrected reading wins: {texts:?}"
     );
-    let top = decoded.candidates.first().expect("the assertion above held");
+    let top = decoded
+        .candidates
+        .first()
+        .expect("the assertion above held");
     assert_eq!(
         top.annotation.as_deref(),
-        Some("纠错：awnba"),
+        Some("音:wan'ba｜纠错：awnba"),
         "the word over the interior slip is annotated: {top:?}"
     );
 }
@@ -787,7 +1129,8 @@ fn test_correction_switch_leaves_a_spelled_input_unmoved() {
         let mut off_session = Session::new();
         let mut on_session = Session::new();
         for ch in raw.chars() {
-            let _ = off_session.handle_key(KeyAction::InputChar(ch), &SessionConfig::default(), &env);
+            let _ =
+                off_session.handle_key(KeyAction::InputChar(ch), &SessionConfig::default(), &env);
             let _ = on_session.handle_key(KeyAction::InputChar(ch), &on, &env);
         }
         let off: Vec<&str> = off_session

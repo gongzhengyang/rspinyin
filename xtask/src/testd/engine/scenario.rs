@@ -20,10 +20,15 @@
 
 mod fixture;
 mod report;
+mod store;
+mod v2;
 
 pub use crate::testd::engine::scenario::fixture::EngineFixture;
 pub use crate::testd::engine::scenario::report::{
     Divergence, Expectation, Observation, StepPrint, decode_code, ime_code,
+};
+pub use crate::testd::engine::scenario::v2::{
+    BigramMode, DecayClock, DecaySection, DecodeSection, ScenarioV2, UserDbSection,
 };
 
 use std::collections::BTreeMap;
@@ -61,6 +66,28 @@ pub struct Scenario {
     /// Whether the scenario decodes with the spelling-correction switch on.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub correction: bool,
+    /// The v2 `[decode]` section: the switches every request carries, by name.
+    ///
+    /// Absent in every file written before the section existed, and defaulted to the v1
+    /// behaviour -- no extra flags, no container model -- so those files parse unchanged.
+    #[serde(default, skip_serializing_if = "DecodeSection::is_default")]
+    pub decode: DecodeSection,
+    /// The v2 `[user_db]` section: the user store the scenario runs against.
+    ///
+    /// Absent means the scenario's own `[dictionary]` frequency tables build the user
+    /// double, exactly as v1 did. A section replaces that table wholesale, which is what
+    /// [`crate::testd::engine::scenario::ScenarioV2::of`] refuses to do twice.
+    #[serde(default, skip_serializing_if = "UserDbSection::is_default")]
+    pub user_db: UserDbSection,
+    /// The v2 `[decay]` section: the half-life the user store folds with.
+    ///
+    /// Half-lives are record ticks, the store's own usage clock: a seeded word's commits
+    /// age by the records seeded after them, and the section pins the rate that ageing
+    /// runs at. It names no default store -- a clock that folds nothing is a scenario
+    /// that configured air -- and [`crate::testd::engine::scenario::ScenarioV2::of`]
+    /// refuses one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decay: Option<DecaySection>,
 }
 
 impl Scenario {
@@ -81,6 +108,9 @@ impl Scenario {
             fuzzy: Vec::new(),
             abbrev: false,
             correction: false,
+            decode: DecodeSection::default(),
+            user_db: UserDbSection::default(),
+            decay: None,
         }
     }
 
@@ -307,6 +337,11 @@ pub fn parse_scenario(text: &str) -> anyhow::Result<Scenario> {
             );
         }
     }
+    // The v2 sections are checked as a whole as well as one by one: a rule the
+    // assembly would refuse (a clock with no store, a container model beside a
+    // spec-written one) is a parse error here, so a scenario fails at load with the
+    // rule named rather than at build with a context around it.
+    ScenarioV2::of(&scenario)?;
     Ok(scenario)
 }
 

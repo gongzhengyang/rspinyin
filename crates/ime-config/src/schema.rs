@@ -182,6 +182,21 @@ closed_set! {
 }
 
 closed_set! {
+    /// What happens to a live composition when the input method is switched away
+    /// from or reset: the `engine.on_im_switch` key.
+    ///
+    /// `Clear` is the shipped behaviour: the composing text is taken back and
+    /// nothing reaches the application. `CommitRaw` commits the raw input first,
+    /// so a user who switches away mid-word keeps the letters they typed. The
+    /// two finer policies other engines offer -- committing the converted text
+    /// and committing a preview -- collapse onto `CommitRaw` here, because this
+    /// engine's conversion chain runs at commit time on the effect path, where a
+    /// switch-away commit is the same door.
+    ImSwitch, key = "engine.on_im_switch", message = "unknown switch policy",
+    default = Clear, values = { Clear => "clear", CommitRaw => "commit_raw" }
+}
+
+closed_set! {
     /// How sessions are shared across input contexts: the `engine.share_state` key.
     ///
     /// `Context` keeps one session per input context, which is the historical
@@ -395,6 +410,13 @@ pub struct EngineConfig {
     /// configuration's half of the engine's `DecodeFlags::ABBREV` switch; the decoder
     /// reads no configuration, so the host layer turns this flag into that bit.
     pub abbrev: bool,
+    /// `on_im_switch`: what a live composition does when the input method is
+    /// switched away from or reset.
+    ///
+    /// `Clear` -- the default -- takes the composing text back and commits
+    /// nothing; `CommitRaw` commits the raw input first. See the type's own
+    /// documentation for why the finer policies collapse onto `CommitRaw`.
+    pub on_im_switch: ImSwitch,
     /// `correction`: whether a one-step typing slip is corrected for an input no exact
     /// spelling covers, so that `zhegn` reaches a word spelled `zheng`.
     ///
@@ -404,6 +426,27 @@ pub struct EngineConfig {
     /// `DecodeFlags::CORRECTION` switch (ADR-0014); the decoder reads no
     /// configuration, so the host layer turns this flag into that bit.
     pub correction: bool,
+    /// `compose`: whether a dead-key sequence the host is composing -- an acute
+    /// accent followed by `e`, for one -- is answered before the key table sees
+    /// the key.
+    ///
+    /// Off by default: a compose pass that swallows keys changes what a European
+    /// keyboard types into the application, and a user whose key table already
+    /// claims those keys must not have them taken. The host the plugin runs
+    /// under has to offer compose support for the switch to do anything at all;
+    /// with a host that offers none, the switch is inert and every key routes
+    /// exactly as it did.
+    pub compose: bool,
+    /// `mixed_english`: whether an input no pinyin reading cuts is offered the
+    /// English lexicon's entry for it, so that `github` reaches the word spelled
+    /// `GitHub`.
+    ///
+    /// Off by default: a user who never asked for English candidates must not have
+    /// their compositions answered from a table they did not know was there. The
+    /// key is the configuration's half of the engine's `DecodeFlags::ENGLISH`
+    /// switch (ADR-0016); the decoder reads no configuration, so the host layer
+    /// turns this flag into that bit.
+    pub mixed_english: bool,
     /// `share_state`: how sessions are shared across input contexts.
     pub share_state: ShareState,
 }
@@ -619,6 +662,7 @@ impl Default for Config {
             fuzzy: FuzzyConfig::default(),
             engine: EngineConfig {
                 punct_mode: PunctMode::Chinese,
+                on_im_switch: ImSwitch::Clear,
                 full_width: false,
                 auto_english_on_uppercase: true,
                 passthrough_url: true,
@@ -626,6 +670,8 @@ impl Default for Config {
                 verify_dict_on_load: VerifyDictOnLoad::Full,
                 abbrev: false,
                 correction: false,
+                mixed_english: false,
+                compose: false,
                 share_state: ShareState::Context,
             },
             ui: UiConfig {

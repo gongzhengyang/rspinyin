@@ -90,8 +90,8 @@ use clap::Args;
 use crate::budget::repo_root;
 use crate::testd::env::EnvCapabilities;
 use crate::testd::evidence::{
-    BatchSummary, BatchVerdict, CaseBundle, CaseEvidence, CaseStatus, EvidenceError, RunDir,
-    RunJournal, TraceRecord, Utc,
+    AssertionV3, BatchSummary, BatchVerdict, CaseBundle, CaseEvidence, CaseStatus, Claim,
+    EnvironmentFact, EvidenceError, FinalReport, RunDir, RunJournal, TraceRecord, Utc,
 };
 
 use self::cases::CaseLine;
@@ -154,7 +154,7 @@ pub fn run(args: SuiteArgs) -> Result<()> {
     );
     for case in &selected {
         let (runs, duration_ms) = execute_all(case, &root);
-        let evidence = run_case(case, &environment, &runs, duration_ms);
+        let evidence = run_case(case, environment.facts(), &runs, duration_ms);
         let trace = evidence
             .status
             .needs_trace()
@@ -169,13 +169,22 @@ pub fn run(args: SuiteArgs) -> Result<()> {
     journal
         .publish(&run_dir, &results)
         .with_context(|| format!("publishing the run under {}", results.display()))?;
+    // The batch report is rendered from the checklist the publish just wrote, and written
+    // beside it: a run directory carries its own report, and the same checklist would
+    // re-render it byte for byte.
+    let report = FinalReport::of(&journal.checklist(&run_dir));
+    let report_path = run_dir
+        .write_report(&report.render())
+        .with_context(|| format!("writing the batch report into {}", run_dir.name()))?;
+    println!("suite: the batch report is {}", report_path.display());
     let summary = journal.summary();
     println!(
-        "suite: {} case(s): {} passed, {} failed, {} flawed, {} evidence gap(s); verdict {}",
+        "suite: {} case(s): {} passed, {} failed, {} flawed, {} skipped, {} evidence gap(s); verdict {}",
         summary.cases(),
         summary.passed,
         summary.failed,
         summary.flawed,
+        summary.skipped,
         summary.evidence_gaps,
         summary.verdict().label()
     );
@@ -217,27 +226,58 @@ fn execute_all(case: &CaseLine, root: &Path) -> (Vec<CommandRun>, u64) {
 /// The verdict record one case's runs produce.
 ///
 /// `runs` arrives as a value rather than being executed here, which is what lets the judgement
-/// and the bundle a case produces be asserted without running a command at all.
+/// and the bundle a case produces be asserted without running a command at all. The facts a
+/// case's evidence carries arrive as the slice the environment collected rather than as the
+/// collector itself, so a caller -- and a test -- can name exactly what the record sees.
+///
+/// The v3 record is built from the same assertions the v1 document holds: every assertion
+/// becomes a [`Claim`], so the checklist carries the per-claim verdicts without a reader having
+/// to re-derive them from the v1 list. The tier comes from the case table's own row; the
+/// dimensions, the screenshot declarations and the budget keys stay empty until the case table
+/// transcribes them -- an honest "nothing declared", never a coverage claim.
 ///
 /// # Panics
 ///
 /// Never.
 fn run_case(
     case: &CaseLine,
-    environment: &Environment,
+    facts: &[EnvironmentFact],
     runs: &[CommandRun],
     duration_ms: u64,
 ) -> CaseEvidence {
+    let assertions = verdict::assertions_of(case, runs);
+    // The claim texts are the assertion texts as they are written, withheld values included:
+    // a tail that was withheld stays the redaction placeholder here, which is what keeps the
+    // checklist as publishable as the bundle it was read from.
+    let claims = assertions
+        .iter()
+        .map(|assertion| Claim {
+            name: assertion.name.clone(),
+            expect: assertion.expected.as_str().to_owned(),
+            actual: assertion.actual.as_str().to_owned(),
+            pass: assertion.ok,
+        })
+        .collect();
     CaseEvidence {
         tc: case.id.to_owned(),
         module: case.module.to_owned(),
         status: verdict::judge(runs),
         started_at: Utc::now(),
         duration_ms,
-        assertions: verdict::assertions_of(case, runs),
+        assertions,
         visual: Vec::new(),
         healed: Vec::new(),
-        environment: environment.facts().to_vec(),
+        environment: facts.to_vec(),
+        v3: Some(AssertionV3 {
+            case: case.id.to_owned(),
+            tier: case.tier,
+            dims: Vec::new(),
+            requires_screenshots: false,
+            screenshots_expected: Vec::new(),
+            budget_keys: Vec::new(),
+            claims,
+            diffs: Vec::new(),
+        }),
     }
 }
 

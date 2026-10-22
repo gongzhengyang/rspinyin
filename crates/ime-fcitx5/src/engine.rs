@@ -131,6 +131,17 @@ const MODIFIER_MASK: u32 = CTRL | ALT | SHIFT | SUPER | SUPER2 | HYPER | META;
 /// [`MODIFIER_MASK`] without `Shift`, for the rows that tolerate a held Shift.
 const NON_SHIFT_MODIFIERS: u32 = MODIFIER_MASK & !SHIFT;
 
+/// Answers whether a key carries a modifier the compose step must not take.
+///
+/// Ctrl and Super are shortcut modifiers: a dead-key sequence is typed with the
+/// letter keys alone, and a chord the user holds one of those for is the
+/// application's, whatever the layout is composing. Alt is left out on purpose --
+/// the card's contract names Ctrl and Super, and Alt is the one modifier some
+/// layouts hang their own characters on.
+pub(crate) fn carries_compose_blocking_modifier(event: &FcitxKeyEvent) -> bool {
+    event.state & (CTRL | SUPER | SUPER2) != 0
+}
+
 // ── Key symbols ──────────────────────────────────────────────────────────────────
 //
 // XKB keysyms as the installed `fcitx-utils/keysymgen.h` defines them; `FcitxKeyEvent::sym`

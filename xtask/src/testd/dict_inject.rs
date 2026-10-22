@@ -19,7 +19,7 @@
 //! meant to test. Every mutation therefore declares whether it *is* the checksum break
 //! ([`DictMutation::SectionCrc`]) or a field break, and a field break has the container's
 //! checksums recomputed afterwards so that the field is the only thing left wrong.
-//! [`DictFixture::mutate`] refuses a change that would leave the container valid outright:
+//! [`MutatedContainer::mutate`] refuses a change that would leave the container valid outright:
 //! a fixture that silently produces a usable file is worse than no fixture at all.
 //!
 //! # Which step catches which field
@@ -41,8 +41,8 @@
 //! - An FST value is read when a key is looked up, so a word-list range that leaves the
 //!   section is caught by the lookup.
 //!
-//! [`DictFixture::assert_rejected`] checks the step as well as the kind of error, and
-//! [`DictFixture::assert_rejected_field`] checks which range was refused. Both halves
+//! [`MutatedContainer::assert_rejected`] checks the step as well as the kind of error, and
+//! [`MutatedContainer::assert_rejected_field`] checks which range was refused. Both halves
 //! matter: every length and offset failure shares one `DictError` variant, so a case that
 //! asserted only the variant could pass on a container refused for a different field, and a
 //! case that asserted only the field could pass on a container refused at the wrong step.
@@ -58,7 +58,7 @@
 //!
 //! # The scratch copy
 //!
-//! Nothing here writes to the file it was given. [`DictFixture::from_compiled`] copies the
+//! Nothing here writes to the file it was given. [`MutatedContainer::from_compiled`] copies the
 //! source to the destination the caller names, every mutation is applied to a fresh copy of
 //! the *pristine* image rather than to the previous result -- so two mutations never
 //! compound into a container broken two ways -- and [`Drop`] takes the copy away again. A
@@ -71,6 +71,16 @@
 //! next. It builds a malformed file and reports what the loader said about it; quarantining
 //! the file, degrading to passthrough and going read-only belong to the recovery pass, and
 //! are asserted there.
+//!
+//! # The generated half
+//!
+//! [`generate`] is the other half of the family: the named containers the word-source,
+//! normalization, bigram and hot-swap case cards reference, compiled in this process by the
+//! dictionary compiler's own section builder from fixed closed-world word tables and held to
+//! the expectation table in `tests/fixtures/dict/`. Where [`MutatedContainer`] takes a good
+//! container and breaks it in one named way, [`DictFixture`] builds a good one from nothing a
+//! case would have to fetch; the two compose, and a case that mutates a generated container
+//! gets both properties at once.
 //!
 //! # The one deferral
 //!
@@ -98,9 +108,12 @@ use ime_types::{DictError, ImeError, Lexicon};
 use sha2::{Digest, Sha256};
 
 mod error;
+mod generate;
 mod mutate;
 mod mutation;
 
+#[cfg(test)]
+mod generate_tests;
 #[cfg(test)]
 mod mutation_tests;
 #[cfg(test)]
@@ -109,6 +122,7 @@ mod support;
 mod tests;
 
 pub use self::error::FixtureError;
+pub use self::generate::{CORPUS_SNIPPET, DictFixture, Generated, Loaded};
 pub use self::mutation::{DictErrorKind, DictMutation, Refusal, RefusalPoint};
 
 /// The name a user store carries inside the plugin's data directory.
@@ -135,11 +149,11 @@ pub fn sha256(path: &Path) -> Result<String, FixtureError> {
 
 /// A scratch copy of a container, with one named mutation applied to it.
 ///
-/// The pristine image is held so that every call to [`DictFixture::mutate`] starts from the
+/// The pristine image is held so that every call to [`MutatedContainer::mutate`] starts from the
 /// file as the compiler wrote it, not from the result of the previous mutation: a container
 /// broken two ways can be refused for the wrong one, which is the failure mode this type
 /// exists to rule out.
-pub struct DictFixture {
+pub struct MutatedContainer {
     /// The scratch copy, written by `mutate` and removed on drop.
     path: PathBuf,
     /// Whether this fixture created `path`'s parent directory.
@@ -150,7 +164,7 @@ pub struct DictFixture {
     applied: Option<DictMutation>,
 }
 
-impl DictFixture {
+impl MutatedContainer {
     /// Copies `src` to `dest` and prepares to mutate the copy.
     ///
     /// # Errors
@@ -278,7 +292,7 @@ impl DictFixture {
     /// nothing about the field it named: an entry the loader rejected at open would be
     /// caught by the header checks, and the record's own field would never be read. A case
     /// that also needs to pin *which* range was refused wants
-    /// [`DictFixture::assert_rejected_field`], which layers that check on this one.
+    /// [`MutatedContainer::assert_rejected_field`], which layers that check on this one.
     ///
     /// # Errors
     /// Returns [`FixtureError::NoMutation`] when nothing has been applied,
@@ -325,7 +339,7 @@ impl DictFixture {
     /// a wrong magic, say -- is reported here, because the case asserted one.
     ///
     /// # Errors
-    /// Returns the errors of [`DictFixture::assert_rejected`], and
+    /// Returns the errors of [`MutatedContainer::assert_rejected`], and
     /// [`FixtureError::WrongField`] when the bounds failure names another field.
     pub fn assert_rejected_field(
         &self,
@@ -434,7 +448,7 @@ impl DictFixture {
     }
 }
 
-impl Drop for DictFixture {
+impl Drop for MutatedContainer {
     /// Takes the scratch copy away, and the directory this fixture created for it.
     fn drop(&mut self) {
         // A case that already failed must not be turned into an abort by a second panic, so
@@ -598,7 +612,7 @@ impl UserStoreFixture {
 impl Drop for UserStoreFixture {
     /// Takes the store away again.
     fn drop(&mut self) {
-        // Dropped rather than unwrapped, for the reason [`DictFixture`]'s drop gives.
+        // Dropped rather than unwrapped, for the reason [`MutatedContainer`]'s drop gives.
         let _ = fs::remove_file(&self.path);
     }
 }

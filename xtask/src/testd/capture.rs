@@ -79,7 +79,9 @@ mod source;
 #[cfg(test)]
 mod tests;
 
-pub use self::encode::{CaptureMetadata, DEPTH_KEYWORD, SCALE_KEYWORD, read_metadata};
+pub use self::encode::{
+    CaptureMetadata, DEPTH_KEYWORD, SCALE_KEYWORD, read_metadata, read_rgba, write_png,
+};
 pub use self::error::CaptureError;
 pub use self::plan::{CHUNK_ROWS, Footprint, MAX_FRAME_BYTES, MAX_SIDE_PX};
 

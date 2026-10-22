@@ -43,6 +43,8 @@ pub mod env;
 pub mod env_gate;
 pub mod evidence;
 pub mod framerate;
+pub mod golden;
+pub mod golden_cli;
 pub mod guard;
 pub mod heal;
 pub mod input;

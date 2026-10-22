@@ -28,7 +28,7 @@ use ime_types::{
     HideReason, ImeError, Lexicon, PageState, SyllableId, UiCommand, UiFrame, UserFreqSource,
     WordFlags, WordIter, WordRef,
 };
-use rspinyin::engine::host::Host;
+use rspinyin::engine::host::{ComposeOutcome, Host};
 use rspinyin::engine::{KeyBindings, KeyRouter, RoutingConfig, translate_key};
 use rspinyin::ffi::FcitxKeyEvent;
 use rspinyin::privacy_impl::{AppBlacklist, ContextPrivacy, ContextReport};
@@ -93,6 +93,7 @@ pub const KEY_TAB: u32 = 0xff09;
 /// `FcitxKey_Return`.
 pub const KEY_RETURN: u32 = 0xff0d;
 /// `FcitxKey_Escape`.
+pub const KEY_DEAD_ACUTE: u32 = 0xfe51;
 pub const KEY_ESCAPE: u32 = 0xff1b;
 /// `FcitxKey_Left`.
 pub const KEY_LEFT: u32 = 0xff51;
@@ -356,6 +357,10 @@ pub struct RecordingHost {
     pub calls: usize,
     /// The text of every commit, in order.
     pub commits: Vec<String>,
+    /// The answers the compose step gets, in the order the keys ask. An empty
+    /// queue answers [`ComposeOutcome::Unsupported`], which is the host that
+    /// offers no compose support.
+    pub compose: std::collections::VecDeque<ComposeOutcome>,
     /// How many candidates the newest frame holds.
     pub newest_candidates: usize,
     /// The paging state of the newest frame.
@@ -398,6 +403,7 @@ impl Default for RecordingHost {
     /// in, and which has been handed nothing.
     fn default() -> Self {
         Self {
+            compose: std::collections::VecDeque::new(),
             calls: 0,
             commits: Vec::new(),
             newest_candidates: 0,
@@ -414,6 +420,13 @@ impl Default for RecordingHost {
 }
 
 impl Host for RecordingHost {
+    fn process_compose(&mut self, _ic: u64, _key: &FcitxKeyEvent) -> ComposeOutcome {
+        self.calls += 1;
+        self.compose
+            .pop_front()
+            .unwrap_or(ComposeOutcome::Unsupported)
+    }
+
     fn commit(&mut self, _ic: u64, text: &str) {
         self.calls += 1;
         self.commits.push(text.to_owned());
@@ -464,6 +477,7 @@ fn ordinary_report() -> ContextReport<'static> {
         program: None,
         password: false,
         sensitive: false,
+        preedit: false,
     }
 }
 
@@ -502,6 +516,9 @@ impl Fixture {
             lexicon: &self.lexicon,
             user_freq: &self.user,
             lm: &self.lm,
+            english: None,
+            confusables: None,
+            symbols: None,
         }
     }
 

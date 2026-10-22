@@ -60,9 +60,10 @@
 //! # Modules
 //!
 //! [`table`] holds the decision table and the capability predicates it answers with, [`spec`]
-//! reads the register `features.md` 0.5.5 keeps and holds the table to it, and [`cases`] reads
-//! the case suite's own metadata. This file holds the vocabulary they share and the functions a
-//! caller reaches for first.
+//! reads the register `features.md` 0.5.5 keeps and holds the table to it, [`cases`] reads the
+//! case suite's own metadata, and [`eligibility`] reduces the verdict to the three-state answer
+//! the ledger records. This file holds the vocabulary they share and the functions a caller
+//! reaches for first.
 
 // The gate is exercised by the tests beside it and by nothing else yet: the case runner that
 // would call it and the subcommand tree that would print its report both live in files this
@@ -75,6 +76,7 @@
 #![allow(dead_code, unused_imports)]
 
 mod cases;
+mod eligibility;
 mod spec;
 mod table;
 
@@ -82,6 +84,7 @@ mod table;
 mod tests;
 
 pub use self::cases::{CASE_DOCUMENT, CASE_SHARD_DIR, parse_cases, read_cases};
+pub use self::eligibility::{CaseEligibility, ELIGIBILITY_CLAIM, eligibility_of};
 pub use self::spec::{
     REGISTER_SECTION, RegisterEntry, SPEC_DOCUMENT, TableDrift, UnverifiableRegister,
     cross_check_spec, read_register,
@@ -288,6 +291,12 @@ pub struct TestCaseMeta {
     pub module: String,
     /// The environment the case declares it needs.
     pub requirement: EnvRequirement,
+    /// The tasks the case card's `可执行性：[待实现]` annotation anchors, when it carries one.
+    ///
+    /// `Some` only when the annotation declares the case pending *and* the card names at least
+    /// one task to wait on: a pending case the card cannot anchor is unclassifiable, and an
+    /// unclassifiable case falls through to the decision table, which withholds it fail-closed.
+    pub pending_impl: Option<String>,
 }
 
 /// What a run reported about a case.

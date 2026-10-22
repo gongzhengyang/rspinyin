@@ -1,0 +1,33 @@
+# ADD-shard example scenario: the user's own commits pin a word to the top of the key it
+# shares (TC-ADD-009's subject). The `[user_db]` section replaces the spec's frequency
+# table with the real store, seeded from `tests/fixtures/userdb/pin.toml`; the dictionary
+# hands the key to 你号 first, and the seeded commits hand the top to 你好.
+
+name = "add-user-pin"
+
+[user_db]
+fixture = "seed:pin"
+
+[[dictionary.words]]
+key = "ni'hao"
+texts = ["你号", "你好"]
+
+[[steps]]
+action = "input-char:n"
+expect = { candidates = { first = "n", count = 1, contains = [] } }
+
+[[steps]]
+action = "input-char:i"
+expect = { candidates = { first = "ni", count = 1, contains = [] } }
+
+[[steps]]
+action = "input-char:h"
+expect = { candidates = { first = "nih", count = 1, contains = [] } }
+
+[[steps]]
+action = "input-char:a"
+expect = { candidates = { first = "niha", count = 1, contains = [] } }
+
+[[steps]]
+action = "input-char:o"
+expect = { candidates = { first = "你好", count = 2, contains = ["你号"] } }

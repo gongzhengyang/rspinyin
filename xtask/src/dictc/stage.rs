@@ -38,8 +38,11 @@ pub fn run(args: StageArgs) -> anyhow::Result<()> {
     let staged = paths.data_dir.join(STAGED_FILE);
     fs::copy(source, &staged)
         .with_context(|| format!("copying {} to {}", source.display(), staged.display()))?;
-    fs::set_permissions(&staged, fs::Permissions::from_mode(ime_dict::paths::FILE_MODE))
-        .with_context(|| format!("narrowing the mode of {}", staged.display()))?;
+    fs::set_permissions(
+        &staged,
+        fs::Permissions::from_mode(ime_dict::paths::FILE_MODE),
+    )
+    .with_context(|| format!("narrowing the mode of {}", staged.display()))?;
 
     println!("staged {} as {}", source.display(), staged.display());
     println!("next steps:");
@@ -54,9 +57,15 @@ pub fn run(args: StageArgs) -> anyhow::Result<()> {
             .unwrap_or_else(|| PathBuf::from("<no configuration directory>"))
             .display()
     );
-    println!("  2. reload the fcitx5 configuration (`fcitx5-remote -r`, or the config tool's reload)");
-    println!("     the plugin validates the staged container, swaps it in atomically, and clears the key;");
-    println!("     a container that fails validation is rejected, the old dictionary keeps serving, and the");
+    println!(
+        "  2. reload the fcitx5 configuration (`fcitx5-remote -r`, or the config tool's reload)"
+    );
+    println!(
+        "     the plugin validates the staged container, swaps it in atomically, and clears the key;"
+    );
+    println!(
+        "     a container that fails validation is rejected, the old dictionary keeps serving, and the"
+    );
     println!("     reason is reported as dict/swap/rejected on the diagnostic channel");
     Ok(())
 }

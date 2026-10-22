@@ -8,6 +8,7 @@
 //! it to be tested deterministically against in-memory mocks with no filesystem,
 //! clock, or display server involved.
 
+pub mod confusable;
 pub mod fuzzy;
 pub mod input;
 pub mod lm;
@@ -19,4 +20,5 @@ pub mod script;
 pub mod segment;
 pub mod shuangpin;
 pub mod state;
+pub mod symbols;
 pub mod viterbi;

@@ -82,6 +82,9 @@ fn ordinary_report() -> ContextReport<'static> {
         program: None,
         password: false,
         sensitive: false,
+        // An ordinary application renders a client preedit: the negotiation
+        // leaves the configuration's answer standing.
+        preedit: true,
     }
 }
 
@@ -412,6 +415,9 @@ impl Fixture {
             lexicon: &self.lexicon,
             user_freq: &self.user,
             lm: &self.lm,
+            english: None,
+            confusables: None,
+            symbols: None,
         }
     }
 

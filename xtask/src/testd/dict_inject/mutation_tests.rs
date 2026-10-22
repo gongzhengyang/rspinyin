@@ -24,7 +24,7 @@ use super::mutate::{FILE_CRC_OFFSET, SECTION_CRC_FIELD, garbage, named_span};
 use super::support::{
     Scratch, Source, compiled_dictionary, compiled_dir, dir_names, fixture, source,
 };
-use super::{DictErrorKind, DictFixture, DictMutation, FixtureError, sha256};
+use super::{DictErrorKind, DictMutation, FixtureError, MutatedContainer, sha256};
 
 /// The eight mutations the channel was first specified to cover.
 ///
@@ -214,7 +214,7 @@ fn is_checksum_field(at: usize) -> bool {
 ///
 /// The fixture is driven through the same public surface a case outside this module would
 /// use, so the sweep is an assertion about the channel rather than about an internal helper.
-fn sweep(fixture: &mut DictFixture, cases: &[Case]) {
+fn sweep(fixture: &mut MutatedContainer, cases: &[Case]) {
     for case in cases {
         let mutation = &case.mutation;
         fixture
@@ -702,7 +702,7 @@ fn test_the_compiled_artifact_is_read_only_and_its_directory_gains_nothing() {
     if artifact.is_file() {
         let digest = sha256(&artifact).expect("hashing the compiled dictionary");
         let scratch = Scratch::new("artifact");
-        let mut fixture = DictFixture::from_compiled(&artifact, &scratch.path("copy.dict"))
+        let mut fixture = MutatedContainer::from_compiled(&artifact, &scratch.path("copy.dict"))
             .expect("a compiled dictionary is a container the fixture can copy");
         sweep(&mut fixture, &fixed_cases());
         drop(fixture);

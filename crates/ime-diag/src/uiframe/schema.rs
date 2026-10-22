@@ -194,6 +194,9 @@ pub enum SourceName {
     Phrase,
     /// A script conversion of another candidate.
     Script,
+    /// An entry of the English lexicon, offered for an input no pinyin
+    /// reading cuts.
+    English,
 }
 
 impl SourceName {
@@ -207,6 +210,7 @@ impl SourceName {
             CandidateSource::Symbol => Self::Symbol,
             CandidateSource::Phrase => Self::Phrase,
             CandidateSource::Script => Self::Script,
+            CandidateSource::English => Self::English,
         }
     }
 
@@ -220,6 +224,7 @@ impl SourceName {
             Self::Symbol => CandidateSource::Symbol,
             Self::Phrase => CandidateSource::Phrase,
             Self::Script => CandidateSource::Script,
+            Self::English => CandidateSource::English,
         }
     }
 }

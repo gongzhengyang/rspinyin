@@ -131,8 +131,8 @@ type Pinned = Vec<(Box<str>, bool)>;
 type KeyRows = Vec<(Box<str>, Option<Box<str>>)>;
 
 /// The coined entries one flush takes out of the delta map: the composite `(key, word)`
-/// row key, and the word it enrols.
-type Coined = Vec<(Box<str>, Box<str>)>;
+/// row key, the word it enrols, and the commits the window accumulated for the pair.
+type Coined = Vec<(Box<str>, Box<str>, u32)>;
 
 /// The coined rows one flush takes out as removals, by their composite row key.
 type CoinedRemoved = Vec<Box<str>>;
@@ -308,7 +308,11 @@ impl Inner {
             }
             let pinned = pending.pins.drain().collect();
             let key_rows = pending.key_rows.drain().collect();
-            let coined = pending.coined.drain().collect();
+            let coined = pending
+                .coined
+                .drain()
+                .map(|(composite, (word, count))| (composite, word, count))
+                .collect();
             let coined_removed = pending.coined_removed.drain().collect();
             (
                 drained,
@@ -355,7 +359,7 @@ impl Inner {
         removed: &[Box<str>],
         pinned: &[(Box<str>, bool)],
         key_rows: &[(Box<str>, Option<Box<str>>)],
-        coined: &[(Box<str>, Box<str>)],
+        coined: &[(Box<str>, Box<str>, u32)],
         coined_removed: &[Box<str>],
         durability: Durability,
     ) -> Result<(), String> {
@@ -410,8 +414,8 @@ impl Inner {
             // The coined rows land in the same transaction as everything else: one flush,
             // one commit, and the durability window the frequency records live under is
             // the one the coins live under too. An insert of an entry the file already
-            // holds adds one commit to what is stored, which is the confirmation the
-            // coin path recorded.
+            // holds adds the window's commits to what is stored, which is the
+            // confirmation the coin path recorded.
             let mut lexicon = txn
                 .open_table(USER_LEXICON)
                 .map_err(|error| error.to_string())?;
@@ -420,13 +424,16 @@ impl Inner {
                     .remove(composite.as_ref())
                     .map_err(|error| error.to_string())?;
             }
-            for (composite, _word) in coined {
+            for (composite, _word, count) in coined {
                 let previous = lexicon
                     .get(composite.as_ref())
                     .map_err(|error| error.to_string())?
                     .map_or((0u32, 0u64), |guard| guard.value());
                 lexicon
-                    .insert(composite.as_ref(), (previous.0.saturating_add(1), previous.1))
+                    .insert(
+                        composite.as_ref(),
+                        (previous.0.saturating_add(*count), previous.1),
+                    )
                     .map_err(|error| error.to_string())?;
             }
             for (key, delta) in drained {

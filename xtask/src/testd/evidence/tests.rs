@@ -12,9 +12,12 @@
 //! directory, so nothing here touches the repository, the operator's home or a display server,
 //! and no test reads a clock: the instants they use are named explicitly.
 //!
-//! The two indexes have tests of their own beside this file, in `index`.
+//! The two indexes have tests of their own beside this file, in `index`, and the batch
+//! report and the cross-run registry in `report`.
 
 mod index;
+mod report;
+mod v3;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
@@ -84,6 +87,7 @@ fn evidence(module: &str, tc: &str, status: CaseStatus) -> CaseEvidence {
         visual: Vec::new(),
         healed: Vec::new(),
         environment: Vec::new(),
+        v3: None,
     }
 }
 
@@ -848,12 +852,18 @@ fn test_a_lost_bundle_does_not_stop_the_batch() {
 
     let text = journal.render_index(&run);
     assert!(
-        text.contains("- cases: 2 (pass 1, fail 0, flawed 1)"),
+        text.contains("- cases: 2 (pass 1, fail 0, flawed 1, skipped 0)"),
         "{text}"
     );
-    assert!(text.contains("| ui | TC-UI-01 | pass |"), "{text}");
-    assert!(text.contains("| core | TC-CORE-01 | flawed |"), "{text}");
-    assert!(text.contains("| 2 | 1 | no | 0 | gap: "), "{text}");
+    assert!(text.contains("| ui | TC-UI-01 | - | pass |"), "{text}");
+    assert!(
+        text.contains("| core | TC-CORE-01 | - | flawed |"),
+        "{text}"
+    );
+    assert!(
+        text.contains("| - | flawed | 12 ms | 2 | 1 | no | 0 | gap: "),
+        "{text}"
+    );
 }
 
 #[test]
@@ -903,18 +913,18 @@ fn test_run_journal_renders_the_case_table_and_writes_it() {
     assert!(text.contains("# Run run-20231114-221320"), "{text}");
     assert!(text.contains("- started: 2023-11-14T22:13:20Z"), "{text}");
     assert!(
-        text.contains("- cases: 2 (pass 1, fail 1, flawed 0)"),
+        text.contains("- cases: 2 (pass 1, fail 1, flawed 0, skipped 0)"),
         "{text}"
     );
     assert!(text.contains("- evidence gaps: 0"), "{text}");
     assert!(text.contains("- healed: 1"), "{text}");
     assert!(text.contains("- verdict: fail"), "{text}");
     assert!(
-        text.contains("| core | TC-CORE-01 | pass | 12 ms | 0 | 0 | no | 0 | complete |"),
+        text.contains("| core | TC-CORE-01 | - | pass | 12 ms | 0 | 0 | no | 0 | complete |"),
         "{text}"
     );
     assert!(
-        text.contains("| ui | TC-UI-01 | fail | 12 ms | 2 | 1 | yes | 1 | complete |"),
+        text.contains("| ui | TC-UI-01 | - | fail | 12 ms | 2 | 1 | yes | 1 | complete |"),
         "{text}"
     );
 
@@ -980,17 +990,21 @@ fn test_batch_summary_counts_and_ranks_the_verdicts() {
     assert_eq!(gapped.cases(), 3);
     assert_eq!(gapped.verdict(), BatchVerdict::Flawed);
 
-    // A failure outranks a gap, and the gap is still counted beside it.
+    // A failure outranks a gap, and the gap is still counted beside it. A skipped case is
+    // counted by neither: it was judged by nothing.
     let mixed = BatchSummary {
         passed: 1,
         failed: 1,
         flawed: 1,
+        skipped: 2,
         evidence_gaps: 1,
+        screenshot_gaps: 0,
         healed: 2,
     };
     assert_eq!(mixed.cases(), 3);
     assert_eq!(mixed.verdict(), BatchVerdict::Fail);
     assert_eq!(mixed.healed, 2);
+    assert_eq!(mixed.skipped, 2);
 
     assert_eq!(BatchVerdict::Pass.label(), "pass");
     assert_eq!(BatchVerdict::Fail.label(), "fail");
@@ -1009,6 +1023,14 @@ fn test_case_row_is_complete_only_without_a_gap() {
         trace: false,
         healed: 0,
         gap: None,
+        tier: None,
+        claims: 0,
+        failed_claims: 0,
+        screenshots_expected: 0,
+        screenshots_missing: Vec::new(),
+        withheld: None,
+        dims: Vec::new(),
+        budget_keys: Vec::new(),
     };
     assert!(row.is_complete());
 

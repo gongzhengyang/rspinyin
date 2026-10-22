@@ -7,7 +7,11 @@ use super::*;
 fn map(key: &str, weights: &[u32]) -> WordMap {
     WordMap::from([(
         String::from(key),
-        weights.iter().enumerate().map(|(id, weight)| (*weight, id as u32)).collect(),
+        weights
+            .iter()
+            .enumerate()
+            .map(|(id, weight)| (*weight, id as u32))
+            .collect(),
     )])
 }
 

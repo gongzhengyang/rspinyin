@@ -49,8 +49,8 @@ use ime_diag::perms;
 
 use super::error::EvidenceError;
 use super::{
-    ASSERTIONS_FILE, CaseEvidence, HEAL_FILE, LEGACY_SUBDIRS, RESULTS_DIR, RUN_INDEX_FILE,
-    RUNS_DIR, TRACE_FILE, TraceRecord, Utc,
+    ASSERTIONS_FILE, CHECKLIST_FILE, CaseEvidence, HEAL_FILE, LEGACY_SUBDIRS, RESULTS_DIR,
+    RUN_INDEX_FILE, RUNS_DIR, TRACE_FILE, TraceRecord, Utc,
 };
 use crate::testd::capture;
 
@@ -225,6 +225,38 @@ impl RunDir {
     /// Never.
     pub fn write_index(&self, text: &str) -> Result<PathBuf, EvidenceError> {
         let path = self.root.join(RUN_INDEX_FILE);
+        write_private(&path, text.as_bytes())?;
+        Ok(path)
+    }
+
+    /// Writes the run's batch `checklist.json`, the evidence-existence table of its cases.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvidenceError::Io`] when the file cannot be written or its mode cannot be set.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn write_checklist(&self, text: &str) -> Result<PathBuf, EvidenceError> {
+        let path = self.root.join(CHECKLIST_FILE);
+        write_private(&path, text.as_bytes())?;
+        Ok(path)
+    }
+
+    /// Writes the run's batch report, `final-report.md`, what the executor reads first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvidenceError::Io`] when the file cannot be written or its mode cannot be set.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn write_report(&self, text: &str) -> Result<PathBuf, EvidenceError> {
+        let path = self
+            .root
+            .join(crate::testd::evidence::report::FINAL_REPORT_FILE);
         write_private(&path, text.as_bytes())?;
         Ok(path)
     }

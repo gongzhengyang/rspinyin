@@ -58,11 +58,7 @@ fn test_set_pinned_moves_the_pin_when_a_second_word_takes_the_key() {
     db.set_pinned(KEY, Some(WORD)).expect("pinning the first");
     db.set_pinned(KEY, Some("jie"))
         .expect("pinning a different word under the same key");
-    assert_eq!(
-        db.freq(WORD),
-        1,
-        "the word that held the pin gave it up"
-    );
+    assert_eq!(db.freq(WORD), 1, "the word that held the pin gave it up");
     assert_eq!(
         db.freq("jie"),
         PINNED_FREQ,
@@ -85,7 +81,8 @@ fn test_set_pinned_none_clears_the_key_pin_explicitly() {
 
     // A key that holds no pin has nothing to clear, and says so without an error or a
     // write: the call is a no-op, not a refusal.
-    db.set_pinned(OTHER_KEY, None).expect("clearing an empty key");
+    db.set_pinned(OTHER_KEY, None)
+        .expect("clearing an empty key");
     assert_eq!(db.freq(WORD), 1);
 }
 
@@ -202,11 +199,7 @@ fn test_a_pin_is_known_to_a_store_too_large_to_load() {
     db.wait_for_flush();
     drop(db);
 
-    let db = UserDb::open_with_hydrate_cap(
-        db_path(&dir),
-        Box::new(TestClock::default()),
-        0,
-    );
+    let db = UserDb::open_with_hydrate_cap(db_path(&dir), Box::new(TestClock::default()), 0);
     let db = db.expect("opening the store past its ceiling");
     assert!(!db.is_hydrated(), "the fixture is on the fallback path");
     assert_eq!(

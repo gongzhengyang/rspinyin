@@ -61,7 +61,10 @@ fn candidate(text: &str, score: f32) -> Candidate {
 
 /// The texts of a list, in the order the re-rank left them.
 fn texts(candidates: &[Candidate]) -> Vec<String> {
-    candidates.iter().map(|candidate| candidate.text.clone()).collect()
+    candidates
+        .iter()
+        .map(|candidate| candidate.text.clone())
+        .collect()
 }
 
 #[test]
@@ -200,10 +203,22 @@ fn test_rerank_aligned_carries_the_drafts_through_the_same_moves() {
 
     crate::viterbi::context::rerank_aligned(&mut candidates, &mut drafts, Some("银行"), &model);
 
-    assert_eq!(texts(&candidates), vec!["预算", "银行"], "context wins the tie");
-    assert_eq!(drafts[0].text(), "预算", "the draft moved with its candidate");
+    assert_eq!(
+        texts(&candidates),
+        vec!["预算", "银行"],
+        "context wins the tie"
+    );
+    assert_eq!(
+        drafts[0].text(),
+        "预算",
+        "the draft moved with its candidate"
+    );
     assert_eq!(drafts[1].text(), "银行", "and so did the other one");
-    assert_eq!(drafts[2].text(), "the third stays", "below the band nothing moved");
+    assert_eq!(
+        drafts[2].text(),
+        "the third stays",
+        "below the band nothing moved"
+    );
 }
 
 /// One draft with the text the test names and no spans: the re-rank permutes whole
@@ -215,6 +230,7 @@ fn draft_of(text: &str) -> crate::viterbi::sweep::Draft {
         syllables: 2,
         score: 0,
         corrected: false,
+        readings: String::new(),
         words: crate::viterbi::sweep::WordSpans::EMPTY,
     }
 }

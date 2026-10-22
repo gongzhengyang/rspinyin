@@ -204,6 +204,9 @@ fn composing_session() -> Session {
         lexicon: &lexicon,
         user_freq: &user,
         lm: &lm,
+        english: None,
+        confusables: None,
+        symbols: None,
     };
     let cfg = SessionConfig::default();
     let mut session = Session::new();

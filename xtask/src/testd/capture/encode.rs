@@ -89,6 +89,55 @@ pub fn write_png(
     writer.finish().map_err(codec_error)
 }
 
+/// Reads a PNG back as the RGBA frame it was written from.
+///
+/// This is the read half of [`write_png`]: the golden-diff channel loads a baseline or a
+/// captured frame with it and compares pixels, so the file's own colour type governs the
+/// unpack and only the layouts this harness writes are accepted.
+///
+/// # Errors
+///
+/// Returns [`CaptureError::Read`] when the file cannot be opened, and
+/// [`CaptureError::Png`] when it is not a PNG this build can read -- which includes an
+/// 8-bit RGBA requirement the file does not meet, because a frame read into the wrong
+/// layout would diff against everything.
+///
+/// # Panics
+///
+/// Never.
+pub fn read_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>), CaptureError> {
+    let file = File::open(path).map_err(|error| CaptureError::Read {
+        path: path.to_path_buf(),
+        detail: error.to_string(),
+    })?;
+    let mut reader = png::Decoder::new(BufReader::new(file))
+        .read_info()
+        .map_err(codec_error)?;
+    let info = reader.info().clone();
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return Err(CaptureError::Png {
+            detail: format!(
+                "{} is {:?} {:?}, and this channel compares 8-bit RGBA frames only",
+                path.display(),
+                info.bit_depth,
+                info.color_type
+            ),
+        });
+    }
+    // The buffer is the *output* size, not the file's raw scanline size: the raw data
+    // carries one filter byte per row, and a buffer sized from it would hand back a frame
+    // with a run of zeros after every row.
+    let Some(size) = reader.output_buffer_size() else {
+        return Err(CaptureError::Png {
+            detail: format!("{} names no decodable frame size", path.display()),
+        });
+    };
+    let mut image = vec![0u8; size];
+    let output = reader.next_frame(&mut image).map_err(codec_error)?;
+    image.truncate(output.buffer_size());
+    Ok((output.width, output.height, image))
+}
+
 /// Reads the capture record a PNG carries.
 ///
 /// Answers `None` when the file is a readable PNG that does not carry the record -- either

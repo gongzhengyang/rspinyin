@@ -16,8 +16,8 @@ use std::collections::BinaryHeap;
 use super::*;
 
 use super::cache::lock_cache;
-use super::hydrate::COMPOSITE_SEPARATOR;
 use super::flush::Delta;
+use super::hydrate::COMPOSITE_SEPARATOR;
 
 // The parent module imports `Ordering` for its atomics; this module orders records. An
 // explicit import wins over a glob, so the name below means the comparison here and the
@@ -202,7 +202,15 @@ impl Inner {
             // opposite statement, and the later one wins, exactly as a record takes a
             // tombstone back.
             pending.coined_removed.remove(composite.as_ref());
-            pending.coined.insert(composite, Box::from(word));
+            // A pair already waiting in the window counts one more confirmation rather
+            // than replacing it: the commits column is how often the user committed the
+            // pair, and every commit of the window is one of those.
+            match pending.coined.get_mut(composite.as_ref()) {
+                Some((_, count)) => *count = count.saturating_add(1),
+                None => {
+                    pending.coined.insert(composite, (Box::from(word), 1));
+                }
+            }
             pending.coined.len() >= PENDING_CAPACITY
         };
         if due {
@@ -305,7 +313,9 @@ impl Inner {
         // word on this call, so the very next decode ranks the remaining candidates
         // without it.
         self.release_pins(key);
-        if present {
+        // A coined word is a word the store knows even though the frequency tables never
+        // learned it: the removal of its rows is what makes the outcome say removed.
+        if present || !coined.is_empty() {
             ForgetOutcome::Removed
         } else {
             ForgetOutcome::NotFound

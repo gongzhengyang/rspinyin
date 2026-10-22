@@ -655,7 +655,10 @@ fn test_fuzzy_section_merges_key_by_key_over_the_defaults() {
     let document = "schema_version = 2\n[fuzzy]\nzh_z = true\nn_l = true\n";
     let (config, warnings) = Config::from_document(document).expect("a legal document");
     assert!(warnings.is_empty(), "{warnings:?}");
-    assert!(config.fuzzy.zh_z && config.fuzzy.n_l, "the keys the document sets");
+    assert!(
+        config.fuzzy.zh_z && config.fuzzy.n_l,
+        "the keys the document sets"
+    );
     assert!(
         !config.fuzzy.enabled && !config.fuzzy.ch_c && !config.fuzzy.in_ing,
         "and every key it leaves out keeps its default"

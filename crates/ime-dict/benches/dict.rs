@@ -267,15 +267,15 @@ fn bench_prefix(group: &mut BenchmarkGroup<'_, WallTime>, fixture: &Fixture) {
         bencher.iter(|| {
             let prefix = hits[cursor % hits.len()];
             cursor = cursor.wrapping_add(1);
-            let served = fixture
-                .lexicon
-                .prefix(black_box(prefix), PREFIX_LIMIT);
+            let served = fixture.lexicon.prefix(black_box(prefix), PREFIX_LIMIT);
             black_box(served.map(|iter| iter.count()))
         });
     });
     group.bench_function("prefix_miss", |bencher| {
         bencher.iter(|| {
-            let served = fixture.lexicon.prefix(black_box(miss.as_str()), PREFIX_LIMIT);
+            let served = fixture
+                .lexicon
+                .prefix(black_box(miss.as_str()), PREFIX_LIMIT);
             black_box(served.map(|iter| iter.count()))
         });
     });

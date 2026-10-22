@@ -18,6 +18,8 @@
 //! # Columns: key <TAB> weight <TAB> last_used_unix <TAB> created_unix <TAB> pinned <TAB> dee_q16 <TAB> tick
 //! # `key` is the word the user committed, which is what the frequency was recorded against.
 //! nihao<TAB>128<TAB>1759161600000<TAB>1756570000000<TAB>0<TAB>8388608<TAB>412
+//! # Coined words: key <TAB> word <TAB> commits <TAB> last_used_unix
+//! zhu'ji<TAB>诸暨<TAB>3<TAB>0
 //! ```
 //!
 //! Rows come out in key order, which is the order the store's table holds them in, so two
@@ -25,18 +27,30 @@
 //! `#` is a comment; a document whose first non-blank line is not the marker above is not an
 //! export of this format and is refused whole.
 //!
+//! The frequency rows are followed by the coined-word section whenever the store holds
+//! any: one comment naming the four columns of the rows that follow it, written by the
+//! commit path that enrolled the pairs the user spelled. The section travels in both
+//! directions -- an import writes the rows back under the same merge rule the frequency
+//! rows obey, never lowering a count the user already earned. A build too old to know the
+//! section reads its rows as malformed frequency rows and refuses the document whole,
+//! which is the same forward break every column extension of the marker made.
+//!
 //! The `dee_q16` column is the decay accumulator in Q16.16 and `tick` the record's
 //! logical stamp -- the two inputs the store's decay reads. A v2 import accepts the v1
 //! document as well: its five columns map onto the first five of these, and its rows
 //! enter the store un-ticked and un-decayed, which is what a v1 record is.
 
-use std::fmt::Write as _;
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 
+use super::flush::Delta;
+use super::hydrate::COMPOSITE_SEPARATOR;
 use super::*;
 
-use super::flush::Delta;
+mod document;
+
+use self::document::{CoinedExport, ExportDocument, Parsed, parse_export};
 
 /// Ceiling on one export document, in bytes (`ASM-A-09`).
 ///
@@ -73,24 +87,6 @@ pub(super) fn set_export_limit(limit: u64) {
     EXPORT_LIMIT.with(|held| held.set(limit));
 }
 
-/// The first line of an export, and the marker an import is recognised by.
-const EXPORT_MARKER: &str = "# rspinyin user dictionary export v2";
-/// The marker a schema-1 build wrote. An import still recognises it: a document a
-/// user exported under v1 has to come back into the store that upgraded.
-const EXPORT_MARKER_V1: &str = "# rspinyin user dictionary export v1";
-
-/// The line that names the columns, written under the marker.
-const EXPORT_COLUMNS: &str = "# Columns: key <TAB> weight <TAB> last_used_unix <TAB> created_unix <TAB> pinned <TAB> dee_q16 <TAB> tick";
-
-/// What the `key` column holds, written under the columns.
-///
-/// The column holds the word the user committed, because that is the key every other call
-/// uses -- [`UserFreqSource::freq`], [`UserFreqSource::record`] and the commit path that
-/// feeds them. The pinyin the user typed is not a key any lookup would ever match, so an
-/// export that wrote it would produce a document nothing could be imported back into.
-const EXPORT_KEY_NOTE: &str =
-    "# `key` is the word the user committed, which is what the frequency was recorded against.";
-
 /// What one import did.
 ///
 /// An import is all-or-nothing: the document is read and validated in full before a single
@@ -118,14 +114,15 @@ impl UserDb {
     /// which is then renamed over it: a rename is atomic, so a reader of `path` sees either
     /// the previous export or the new one and never a half-written file. The temporary file
     /// carries mode [`FILE_MODE`] from the moment it exists, because an export is the user's
-    /// own vocabulary and is as private as the store it came from.
+    /// own vocabulary and is as private as the store it came from. The count covers the
+    /// frequency rows and the coined rows alike.
     ///
     /// # Errors
     /// Returns [`ImeError::ExportTooLarge`] when the document would pass
     /// [`EXPORT_LIMIT_BYTES`] -- nothing is written in that case, temporary file included --
-    /// [`ImeError::DictCorrupt`] when the store holds a key the format cannot carry, and
-    /// [`ImeError::DictUnavailable`] naming `path` when the file cannot be written or
-    /// renamed.
+    /// [`ImeError::DictCorrupt`] when the store holds a key or a coined word the format
+    /// cannot carry, and [`ImeError::DictUnavailable`] naming `path` when the file cannot be
+    /// written or renamed.
     pub fn export_to_file(&self, path: impl AsRef<Path>) -> Result<u64, ImeError> {
         let path = path.as_ref();
         let (document, rows) = self.inner.render_export()?;
@@ -146,15 +143,17 @@ impl UserDb {
     /// Reads an export document and writes its rows into the store, returning what it did.
     ///
     /// Nothing is applied unless the whole document is well formed: the marker line has to
-    /// be present, every data row has to hold exactly the five tab-separated columns
-    /// [`EXPORT_COLUMNS`] names, the three numeric columns have to be decimal, and the pin
+    /// be present, every data row has to hold the columns its section names -- seven for
+    /// the frequency rows, four for the coined rows below the coined marker -- the three
+    /// numeric columns have to be decimal, and the pin
     /// column has to be
     /// `0` or `1`. A document that fails any of those is refused whole and the store is left
     /// exactly as it was.
     ///
     /// A row for a key the store already holds is merged rather than replaced: the larger
     /// weight, the later use, the earlier creation time and the pin flag of either side
-    /// survive. An import must never lower a count the user already earned by typing.
+    /// survive. An import must never lower a count the user already earned by typing. A
+    /// coined row merges the same way, by the larger commit count and the later use.
     ///
     /// # Errors
     /// Returns [`ImeError::ExportTooLarge`] when the document is larger than
@@ -185,10 +184,11 @@ impl UserDb {
                 recognised: parsed.recognised,
             });
         }
-        let applied = self.inner.apply_import(&parsed.rows)?;
+        let accepted = parsed.rows.len().saturating_add(parsed.coined.len());
+        let applied = self.inner.apply_import(&parsed.rows, &parsed.coined)?;
         Ok(ImportReport {
             applied,
-            accepted: u64::try_from(parsed.rows.len()).unwrap_or(u64::MAX),
+            accepted: u64::try_from(accepted).unwrap_or(u64::MAX),
             rejected: 0,
             recognised: true,
         })
@@ -239,7 +239,97 @@ impl Inner {
                 dee_q16: i64::from(delta.count) << 16,
             })?;
         }
+        self.scan_coined(&mut document)?;
         document.finish()
+    }
+
+    /// Renders the coined-word section, when the store holds any coined words.
+    ///
+    /// One read transaction covers the table and the pending coins are folded in from a
+    /// copy taken before it, so the section cannot mix two generations of a row: a coin
+    /// waiting for its flush adds its window's commits to the row the file already
+    /// holds, and one the file has never seen enters as its own row. A row a forget is
+    /// waiting for is left out, whichever half of it is in the file.
+    ///
+    /// # Errors
+    /// Returns [`ImeError::DictCorrupt`] when a row the store holds cannot be carried --
+    /// a composite the coin path could not have written, or a word the format has no
+    /// column for -- and [`ImeError::DictUnavailable`] when the transaction fails.
+    fn scan_coined(&self, document: &mut ExportDocument) -> Result<(), ImeError> {
+        let (coins, removed) = self.coin_snapshot();
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|error| store_error(&self.path, &error))?;
+        let rows = match txn.open_table(USER_LEXICON) {
+            Ok(table) => table,
+            // A store that has never flushed a coin holds no table yet, which is an
+            // empty section and not a failure.
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+            Err(error) => return Err(store_error(&self.path, &error)),
+        };
+        // The rows collect into a map keyed by the composite, so a pending coin folds
+        // into its row instead of doubling it, and the iteration is the map's key order
+        // rather than whatever order the two sources were read in.
+        let mut merged: BTreeMap<Box<str>, CoinedExport> = BTreeMap::new();
+        if let Ok(mut iter) = rows.iter().map(|walk| walk) {
+            while let Some(Ok((row_key, row))) = iter.next() {
+                let composite = Box::<str>::from(row_key.value());
+                if removed.contains(composite.as_ref()) {
+                    continue;
+                }
+                let (commits, last_used) = row.value();
+                let Some((key, word)) = composite.split_once(COMPOSITE_SEPARATOR) else {
+                    return Err(ImeError::DictCorrupt {
+                        path: self.path.clone(),
+                    });
+                };
+                let mut rendered = CoinedExport {
+                    key: String::from(key),
+                    word: String::from(word),
+                    commits,
+                    last_used_unix: last_used,
+                };
+                if let Some((_, count)) = coins.get(composite.as_ref()) {
+                    rendered.commits = rendered.commits.saturating_add(*count);
+                }
+                merged.insert(composite, rendered);
+            }
+        }
+        for (composite, (word, count)) in coins {
+            if merged.contains_key(composite.as_ref()) {
+                continue;
+            }
+            let Some((key, _)) = composite.split_once(COMPOSITE_SEPARATOR) else {
+                return Err(ImeError::DictCorrupt {
+                    path: self.path.clone(),
+                });
+            };
+            let key = String::from(key);
+            merged.insert(
+                composite,
+                CoinedExport {
+                    key,
+                    word: String::from(word.as_ref()),
+                    commits: count,
+                    last_used_unix: 0,
+                },
+            );
+        }
+        for row in merged.values() {
+            document.push_coined(row)?;
+        }
+        Ok(())
+    }
+
+    /// Copies the pending coins and their tombstones out of the pending lock.
+    ///
+    /// The same reason [`Inner::pending_snapshot`] copies: the scan must not hold the
+    /// delta lock across a read transaction. The maps are bounded by the pending
+    /// capacity, so the copy is bounded by it too.
+    fn coin_snapshot(&self) -> (HashMap<Box<str>, (Box<str>, u32)>, HashSet<Box<str>>) {
+        let pending = lock(&self.pending);
+        (pending.coined.clone(), pending.coined_removed.clone())
     }
 
     /// Renders every stored record into `document`, in key order.
@@ -299,13 +389,20 @@ impl Inner {
     /// Writes imported rows into the store in one transaction, returning how many landed.
     ///
     /// The pending delta is flushed first, so the value an import merges with is the value
-    /// the store actually holds rather than the one it held at the last flush.
+    /// the store actually holds rather than the one it held at the last flush. The coined
+    /// rows land in the same transaction as the frequency rows, under the same merge rule:
+    /// the larger commit count and the later use survive, and the in-memory composite map
+    /// learns the rows the store took so `is_user_word` and a later forget see them.
     ///
     /// # Errors
     /// Returns [`ImeError::DataReadonly`] when the store is read-only or the flush fails,
     /// and [`ImeError::DictUnavailable`] when a transaction fails.
-    pub(super) fn apply_import(&self, rows: &[UserRecord]) -> Result<u64, ImeError> {
-        if rows.is_empty() {
+    pub(super) fn apply_import(
+        &self,
+        rows: &[UserRecord],
+        coined: &[CoinedExport],
+    ) -> Result<u64, ImeError> {
+        if rows.is_empty() && coined.is_empty() {
             return Ok(0);
         }
         if self.readonly.load(Ordering::Acquire) {
@@ -319,6 +416,7 @@ impl Inner {
         // typing -- so it may wait for that to be true.
         self.flush_now(Durability::Immediate)?;
         let mut merged: Vec<(Box<str>, Stored, bool)> = Vec::with_capacity(rows.len());
+        let mut adopted: Vec<(Box<str>, Box<str>)> = Vec::with_capacity(coined.len());
         let mut txn = self
             .db
             .begin_write()
@@ -329,6 +427,9 @@ impl Inner {
                 .map_err(|error| store_error(&self.path, &error))?;
             let mut meta = txn
                 .open_table(USER_META)
+                .map_err(|error| store_error(&self.path, &error))?;
+            let mut lexicon = txn
+                .open_table(USER_LEXICON)
                 .map_err(|error| store_error(&self.path, &error))?;
             for row in rows {
                 let previous = words
@@ -381,6 +482,26 @@ impl Inner {
                 .map_err(|error| store_error(&self.path, &error))?;
                 merged.push((Box::from(row.key.as_str()), merged_row, pinned != 0));
             }
+            // The coined rows merge under the frequency rows' own rule: a count the user
+            // already earned is never lowered, and the later use wins.
+            for row in coined {
+                let composite: Box<str> =
+                    format!("{}{}{}", row.key, COMPOSITE_SEPARATOR, row.word).into();
+                let previous = lexicon
+                    .get(composite.as_ref())
+                    .map_err(|error| store_error(&self.path, &error))?
+                    .map_or((0u32, 0u64), |guard| guard.value());
+                lexicon
+                    .insert(
+                        composite.as_ref(),
+                        (
+                            previous.0.max(row.commits),
+                            previous.1.max(row.last_used_unix),
+                        ),
+                    )
+                    .map_err(|error| store_error(&self.path, &error))?;
+                adopted.push((composite, Box::from(row.word.as_str())));
+            }
         }
         txn.set_durability(Durability::Immediate);
         txn.commit()
@@ -388,7 +509,20 @@ impl Inner {
         for (key, row, pinned) in &merged {
             self.adopt_imported(key, *row, *pinned);
         }
-        Ok(u64::try_from(rows.len()).unwrap_or(u64::MAX))
+        // The composite map the reads consult learns the rows the transaction took, so
+        // `is_user_word` answers for an imported coin at once and a later forget finds
+        // its rows without a scan.
+        {
+            let mut coined_map = lock(&self.coined_words);
+            for (composite, word) in &adopted {
+                let entries = coined_map.entry(word.clone()).or_default();
+                if !entries.contains(composite) {
+                    entries.push(composite.clone());
+                }
+            }
+        }
+        let landed = rows.len().saturating_add(adopted.len());
+        Ok(u64::try_from(landed).unwrap_or(u64::MAX))
     }
 }
 
@@ -403,215 +537,6 @@ fn earliest_stamp(held: u64, imported: u64) -> u64 {
         (kept, 0) => kept,
         (kept, other) => kept.min(other),
     }
-}
-
-/// Whether a key can be written to the document and read back unchanged.
-///
-/// A key holding a tab, a carriage return or a newline would break the row it sits in, and
-/// one starting with `#` would come back as a comment: either way the export would not be
-/// the round trip it claims to be, so the store reports the key instead of writing a
-/// document it cannot read.
-fn is_exportable(key: &str) -> bool {
-    !key.is_empty() && !key.starts_with('#') && !key.contains(['\t', '\r', '\n'])
-}
-
-/// The document being rendered, its size and its row count.
-///
-/// The buffer stops growing at the ceiling while the size keeps counting, so the reported
-/// figure is the size the document would have had.
-struct ExportDocument {
-    text: String,
-    bytes: u64,
-    rows: u64,
-    /// The ceiling in force when the document was started, so that a row costs no more than
-    /// one comparison.
-    limit: u64,
-    /// The store the document is read from, so that a key the format cannot carry is
-    /// reported against the file that holds it.
-    path: PathBuf,
-    /// A row's own line, reused so that a store of many words does not allocate per word.
-    line: String,
-}
-
-impl ExportDocument {
-    /// Starts a document with its three comment lines.
-    fn new(path: PathBuf) -> Self {
-        let mut text = String::with_capacity(4096);
-        for line in [EXPORT_MARKER, EXPORT_COLUMNS, EXPORT_KEY_NOTE] {
-            text.push_str(line);
-            text.push('\n');
-        }
-        Self {
-            bytes: u64::try_from(text.len()).unwrap_or(u64::MAX),
-            text,
-            rows: 0,
-            limit: export_limit(),
-            path,
-            line: String::with_capacity(128),
-        }
-    }
-
-    /// Renders one record and appends it while the document still fits.
-    ///
-    /// # Errors
-    /// Returns [`ImeError::DictCorrupt`] when the record's key cannot be carried by the
-    /// format.
-    fn push(&mut self, row: &UserRecord) -> Result<(), ImeError> {
-        if !is_exportable(&row.key) {
-            return Err(ImeError::DictCorrupt {
-                path: self.path.clone(),
-            });
-        }
-        self.line.clear();
-        // Writing into a `String` cannot fail, and the result is discarded rather than
-        // unwrapped: there is no panic path to take and no error to report.
-        let _ = writeln!(
-            self.line,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            row.key,
-            row.weight,
-            row.last_used_unix,
-            row.created_unix,
-            u8::from(row.pinned),
-            row.dee_q16,
-            row.tick
-        );
-        self.bytes = self
-            .bytes
-            .saturating_add(u64::try_from(self.line.len()).unwrap_or(u64::MAX));
-        if self.bytes <= self.limit {
-            self.text.push_str(&self.line);
-        }
-        self.rows = self.rows.saturating_add(1);
-        Ok(())
-    }
-
-    /// Returns the document and its row count, or reports that it does not fit.
-    ///
-    /// # Errors
-    /// Returns [`ImeError::ExportTooLarge`] when the document passed the ceiling.
-    fn finish(self) -> Result<(String, u64), ImeError> {
-        if self.bytes > self.limit {
-            return Err(ImeError::ExportTooLarge {
-                bytes: self.bytes,
-                limit: self.limit,
-            });
-        }
-        Ok((self.text, self.rows))
-    }
-}
-
-/// What reading one document produced.
-struct Parsed {
-    /// Whether the document carried this format's marker.
-    recognised: bool,
-    /// The rows that passed validation; empty when the document was refused.
-    rows: Vec<UserRecord>,
-    /// How many rows failed validation.
-    rejected: u64,
-}
-
-impl Parsed {
-    /// A document that is not an export of this format, with every data row it holds counted
-    /// as rejected.
-    fn refused(document: &str) -> Self {
-        Self {
-            recognised: false,
-            rows: Vec::new(),
-            rejected: data_lines(document).count().try_into().unwrap_or(u64::MAX),
-        }
-    }
-}
-
-/// Iterates the lines that carry data: no blank lines and no comments.
-fn data_lines(document: &str) -> impl Iterator<Item = &str> {
-    document
-        .lines()
-        .map(str::trim_end)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-}
-
-/// Reads an export document, validating every row before any of them is trusted.
-///
-/// A document under either marker is accepted: the v2 document is what this build
-/// writes, and the v1 one is what a schema-1 build wrote -- its rows read as un-ticked,
-/// un-decayed records, which is what they are.
-///
-/// # Panics
-/// Never: every field is parsed with a checked conversion and every failure is a rejected
-/// row.
-fn parse_export(document: &str) -> Parsed {
-    let marker = document
-        .lines()
-        .map(str::trim_end)
-        .find(|line| !line.is_empty());
-    let recognised = marker == Some(EXPORT_MARKER) || marker == Some(EXPORT_MARKER_V1);
-    if !recognised {
-        return Parsed::refused(document);
-    }
-    let v1 = marker == Some(EXPORT_MARKER_V1);
-    let mut rows = Vec::new();
-    let mut rejected = 0u64;
-    for line in data_lines(document) {
-        match parse_row(line, v1) {
-            Some(row) => rows.push(row),
-            None => rejected = rejected.saturating_add(1),
-        }
-    }
-    if rejected > 0 {
-        rows.clear();
-    }
-    Parsed {
-        recognised: true,
-        rows,
-        rejected,
-    }
-}
-
-/// Parses one data row, or answers `None` when it is not one.
-///
-/// The key is the only column that may hold anything but ASCII digits, and it is taken as
-/// written: a key the store could not export is one an import would not find either. A v1
-/// row carries the five columns the v1 format defined; a v2 row adds the decay
-/// accumulator and the tick.
-fn parse_row(line: &str, v1: bool) -> Option<UserRecord> {
-    let mut columns = line.split('\t');
-    let key = columns.next()?;
-    let weight = columns.next()?.parse::<u32>().ok()?;
-    let last_used_unix = columns.next()?.parse::<u64>().ok()?;
-    let created_unix = columns.next()?.parse::<u64>().ok()?;
-    let pinned = match columns.next()? {
-        "0" => false,
-        "1" => true,
-        _ => return None,
-    };
-    let (dee_q16, tick) = if v1 {
-        // A v1 record has no decay history: the accumulator is the un-decayed identity
-        // and the tick is zero, the same reading the migration gives a v1 row.
-        if columns.next().is_some() {
-            return None;
-        }
-        (i64::from(weight) << 16, 0)
-    } else {
-        let dee_q16 = columns.next()?.parse::<i64>().ok()?;
-        let tick = columns.next()?.parse::<u64>().ok()?;
-        if columns.next().is_some() {
-            return None;
-        }
-        (dee_q16, tick)
-    };
-    if !is_exportable(key) {
-        return None;
-    }
-    Some(UserRecord {
-        key: String::from(key),
-        weight,
-        last_used_unix,
-        created_unix,
-        pinned,
-        tick,
-        dee_q16,
-    })
 }
 
 /// The path the temporary file is written to before it is renamed over `path`.

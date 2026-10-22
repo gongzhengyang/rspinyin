@@ -211,6 +211,25 @@ impl UserLexicon {
         after != before
     }
 
+    /// Flips the user's pin on every entry whose word is `text`, answering whether any
+    /// entry moved.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn toggle_pinned(&mut self, text: &str) -> bool {
+        let mut moved = false;
+        for entries in self.words.values_mut() {
+            for entry in entries {
+                if entry.text.as_ref() == text {
+                    entry.pinned = !entry.pinned;
+                    moved = true;
+                }
+            }
+        }
+        moved
+    }
+
     /// Records the user's pin on every entry whose word is `text`.
     ///
     /// # Panics
@@ -543,5 +562,14 @@ impl UserLexiconHandle {
     /// Never.
     pub fn set_pinned(&self, word: &str, pinned: bool) {
         self.lock().set_pinned(word, pinned);
+    }
+
+    /// Flips the user's pin on every entry whose word is `text`.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn toggle_pin(&self, word: &str) {
+        self.lock().toggle_pinned(word);
     }
 }

@@ -733,6 +733,297 @@ fn test_engine_source_uses_no_filesystem_or_clock() {
             );
         }
     }
-    // The one module that does read files is deliberately outside the list.
+    // The two modules that do read files are deliberately outside the list: `cli.rs`
+    // reads the scenario files, and `scenario/store.rs` builds a `[user_db]` scenario's
+    // store and the bigram scenario's container while the fixture is assembled -- the
+    // same load-time layer, never the drive.
     assert!(include_str!("cli.rs").contains("std::fs"));
+    assert!(include_str!("scenario/store.rs").contains("std::fs"));
+}
+
+/// The v2 sections every built-in scenario leaves untouched.
+///
+/// The compatibility gate the v2 parser is held to: the built-in set was written before
+/// the sections existed, and every one of them must parse and run with no `[decode]`,
+/// no `[user_db]` and no `[decay]` at all -- which is what keeps a v1 fixture file and a
+/// v2 harness reading the same document.
+#[test]
+fn test_every_builtin_scenario_stays_v1() {
+    for scenario in scenarios() {
+        assert!(
+            scenario.decode.is_default(),
+            "{}: the built-in set carries no [decode] section",
+            scenario.name
+        );
+        assert!(
+            scenario.user_db.is_default(),
+            "{}: the built-in set carries no [user_db] section",
+            scenario.name
+        );
+        assert!(
+            scenario.decay.is_none(),
+            "{}: the built-in set carries no [decay] section",
+            scenario.name
+        );
+        EngineFixture::new(scenario).expect("the built-in set assembles");
+    }
+}
+
+/// A v2 scenario that names the abbreviation switch through `[decode]`.
+const ABBREV_V2: &str = r#"
+name = "v2-abbrev"
+[decode]
+flags = ["ABBREV"]
+[[dictionary.words]]
+key = "ni'hao"
+texts = ["你好"]
+[[dictionary.words]]
+key = "n'h"
+texts = ["你好"]
+[[steps]]
+action = "input-char:n"
+expect = { candidates = { first = "n", count = 1, contains = [] } }
+[[steps]]
+action = "input-char:h"
+expect = { candidates = { first = "你好", count = 1, contains = [] } }
+"#;
+
+#[test]
+fn test_v2_flags_reach_the_request() {
+    // The v2 channel names the switch, and the switch does what the v1 field's own
+    // scenario shows it doing: the initials reach the full spelling.
+    let scenario = parse_scenario(ABBREV_V2).expect("the v2 scenario parses");
+    assert!(scenario.abbrev == false, "the v1 field stays clear");
+    let fixture = EngineFixture::new(scenario).expect("the fixture assembles");
+    run_scenario(
+        &fixture.scenario,
+        &fixture.lexicon,
+        fixture.sources().user_freq,
+        fixture.sources().lm,
+    )
+    .expect("the abbreviation reaches the full spelling through the v2 channel");
+}
+
+#[test]
+fn test_v2_sections_refuse_what_cannot_be_assembled() {
+    // A flag no bit carries is refused at parse, not silently ignored.
+    assert!(
+        parse_scenario(&ABBREV_V2.replace("ABBREV", "NOT_A_FLAG")).is_err(),
+        "an unknown flag name is a parse error"
+    );
+    // A clock without a store folds nothing.
+    let clock_no_store = r#"
+name = "v2-clock"
+[decay]
+half_life_ticks = 139
+[[dictionary.words]]
+key = "ni'hao"
+texts = ["你好"]
+[[steps]]
+action = "input-char:n"
+expect = { candidates = { first = "n", count = 1, contains = [] } }
+"#;
+    assert!(
+        parse_scenario(clock_no_store).is_err(),
+        "a decay clock without a store is a parse error"
+    );
+    // A container model beside a spec-written one would make the score ambiguous.
+    let bigram_and_spec = ABBREV_V2.replace(
+        "[decode]\nflags = [\"ABBREV\"]",
+        "[decode]\nbigram = \"present\"\n[[dictionary.unigrams]]\nword = \"你好\"\nscore = -128",
+    );
+    assert!(
+        parse_scenario(bigram_and_spec.as_str()).is_err(),
+        "bigram=present refuses a spec-written model"
+    );
+    // A real store beside a spec-written frequency table would make the boost ambiguous.
+    let store_and_spec = ABBREV_V2.replace(
+        "[decode]",
+        "[user_db]\nfixture = \"cold\"\n[[dictionary.user_freq]]\nkey = \"你好\"\nvalue = 10\n[decode]",
+    );
+    assert!(
+        parse_scenario(store_and_spec.as_str()).is_err(),
+        "a user store refuses a spec-written frequency table"
+    );
+    // A fixture value that names nothing is refused.
+    let bad_fixture = ABBREV_V2.replace("[decode]", "[user_db]\nfixture = \"borrowed\"\n[decode]");
+    assert!(
+        parse_scenario(bad_fixture.as_str()).is_err(),
+        "an unknown fixture value is a parse error"
+    );
+}
+
+/// The v2 scenarios of the add shard, as the repository's own fixture directory holds
+/// them.
+const ADD_SCENARIOS_DIR: &str = "../tests/fixtures/scenarios";
+
+#[test]
+fn test_the_add_shard_example_scenarios_replay_green() {
+    // The physical replay: the fixture files are loaded the way `xtask testd-engine
+    // --scenarios` loads them, and every scenario of the directory runs its steps and
+    // its repeat assertion green.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ADD_SCENARIOS_DIR);
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("reading the scenario directory") {
+        let path = entry.expect("a directory entry").path();
+        if path.extension().is_some_and(|ext| ext == "toml") {
+            names.push(path);
+        }
+    }
+    names.sort();
+    assert!(names.len() >= 3, "the add shard's examples are all there");
+    for path in &names {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let scenario =
+            parse_scenario(&text).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let fixture = EngineFixture::new(scenario)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let outcome = run_scenario(
+            &fixture.scenario,
+            &fixture.lexicon,
+            fixture.sources().user_freq,
+            fixture.sources().lm,
+        )
+        .map(|()| {
+            assert_repeatable(&fixture.scenario, &fixture.sources(), REPEAT_RUNS)
+                .map_err(|divergence| divergence.describe())
+        });
+        assert!(
+            outcome.is_ok(),
+            "{}: {:?}",
+            path.display(),
+            outcome.err().map(|divergence| divergence.describe())
+        );
+    }
+}
+
+#[test]
+fn test_a_v2_scenario_parses_within_its_time_budget() {
+    // The parse-increment budget: resolving a v2 file -- its sections, the flag and
+    // fixture names, the cross-section rules -- costs at most a millisecond, so loading a
+    // directory of scenarios stays invisible beside the replays it configures. The heaviest
+    // example file is the subject: it carries all three sections and the longest step list.
+    //
+    // The assertion is the *fastest* of fifty parses, not each of them: the budget names
+    // the parse's own cost, and a suite runs next to neighbours on the same cores, where a
+    // single parse can be preempted no matter how small it is. The minimum is the one
+    // number the scheduler noise cannot inflate.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(ADD_SCENARIOS_DIR)
+        .join("add-user-pin.toml");
+    let text = std::fs::read_to_string(&path).expect("reading the example scenario");
+    let budget = std::time::Duration::from_millis(1);
+    // A nextest run starts the moment the build ends, while its last compile jobs are
+    // still draining; a measurement taken in that window times the builder beside it. The
+    // settle is not part of the quantity measured -- it only keeps the builder out of it.
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let fastest = (0..50)
+        .map(|_| {
+            let began = std::time::Instant::now();
+            parse_scenario(&text).expect("the scenario parses");
+            began.elapsed()
+        })
+        .min()
+        .expect("fifty attempts always yield a minimum");
+    assert!(
+        fastest <= budget,
+        "the fastest of fifty parses took {fastest:?}, over the 1 ms budget"
+    );
+}
+
+#[test]
+fn test_the_user_db_store_serves_its_seeds() {
+    // The [user_db] section replaces the spec's table with the real store, and the seed
+    // file's commits are what the store answers with: the pinned word carries a
+    // frequency, and the word the dictionary holds but the user never typed carries
+    // none.
+    let scenario = parse_scenario(
+        r#"
+name = "v2-user-pin"
+[user_db]
+fixture = "seed:pin"
+[[dictionary.words]]
+key = "ni'hao"
+texts = ["你号", "你好"]
+[[steps]]
+action = "input-char:n"
+expect = { candidates = { first = "n", count = 1, contains = [] } }
+[[steps]]
+action = "input-char:i"
+expect = { candidates = { first = "ni", count = 1, contains = [] } }
+[[steps]]
+action = "input-char:h"
+expect = { candidates = { first = "nih", count = 1, contains = [] } }
+[[steps]]
+action = "input-char:a"
+expect = { candidates = { first = "niha", count = 1, contains = [] } }
+[[steps]]
+action = "input-char:o"
+expect = { candidates = { first = "你好", count = 2, contains = ["你号"] } }
+"#,
+    )
+    .expect("the scenario parses");
+    let fixture = EngineFixture::new(scenario).expect("the store builds");
+    let user_freq = fixture.sources().user_freq;
+    assert!(
+        user_freq.freq("你好") > 0,
+        "the seeded word carries a frequency"
+    );
+    assert_eq!(user_freq.freq("你号"), 0, "the untyped word carries none");
+    run_scenario(
+        &fixture.scenario,
+        &fixture.lexicon,
+        user_freq,
+        fixture.sources().lm,
+    )
+    .expect("the seeded word pins the key");
+}
+
+#[test]
+fn test_bigram_present_takes_the_model_from_the_container() {
+    // The container fixture's BIGRAM section is the model: the pair the corpus chains is
+    // scored above the reversed pair the corpus never produces, and the spec is refused
+    // a model of its own.
+    let scenario = parse_scenario(
+        r#"
+name = "v2-bigram-present"
+[decode]
+bigram = "present"
+[[dictionary.words]]
+key = "zhong'guo"
+texts = ["中国"]
+[[dictionary.words]]
+key = "yin'hang"
+texts = ["银行"]
+[[dictionary.words]]
+key = "jing'ji"
+texts = ["经济"]
+[[steps]]
+action = "input-char:a"
+expect = { candidates = { first = "a", count = 1, contains = [] } }
+"#,
+    )
+    .expect("the scenario parses");
+    let fixture = EngineFixture::new(scenario).expect("the container builds");
+    let lm = fixture.sources().lm;
+    let forward = lm.bigram("中国", "银行");
+    let reverse = lm.bigram("银行", "中国");
+    assert!(
+        forward > reverse,
+        "the corpus pairs 中国 with 银行, never the reverse: {forward} vs {reverse}"
+    );
+    // Every word of the container is its own heaviest, so the whole unigram table
+    // quantizes to the ceiling: a found word scores the Q12 maximum's log, which is
+    // zero, and only a miss scores the floor.
+    assert_eq!(
+        lm.unigram("中国"),
+        0,
+        "the container's own word is found at the ceiling"
+    );
+    assert_ne!(
+        lm.unigram("办公室"),
+        0,
+        "a word outside the container scores the miss"
+    );
 }

@@ -22,7 +22,7 @@ use ime_types::{DictError, Lexicon};
 use super::mutate::{GARBAGE_BYTES, garbage};
 use super::support::{Scratch, fixture};
 use super::{
-    DictErrorKind, DictFixture, DictMutation, FixtureError, RefusalPoint, USER_STORE_NAME,
+    DictErrorKind, DictMutation, FixtureError, MutatedContainer, RefusalPoint, USER_STORE_NAME,
     UserStoreFixture, UserStoreMutation, sha256,
 };
 
@@ -67,7 +67,7 @@ fn test_from_compiled_refuses_a_source_that_is_not_a_container() {
     let scratch = Scratch::new("bad-source");
     let origin = scratch.path("base.dict");
     fs::write(&origin, b"not a container").expect("writing the source");
-    let refused = DictFixture::from_compiled(&origin, &scratch.path("copy.dict")).err();
+    let refused = MutatedContainer::from_compiled(&origin, &scratch.path("copy.dict")).err();
     assert!(
         matches!(&refused, Some(FixtureError::Unreadable { .. })),
         "{refused:?}"
@@ -75,7 +75,7 @@ fn test_from_compiled_refuses_a_source_that_is_not_a_container() {
 
     let absent = scratch.path("nothing.dict");
     let copy = scratch.path("copy.dict");
-    let missing = DictFixture::from_compiled(&absent, &copy).err();
+    let missing = MutatedContainer::from_compiled(&absent, &copy).err();
     assert!(
         matches!(&missing, Some(FixtureError::Io { .. })),
         "{missing:?}"

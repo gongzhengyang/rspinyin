@@ -512,6 +512,7 @@ fn source_code(source: CandidateSource) -> u32 {
         CandidateSource::Symbol => 4,
         CandidateSource::Phrase => 5,
         CandidateSource::Script => 6,
+        CandidateSource::English => 7,
     }
 }
 

@@ -5,7 +5,7 @@
 //! break has to be caught, and the kind of error that step has to raise. It is a value
 //! module: it writes no byte, opens no file and knows no offset.
 //!
-//! Boundaries: [`super::mutate`] turns a variant into an image, [`super::DictFixture`]
+//! Boundaries: [`super::mutate`] turns a variant into an image, [`super::MutatedContainer`]
 //! applies it and reads the result back, and [`super::error`] names what the harness itself
 //! refuses to do. Splitting the vocabulary out of the fixture is what keeps the fixture
 //! about copies, steps and assertions.
@@ -43,7 +43,7 @@ pub enum DictMutation {
     /// Writes `version` into the header's `format_version` field.
     ///
     /// The shape a dictionary written by a newer build arrives in. A version the loader
-    /// already reads is refused by [`super::DictFixture::mutate`] as inert.
+    /// already reads is refused by [`super::MutatedContainer::mutate`] as inert.
     FormatVersion {
         /// The version to write.
         version: u16,
@@ -69,7 +69,7 @@ pub enum DictMutation {
     },
     /// Writes `len` into the `word_len` field of the entry at `index`.
     ///
-    /// A value inside `1..=MAX_WORD_LEN` is refused by [`super::DictFixture::mutate`] as
+    /// A value inside `1..=MAX_WORD_LEN` is refused by [`super::MutatedContainer::mutate`] as
     /// inert: the point of the mutation is a length the container's own contract forbids.
     EntryLength {
         /// Which record to patch.
@@ -226,7 +226,7 @@ impl DictMutation {
 
     /// The step at which the container this mutation produces has to be refused.
     ///
-    /// [`super::DictFixture::assert_rejected`] compares this against the step that actually
+    /// [`super::MutatedContainer::assert_rejected`] compares this against the step that actually
     /// raised the refusal, so a mutation that named the wrong step fails instead of passing
     /// on an error it never meant to test.
     pub fn refusal_point(&self) -> RefusalPoint {

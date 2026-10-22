@@ -206,7 +206,10 @@ pub fn run(args: SmokeArgs) -> Result<()> {
         let summary = derive(&args.cases, &holdout, &args.dict)?;
         println!(
             "smoke: derived {} core cases from {} ({} holdout rows scanned, {} non-core cases kept)",
-            summary.derived, holdout.display(), summary.scanned, summary.kept
+            summary.derived,
+            holdout.display(),
+            summary.scanned,
+            summary.kept
         );
         return Ok(());
     }
@@ -217,7 +220,9 @@ pub fn run(args: SmokeArgs) -> Result<()> {
             failure.id, failure.keys, failure.expected, failure.got
         );
         if args.verbose {
-            println!("      (use `xtask testd-engine` with a scenario naming these keys to see the page)");
+            println!(
+                "      (use `xtask testd-engine` with a scenario naming these keys to see the page)"
+            );
         }
     }
     println!(
@@ -280,7 +285,10 @@ pub(crate) fn evaluate(set: &[SmokeCase], mounted: &Mounted) -> SmokeReport {
         if satisfied(&case.expect.kind, &texts) {
             report.passed += 1;
         } else {
-            let got = texts.first().cloned().unwrap_or_else(|| "(no candidate)".to_owned());
+            let got = texts
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "(no candidate)".to_owned());
             report.failures.push(SmokeFailure {
                 id: case.id.clone(),
                 keys: case.keys.clone(),
@@ -323,7 +331,9 @@ pub(crate) fn mount(dict: &Path) -> Result<Mounted> {
 pub(crate) fn decode_texts(mounted: &Mounted, keys: &str) -> Vec<String> {
     let user = FreshUser;
     let request = DecodeRequest::new(keys);
-    let result = mounted.decoder.decode(&request, &mounted.lexicon, &user, &mounted.lm);
+    let result = mounted
+        .decoder
+        .decode(&request, &mounted.lexicon, &user, &mounted.lm);
     result.candidates.into_iter().map(|c| c.text).collect()
 }
 
@@ -380,11 +390,14 @@ pub fn parse_cases(text: &str) -> Result<Vec<SmokeCase>> {
         let keys = columns.next().unwrap_or_default();
         let expect_column = columns.next().unwrap_or_default();
         ensure!(!id.is_empty(), "smoke: line {number}: the case id is empty");
-        ensure!(!seen.contains(id), "smoke: line {number}: the id {id:?} is used twice");
+        ensure!(
+            !seen.contains(id),
+            "smoke: line {number}: the id {id:?} is used twice"
+        );
         seen.insert(id.to_owned());
         ensure_keys(keys).with_context(|| format!("smoke: line {number} (case {id})"))?;
-        let expect =
-            expectation(expect_column).with_context(|| format!("smoke: line {number} (case {id})"))?;
+        let expect = expectation(expect_column)
+            .with_context(|| format!("smoke: line {number} (case {id})"))?;
         // Every column past the expectation is tag text, and the tags inside one
         // column are whitespace-separated, so `ambiguity  extra` reads as two.
         let tags: Vec<String> = raw_columns[3..]
@@ -486,7 +499,9 @@ pub fn expectation(column: &str) -> Result<Expectation> {
                     .with_context(|| format!("the @regex pattern {value:?} does not compile"))?,
             )
         }
-        _ => bail!("unknown expectation form {prefix:?}; the forms are @first:, @contains: and @regex:"),
+        _ => bail!(
+            "unknown expectation form {prefix:?}; the forms are @first:, @contains: and @regex:"
+        ),
     };
     Ok(Expectation { kind, raw })
 }
@@ -554,9 +569,7 @@ pub fn derive(cases: &Path, holdout: &Path, dict: &Path) -> Result<DeriveSummary
         let texts = decode_texts(&mounted, &keys);
         if texts.first().is_some_and(|got| got == &expected) {
             let id = format!("core_{:03}", derived.len() + 1);
-            derived.push(format!(
-                "{id}\t{keys}\t@first:{expected}\t{CORE_TAG}"
-            ));
+            derived.push(format!("{id}\t{keys}\t@first:{expected}\t{CORE_TAG}"));
         }
     }
     // The handwritten bands survive the rewrite: everything that is not the derived
@@ -564,8 +577,7 @@ pub fn derive(cases: &Path, holdout: &Path, dict: &Path) -> Result<DeriveSummary
     let kept_text = if cases.exists() {
         let current = fs::read_to_string(cases)
             .with_context(|| format!("cannot read the current case set {}", cases.display()))?;
-        let current = parse_cases(&current)
-            .with_context(|| format!("in {}", cases.display()))?;
+        let current = parse_cases(&current).with_context(|| format!("in {}", cases.display()))?;
         let kept: Vec<&SmokeCase> = current
             .iter()
             .filter(|case| !case.tags.iter().any(|tag| tag == CORE_TAG))
@@ -581,8 +593,12 @@ pub fn derive(cases: &Path, holdout: &Path, dict: &Path) -> Result<DeriveSummary
                 line
             })
             .collect();
-        fs::create_dir_all(cases.parent().unwrap_or(Path::new(".")))
-            .with_context(|| format!("cannot create {}", cases.parent().unwrap_or(Path::new(".")).display()))?;
+        fs::create_dir_all(cases.parent().unwrap_or(Path::new("."))).with_context(|| {
+            format!(
+                "cannot create {}",
+                cases.parent().unwrap_or(Path::new(".")).display()
+            )
+        })?;
         format_lines(&lines)
     } else {
         String::new()
@@ -604,7 +620,10 @@ pub fn derive(cases: &Path, holdout: &Path, dict: &Path) -> Result<DeriveSummary
         body.push_str(line);
         body.push('\n');
     }
-    let kept = kept_text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).count();
+    let kept = kept_text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .count();
     fs::write(cases, body)
         .with_context(|| format!("cannot write the case set {}", cases.display()))?;
     Ok(DeriveSummary {
@@ -652,7 +671,10 @@ fn parse_holdout(text: &str) -> Result<Vec<(String, String)>> {
         let mut columns = trimmed.split('\t').map(str::trim);
         let keys = columns.next().unwrap_or_default();
         let expected = columns.next().unwrap_or_default();
-        ensure!(!keys.is_empty() && !expected.is_empty(), "smoke: holdout line {number}: expected `pinyin<TAB>expected`");
+        ensure!(
+            !keys.is_empty() && !expected.is_empty(),
+            "smoke: holdout line {number}: expected `pinyin<TAB>expected`"
+        );
         ensure_keys(keys).with_context(|| format!("smoke: holdout line {number}"))?;
         rows.push((keys.to_owned(), expected.to_owned()));
     }

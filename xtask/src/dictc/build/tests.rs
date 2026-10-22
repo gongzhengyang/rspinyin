@@ -474,7 +474,10 @@ fn test_merge_two_char_layer_overrides_fills_and_skips_other_lengths() {
     // judges.
     let bank = jieba.iter().find(|w| w.text == "银行").expect("银行");
     assert_eq!(bank.weight, 4_000, "the jieba weight is the backbone");
-    assert_eq!(bank.key, "yin'xing", "the huayu reading travels with the word");
+    assert_eq!(
+        bank.key, "yin'xing",
+        "the huayu reading travels with the word"
+    );
     let china = jieba.iter().find(|w| w.text == "中国").expect("中国");
     assert_eq!(china.weight, 5_000);
     // A word only huayu holds joins at the jieba weight of its rank in the
@@ -543,7 +546,15 @@ fn test_polyphone_rule_keeps_the_readings_usage_supports() {
         &std::collections::BTreeSet::new(),
         PolyphoneRule { freq_ratio_pct: 5 },
     );
-    assert_eq!(counts, PolyphoneAutoCounts { assigned: 2, flattened: 0, manual: 0, total: 2 });
+    assert_eq!(
+        counts,
+        PolyphoneAutoCounts {
+            assigned: 2,
+            flattened: 0,
+            manual: 0,
+            total: 2
+        }
+    );
     let bank = words.iter().find(|w| w.text == "银行").expect("银行");
     assert_eq!(bank.key, "yin'hang", "a supported reading is kept");
 }

@@ -236,10 +236,8 @@ mod tests {
 
     /// Opens a store in a directory of the test's own, under the system temp directory.
     fn store_in(label: &str) -> (std::path::PathBuf, UserDb) {
-        let dir = std::env::temp_dir().join(format!(
-            "rspinyin-sources-{}-{label}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("rspinyin-sources-{}-{label}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("creating the test directory");
         let db = UserDb::open(dir.join("user.redb")).expect("opening the test store");

@@ -157,11 +157,18 @@ enum Command {
     /// Not boxed: the argument struct is a display name, a window id, a scale and a
     /// path, far smaller than the boxed variants above.
     Capture(testd::capture_cli::CaptureArgs),
+    /// Bless a visual baseline into the library, or judge a frame against one.
+    ///
+    /// Not boxed: the argument struct is flags and paths, far smaller than the boxed
+    /// variants above.
+    Golden(testd::golden_cli::GoldenArgs),
 }
 
 /// Subcommands under `xtask dict`.
 #[derive(Debug, clap::Subcommand)]
 enum DictCommand {
+    /// Compile the mixed-English word list into `eng.dict`.
+    Eng(dictc::eng::EngArgs),
     /// Copy a compiled container into the staged location and print the follow-up steps:
     /// the `[data] dict_staged_path` key to set and the reload that triggers the swap.
     Stage(dictc::stage::StageArgs),
@@ -171,6 +178,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Dict { command } => match command {
+            DictCommand::Eng(args) => dictc::eng::run(args),
             DictCommand::Stage(args) => dictc::stage::run(args),
         },
         Command::Dictc(args) => dictc::run(*args),
@@ -222,5 +230,6 @@ fn main() -> anyhow::Result<()> {
         Command::TestdSmoke(args) => testd::smoke::run(args),
         Command::TestMirror(args) => testd::mirror_cli::run(*args),
         Command::Capture(args) => testd::capture_cli::run(args),
+        Command::Golden(args) => testd::golden_cli::run(args),
     }
 }

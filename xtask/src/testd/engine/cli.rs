@@ -111,11 +111,16 @@ pub fn run(args: EngineArgs) -> Result<()> {
         // The single run comes first, so that a scenario which diverges is reported as a
         // scenario failure rather than as a replay that drifted: the two are different
         // defects and a reader has to be able to tell them apart.
+        //
+        // The sources go through `sources()` rather than the fields directly: a v2
+        // scenario's store and container model replace the doubles, and a replay that
+        // handed the spec-built doubles would run the scenario against nothing.
+        let sources = fixture.sources();
         let outcome = run_scenario(
             &fixture.scenario,
-            &fixture.lexicon,
-            &fixture.user_freq,
-            &fixture.lm,
+            sources.lexicon,
+            sources.user_freq,
+            sources.lm,
         )
         .and_then(|()| assert_repeatable(&fixture.scenario, &fixture.sources(), runs));
         match outcome {

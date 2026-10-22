@@ -348,6 +348,13 @@ fn mode_section() -> OverlaySection {
         keys: String::from("Ctrl+Shift+P"),
         label: String::from("诊断面板"),
     });
+    // Where the current state is: the one row that says where to look rather
+    // than what to press, which is the panel's answer to a state the user can
+    // otherwise only discover by typing.
+    entries.push(OverlayEntry {
+        keys: String::from("状态条"),
+        label: String::from("窗顶显示当前中英 · 简繁"),
+    });
     OverlaySection {
         title: String::from("模式"),
         entries,
@@ -383,6 +390,12 @@ fn edit_section() -> OverlaySection {
             OverlayEntry {
                 keys: String::from("Ctrl+P"),
                 label: String::from("置顶候选（再按取消）"),
+            },
+            // The symbol panel's own discoverability: the codes are the table's,
+            // and the row is how a user finds the mode without reading the docs.
+            OverlayEntry {
+                keys: String::from("v"),
+                label: String::from("符号面板：v1 数字 · vh 序号 · vx 箭头 · vym 声调 · vdw 单位"),
             },
         ],
     }

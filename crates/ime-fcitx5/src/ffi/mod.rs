@@ -222,8 +222,12 @@ fn guard_ffi_with<R>(fallback: R, write_line: impl FnMut(&str), body: impl FnOnc
 ///
 /// The window is the unit a storm is measured in: a session whose candidate window never
 /// becomes ready reports `ui/not-ready` on every keystroke, and what an operator needs
-/// from that is the first line plus the rate behind it, not one line per frame.
-const THROTTLE_WINDOW: Duration = Duration::from_secs(1);
+/// from that is the first line plus the rate behind it, not one line per frame. Sixty
+/// seconds is the release window the reference engines use for exactly this class of
+/// repeating lifecycle line -- long enough that a storm costs twelve lines a minute
+/// instead of sixty, short enough that an operator watching the log sees the next
+/// release while it is still on their screen.
+const THROTTLE_WINDOW: Duration = Duration::from_secs(60);
 
 /// How many distinct codes the throttle can track at once.
 ///

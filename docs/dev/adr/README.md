@@ -21,6 +21,8 @@
 | `0012` | 词源扩展与 bigram 共现语料（THUOCL/华宇接入；zh-Wikipedia CC BY-SA 语料治理） | 已接受 | `docs/dev/compare-and-improve.md` 的 IMP-15/IMP-03，2026-10-14 项目所有者裁决 | [0012-corpus-and-word-sources.md](0012-corpus-and-word-sources.md) |
 | `0013` | 增量契约扩展：`UserFreqSource::set_pinned` 默认方法（置顶词） | 已接受 | `docs/dev/features-add-phase1.md` 的 `TASK-1.04.01` | `docs/dev/adr/0013-user-freq-source-set-pinned.md` |
 | `0014` | 增量契约扩展：`DecodeFlags::CORRECTION` 位（拼写纠错） | 已接受 | `docs/dev/features-add-phase3.md` 的 `TASK-3.01.01` | [0014-decode-flags-correction-bit.md](0014-decode-flags-correction-bit.md) |
+| `0015` | 词库容器格式 v2 与 BIGRAM 段 | 已接受 | `docs/dev/features-add-phase1.md` 的 `TASK-1.03.01` | [0015-dict-container-format-v2.md](0015-dict-container-format-v2.md) |
+| `0016` | 增量契约扩展：`DecodeFlags::ENGLISH` 位 + `CandidateSource::English`（混输） | 已接受 | `docs/dev/features-add-phase3.md` 的 `TASK-3.05.01` | [0016-mixed-english-contract-bits.md](0016-mixed-english-contract-bits.md) |
 
 ## 编号冲突的由来
 

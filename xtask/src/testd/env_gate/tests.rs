@@ -10,6 +10,9 @@
 //! The machines are written out one per shape the gate has to tell apart: an X11 session, the
 //! registered development machine (WSLg under Weston), a real wlroots session whose registry was
 //! read, a display that was named but could not be opened, and a machine with nothing at all.
+//!
+//! The eligibility tests -- the pending annotation, the three states, the skipped ledger
+//! landing -- are [`eligibility`]'s, split out of this file to keep it inside the line limit.
 
 use std::path::PathBuf;
 
@@ -18,6 +21,8 @@ use crate::budget::repo_root;
 use crate::testd::env::{
     AddonDescriptor, EnvCapabilities, Observation, ProbeGap, ProcessEntry, RegistryFacts, X11Facts,
 };
+
+mod eligibility;
 
 /// A process table row, as the reader would have built it.
 fn row(pid: u32, ppid: u32, comm: &str) -> ProcessEntry {
@@ -105,6 +110,7 @@ fn case(id: &str, module: &str, requirement: EnvRequirement) -> TestCaseMeta {
         id: id.to_owned(),
         module: module.to_owned(),
         requirement,
+        pending_impl: None,
     }
 }
 

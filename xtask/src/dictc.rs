@@ -24,13 +24,14 @@
 //! threshold, and the build fails when the measured key growth passes
 //! `--max-key-growth`.
 
-mod bigram;
+pub(crate) mod bigram;
 mod budget;
 // `pub(crate)` because the smoke baseline's fixture compiles its container through
 // the same `compile` the tool uses: a test evaluation that passes passes against
 // what `dictc` writes, and a hand-built section would prove only that the reader
 // agrees with the test.
 pub(crate) mod build;
+pub mod eng;
 mod manifest;
 pub(crate) mod normalize;
 pub mod quality;
@@ -264,16 +265,12 @@ pub fn run(args: DictcArgs) -> Result<()> {
             huayu_words.len(),
             huayu_skips.total()
         );
-        let merge_stats =
-            build::merge_two_char_layer(&mut words, huayu_words, args.l2_min_freq);
+        let merge_stats = build::merge_two_char_layer(&mut words, huayu_words, args.l2_min_freq);
         println!(
             "dictc: L2 two-character layer (floor {}): {} weights overridden, {} words added",
             args.l2_min_freq, merge_stats.overridden, merge_stats.added
         );
-        let manual: BTreeSet<String> = corrections
-            .iter()
-            .map(|(word, _)| word.clone())
-            .collect();
+        let manual: BTreeSet<String> = corrections.iter().map(|(word, _)| word.clone()).collect();
         auto_counts = build::apply_polyphone_rule(
             &mut words,
             &l1,

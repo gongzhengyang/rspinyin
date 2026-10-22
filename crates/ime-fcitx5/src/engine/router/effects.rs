@@ -43,9 +43,10 @@ use crate::engine::host::Host;
 use crate::ffi::emit_diagnostic;
 use crate::privacy_impl::LearningGate;
 
-use super::phrases::PHRASE_ADDED_CODE;
-use super::context::Context;
 use super::StepCtx;
+use super::context;
+use super::context::Context;
+use super::phrases::PHRASE_ADDED_CODE;
 
 /// What one round of effect execution did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -191,6 +192,17 @@ impl Context {
                         Err(err) => host.diagnose(self.ic, &err),
                     }
                 }
+                Effect::CoinUserWords { pairs } => {
+                    // The commit's pairs are learning, exactly as the frequency record
+                    // beside them is: the same gate decides, and a suppressed context
+                    // coins nothing. The pairs wait in the step context rather than
+                    // reaching the lexicon here, because the step holds the lexicon's
+                    // read lock -- the write is the drain's, once the lock is gone.
+                    if ctx.privacy.should_learn(self.ic) {
+                        ctx.coins.extend(pairs);
+                    }
+                    applied.acted = true;
+                }
                 Effect::ForgetUserWord { key } => {
                     // The one path from a forgotten candidate to the user's frequencies.
                     // The session removed the word from the frame it sent; this is what
@@ -207,6 +219,9 @@ impl Context {
                     if !ctx.env.user_freq.forget(&key) {
                         host.diagnose(self.ic, &ImeError::UserWordNotFound);
                     }
+                    // The store's half of the removal has run; the lexicon's memory of
+                    // the word waits for the drain, because the step holds its lock.
+                    ctx.forget_words.push(key);
                     applied.acted = true;
                 }
                 Effect::ToggleUserPin { key, word } => {
@@ -218,6 +233,9 @@ impl Context {
                         }
                         Err(err) => host.diagnose(self.ic, &err),
                     }
+                    // The lexicon's own eviction-protection flag follows the toggle;
+                    // the write waits for the drain like every other one.
+                    ctx.pin_changes.push(word);
                 }
                 Effect::Diagnose(err) => host.diagnose(self.ic, &err),
                 Effect::ModeFlash { bit } => {
@@ -287,7 +305,14 @@ impl Context {
     ///
     /// Never.
     fn write_preedit(&self, ctx: &StepCtx<'_, '_>, text: &str, caret: u32, host: &mut dyn Host) {
-        if ctx.config.client_preedit {
+        // The user's configuration is an upper bound and the application's
+        // capability is the floor: a client that cannot render a preedit area
+        // gets the candidate window's header instead, never a broken inline
+        // string. An application the host reported nothing about keeps the
+        // behaviour it always had -- the negotiation narrows only when the host
+        // spoke.
+        let supported = self.preedit_supported;
+        if context::resolve_client_preedit(ctx.config.client_preedit, supported) {
             host.set_preedit(self.ic, text, caret);
         } else {
             host.clear_preedit(self.ic);

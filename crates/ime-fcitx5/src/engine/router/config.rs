@@ -25,10 +25,10 @@
 //! client-preedit policy and the label the window's header shows — so that a caller hands
 //! the routing layer one value and a reload replaces it whole.
 
+use ime_config::PunctMode;
 use ime_config::keymap::{KeyBindings, project_keys};
 use ime_config::{Config, SchemeChoice, ShareState};
-use ime_core::state::SessionConfig;
-use ime_config::PunctMode;
+use ime_core::state::{ImSwitchPolicy, SessionConfig};
 use ime_types::ImeError;
 
 use super::modes::OutputProjection;
@@ -64,6 +64,10 @@ pub struct RoutingConfig {
     /// `[engine] passthrough_url`: whether keys are left to the application while the
     /// caret sits inside a URL or an email address.
     pub passthrough_url: bool,
+    /// `[engine] compose`: whether a dead-key sequence the host is composing is
+    /// answered before the key table sees the key. Off by default; with a host
+    /// that offers no compose support the switch is inert.
+    pub compose: bool,
     /// The output bits a fresh context starts from, from the `[engine]` section's
     /// `full_width` and `punct_mode`.
     pub output: OutputProjection,
@@ -91,6 +95,7 @@ impl Default for RoutingConfig {
             // classifies exactly as a fresh installation does.
             auto_english_on_uppercase: true,
             passthrough_url: true,
+            compose: false,
             output: OutputProjection::default(),
             share: ShareState::Context,
         }
@@ -141,6 +146,11 @@ impl RoutingConfig {
             ime_core::fuzzy::projection(config.fuzzy.enabled, config.fuzzy.class_flags());
         session.abbrev = config.engine.abbrev;
         session.correction = config.engine.correction;
+        session.english = config.engine.mixed_english;
+        session.on_im_switch = match config.engine.on_im_switch {
+            ime_config::schema::ImSwitch::Clear => ImSwitchPolicy::Clear,
+            ime_config::schema::ImSwitch::CommitRaw => ImSwitchPolicy::CommitRaw,
+        };
         let routing = Self {
             keys,
             session,
@@ -148,6 +158,7 @@ impl RoutingConfig {
             scheme_hint: config.scheme.header_hint(),
             auto_english_on_uppercase: config.engine.auto_english_on_uppercase,
             passthrough_url: config.engine.passthrough_url,
+            compose: config.engine.compose,
             output: OutputProjection {
                 full_width: config.engine.full_width,
                 punct_full: config.engine.punct_mode == PunctMode::Chinese,

@@ -16,12 +16,13 @@ fn options<'a>(
     readings: &'a mut Readings,
     keys: &'a mut Vec<u8>,
     fallback_single: bool,
-) -> LatticeOptions<'a> {
+) -> LatticeOptions<'a, 'static> {
     LatticeOptions {
         fallback_single,
         flags: DecodeFlags::empty(),
         readings,
         keys,
+        english: None,
     }
 }
 
@@ -30,7 +31,6 @@ fn lattice_of<'a>(raw: &str, lexicon: &'a MockLexicon) -> Lattice<'a> {
     let mut dag = SyllableDag::new();
     assert!(dag.build(raw).is_ok(), "building {raw:?}");
     let mut readings = Readings::new();
-    let mut keys: Vec<u8> = Vec::new();
     let mut keys: Vec<u8> = Vec::new();
     build_lattice(
         &dag,
@@ -134,7 +134,12 @@ fn test_build_lattice_without_the_fallback_switch_leaves_spans_uncovered() {
     assert!(dag.build("nihao").is_ok());
     let mut readings = Readings::new();
     let mut keys: Vec<u8> = Vec::new();
-    let lattice = build_lattice(&dag, &lexicon, &NoUser, options(&mut readings, &mut keys, false));
+    let lattice = build_lattice(
+        &dag,
+        &lexicon,
+        &NoUser,
+        options(&mut readings, &mut keys, false),
+    );
     assert_eq!(texts(&lattice, 0), vec!["你"]);
     assert!(lattice.edges_from(2).is_empty());
 }
@@ -188,7 +193,12 @@ fn test_build_lattice_of_an_empty_graph_has_no_edges() {
     let dag = SyllableDag::new();
     let mut readings = Readings::new();
     let mut keys: Vec<u8> = Vec::new();
-    let lattice = build_lattice(&dag, &lexicon, &NoUser, options(&mut readings, &mut keys, true));
+    let lattice = build_lattice(
+        &dag,
+        &lexicon,
+        &NoUser,
+        options(&mut readings, &mut keys, true),
+    );
     assert!(lattice.is_empty());
     assert_eq!(lattice.len(), 0);
     assert_eq!(lattice.node_count(), 1);
@@ -357,7 +367,12 @@ fn test_build_lattice_carries_a_correction_penalty_that_sits_inside_a_word() {
     );
     let mut readings = Readings::new();
     let mut keys: Vec<u8> = Vec::new();
-    let lattice = build_lattice(&dag, &lexicon, &NoUser, options(&mut readings, &mut keys, true));
+    let lattice = build_lattice(
+        &dag,
+        &lexicon,
+        &NoUser,
+        options(&mut readings, &mut keys, true),
+    );
     let correction = crate::segment::correct::CORRECTION_PENALTY_Q8;
     // The single corrected syllable.
     let wan = lattice

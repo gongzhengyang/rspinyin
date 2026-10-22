@@ -279,8 +279,12 @@ struct PendingState {
     /// should name -- or `None` for a row to delete.
     key_rows: HashMap<Box<str>, Option<Box<str>>>,
     /// Coined entries waiting for the next flush: the composite `(key, word)` row key,
-    /// and the word it enrols.
-    coined: HashMap<Box<str>, Box<str>>,
+    /// the word it enrols, and how many commits of the pair the window accumulated.
+    ///
+    /// The count is the point of the value: three commits of the same pair inside one
+    /// flush window are three confirmations, and a map of row keys alone would quietly
+    /// forget two of them.
+    coined: HashMap<Box<str>, (Box<str>, u32)>,
     /// Coined rows the user asked to forget, by their composite row key.
     coined_removed: HashSet<Box<str>>,
     /// Monotonic nanoseconds of the last flush, so that the interval trigger measures
@@ -827,7 +831,7 @@ fn store_reads() -> u64 {
 
 /// Arms the next flush to fail. Test-only.
 #[cfg(test)]
-fn inject_failure() {
+pub(crate) fn inject_failure() {
     INJECTED_FAILURE.with(|flag| flag.set(true));
 }
 

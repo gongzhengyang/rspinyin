@@ -329,7 +329,10 @@ fn test_write_data_clears_the_staged_path_and_preserves_the_rest() {
         "the replaced region's comment goes with the block: {written}"
     );
     assert!(written.contains("durability = \"immediate\"\n"));
-    assert!(written.contains("# engine comment\n"), "engine comment survives: {written}");
+    assert!(
+        written.contains("# engine comment\n"),
+        "engine comment survives: {written}"
+    );
     assert!(written.contains("scheme = \"light\"\n"));
     // What the file holds is what the caller asked for, value for value.
     let (reparsed, warnings) = Config::from_document(&written).expect("the document parses");

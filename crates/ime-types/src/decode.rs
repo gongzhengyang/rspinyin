@@ -90,6 +90,12 @@ bitflags::bitflags! {
         /// only where the exact query missed, so a correctly spelled input costs
         /// nothing and ranks exactly as it does with the bit clear (ADR-0014).
         const CORRECTION = 1 << 14;
+        /// Offer the English lexicon's entry for an input no pinyin reading cuts,
+        /// so that `github` reaches the word spelled `GitHub` (ADR-0016). The
+        /// edge is generated only where the exact, fuzzy and correction walks
+        /// all left the input uncut, so an input that reads as pinyin costs
+        /// nothing and ranks exactly as it does with the bit clear.
+        const ENGLISH = 1 << 15;
     }
 }
 
@@ -312,17 +318,18 @@ mod tests {
     #[test]
     fn test_decode_flags_all_covers_every_defined_bit() {
         // Widened from 0x07FF by ADR-0005, which appended SHUANGPIN, PHRASE and
-        // SCRIPT, and from 0x3FFF by ADR-0014, which appended CORRECTION. This
-        // assertion is the guard that makes an appended bit a deliberate act
-        // rather than a silent widening of the namespace.
-        assert_eq!(DecodeFlags::all().bits(), 0x7FFF);
+        // SCRIPT, from 0x3FFF by ADR-0014, which appended CORRECTION, and from
+        // 0x7FFF by ADR-0016, which appended ENGLISH. This assertion is the
+        // guard that makes an appended bit a deliberate act rather than a
+        // silent widening of the namespace.
+        assert_eq!(DecodeFlags::all().bits(), 0xFFFF);
     }
 
     #[test]
     fn test_decode_flags_unknown_bits_are_truncated() {
         let truncated = DecodeFlags::from_bits_truncate(u16::MAX);
         assert!(truncated.contains(DecodeFlags::USER_DICT));
-        assert_eq!(truncated.bits(), 0x7FFF);
+        assert_eq!(truncated.bits(), 0xFFFF);
     }
 
     #[test]
@@ -334,6 +341,16 @@ mod tests {
         assert!(!DecodeFlags::default().contains(DecodeFlags::CORRECTION));
         let on = DecodeFlags::USER_DICT | DecodeFlags::CORRECTION;
         assert_eq!(on.bits(), (1 << 10) | (1 << 14));
+        assert_eq!(DecodeFlags::from_bits(on.bits()), Some(on));
+    }
+
+    #[test]
+    fn test_decode_flags_english_is_bit_fifteen_and_off_by_default() {
+        // The value is the contract, as its sibling bits are (ADR-0016).
+        assert_eq!(DecodeFlags::ENGLISH.bits(), 1 << 15);
+        assert!(!DecodeFlags::default().contains(DecodeFlags::ENGLISH));
+        let on = DecodeFlags::USER_DICT | DecodeFlags::ENGLISH;
+        assert_eq!(on.bits(), (1 << 10) | (1 << 15));
         assert_eq!(DecodeFlags::from_bits(on.bits()), Some(on));
     }
 

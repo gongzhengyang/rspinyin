@@ -57,12 +57,13 @@ use ime_core::privacy::InputContextKind;
 use ime_core::state::SessionEnv;
 use ime_dict::hot_swap::LexiconSlot;
 use ime_dict::script::ScriptIndex;
+use ime_dict::user_lexicon::UserLexiconHandle;
 use ime_types::{Anchor, UiEvent};
 
 use crate::engine::host::Host;
 use crate::engine::router::{KeyRouter, RoutingConfig};
 use crate::ffi::{FcitxKeyEvent, emit_diagnostic};
-use crate::privacy_impl::ContextPrivacy;
+use crate::privacy_impl::{ContextPrivacy, ContextReport};
 
 /// Recorded when a callback arrives with no session host installed.
 ///
@@ -154,26 +155,48 @@ impl SessionHost {
 
     /// Creates the session of an input context the host switched to this input method.
     ///
+    /// The context is observed as [`ContextReport::Unreported`], which every policy treats
+    /// as sensitive: the capability flags the host holds do not reach Rust through the C
+    /// ABI yet, so the plugin learns nothing rather than learning from a password box. Use
+    /// [`SessionHost::activate_reported`] once the flags travel.
+    ///
     /// # Arguments
     ///
     /// * `ic` — the host's identity for the input context.
     ///
     /// # Returns
     ///
-    /// What the privacy policy knows about the context. The capability flags the host
-    /// holds do not reach Rust through the C ABI yet, so the context is observed as
-    /// unreported — which every policy treats as sensitive, and which is why the plugin
-    /// learns nothing rather than learning from a password box.
+    /// What the privacy policy knows about the context.
     ///
     /// # Panics
     ///
     /// Never.
     pub fn activate(&mut self, ic: u64) -> InputContextKind {
+        self.activate_reported(ic, ContextReport::Unreported)
+    }
+
+    /// Creates the session of an input context the host has described.
+    ///
+    /// # Arguments
+    ///
+    /// * `ic` — the host's identity for the input context.
+    /// * `report` — what the host read off the context: the password and sensitive flags
+    ///   and the application name, or [`ContextReport::Unreported`].
+    ///
+    /// # Returns
+    ///
+    /// What the privacy policy knows about the context, which is what decides whether the
+    /// commits made in it are recorded.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn activate_reported(&mut self, ic: u64, report: ContextReport<'_>) -> InputContextKind {
         // A context being switched to this input method is alive, whatever a previous
         // incarnation of its id left on the reclamation counter.
         self.focus_misses.remove(&ic);
         self.ensure_tracked(ic);
-        self.router.activate(ic)
+        self.router.activate_reported(ic, report)
     }
 
     /// Drops the session of an input context the host switched away from.
@@ -488,18 +511,35 @@ pub fn install(
     env: SessionEnv<'static>,
     privacy: ContextPrivacy,
     config: RoutingConfig,
-    lexicon: Option<&'static LexiconSlot>,
+    lexicons: RouterLexicons<'static>,
 ) -> bool {
     let mut slot = lock_sessions();
     if slot.is_some() {
         return false;
     }
-    let router = match lexicon {
-        Some(slot) => KeyRouter::new(env, privacy, config).with_lexicon_slot(slot),
-        None => KeyRouter::new(env, privacy, config),
-    };
+    let mut router = KeyRouter::new(env, privacy, config);
+    if let Some(system) = lexicons.system {
+        router = router.with_lexicon_slot(system);
+    }
+    if let Some(user) = lexicons.user {
+        router = router.with_user_lexicon(user);
+    }
     *slot = Some(SessionHost::new(router));
     true
+}
+
+/// The lexicons a router reads, as the startup sequence assembled them.
+///
+/// One value rather than two optional parameters, because the two travel together and a
+/// caller that has neither -- every test host, and a start that mapped nothing -- passes
+/// the default and gets a router over its environment's own sources.
+#[derive(Clone, Copy, Default)]
+pub struct RouterLexicons<'a> {
+    /// The slot the system dictionary and its model are re-read through, when the start
+    /// mapped a container.
+    pub system: Option<&'a LexiconSlot>,
+    /// The user's own words, when the process assembled them.
+    pub user: Option<&'a UserLexiconHandle>,
 }
 
 /// Installs the variant table the script mode converts through, when a host is installed.
@@ -549,6 +589,32 @@ pub fn is_installed() -> bool {
 pub fn activate(ic: u64) -> bool {
     with_sessions(false, |sessions| {
         sessions.activate(ic);
+        true
+    })
+}
+
+/// Creates the session of an input context the host has described.
+///
+/// The C ABI currently delivers an activation as the context id alone, so the plain
+/// [`activate`] observes every context as unreported; this entry is the shape the FFI
+/// layer calls once the vtable forwards the capability flags and the program name, and
+/// the shape the tests use to stand in for a host that reported an ordinary context.
+///
+/// # Arguments
+///
+/// * `ic` — the host's identity for the input context.
+/// * `report` — what the host read off the context, or [`ContextReport::Unreported`].
+///
+/// # Returns
+///
+/// Whether a session is live for the context afterwards, as [`activate`] answers.
+///
+/// # Panics
+///
+/// Never.
+pub fn activate_reported(ic: u64, report: ContextReport<'_>) -> bool {
+    with_sessions(false, |sessions| {
+        sessions.activate_reported(ic, report);
         true
     })
 }

@@ -82,6 +82,11 @@ pub enum ContextReport<'a> {
         password: bool,
         /// `fcitx::CapabilityFlag::Sensitive`.
         sensitive: bool,
+        /// `fcitx::CapabilityFlag::Preedit`: whether the application can render a
+        /// client-side preedit at all. The client-preedit negotiation reads it;
+        /// an application that cannot never sees an inline string, whatever the
+        /// configuration says.
+        preedit: bool,
     },
     /// The flags could not be read for this context, or the host reported nothing.
     Unreported,
@@ -130,6 +135,7 @@ pub fn classify(report: ContextReport<'_>, blacklist: &AppBlacklist) -> InputCon
         program,
         password,
         sensitive,
+        ..
     } = report
     else {
         return InputContextKind::unreported();
@@ -505,6 +511,7 @@ mod tests {
             program,
             password,
             sensitive,
+            preedit: false,
         }
     }
 

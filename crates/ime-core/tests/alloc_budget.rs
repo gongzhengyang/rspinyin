@@ -236,11 +236,19 @@ fn steady_state(
     lm: &dyn LanguageModel,
 ) -> (usize, usize, bool) {
     let mut scratch = DecodeScratch::new();
-    decoder.decode_into(&mut scratch, request, lexicon, &NoUser, lm);
+    decoder.decode_into(&mut scratch, request, lexicon, &NoUser, lm, None, None);
     let degraded = scratch.result().degraded;
     let before_allocations = alloc_count::allocations();
     let before_bytes = alloc_count::bytes();
-    decoder.decode_into(&mut scratch, black_box(request), lexicon, &NoUser, lm);
+    decoder.decode_into(
+        &mut scratch,
+        black_box(request),
+        lexicon,
+        &NoUser,
+        lm,
+        None,
+        None,
+    );
     black_box(scratch.result().candidates.len());
     (
         alloc_count::allocations() - before_allocations,
@@ -333,7 +341,15 @@ fn test_decode_into_first_decode_costs_more_than_the_steady_state() {
     let mut scratch = DecodeScratch::new();
 
     let before = alloc_count::allocations();
-    decoder.decode_into(&mut scratch, &request, &Everywhere, &NoUser, &lm);
+    decoder.decode_into(
+        &mut scratch,
+        &request,
+        &Everywhere,
+        &NoUser,
+        &lm,
+        None,
+        None,
+    );
     let cold = alloc_count::allocations() - before;
     assert!(
         !scratch.result().degraded,
@@ -437,7 +453,7 @@ fn test_decode_into_steady_state_costs_the_budgeted_allocation() {
     // The first decode is the cold-start figure the report records: what filling the
     // workspace once costs, which is the number the reuse is worth.
     let before = alloc_count::allocations();
-    decoder.decode_into(&mut scratch, &long, &Everywhere, &NoUser, &lm);
+    decoder.decode_into(&mut scratch, &long, &Everywhere, &NoUser, &lm, None, None);
     let cold = alloc_count::allocations() - before;
     assert!(
         !scratch.result().degraded,

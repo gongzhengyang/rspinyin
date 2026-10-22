@@ -39,13 +39,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ime_config::{DataConfig, VerifyDictOnLoad, write_data};
+use ime_core::confusable::ConfusableTable;
 use ime_core::privacy::DefaultPolicy;
 use ime_core::state::SessionEnv;
+use ime_core::symbols::SymbolTable;
 use ime_core::viterbi::Decoder;
 use ime_dict::format::reader::Verify;
+use ime_dict::fst_index::FstLexicon;
 use ime_dict::hot_swap::{LexiconBundle, LexiconSlot};
 use ime_dict::script::ScriptIndex;
-use ime_types::{DictError, ImeError, UserFreqSource};
+use ime_dict::user_lexicon::UserLexiconHandle;
+use ime_types::{DictError, ImeError, Lexicon, UserFreqSource};
 
 use crate::ffi::emit_diagnostic;
 use crate::privacy_impl::{AppBlacklist, ContextPrivacy};
@@ -54,6 +58,7 @@ use crate::session_host;
 use super::config::routing_config;
 use super::config::with_config_store;
 use super::layout;
+use super::lock;
 use super::probes;
 use super::report_step_failure;
 use super::user_store::user_store;
@@ -81,6 +86,16 @@ const DICT_SWAP_REJECTED_CODE: &str = "dict/swap/rejected";
 /// pays for a second construction.
 static DECODER: OnceLock<Decoder> = OnceLock::new();
 
+/// The user's own words: the table the commit path enrols into, over the store's own
+/// persistence.
+///
+/// Assembled beside the dictionary the `lexicon` step maps, from the rows the user store
+/// already holds; a start with no store -- the read-only degradation's home -- assembles
+/// no handle, and the session decodes without a front lexicon, exactly as it decoded
+/// before the first coin existed. The handle is what the router locks per step and what
+/// the drain writes through; it never reaches a decode path in any other form.
+static USER_LEXICON: OnceLock<UserLexiconHandle> = OnceLock::new();
+
 /// The live dictionary: the container a decode reads, replaceable by a validated swap.
 ///
 /// Installed by the `lexicon` step when the start mapped a container, and empty when it did
@@ -94,6 +109,34 @@ static LEXICON_SLOT: OnceLock<LexiconSlot> = OnceLock::new();
 /// dictionary and its model together, never the user's own words — so it stays a plain
 /// static rather than joining the slot.
 static SOURCES: OnceLock<SessionSources> = OnceLock::new();
+
+/// The English lexicon of the process, when the data directory carries one.
+///
+/// Loaded beside the dictionary the `lexicon` step maps; a directory without the file —
+/// an install that predates the mixed-English switch — holds `None`, and the switch
+/// answers with the pass-through degradation it started with. `Some` does not by itself
+/// put an English candidate in front of the user: the decode consults the lexicon only
+/// for an input no pinyin reading cuts, and the switch the configuration owns gates the
+/// query. The lexicon is never replaced: a swap changes the dictionary and its model as
+/// one, and English words are not a pinyin reading's concern.
+static ENGLISH_LEXICON: OnceLock<Option<FstLexicon>> = OnceLock::new();
+
+/// The confusable table of the process, when the data directory carries one.
+///
+/// The document the wrong-word hint channel reads; a directory without the file -- an
+/// install that predates the channel -- holds `None`, and every candidate's annotation
+/// is exactly what a build before the channel produced. The table is never replaced:
+/// it is shipped data, not a user document, and a swap changes the dictionary and its
+/// model as one.
+static CONFUSABLES: OnceLock<Option<ConfusableTable>> = OnceLock::new();
+
+/// The symbol table of the process, when the data directory carries one.
+///
+/// The document the v-mode panel serves; a directory without the file -- an install
+/// that predates the panel -- holds `None`, and an input that starts with `v`
+/// decodes exactly as a build before the panel existed. The table is never
+/// replaced: it is shipped data, not a user document.
+static SYMBOLS: OnceLock<Option<SymbolTable>> = OnceLock::new();
 
 /// What every session reads besides the dictionary: the user's own frequencies.
 ///
@@ -156,7 +199,15 @@ pub(super) fn load_lexicon() -> Result<(), ImeError> {
 /// Never.
 pub(super) fn install_session_host() -> Result<(), ImeError> {
     let environment = session_env(session_sources());
-    if session_host::install(environment, privacy(), routing_config(), lexicon_slot()) {
+    if session_host::install(
+        environment,
+        privacy(),
+        routing_config(),
+        session_host::RouterLexicons {
+            system: lexicon_slot(),
+            user: user_lexicon_handle(),
+        },
+    ) {
         // The variant table the script mode converts through: the built-in seed, which
         // this build always carries. A container-sourced table replaces this call, not
         // this wiring; a build whose table is missing holds
@@ -198,7 +249,122 @@ pub(super) fn session_env(sources: &'static SessionSources) -> SessionEnv<'stati
         lexicon: &MISSING_DICTIONARY,
         user_freq: sources.user_freq(),
         lm: &MISSING_LANGUAGE_MODEL,
+        english: english_lexicon().map(|lexicon| lexicon as &dyn Lexicon),
+        confusables: confusables(),
+        symbols: symbols(),
     }
+}
+
+/// The English lexicon of the process, loaded on the first call.
+///
+/// The load is best-effort by design: a data directory without `eng.dict` holds `None`,
+/// which is an install that predates the switch and not a defect, so it reports nothing
+/// and degrades to the pass-through the switch started with. A container that fails to
+/// load — a truncated copy, a corrupt one — is a real defect and is reported the way the
+/// dictionary's own failures are, but the sequence carries on either way: English
+/// candidates are an addition to the input method, never a condition of it.
+fn english_lexicon() -> Option<&'static FstLexicon> {
+    ENGLISH_LEXICON
+        .get_or_init(|| {
+            let path = layout::english_dictionary_path()?;
+            match FstLexicon::load_with(&path, verify_mode()) {
+                Ok(lexicon) => Some(lexicon),
+                Err(cause) => {
+                    let error = ImeError::DictUnavailable { path, cause };
+                    report_step_failure("english-lexicon", &error);
+                    None
+                }
+            }
+        })
+        .as_ref()
+}
+
+/// The confusable table of the process, loaded on the first call.
+///
+/// The load is best-effort by design: a data directory without `confusable.tsv` holds
+/// `None`, which is an install that predates the channel and not a defect, so it
+/// reports nothing and the hint channel stays off. A document that cannot be read --
+/// an unreadable copy -- is reported the way the dictionary's own failures are, but
+/// the sequence carries on either way: the hints are an addition to the input method,
+/// never a condition of it.
+fn confusables() -> Option<&'static ConfusableTable> {
+    CONFUSABLES
+        .get_or_init(|| {
+            let path = layout::confusable_path()?;
+            let document = match std::fs::read_to_string(&path) {
+                Ok(document) => document,
+                // A file that is not there is the install that predates the
+                // channel, and not a defect; anything else is reported.
+                Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => return None,
+                Err(cause) => {
+                    let error = ImeError::DictUnavailable {
+                        path: path.clone(),
+                        cause: cause.into(),
+                    };
+                    report_step_failure("confusable-table", &error);
+                    return None;
+                }
+            };
+            let (table, report) = ConfusableTable::load(&document);
+            if report.skipped > 0 {
+                // A row the reader refused is a packaging fault in shipped data, and
+                // the build wants to know; the rows that were usable still serve.
+                let error = ImeError::ConfigInvalid {
+                    key: String::from("confusable.file"),
+                    reason: format!(
+                        "{} row(s) of the installed table could not be used",
+                        report.skipped
+                    ),
+                };
+                report_step_failure("confusable-table", &error);
+            }
+            Some(table)
+        })
+        .as_ref()
+}
+
+/// The symbol table of the process, loaded on the first call.
+///
+/// The load is best-effort by design: a data directory without `symbols.tsv` holds
+/// `None`, which is an install that predates the panel and not a defect, so it
+/// reports nothing and the v-mode stays off. A document that cannot be read is
+/// reported the way the dictionary's own failures are, but the sequence carries on
+/// either way: the panel is an addition to the input method, never a condition of
+/// it.
+fn symbols() -> Option<&'static SymbolTable> {
+    SYMBOLS
+        .get_or_init(|| {
+            let path = layout::symbols_path()?;
+            let document = match std::fs::read_to_string(&path) {
+                Ok(document) => document,
+                // A file that is not there is the install that predates the
+                // panel, and not a defect; anything else is reported.
+                Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => return None,
+                Err(cause) => {
+                    let error = ImeError::DictUnavailable {
+                        path: path.clone(),
+                        cause: cause.into(),
+                    };
+                    report_step_failure("symbol-table", &error);
+                    return None;
+                }
+            };
+            let (table, report) = SymbolTable::load(&document);
+            if report.skipped > 0 {
+                // A row the reader refused is a packaging fault in shipped data, and
+                // the build wants to know; the categories that were read still serve.
+                let error = ImeError::ConfigInvalid {
+                    key: String::from("symbols.file"),
+                    reason: format!(
+                        "{} row(s) of the installed table could not be used",
+                        report.skipped
+                    ),
+                };
+                report_step_failure("symbol-table", &error);
+            }
+            Some(table)
+        })
+        .as_ref()
 }
 
 /// The sources every session decodes against, built on the first call.
@@ -225,6 +391,36 @@ pub(super) fn lexicon_slot() -> Option<&'static LexiconSlot> {
     LEXICON_SLOT.get()
 }
 
+/// The user's own words of the process, when a store exists to hold them.
+///
+/// # Panics
+///
+/// Never.
+pub(super) fn user_lexicon_handle() -> Option<&'static UserLexiconHandle> {
+    USER_LEXICON.get()
+}
+
+/// Assembles the user's lexicon over the store the process adopted.
+///
+/// Called once, from [`sources_for`], beside the dictionary mapping: the entries the
+/// store already holds become the front lexicon of the session. A store that is not
+/// there -- no layout, or the read-only degradation -- assembles nothing, which is the
+/// plugin that decoded without a user lexicon, the shape every start took before the
+/// first coin was possible.
+///
+/// # Panics
+///
+/// Never.
+fn assemble_user_lexicon() {
+    let Some(store) = user_store() else {
+        return;
+    };
+    // A `UserDb` is a handle over shared state, so the clone the lexicon reads through
+    // is the same store the frequency path writes to -- one file, one flush window.
+    let db = lock(&store.db).clone();
+    let _ = USER_LEXICON.set(UserLexiconHandle::hydrate(db));
+}
+
 /// Builds the sources a session decodes against, for the dictionary at `dictionary`.
 ///
 /// The entry point a test drives: with the path injected, whether a dictionary is mapped or
@@ -243,6 +439,7 @@ pub(super) fn lexicon_slot() -> Option<&'static LexiconSlot> {
 ///
 /// Never.
 pub(super) fn sources_for(dictionary: Option<&Path>) -> SessionSources {
+    assemble_user_lexicon();
     let sources = SessionSources {
         user_freq: user_frequency(),
     };
@@ -416,7 +613,10 @@ fn clear_staged_key(previous: &DataConfig) {
     cleared.dict_staged_path = String::new();
     let path = with_config_store(|store| store.path().to_path_buf());
     let Some(path) = path else {
-        report_step_failure("dict-swap", &"no configuration store to clear the staged key");
+        report_step_failure(
+            "dict-swap",
+            &"no configuration store to clear the staged key",
+        );
         return;
     };
     if let Err(error) = write_data(&path, previous, &cleared) {

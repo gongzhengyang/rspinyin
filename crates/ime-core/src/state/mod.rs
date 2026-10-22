@@ -130,6 +130,34 @@ pub struct SessionConfig {
     /// it below everything the input spells is the engine's business, not the
     /// configuration's.
     pub correction: bool,
+    /// `engine.mixed_english`: whether an input no pinyin reading cuts is offered
+    /// the English lexicon's entry for it, so that `github` reaches the word
+    /// spelled `GitHub`.
+    ///
+    /// Off by default: a user who never asked for English candidates must not have
+    /// their compositions answered from a table they did not know was there. With
+    /// the switch off the decode never queries the English lexicon, whatever it
+    /// holds.
+    pub english: bool,
+    /// `engine.on_im_switch`: what a live composition does when the input method
+    /// is switched away from or reset.
+    pub on_im_switch: ImSwitchPolicy,
+}
+
+/// What a live composition does when the input method is switched away from.
+///
+/// The configuration's own spelling of the choice lives in `ime-config`; this is
+/// the engine's half, projected once per configuration load like the scheme and
+/// the fuzzy mask.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImSwitchPolicy {
+    /// The shipped behaviour: the composing text is taken back and nothing
+    /// reaches the application.
+    #[default]
+    Clear,
+    /// The raw input is committed first, so a user who switches away mid-word
+    /// keeps the letters they typed.
+    CommitRaw,
 }
 
 impl Default for SessionConfig {
@@ -146,6 +174,8 @@ impl Default for SessionConfig {
             fuzzy: ime_types::DecodeFlags::empty(),
             abbrev: false,
             correction: false,
+            english: false,
+            on_im_switch: ImSwitchPolicy::Clear,
         }
     }
 }

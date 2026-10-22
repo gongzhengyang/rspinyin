@@ -32,6 +32,15 @@ const REQUIREMENT_FIELD: &str = "环境需求";
 /// The metadata field a case names its module in.
 const MODULE_FIELD: &str = "模块与类别";
 
+/// The metadata field a case declares its executability in.
+const EXECUTABILITY_FIELD: &str = "可执行性";
+
+/// The annotation value that declares a case is waiting on code.
+const PENDING_MARKER: &str = "[待实现]";
+
+/// The metadata field a pending case names the tasks it waits on in.
+const ANCHOR_FIELD: &str = "锚定";
+
 /// Reads the case metadata out of a case document.
 ///
 /// One entry per `TC-<module>-<number>` heading, in document order, with the module and the
@@ -59,6 +68,7 @@ pub fn parse_cases(text: &str) -> Vec<TestCaseMeta> {
             current = Some(TestCaseMeta {
                 module: module_of(&id),
                 requirement: EnvRequirement::Undeclared(String::new()),
+                pending_impl: None,
                 id,
             });
             continue;
@@ -71,6 +81,9 @@ pub fn parse_cases(text: &str) -> Vec<TestCaseMeta> {
         }
         if let Some(declared) = field_value(trimmed, REQUIREMENT_FIELD) {
             case.requirement = EnvRequirement::parse(&declared);
+        }
+        if let Some(anchored) = pending_annotation(trimmed) {
+            case.pending_impl = Some(anchored);
         }
     }
     if let Some(case) = current {
@@ -121,6 +134,78 @@ fn field_value(line: &str, name: &str) -> Option<String> {
     let rest = rest.strip_prefix('：')?;
     let value = rest.split('|').next()?;
     Some(value.trim().trim_matches('`').trim().to_owned())
+}
+
+/// The tasks a case's attribute line anchors, when the line declares it pending.
+///
+/// A pending case is one whose card says `可执行性：`[待实现]`` and names the tasks it waits on
+/// in `锚定：`. Both live in the case's `基本属性` line as `｜`-separated segments -- the ASCII
+/// pipe accepted beside the full-width one, which the suite has written in both forms -- so the
+/// probe reads segments rather than the whole line: a `锚点：` segment, the source anchor, is a
+/// different field and must never be read as the task anchor.
+///
+/// Returns the `/`-joined anchor tasks, or `None` when the line declares nothing. A pending
+/// declaration without at least one task id is refused -- a pending case the card cannot anchor
+/// is a card defect, and the gate falls through to the decision table for it, which withholds
+/// it fail-closed.
+///
+/// # Panics
+///
+/// Never.
+fn pending_annotation(line: &str) -> Option<String> {
+    let mut pending = false;
+    let mut tasks: Vec<&str> = Vec::new();
+    for segment in line.split(['｜', '|']) {
+        let segment = segment.trim();
+        let segment = segment.strip_prefix("**").unwrap_or(segment);
+        let declared = segment
+            .strip_prefix(EXECUTABILITY_FIELD)
+            .and_then(|rest| rest.strip_prefix('：'));
+        if let Some(value) = declared {
+            pending |= value.trim().trim_matches('`').trim() == PENDING_MARKER;
+        }
+        let anchored = segment
+            .strip_prefix(ANCHOR_FIELD)
+            .and_then(|rest| rest.strip_prefix('：'));
+        if let Some(value) = anchored {
+            tasks.extend(task_ids(value));
+        }
+    }
+    if pending && !tasks.is_empty() {
+        return Some(tasks.join("/"));
+    }
+    None
+}
+
+/// The TASK identifiers a segment names, in the order it names them.
+///
+/// The scan starts at each `TASK-` and takes the identifier characters that follow, which is
+/// what survives the backticks a card wraps the ids in and the prose that follows them: a
+/// segment that names two ids across a `/` yields both, and `` `TASK-1.03.02` ``（W-8 退出路径）
+/// yields one.
+///
+/// # Panics
+///
+/// Never.
+fn task_ids(value: &str) -> Vec<&str> {
+    let mut ids = Vec::new();
+    let mut rest = value;
+    while let Some(start) = rest.find("TASK-") {
+        let after = &rest[start + "TASK-".len()..];
+        let len: usize = after
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '.' || *ch == '-')
+            .map(char::len_utf8)
+            .sum();
+        if len > 0 {
+            // The id is the marker and what it names: `TASK-1.03.02`, not `1.03.02`.
+            ids.push(&rest[start..start + "TASK-".len() + len]);
+        }
+        // The scan always advances past the `TASK-` it found, so a marker that names no
+        // identifier cannot loop: the next search starts after it.
+        rest = &after[len..];
+    }
+    ids
 }
 
 /// The case identifier a heading line opens, when it opens one.

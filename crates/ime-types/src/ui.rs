@@ -222,10 +222,11 @@ pub struct Candidate {
 
 /// Where a candidate came from; drives the source label and the diagnostics.
 ///
-/// `Phrase` and `Script` were appended by ADR-0005. Appending a variant makes every
-/// `match` on this enum non-exhaustive, which is deliberate: the compiler lists the
-/// places that have to decide what the new source looks like. `Symbol` is the
-/// precedent -- it was defined ahead of its implementation for the same reason.
+/// `Phrase` and `Script` were appended by ADR-0005, `English` by ADR-0016.
+/// Appending a variant makes every `match` on this enum non-exhaustive, which is
+/// deliberate: the compiler lists the places that have to decide what the new
+/// source looks like. `Symbol` is the precedent -- it was defined ahead of its
+/// implementation for the same reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CandidateSource {
     Dict,
@@ -238,6 +239,9 @@ pub enum CandidateSource {
     /// A script conversion of another candidate, rather than a reading of the
     /// input.
     Script,
+    /// An entry of the English lexicon, offered for an input no pinyin reading
+    /// cuts (ADR-0016).
+    English,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

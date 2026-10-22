@@ -8,8 +8,9 @@
 
 use super::*;
 
-use ime_types::DecodeRequest;
+use ime_types::{DecodeRequest, DecodeResult};
 
+use crate::confusable::ConfusableTable;
 use crate::lm::InMemoryLm;
 use crate::state::paging::{MAX_PAGE_SIZE, MAX_PAGES, MAX_REACHABLE_CANDIDATES, Paging};
 use crate::viterbi::decoder::{DEFAULT_MAX_CANDIDATES, DecodeConfig, Decoder, MAX_CANDIDATES};
@@ -57,6 +58,7 @@ fn ranked_drafts(count: usize) -> Vec<Draft> {
             syllables: 1,
             score: i32::try_from(count - index).expect("the test counts are small"),
             corrected: false,
+            readings: String::new(),
             words: WordSpans::EMPTY,
         })
         .collect()
@@ -84,6 +86,7 @@ fn plain_draft(text: &str, score: i32) -> Draft {
         syllables: 2,
         score,
         corrected: false,
+        readings: String::new(),
         words: WordSpans::EMPTY,
     }
 }
@@ -98,7 +101,7 @@ fn test_result_of_into_annotates_a_corrected_draft_and_leaves_an_exact_one_quiet
         plain_draft("整好", 90),
     ];
     let mut out = empty_result();
-    result_of_into(&mut out, &drafts, false, "zhegn");
+    result_of_into(&mut out, &drafts, false, "zhegn", None);
     assert_eq!(
         out.candidates[0].annotation.as_deref(),
         Some("纠错：zhegn"),
@@ -118,17 +121,165 @@ fn test_result_of_into_rewrites_a_slot_annotation_across_decodes() {
     }];
     let mut out = empty_result();
     // First decode: the corrected candidate seeds the slot's annotation buffer.
-    result_of_into(&mut out, &corrected, false, "zhegn");
+    result_of_into(&mut out, &corrected, false, "zhegn", None);
     assert_eq!(out.candidates[0].annotation.as_deref(), Some("纠错：zhegn"));
     // Second decode of a different slip: the slot must follow the new spelling
     // rather than keep the previous input's annotation behind it.
-    result_of_into(&mut out, &corrected, false, "zhoeng");
-    assert_eq!(out.candidates[0].annotation.as_deref(), Some("纠错：zhoeng"));
+    result_of_into(&mut out, &corrected, false, "zhoeng", None);
+    assert_eq!(
+        out.candidates[0].annotation.as_deref(),
+        Some("纠错：zhoeng")
+    );
     // Third decode, exact input, same candidate count: the slot that held an
     // annotation now holds an exact reading, and the annotation is gone.
     let exact = vec![plain_draft("真诚", 100)];
-    result_of_into(&mut out, &exact, false, "zheng");
+    result_of_into(&mut out, &exact, false, "zheng", None);
     assert_eq!(out.candidates[0].annotation, None);
+}
+
+#[test]
+fn test_result_of_into_annotates_a_fuzzy_draft_with_the_standard_reading() {
+    // A fuzzy candidate has no correction mark but does have a standard reading:
+    // the widened edge's key is what the word is really read as, and the hint says
+    // so without naming a spelling the user never typed.
+    let drafts = vec![Draft {
+        readings: String::from("shuo'fu"),
+        ..plain_draft("说服", 100)
+    }];
+    let mut out = empty_result();
+    result_of_into(&mut out, &drafts, false, "shuo'fu", None);
+    assert_eq!(
+        out.candidates[0].annotation.as_deref(),
+        Some("音:shuo'fu"),
+        "a fuzzy candidate names the reading it was found under"
+    );
+}
+
+#[test]
+fn test_result_of_into_prefaces_a_corrected_draft_with_its_standard_reading() {
+    // Both facts travel on one annotation: the reading the word is found under
+    // first, then the spelling the user actually typed -- the pair explains the
+    // candidate without the window needing a second field.
+    let drafts = vec![Draft {
+        corrected: true,
+        readings: String::from("zheng"),
+        ..plain_draft("真诚", 100)
+    }];
+    let mut out = empty_result();
+    result_of_into(&mut out, &drafts, false, "zhegn", None);
+    assert_eq!(
+        out.candidates[0].annotation.as_deref(),
+        Some("音:zheng｜纠错：zhegn")
+    );
+}
+
+#[test]
+fn test_result_of_into_appends_a_confusable_hint_after_the_engine_hints() {
+    let table = ConfusableTable::parse("按奈\t按捺\n").expect("rows are usable");
+    let drafts = vec![plain_draft("按奈", 100)];
+    let mut out = empty_result();
+    result_of_into(&mut out, &drafts, false, "an'nai", Some(&table));
+    assert_eq!(
+        out.candidates[0].annotation.as_deref(),
+        Some("字:→按捺"),
+        "a wrong form the table holds is named with the correct one"
+    );
+    // On a draft that also carries an engine hint the table's part comes last.
+    let drafts = vec![Draft {
+        corrected: true,
+        readings: String::from("an'nai"),
+        ..plain_draft("按奈", 100)
+    }];
+    let mut out = empty_result();
+    result_of_into(&mut out, &drafts, false, "an'nai", Some(&table));
+    assert_eq!(
+        out.candidates[0].annotation.as_deref(),
+        Some("音:an'nai｜纠错：an'nai｜字:→按捺")
+    );
+}
+
+#[test]
+fn test_result_of_into_leaves_a_confusable_miss_and_a_detached_table_quiet() {
+    let table = ConfusableTable::parse("按奈\t按捺\n").expect("rows are usable");
+    let mut out = empty_result();
+    // A text the table does not hold is annotated with nothing, whether the table
+    // is attached or not.
+    let drafts = vec![plain_draft("按捺", 100)];
+    result_of_into(&mut out, &drafts, false, "an'nai", Some(&table));
+    assert_eq!(out.candidates[0].annotation, None, "a miss stays quiet");
+    let drafts = vec![plain_draft("按奈", 100)];
+    result_of_into(&mut out, &drafts, false, "an'nai", None);
+    assert_eq!(
+        out.candidates[0].annotation, None,
+        "without the table the channel is off, not merely silent"
+    );
+}
+
+#[test]
+fn test_result_of_into_changes_no_order_text_or_score_for_its_hints() {
+    // The hint channel is annotation-only: the same drafts through the same list
+    // come out in the same order with the same texts and scores, with the table
+    // attached and without it.
+    let drafts = vec![
+        Draft {
+            readings: String::from("an'nai"),
+            ..plain_draft("按奈", 100)
+        },
+        plain_draft("按捺", 90),
+    ];
+    let mut hinted = empty_result();
+    let table = ConfusableTable::parse("按奈\t按捺\n").expect("rows are usable");
+    result_of_into(&mut hinted, &drafts, false, "an'nai", Some(&table));
+    let mut quiet = empty_result();
+    result_of_into(&mut quiet, &drafts, false, "an'nai", None);
+    assert_eq!(
+        hinted
+            .candidates
+            .iter()
+            .map(|c| (c.text.as_str(), c.index, c.score))
+            .collect::<Vec<_>>(),
+        quiet
+            .candidates
+            .iter()
+            .map(|c| (c.text.as_str(), c.index, c.score))
+            .collect::<Vec<_>>(),
+        "hints decorate; they never reorder"
+    );
+}
+
+#[test]
+fn test_is_widened_follows_the_fuzzy_and_correction_penalties_only() {
+    use crate::segment::abbrev::ABBREV_PENALTY_Q8;
+    assert!(is_widened(crate::fuzzy::FUZZY_PENALTY_Q8));
+    assert!(is_widened(crate::segment::correct::CORRECTION_PENALTY_Q8));
+    assert!(
+        !is_widened(ABBREV_PENALTY_Q8),
+        "typing initials is a choice, not a slip: no reading is hinted at"
+    );
+    assert!(!is_widened(0), "an exact edge is not widened");
+}
+
+#[test]
+fn test_append_standard_reading_joins_readings_and_skips_unusable_ranges() {
+    // The reading is the whole key the word was found under, one arena slice per
+    // widened word; two widened words join the way two keys do.
+    let keys = b"wan'ba";
+    let mut readings = String::new();
+    append_standard_reading(&mut readings, keys, (0, 3));
+    append_standard_reading(&mut readings, keys, (4, 2));
+    assert_eq!(readings, "wan'ba");
+    // A range past the arena and an empty range append nothing, and a slice that
+    // is not UTF-8 -- which the build cannot produce, but the reader refuses
+    // anyway -- is skipped rather than failed on.
+    let mut readings = String::new();
+    append_standard_reading(&mut readings, keys, (100, 2));
+    append_standard_reading(&mut readings, keys, (0, 100));
+    append_standard_reading(&mut readings, keys, (0, 0));
+    append_standard_reading(&mut readings, b"\xff\xfe", (0, 2));
+    assert_eq!(
+        readings, "",
+        "an unusable range is skipped, never a failure"
+    );
 }
 
 #[test]
@@ -145,7 +296,10 @@ fn test_finish_merges_a_corrected_twin_into_one_annotated_candidate() {
     ];
     finish(&mut drafts, DEFAULT_MAX_CANDIDATES);
     assert_eq!(drafts.len(), 1, "the twins fold into one candidate");
-    assert!(drafts[0].corrected, "the correction mark survives the merge");
+    assert!(
+        drafts[0].corrected,
+        "the correction mark survives the merge"
+    );
     assert_eq!(drafts[0].score, 90, "the better score wins the fold");
 }
 

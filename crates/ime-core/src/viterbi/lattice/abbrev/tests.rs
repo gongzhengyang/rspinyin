@@ -29,6 +29,7 @@ fn lattice_of<'a, L: Lexicon>(raw: &str, lexicon: &'a L, flags: DecodeFlags) -> 
             flags,
             readings: &mut readings,
             keys: &mut keys,
+            english: None,
         },
     )
 }

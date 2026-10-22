@@ -417,17 +417,10 @@ fn test_assertions_withhold_every_captured_tail() {
         ..exited(101)
     };
     let case = case("TC-CORE-16");
-    let evidence = CaseEvidence {
-        tc: case.id.to_owned(),
-        module: case.module.to_owned(),
-        status: verdict::judge(std::slice::from_ref(&run)),
-        started_at: started(),
-        duration_ms: 7,
-        assertions: verdict::assertions_of(case, std::slice::from_ref(&run)),
-        visual: Vec::new(),
-        healed: Vec::new(),
-        environment: Vec::new(),
-    };
+    // The record is the runner's own product, built the way the runner builds it: the v3
+    // claims are derived from the same assertions, so the test holds for both documents at
+    // once.
+    let evidence = run_case(case, &[], std::slice::from_ref(&run), 7);
     let document = evidence.to_json().expect("the record is JSON");
     assert!(
         !document.contains(secret),
@@ -435,6 +428,10 @@ fn test_assertions_withhold_every_captured_tail() {
     );
     assert!(document.contains("<redacted:len="), "{document}");
     assert!(document.contains("stdout_tail_1"), "{document}");
+    assert!(
+        document.contains("\"v3\""),
+        "the record carries the v3 section beside the v1 fields: {document}"
+    );
     // The count is kept, which is what tells a reader there was output at all.
     assert!(
         document.contains(&format!(
@@ -563,7 +560,7 @@ fn test_run_case_of_a_failing_case_leaves_a_bundle_with_a_trace() {
     let scratch = Scratch::new("failing");
     let run_dir = RunDir::create(&scratch.path, started()).expect("a fresh run directory");
     let case = case("TC-CORE-11");
-    let evidence = run_case(case, &environment(), &[exited(101)], 41);
+    let evidence = run_case(case, environment().facts(), &[exited(101)], 41);
     assert_eq!(evidence.status, CaseStatus::Fail);
     assert_eq!(evidence.tc, "TC-CORE-11");
     assert_eq!(evidence.module, CORE_MODULE);
@@ -605,7 +602,7 @@ fn test_run_case_of_a_passing_case_leaves_no_trace() {
     let scratch = Scratch::new("passing");
     let run_dir = RunDir::create(&scratch.path, started()).expect("a fresh run directory");
     let case = case("TC-CORE-01");
-    let evidence = run_case(case, &environment(), &[exited(0)], 9);
+    let evidence = run_case(case, environment().facts(), &[exited(0)], 9);
     assert_eq!(evidence.status, CaseStatus::Pass);
     assert!(!evidence.status.needs_trace());
     let bundle = run_dir
@@ -618,7 +615,7 @@ fn test_run_case_of_a_passing_case_leaves_no_trace() {
 #[test]
 fn test_run_case_of_a_case_without_a_command_is_flawed() {
     let case = case("TC-CORE-25");
-    let evidence = run_case(case, &environment(), &[], 0);
+    let evidence = run_case(case, environment().facts(), &[], 0);
     assert_eq!(evidence.status, CaseStatus::Flawed);
     assert!(
         evidence.status.needs_trace(),
@@ -722,7 +719,7 @@ fn test_line_of_reports_the_bundle_a_case_left() {
     let scratch = Scratch::new("line");
     let run_dir = RunDir::create(&scratch.path, started()).expect("a fresh run directory");
     let case = case("TC-CORE-01");
-    let evidence = run_case(case, &environment(), &[exited(0)], 9);
+    let evidence = run_case(case, environment().facts(), &[exited(0)], 9);
     let complete = run_dir.write_case(&evidence, None, None);
     let line = line_of(&evidence, &complete);
     assert!(line.contains("TC-CORE-01"), "{line}");
@@ -736,7 +733,7 @@ fn test_line_of_reports_a_bundle_that_could_not_be_written() {
     // A write that failed is a second failure beside the verdict, and the line has to show both.
     // The reason the archive hands back is path-free by construction, so the line a run's index
     // records carries no filesystem path.
-    let evidence = run_case(case("TC-CORE-01"), &environment(), &[exited(0)], 9);
+    let evidence = run_case(case("TC-CORE-01"), environment().facts(), &[exited(0)], 9);
     let refusal: Result<CaseBundle, EvidenceError> = Err(EvidenceError::RunExists {
         path: PathBuf::from("/repo/results/runs/run-20231114-221320"),
     });

@@ -341,6 +341,9 @@ fn composing(session: &Session, action: KeyAction, cfg: &SessionConfig) -> Execu
         KeyAction::Backspace => Executability::Executable,
         KeyAction::CommitHighlighted => has_highlight(session),
         KeyAction::CommitRaw => non_empty_input(session),
+        // Inside the panel a digit keys the code, and the session turns it into
+        // input; outside it selects, which is what the keymap has always meant.
+        KeyAction::SelectIndex(_) if session.is_symbol_mode() => Executability::Executable,
         KeyAction::SelectIndex(digit) => selectable(session, digit),
         KeyAction::PageNext => flip(session, PageDir::Next),
         KeyAction::PagePrev => flip(session, PageDir::Prev),

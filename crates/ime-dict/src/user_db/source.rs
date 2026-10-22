@@ -223,16 +223,17 @@ impl Inner {
                 }
                 Some(word) => {
                     let installed: Box<str> = Box::from(word);
-                    (pins.insert(Box::from(key), installed.clone()), Some(installed))
+                    (
+                        pins.insert(Box::from(key), installed.clone()),
+                        Some(installed),
+                    )
                 }
             }
         };
         {
             let mut pinned = lock(&self.pinned);
             if let Some(released) = &released {
-                let still_named = lock(&self.key_pins)
-                    .values()
-                    .any(|held| held == released);
+                let still_named = lock(&self.key_pins).values().any(|held| held == released);
                 if !still_named {
                     pinned.remove(released.as_ref());
                 }

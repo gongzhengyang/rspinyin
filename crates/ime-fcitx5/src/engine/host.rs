@@ -42,11 +42,50 @@
 
 use ime_types::{ImeError, UiCommand};
 
+use crate::ffi::FcitxKeyEvent;
+
 /// The host actions the routing layer performs.
 ///
 /// One implementation drives a real Fcitx5 session and one drives the tests; see the
 /// module documentation for what every implementation owes.
+/// What the host answered when the compose step asked about one key.
+///
+/// The host owns the keyboard layout's dead-key state (`processComposeString` on
+/// the reference side); the plugin owns none of it, so the answer is the host's
+/// three ways and nothing else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComposeOutcome {
+    /// The host composes nothing: the key is the caller's to route as always.
+    /// This is also what a host that offers no compose support answers, which is
+    /// why the step costs one virtual call and nothing more.
+    Unsupported,
+    /// The key opened or continued a dead-key sequence: the sequence is not
+    /// finished, so the key is swallowed and the application sees nothing.
+    Swallowed,
+    /// The sequence finished and produced this character: the character reaches
+    /// the application as a direct commit, the semantics of a pass-through
+    /// commit with no learning and no candidate window.
+    Committed(char),
+}
+
 pub trait Host {
+    /// Asks the host whether this key is part of a dead-key sequence it is
+    /// composing.
+    ///
+    /// The compose step calls this before anything else claims the key, and only
+    /// for a press without Ctrl or Super on an idle session -- a composing
+    /// session is never asked, which is what keeps the hot path free of the
+    /// call. The default answers [`ComposeOutcome::Unsupported`]: a host that
+    /// offers no compose support keeps every key exactly where the routing
+    /// table put it.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    fn process_compose(&mut self, _ic: u64, _key: &FcitxKeyEvent) -> ComposeOutcome {
+        ComposeOutcome::Unsupported
+    }
+
     /// Hands committed text to the application.
     ///
     /// # Arguments

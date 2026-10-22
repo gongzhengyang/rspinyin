@@ -1,0 +1,25 @@
+# ADD-shard example scenario: the abbreviation switch named through the v2 `[decode]`
+# section (TC-ADD-008's subject). The switch rides the request as a flag bit, which is
+# the channel a v2 scenario names it through; the `n'h` key is the abbreviation entry a
+# compiled dictionary carries beside the full spelling.
+
+name = "add-abbrev-flags"
+
+[decode]
+flags = ["ABBREV"]
+
+[[dictionary.words]]
+key = "ni'hao"
+texts = ["你好"]
+
+[[dictionary.words]]
+key = "n'h"
+texts = ["你好"]
+
+[[steps]]
+action = "input-char:n"
+expect = { candidates = { first = "n", count = 1, contains = [] } }
+
+[[steps]]
+action = "input-char:h"
+expect = { candidates = { first = "你好", count = 1, contains = [] } }

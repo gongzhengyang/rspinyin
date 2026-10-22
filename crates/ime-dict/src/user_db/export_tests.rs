@@ -353,3 +353,104 @@ fn test_import_refuses_a_document_past_the_size_limit() {
     }
     assert_eq!(db.record_count().expect("counting"), 0);
 }
+
+#[test]
+fn test_export_includes_coined_words_in_a_section_of_their_own() {
+    let dir = temp_dir("export-coined");
+    let clock = TestClock::default();
+    let mut db = open_in(&dir, clock.clone());
+    clock.advance_ms(1_000);
+    db.record("zhu'ji", 0);
+    db.record_coin("zhu'ji", "诸暨");
+    db.final_commit().expect("flushing");
+    db.wait_for_flush();
+
+    let document = document_of(&db);
+    let lines: Vec<&str> = document.lines().collect();
+    // Three comment lines, the frequency row, then the coined section with its own
+    // marker and row.
+    assert_eq!(lines.len(), 6, "{document}");
+    assert_eq!(
+        lines[4],
+        "# Coined words: key <TAB> word <TAB> commits <TAB> last_used_unix"
+    );
+    assert_eq!(lines[5], "zhu'ji\t诸暨\t1\t0", "{document}");
+}
+
+#[test]
+fn test_export_folds_a_coin_the_flush_has_not_written_into_its_row() {
+    let dir = temp_dir("export-coined-pending");
+    let mut db = open_in(&dir, TestClock::default());
+    db.record_coin("zhu'ji", "诸暨");
+    db.final_commit().expect("flushing");
+    db.wait_for_flush();
+    // A second commit of the same pair is a pending confirmation: the row the file
+    // holds says one, the export says two.
+    db.record_coin("zhu'ji", "诸暨");
+
+    let document = document_of(&db);
+    assert!(
+        document.contains("zhu'ji\t诸暨\t2\t0\n"),
+        "the unflushed confirmation counts: {document}"
+    );
+}
+
+#[test]
+fn test_import_restores_coined_words_and_never_lowers_a_count() {
+    let source_dir = temp_dir("coined-source");
+    let mut source = open_in(&source_dir, TestClock::default());
+    source.record_coin("zhu'ji", "诸暨");
+    source.record_coin("gan'xie", "感谢");
+    source.final_commit().expect("flushing");
+    source.wait_for_flush();
+    let mut out = Vec::new();
+    source.export_tsv(&mut out).expect("exporting");
+    let text = String::from_utf8(out).expect("the document is UTF-8");
+    drop(source);
+
+    let target_dir = temp_dir("coined-target");
+    let mut target = open_in(&target_dir, TestClock::default());
+    // The target coined the same word three times on its own: the document's one may
+    // not take that back.
+    for _ in 0..3 {
+        target.record_coin("zhu'ji", "诸暨");
+    }
+    target.final_commit().expect("flushing");
+    target.wait_for_flush();
+
+    let report = target
+        .import_tsv(&mut text.as_bytes())
+        .expect("the document imports");
+    assert_eq!(report.rejected, 0, "{report:?}");
+    assert_eq!(report.applied, 2, "both coined rows land");
+    assert_eq!(
+        target.coined_rows().expect("reading the rows back"),
+        vec![
+            (String::from("gan'xie"), String::from("感谢"), 1),
+            (String::from("zhu'ji"), String::from("诸暨"), 3),
+        ],
+        "the word the target already earned keeps its count"
+    );
+    assert!(
+        target.is_user_word("感谢"),
+        "an imported coin is a word the store knows it coined"
+    );
+    assert!(target.is_user_word("诸暨"));
+}
+
+#[test]
+fn test_import_refuses_a_document_whose_coined_row_is_malformed() {
+    let dir = temp_dir("coined-refused");
+    let mut db = open_in(&dir, TestClock::default());
+    db.record("kept", 0);
+    db.final_commit().expect("flushing");
+    let text = format!(
+        "{MARKER}\n# Columns: key <TAB> weight <TAB> last_used_unix <TAB> created_unix <TAB> pinned <TAB> dee_q16 <TAB> tick\nkept\t1\t0\t0\t0\t65536\t1\n# Coined words: key <TAB> word <TAB> commits <TAB> last_used_unix\nzhu'ji\t诸暨\t1\n"
+    );
+    let report = db
+        .import_tsv(&mut text.as_bytes())
+        .expect("a refused document is an outcome, not a failure");
+    assert!(report.recognised);
+    assert_eq!(report.applied, 0, "one bad row refuses the document whole");
+    assert_eq!(report.rejected, 1);
+}

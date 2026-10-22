@@ -345,7 +345,11 @@ fn suffixed(path: &Path, suffix: &str) -> PathBuf {
 /// # Panics
 ///
 /// Never: every failure is a returned error.
-pub fn write_data(path: &Path, previous: &DataConfig, new: &DataConfig) -> Result<(), WritebackError> {
+pub fn write_data(
+    path: &Path,
+    previous: &DataConfig,
+    new: &DataConfig,
+) -> Result<(), WritebackError> {
     let text = match fs::read_to_string(path) {
         Ok(text) => Some(text),
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,

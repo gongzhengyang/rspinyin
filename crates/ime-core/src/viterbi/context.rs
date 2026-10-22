@@ -143,7 +143,8 @@ pub(crate) fn rerank_aligned(
     for (at, slot) in order.iter_mut().enumerate().take(band_end) {
         *slot = at;
     }
-    order[..band_end].sort_by_key(|&at| std::cmp::Reverse(lm.bigram(context, candidates[at].text.as_str())));
+    order[..band_end]
+        .sort_by_key(|&at| std::cmp::Reverse(lm.bigram(context, candidates[at].text.as_str())));
     let drafts_align = drafts.len() >= band_end;
     for at in 0..band_end {
         // Where the element now at `at` belongs: the chain is followed until it lands

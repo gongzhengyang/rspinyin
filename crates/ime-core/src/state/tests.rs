@@ -21,7 +21,9 @@ use ime_types::{HideReason, KeyAction, Placement, SelectTrigger, UiEvent, UserFr
 
 use super::machine::{Session, SessionEnv, SessionState};
 use super::{Effect, SessionConfig};
+use crate::confusable::ConfusableTable;
 use crate::lm::InMemoryLm;
+use crate::symbols::SymbolTable;
 use crate::viterbi::Decoder;
 use crate::viterbi::lattice::testing::MockLexicon;
 
@@ -149,6 +151,43 @@ impl Fixture {
             lexicon: &self.lexicon,
             user_freq: &self.user,
             lm: &self.lm,
+            english: None,
+            confusables: None,
+            symbols: None,
+        }
+    }
+
+    /// Borrows the sources as the environment a step reads, with one symbol
+    /// table attached beside them, for the panel tests.
+    pub(super) fn env_with_symbols<'env>(
+        &'env self,
+        symbols: &'env SymbolTable,
+    ) -> SessionEnv<'env> {
+        SessionEnv {
+            decoder: &self.decoder,
+            lexicon: &self.lexicon,
+            user_freq: &self.user,
+            lm: &self.lm,
+            english: None,
+            confusables: None,
+            symbols: Some(symbols),
+        }
+    }
+
+    /// Borrows the sources as the environment a step reads, with one confusable
+    /// table attached beside them, for the hint tests.
+    pub(super) fn env_with<'env>(
+        &'env self,
+        confusables: &'env ConfusableTable,
+    ) -> SessionEnv<'env> {
+        SessionEnv {
+            decoder: &self.decoder,
+            lexicon: &self.lexicon,
+            user_freq: &self.user,
+            lm: &self.lm,
+            english: None,
+            confusables: Some(confusables),
+            symbols: None,
         }
     }
 }

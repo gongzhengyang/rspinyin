@@ -49,8 +49,8 @@ use ime_types::{
 };
 use smallvec::SmallVec;
 
-use crate::segment::{DagEdge, MAX_NODES, MAX_SYLLABLE_LEN, Readings, SyllableDag};
 use crate::segment::syllable;
+use crate::segment::{DagEdge, MAX_NODES, MAX_SYLLABLE_LEN, Readings, SyllableDag};
 
 /// Longest word span, in syllables, the lattice considers.
 ///
@@ -107,248 +107,22 @@ const MAX_KEY_BYTES: usize = MAX_WORD_SYLLABLES as usize * (MAX_SYLLABLE_LEN + 1
 /// graph (an `a`-initial one, which can start at most five syllables).
 const SINGLES_INLINE: usize = 8;
 
-/// One word of the lattice.
+/// The lattice graph the build produces: the word edges of one input, grouped by
+/// the node they leave.
 ///
-/// The edge covers the byte range `[start, end)` of the normalized input, where
-/// `start` is the node the edge leaves; see [`Lattice::edges_from`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LatticeEdge<'dict> {
-    /// Node the edge reaches: the byte offset just past the span's last syllable.
-    pub end: u16,
-    /// Syllables the span covers, counted on the graph rather than taken from the
-    /// dictionary entry's own claim, so that a candidate's syllable accounting
-    /// always adds up to the path it came from.
-    pub syllables: u8,
-    /// Characters in the word, for the length bonus. Counted once here because
-    /// the sweep would otherwise recount it for every path that uses the edge.
-    pub characters: u16,
-    /// Where the word came from.
-    pub source: CandidateSource,
-    /// The word, borrowed from the dictionary's mapping.
-    pub word: WordRef<'dict>,
-    /// The key the word was looked up under, as a byte range into the lattice's key
-    /// arena: the canonical spelling the walk built -- syllable texts joined with the
-    /// separator -- which is what a later lookup of the same word will spell. An edge the
-    /// extension walks added names no key in this arena: its range is empty, and the one
-    /// reader of the ranges treats that as nothing to coin from.
-    pub key: (u32, u16),
-    /// Score penalty the edge carries, in the Q16.16 unit the sweep ranks with.
-    ///
-    /// Zero for an edge the exact walk produced, and the heaviest penalty of the
-    /// spans the word covers for an extended one -- [`ABBREV_PENALTY_Q8`](crate::segment::abbrev::ABBREV_PENALTY_Q8)
-    /// for an abbreviated one, the fuzzy penalty for a fuzzy variant, the correction
-    /// penalty for a corrected span at any position of the word -- so that a full
-    /// spelling outranks a widened reading at equal dictionary weight, wherever in
-    /// the word the widening sits. The lattice records the penalty rather than
-    /// applying it: the score of an edge is the sweep's to compute, and this is the
-    /// one term of that score the lattice knows and the sweep cannot derive from the
-    /// word and its predecessor. The order the edges sit in is a second, weaker
-    /// guarantee -- the exact walk's edges come before the abbreviation walk's, so a
-    /// tie falls the right way even on a sweep that ignores this field -- and the
-    /// penalty is what makes the outcome a matter of the score rather than of the
-    /// order.
-    pub penalty_q8: i32,
-}
+/// The type lives in `lattice/graph.rs` because it is the data the build fills and
+/// the sweep walks, while this file carries the walk that fills it.
+mod graph;
 
-/// Every word edge of one input, grouped by the node they leave.
-///
-/// # Examples
-///
-/// ```
-/// use ime_core::segment::{Readings, SyllableDag};
-/// use ime_core::viterbi::build_lattice;
-/// use ime_core::viterbi::lattice::LatticeOptions;
-/// use ime_types::{DecodeFlags, ImeError, Lexicon, WordFlags, WordIter, WordRef};
-///
-/// struct One;
-/// impl Lexicon for One {
-///     fn lookup(&self, key: &str) -> Result<WordIter<'_>, ImeError> {
-///         let words = if key == "ni'hao" {
-///             vec![WordRef { text: "你好", weight: 9, syl_count: 2, flags: WordFlags::empty() }]
-///         } else {
-///             Vec::new()
-///         };
-///         Ok(WordIter::from_vec(words))
-///     }
-///     fn prefix(&self, _prefix: &str, _limit: usize) -> Result<WordIter<'_>, ImeError> {
-///         Err(ImeError::Unsupported)
-///     }
-///     fn fallback_single(&self, _syl: ime_types::SyllableId, _limit: usize) -> Result<WordIter<'_>, ImeError> {
-///         Ok(WordIter::from_vec(Vec::new()))
-///     }
-/// }
-/// impl ime_types::UserFreqSource for One {
-///     fn freq(&self, _key: &str) -> u32 { 0 }
-///     fn record(&self, _key: &str, _weight_hint: u16) {}
-///     fn is_user_word(&self, _key: &str) -> bool { false }
-/// }
-///
-/// let mut dag = SyllableDag::new();
-/// assert!(dag.build("nihao").is_ok());
-/// let mut readings = Readings::new();
-/// let lattice = build_lattice(&dag, &One, &One, LatticeOptions {
-///     fallback_single: true,
-///     flags: DecodeFlags::empty(),
-///     readings: &mut readings,
-/// });
-/// let edges = lattice.edges_from(0);
-/// assert_eq!(edges.len(), 1);
-/// assert_eq!(edges[0].word.text, "你好");
-/// assert_eq!(edges[0].syllables, 2);
-/// // An edge the exact walk found carries no penalty.
-/// assert_eq!(edges[0].penalty_q8, 0);
-/// ```
-#[derive(Clone, Debug, Default)]
-pub struct Lattice<'dict> {
-    /// Every edge, ordered by the node they leave.
-    edges: Vec<LatticeEdge<'dict>>,
-    /// `starts[i]` is the first edge of node `i`; the entry after it is the end,
-    /// so the table has one entry per node plus a sentinel.
-    starts: SmallVec<[u32; MAX_LATTICE_STARTS]>,
-    /// Whether the dictionary refused a lookup, which makes the lattice an
-    /// incomplete picture of what it holds.
-    lookup_failed: bool,
-    /// Whether the abbreviation enumeration was cut short by its own cap, which makes
-    /// the lattice miss the vaguest readings of the input.
-    abbrev_truncated: bool,
-}
-
-impl<'dict> Lattice<'dict> {
-    /// Creates an empty lattice with room for the edges of a graph of `nodes` nodes.
-    ///
-    /// The edge vector is what one decode allocates, so it is sized once rather than grown:
-    /// that is the difference between a single allocation and the several a doubling growth
-    /// takes for a twelve-syllable input. The estimate is what the walk produces per node --
-    /// [`WORDS_PER_KEY`] for the node's one-syllable spans, [`FALLBACK_SINGLES`] when the
-    /// fallback is on, and [`MAX_WORD_SYLLABLES`]` - 1` more keys for the longer spans a
-    /// chain of syllables spells out of the same node. A dictionary richer than that, or a
-    /// graph that branches harder than the margin, grows the vector once more rather than
-    /// being refused.
-    ///
-    /// # Panics
-    ///
-    /// Never: a node count past [`MAX_LATTICE_NODES`] is cut to it.
-    pub fn with_capacity(nodes: usize, fallback_single: bool) -> Self {
-        let mut per_node = WORDS_PER_KEY + usize::from(MAX_WORD_SYLLABLES) - 1;
-        if fallback_single {
-            per_node += FALLBACK_SINGLES;
-        }
-        let nodes = nodes.min(MAX_LATTICE_NODES);
-        Self {
-            edges: Vec::with_capacity(nodes.saturating_mul(per_node)),
-            starts: SmallVec::new(),
-            lookup_failed: false,
-            abbrev_truncated: false,
-        }
-    }
-
-    /// Returns the edges leaving `node`, in the order the walk built them.
-    ///
-    /// Answers with an empty slice for a node index outside the graph rather than
-    /// panicking, so a walker cannot be tripped up by a degenerate lattice.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub fn edges_from(&self, node: usize) -> &[LatticeEdge<'dict>] {
-        let (first, last) = self.edge_range(node);
-        self.edges.get(first..last).unwrap_or(&[])
-    }
-
-    /// Returns the half-open range of edge indices `node` owns.
-    ///
-    /// # Panics
-    ///
-    /// Never: a node outside the table answers with an empty range.
-    pub fn edge_range(&self, node: usize) -> (usize, usize) {
-        let total = u32::try_from(self.edges.len()).unwrap_or(u32::MAX);
-        let first = self.starts.get(node).copied().unwrap_or(total);
-        let last = self.starts.get(node + 1).copied().unwrap_or(total);
-        let first = usize::try_from(first.min(total)).unwrap_or(0);
-        let last = usize::try_from(last.min(total)).unwrap_or(0);
-        (first.min(last), last)
-    }
-
-    /// Returns one edge by its index in the lattice.
-    ///
-    /// # Panics
-    ///
-    /// Never: an index past the end answers `None`.
-    pub fn edge_at(&self, index: usize) -> Option<&LatticeEdge<'dict>> {
-        self.edges.get(index)
-    }
-
-    /// Returns how many edges the lattice holds.
-    pub fn len(&self) -> usize {
-        self.edges.len()
-    }
-
-    /// Returns whether the lattice holds no word at all, which is the state an
-    /// empty or unusable dictionary leaves it in.
-    pub fn is_empty(&self) -> bool {
-        self.edges.is_empty()
-    }
-
-    /// Returns how many nodes the lattice describes, the terminal node included.
-    pub fn node_count(&self) -> usize {
-        self.starts.len()
-    }
-
-    /// Returns whether the dictionary refused a lookup while the lattice was
-    /// built, so the caller can report a degraded result instead of an
-    /// inexplicably short candidate list.
-    pub fn lookup_failed(&self) -> bool {
-        self.lookup_failed
-    }
-
-    /// Returns whether the abbreviation walk left readings of the input out of the
-    /// lattice.
-    ///
-    /// The signal behind the `decode/abbrev-truncated` diagnostic: an input with more
-    /// readings than the enumeration cap holds is still decoded, with the most specific
-    /// readings the cap left room for, and this is what tells a caller the answer is
-    /// built from a subset. It is a fact about the input rather than about the flag set,
-    /// so a caller that logs it once has to remember that it already did. Always `false`
-    /// while [`DecodeFlags::ABBREV`] is clear, because the walk is never entered.
-    pub fn abbrev_truncated(&self) -> bool {
-        self.abbrev_truncated
-    }
-}
+pub use graph::{Lattice, LatticeEdge};
 
 /// The switches one lattice build reads and the buffer it reuses.
 ///
-/// Grouped rather than passed one by one because the three travel together: a build is
-/// asked for the same thing every time and differs only in these, and the buffer is the
-/// caller's, so that a decode that runs once per keystroke hands the same allocation
-/// back instead of building one per node.
-#[derive(Debug)]
-pub struct LatticeOptions<'a> {
-    /// Whether a one-syllable span the dictionary has no word for is filled in with
-    /// single-character candidates. Turning it off leaves the lattice without a path
-    /// for such an input, which the decoder answers with a pass-through candidate.
-    pub fallback_single: bool,
-    /// The switches of the request being decoded.
-    ///
-    /// [`DecodeFlags::ABBREV`] is the whole abbreviation gate: with the bit clear the
-    /// abbreviation walk is never entered, no reading is enumerated and no prefix query
-    /// is made, so a build costs what it cost before abbreviation existed.
-    pub flags: DecodeFlags,
-    /// The buffer the abbreviation enumeration reuses.
-    ///
-    /// It is cleared and filled once per node the walk reaches, and the syllable vectors
-    /// it holds are handed back to the next call, so a decode that keeps one of these
-    /// stops allocating after the first input of a given shape.
-    pub readings: &'a mut Readings,
-    /// The key arena the build writes the canonical spelling of every looked-up key into,
-    /// and the edges name ranges into.
-    ///
-    /// Cleared by the build, so a range names this build's bytes and nothing earlier.
-    /// The arena belongs to the caller's workspace rather than to the lattice on purpose:
-    /// a lattice is built per decode and dropped with the call, and a buffer of its own
-    /// here would put a second allocation back on the key path the workspace had already
-    /// paid once for.
-    pub keys: &'a mut Vec<u8>,
-}
+/// The type lives in `lattice/options.rs` because it is plain data -- the knobs and the
+/// reusable buffers a build takes -- while this file carries the build itself.
+mod options;
+
+pub use options::LatticeOptions;
 
 /// Builds the lattice of `dag`: every word stored under the key of every span of
 /// every reading of the input.
@@ -365,7 +139,7 @@ pub fn build_lattice<'dict>(
     dag: &SyllableDag,
     lexicon: &'dict dyn Lexicon,
     user: &'dict (dyn UserFreqSource + 'dict),
-    options: LatticeOptions<'_>,
+    options: LatticeOptions<'_, 'dict>,
 ) -> Lattice<'dict> {
     let mut lattice = Lattice::with_capacity(usize::from(dag.len()) + 1, options.fallback_single);
     build_lattice_into(&mut lattice, dag, lexicon, user, options);
@@ -388,7 +162,7 @@ pub fn build_lattice_into<'dict>(
     dag: &SyllableDag,
     lexicon: &'dict dyn Lexicon,
     user: &'dict (dyn UserFreqSource + 'dict),
-    options: LatticeOptions<'_>,
+    options: LatticeOptions<'_, 'dict>,
 ) {
     lattice.edges.clear();
     lattice.starts.clear();
@@ -400,11 +174,13 @@ pub fn build_lattice_into<'dict>(
         flags,
         readings,
         keys,
+        english,
     } = options;
     let mut builder = Builder {
         lexicon,
         user,
         fallback_single,
+        english,
         lattice,
         key: [0; MAX_KEY_BYTES],
         key_len: 0,
@@ -424,6 +200,9 @@ pub fn build_lattice_into<'dict>(
         let first = u32::try_from(builder.lattice.edges.len()).unwrap_or(u32::MAX);
         builder.lattice.starts.push(first);
         builder.node(dag, node);
+    }
+    if builder.english.is_some() {
+        builder.english_span(dag);
     }
     builder.lattice.abbrev_truncated = builder.abbrev_truncated;
 }
@@ -479,6 +258,10 @@ struct Builder<'a, 'lattice, 'buf> {
     lexicon: &'a dyn Lexicon,
     user: &'a dyn UserFreqSource,
     fallback_single: bool,
+    /// The English lexicon the mixed-English pass reads, or `None` when the
+    /// request did not ask for it. Never queried for an input a pinyin reading
+    /// cuts.
+    english: Option<&'a dyn Lexicon>,
     lattice: &'lattice mut Lattice<'a>,
     /// Key under construction, reused by every span the walk spells.
     ///
@@ -647,6 +430,7 @@ impl Builder<'_, '_, '_> {
             u16::try_from(key_len.saturating_sub(key_base)).unwrap_or(u16::MAX),
         );
         let mut covered = false;
+        let first_edge = self.lattice.edges.len();
         for word in words.take(WORDS_PER_KEY) {
             covered = true;
             let source = self.source_of(word);
@@ -666,6 +450,23 @@ impl Builder<'_, '_, '_> {
         }
         if covered {
             self.reach(edge.end);
+            // A word the exact walk did not produce is annotated with the standard
+            // reading it was found under, and the standard reading is the whole key:
+            // the span-local range above carries only this span's slice of it, and
+            // the spans a lookup missed never entered the arena at all. The full
+            // spelling is still in the walk's own buffer, so it is recorded here,
+            // once per edge the lookup produced, where the sweep can read it by the
+            // edge it walks.
+            if crate::fuzzy::is_widened(penalty_q8) {
+                let start = u32::try_from(self.keys.len()).unwrap_or(u32::MAX);
+                self.keys.extend_from_slice(&self.key[..key_len]);
+                let range = (start, u16::try_from(key_len).unwrap_or(u16::MAX));
+                for index in first_edge..self.lattice.edges.len() {
+                    if let Ok(index) = u32::try_from(index) {
+                        self.lattice.widened_keys.push((index, range.0, range.1));
+                    }
+                }
+            }
         }
         covered
     }
@@ -757,6 +558,14 @@ mod chars;
 /// budget. The module is private: what a caller sees of it is the edges it adds and
 /// the penalty they carry.
 mod abbrev;
+
+/// The mixed-English pass: the whole-input edge an input no pinyin walk cuts is
+/// offered, when the mixed-English switch is on.
+///
+/// It lives in `lattice/english.rs` beside the abbreviation walk's own file: both are
+/// passes over the finished span walk rather than part of it, and both are gated so
+/// that a request that does not ask for them never pays for them.
+mod english;
 
 /// Test doubles shared by the lattice and the decoder tests.
 ///

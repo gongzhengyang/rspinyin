@@ -124,7 +124,7 @@ impl InputBuffer {
     /// assert_eq!(buf.raw().len(), 64);
     /// ```
     pub fn push_char(&mut self, ch: char) -> Result<(), ImeError> {
-        if !is_input_char(ch) {
+        if !is_input_char(ch) && !accepts_digit(ch, &self.raw) {
             return Err(ImeError::DecodeInvalidChar {
                 ch,
                 at: self.raw.len(),
@@ -346,6 +346,17 @@ impl InputBuffer {
 /// case later, when the segmentation builds its graph.
 fn is_input_char(ch: char) -> bool {
     ch.is_ascii_alphabetic() || ch == '\''
+}
+
+/// Answers whether one character may join this input, given what it already holds.
+///
+/// The alphabet is the ASCII letters and the `'` separator, with one addition: the
+/// digits of the symbol panel's codes. A digit is accepted only into an input that
+/// is already a `v` panel input -- `v1` grows, `ni1` does not -- so typing a number
+/// in the middle of a composition hands it to the application exactly as it did
+/// before the panel existed.
+fn accepts_digit(ch: char, raw: &str) -> bool {
+    ch.is_ascii_digit() && raw.starts_with('v')
 }
 
 /// Returns `true` when `boundaries` is a usable syllable grid for `raw`.

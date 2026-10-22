@@ -211,7 +211,7 @@ impl Decoder {
         lm: &dyn LanguageModel,
     ) -> DecodeResult {
         let mut scratch = DecodeScratch::new();
-        self.decode_into(&mut scratch, req, lx, uf, lm);
+        self.decode_into(&mut scratch, req, lx, uf, lm, None, None);
         scratch.into_result()
     }
 }

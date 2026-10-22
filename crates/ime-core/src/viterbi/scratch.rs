@@ -30,10 +30,13 @@ use ime_types::{
     UserFreqSource,
 };
 
+use crate::confusable::ConfusableTable;
 use crate::segment::{Readings, SyllableDag, abbrev::is_enabled};
 use crate::viterbi::decoder::{Decoder, Silent};
 use crate::viterbi::lattice::{Lattice, LatticeOptions, build_lattice_into};
-use crate::viterbi::sweep::{Draft, Sources, Sweep, SweepStorage, WordSpan, finish, result_of_into};
+use crate::viterbi::sweep::{
+    Draft, Sources, Sweep, SweepStorage, WordSpan, finish, result_of_into,
+};
 
 /// Everything one decode allocates, kept across decodes.
 ///
@@ -345,13 +348,15 @@ impl Decoder {
     ///
     /// Never panics: every index is taken with a checked lookup and every arithmetic step
     /// saturates.
-    pub fn decode_into(
+    pub fn decode_into<'lx>(
         &self,
         scratch: &mut DecodeScratch,
         req: &DecodeRequest,
-        lx: &dyn Lexicon,
+        lx: &'lx dyn Lexicon,
         uf: &dyn UserFreqSource,
         lm: &dyn LanguageModel,
+        english: Option<&'lx dyn Lexicon>,
+        hints: Option<&ConfusableTable>,
     ) {
         // The flag describes an answer, so it is cleared before anything can set it: a
         // request answered without a lattice at all reports no truncation, whatever the
@@ -371,8 +376,16 @@ impl Decoder {
         // path: there is nothing to read, and the empty root path the sweep would find at
         // node 0 is not a candidate.
         let built = scratch.dag.build_for(&req.raw, req.flags);
+        // The English lexicon is read only when the request asked for it: with the
+        // bit clear the option is `None` all the way down, which is the whole cost
+        // of the switch being off.
+        let english_source = if crate::segment::english::is_enabled(req.flags) {
+            english
+        } else {
+            None
+        };
         let abbrev_readable = is_enabled(req.flags) && !scratch.dag.is_empty();
-        if built.is_err() && !abbrev_readable {
+        if built.is_err() && !abbrev_readable && english_source.is_none() {
             passthrough_into(&mut scratch.out, &req.raw);
             return;
         }
@@ -401,12 +414,13 @@ impl Decoder {
                 flags: req.flags,
                 readings: &mut scratch.readings,
                 keys: &mut scratch.lattice_keys,
+                english: english_source,
             },
         );
         scratch.abbrev_truncated = lattice.abbrev_truncated();
         let nodes = lattice.node_count();
         scratch.sweep.prepare(nodes, usize::from(cfg.beam_k));
-        let sources = Sources::new(&lattice, self.scorer(), lm, user);
+        let sources = Sources::new(&lattice, self.scorer(), lm, user, &scratch.lattice_keys);
         let mut sweep =
             Sweep::with_storage(sources, usize::from(cfg.beam_k), nodes, &mut scratch.sweep);
         sweep.run();
@@ -429,6 +443,7 @@ impl Decoder {
             &scratch.drafts,
             lattice.lookup_failed(),
             scratch.dag.normalized(),
+            hints,
         );
     }
 }
@@ -469,7 +484,7 @@ fn passthrough_into(out: &mut DecodeResult, raw: &str) {
 
 #[cfg(test)]
 mod tests {
-    use ime_types::{DecodeFlags, DecodeRequest, DecodeResult, LanguageModel};
+    use ime_types::{CandidateSource, DecodeFlags, DecodeRequest, DecodeResult, LanguageModel};
 
     use crate::lm::InMemoryLm;
     use crate::viterbi::decoder::{DecodeConfig, Decoder};
@@ -482,7 +497,7 @@ mod tests {
         let decoder = Decoder::default();
         let request = DecodeRequest::new(raw);
         let mut scratch = DecodeScratch::new();
-        decoder.decode_into(&mut scratch, &request, lexicon, &NoUser, lm);
+        decoder.decode_into(&mut scratch, &request, lexicon, &NoUser, lm, None, None);
         scratch.into_result()
     }
 
@@ -514,6 +529,112 @@ mod tests {
                 .map(|segment| segment.text.capacity()),
         );
         seen
+    }
+
+    #[test]
+    fn test_mixed_english_offers_the_lexicon_entry_for_an_input_no_reading_cuts() {
+        let system = MockLexicon::with(&[("ni'hao", "你好")]);
+        let english = MockLexicon::with(&[("github", "GitHub")]);
+        let decoder = Decoder::default();
+        let request = DecodeRequest::new("github").with_flags(DecodeFlags::ENGLISH);
+        let mut scratch = DecodeScratch::new();
+        decoder.decode_into(
+            &mut scratch,
+            &request,
+            &system,
+            &NoUser,
+            &InMemoryLm::new(),
+            Some(&english),
+            None,
+        );
+        let first = &scratch.result().candidates[0];
+        assert_eq!(first.text, "GitHub");
+        assert_eq!(first.source, CandidateSource::English);
+        assert_eq!(
+            first.annotation.as_deref(),
+            Some(crate::segment::english::ENGLISH_ANNOTATION)
+        );
+        assert_eq!(
+            first.consumed_syllables, 0,
+            "no pinyin syllable is consumed: the candidate is the shape a pass-through has"
+        );
+    }
+
+    #[test]
+    fn test_mixed_english_switch_off_leaves_the_pass_through_untouched() {
+        let system = MockLexicon::with(&[("ni'hao", "你好")]);
+        let english = MockLexicon::with(&[("github", "GitHub")]);
+        let decoder = Decoder::default();
+        let request = DecodeRequest::new("github");
+        let mut scratch = DecodeScratch::new();
+        // The lexicon is handed over, but the request carries no ENGLISH bit: the
+        // switch is off, and the answer is the raw text, as before the table existed.
+        decoder.decode_into(
+            &mut scratch,
+            &request,
+            &system,
+            &NoUser,
+            &InMemoryLm::new(),
+            Some(&english),
+            None,
+        );
+        let first = &scratch.result().candidates[0];
+        assert_eq!(first.text, "github");
+        assert_eq!(first.source, CandidateSource::Passthrough);
+        assert_eq!(first.annotation, None);
+    }
+
+    #[test]
+    fn test_mixed_english_miss_falls_back_to_the_pass_through() {
+        let system = MockLexicon::with(&[("ni'hao", "你好")]);
+        let english = MockLexicon::with(&[]);
+        let decoder = Decoder::default();
+        let request = DecodeRequest::new("github").with_flags(DecodeFlags::ENGLISH);
+        let mut scratch = DecodeScratch::new();
+        decoder.decode_into(
+            &mut scratch,
+            &request,
+            &system,
+            &NoUser,
+            &InMemoryLm::new(),
+            Some(&english),
+            None,
+        );
+        let first = &scratch.result().candidates[0];
+        assert_eq!(
+            first.text, "github",
+            "the table has no entry, so the raw text"
+        );
+        assert_eq!(first.source, CandidateSource::Passthrough);
+    }
+
+    #[test]
+    fn test_mixed_english_never_disturbs_an_input_a_reading_cuts() {
+        // Even an English table that holds the input's own spelling stays out: the
+        // exact walk cut the input, so the English pass is never reached.
+        let system = MockLexicon::with(&[("ni'hao", "你好")]);
+        let english = MockLexicon::with(&[("nihao", "Nihao")]);
+        let decoder = Decoder::default();
+        let request = DecodeRequest::new("nihao").with_flags(DecodeFlags::ENGLISH);
+        let mut scratch = DecodeScratch::new();
+        decoder.decode_into(
+            &mut scratch,
+            &request,
+            &system,
+            &NoUser,
+            &InMemoryLm::new(),
+            Some(&english),
+            None,
+        );
+        let candidates = &scratch.result().candidates;
+        assert_eq!(candidates[0].text, "你好");
+        assert_eq!(candidates[0].source, CandidateSource::Dict);
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.source != CandidateSource::English),
+            "no English candidate exists for an input the exact walk cut"
+        );
     }
 
     #[test]
@@ -563,12 +684,12 @@ mod tests {
         let mut scratch = DecodeScratch::new();
         // The history the user's own commits built ranks 得 first.
         let ranked = DecodeRequest::new("de");
-        decoder.decode_into(&mut scratch, &ranked, &lexicon, &user, &lm);
+        decoder.decode_into(&mut scratch, &ranked, &lexicon, &user, &lm, None, None);
         assert_eq!(scratch.result().candidates[0].text, "得");
         // With the user dictionary switched off the counts take no part either, so the
         // dictionary's own order decides.
         let off = DecodeRequest::new("de").with_flags(DecodeFlags::empty());
-        decoder.decode_into(&mut scratch, &off, &lexicon, &user, &lm);
+        decoder.decode_into(&mut scratch, &off, &lexicon, &user, &lm, None, None);
         assert_eq!(scratch.result().candidates[0].text, "的");
         assert_eq!(scratch.result().candidates[0].source, CandidateSource::Dict);
     }
@@ -584,7 +705,7 @@ mod tests {
         // and the buffer-reuse assertion below would be exercising an almost empty list.
         let request = DecodeRequest::new("xian");
         let mut scratch = DecodeScratch::new();
-        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm);
+        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm, None, None);
         let first: Vec<String> = scratch
             .result()
             .candidates
@@ -595,7 +716,7 @@ mod tests {
         let before = capacities(&scratch);
         // The second decode of the same input is the steady state: everything it needs is
         // already there, so a capacity that changed is an allocation.
-        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm);
+        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm, None, None);
         assert_eq!(
             capacities(&scratch),
             before,
@@ -620,7 +741,7 @@ mod tests {
         // candidate and no segments, which the next decode has to overwrite completely.
         for raw in ["zzz", "nihao", "zzz", "zhongguo", "zzz"] {
             let request = DecodeRequest::new(raw);
-            decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm);
+            decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm, None, None);
             let expected = decoder.decode(&request, &lexicon, &NoUser, &lm);
             assert_eq!(scratch.result(), &expected, "{raw:?}");
         }
@@ -646,10 +767,18 @@ mod tests {
         .expect("the shipped knobs with the fallback off");
         let mut scratch = DecodeScratch::new();
         let read = DecodeRequest::new("zhongguo");
-        decoder.decode_into(&mut scratch, &read, &lexicon, &NoUser, &lm);
+        decoder.decode_into(&mut scratch, &read, &lexicon, &NoUser, &lm, None, None);
         assert_eq!(scratch.result().candidates[0].text, "中国");
         let unreadable = DecodeRequest::new("nihao");
-        decoder.decode_into(&mut scratch, &unreadable, &lexicon, &NoUser, &lm);
+        decoder.decode_into(
+            &mut scratch,
+            &unreadable,
+            &lexicon,
+            &NoUser,
+            &lm,
+            None,
+            None,
+        );
         let expected = decoder.decode(&unreadable, &lexicon, &NoUser, &lm);
         assert!(expected.degraded, "no word covers the second input");
         assert_eq!(scratch.result(), &expected);
@@ -662,11 +791,11 @@ mod tests {
         let decoder = Decoder::default();
         let mut scratch = DecodeScratch::new();
         let first = DecodeRequest::new("nihao");
-        decoder.decode_into(&mut scratch, &first, &lexicon, &NoUser, &lm);
+        decoder.decode_into(&mut scratch, &first, &lexicon, &NoUser, &lm, None, None);
         assert_eq!(scratch.dag.normalized(), "nihao");
         assert!(scratch.dag.has_path());
         let second = DecodeRequest::new("zhongguo");
-        decoder.decode_into(&mut scratch, &second, &lexicon, &NoUser, &lm);
+        decoder.decode_into(&mut scratch, &second, &lexicon, &NoUser, &lm, None, None);
         // The graph is left describing the input of the last decode, which is what lets a
         // session read the preedit from the workspace instead of building a second graph.
         assert_eq!(scratch.dag.normalized(), "zhongguo");
@@ -680,7 +809,7 @@ mod tests {
         let decoder = Decoder::default();
         let request = DecodeRequest::new("nihao");
         let mut scratch = DecodeScratch::new();
-        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm);
+        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm, None, None);
         // The session keeps the result it hands to the frame, and hands the previous one back
         // before the next keystroke. A workspace that never gets its buffers back would
         // allocate a fresh set of candidate texts on every decode.
@@ -692,7 +821,7 @@ mod tests {
         );
         scratch.recycle(held);
         let before = capacities(&scratch);
-        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm);
+        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm, None, None);
         assert_eq!(
             capacities(&scratch),
             before,
@@ -710,10 +839,18 @@ mod tests {
         let decoder = Decoder::default();
         let mut scratch = DecodeScratch::new();
         let read = DecodeRequest::new("nihao");
-        decoder.decode_into(&mut scratch, &read, &lexicon, &NoUser, &lm);
+        decoder.decode_into(&mut scratch, &read, &lexicon, &NoUser, &lm, None, None);
         assert_eq!(scratch.result().segments.len(), 2);
         let unreadable = DecodeRequest::new("zzz");
-        decoder.decode_into(&mut scratch, &unreadable, &lexicon, &NoUser, &lm);
+        decoder.decode_into(
+            &mut scratch,
+            &unreadable,
+            &lexicon,
+            &NoUser,
+            &lm,
+            None,
+            None,
+        );
         let result = scratch.result();
         assert!(result.degraded);
         assert_eq!(result.candidates.len(), 1);
@@ -734,7 +871,7 @@ mod tests {
         let mut scratch = DecodeScratch::new();
         let request =
             DecodeRequest::new("nh").with_flags(DecodeFlags::USER_DICT | DecodeFlags::ABBREV);
-        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm);
+        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm, None, None);
         let result = scratch.result();
         assert!(
             !result.degraded,
@@ -762,7 +899,7 @@ mod tests {
         let decoder = Decoder::default();
         let mut scratch = DecodeScratch::new();
         let request = DecodeRequest::new("nh");
-        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm);
+        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm, None, None);
         let result = scratch.result();
         assert!(result.degraded);
         assert_eq!(result.candidates.len(), 1);
@@ -773,7 +910,7 @@ mod tests {
         // the answer degrades the same way: a dictionary that cannot enumerate prefixes
         // leaves abbreviation with nothing to offer rather than with a wrong candidate.
         let asked = DecodeRequest::new("nh").with_flags(DecodeFlags::ABBREV);
-        decoder.decode_into(&mut scratch, &asked, &lexicon, &NoUser, &lm);
+        decoder.decode_into(&mut scratch, &asked, &lexicon, &NoUser, &lm, None, None);
         let result = scratch.result();
         assert!(result.degraded);
         assert_eq!(result.candidates[0].text, "nh");
@@ -792,10 +929,10 @@ mod tests {
         let long = "ai".repeat(32);
         let request = DecodeRequest::new(long.as_str())
             .with_flags(DecodeFlags::USER_DICT | DecodeFlags::ABBREV);
-        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm);
+        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &lm, None, None);
         assert!(scratch.abbrev_truncated(), "the cap left readings out");
         let plain = DecodeRequest::new(long.as_str());
-        decoder.decode_into(&mut scratch, &plain, &lexicon, &NoUser, &lm);
+        decoder.decode_into(&mut scratch, &plain, &lexicon, &NoUser, &lm, None, None);
         assert!(
             !scratch.abbrev_truncated(),
             "a decode that does not walk abbreviations clears the previous report"
@@ -808,7 +945,15 @@ mod tests {
         let decoder = Decoder::default();
         let request = DecodeRequest::new(raw);
         let mut scratch = DecodeScratch::new();
-        decoder.decode_into(&mut scratch, &request, lexicon, &NoUser, &InMemoryLm::new());
+        decoder.decode_into(
+            &mut scratch,
+            &request,
+            lexicon,
+            &NoUser,
+            &InMemoryLm::new(),
+            None,
+            None,
+        );
         scratch.coin_pairs(0)
     }
 
@@ -847,9 +992,16 @@ mod tests {
         let lexicon = MockLexicon::with(&[("wan", "万"), ("ba", "吧")]);
         let decoder = Decoder::default();
         let mut scratch = DecodeScratch::new();
-        let request = DecodeRequest::new("wanba")
-            .with_flags(ime_types::DecodeFlags::CORRECTION);
-        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &InMemoryLm::new());
+        let request = DecodeRequest::new("wanba").with_flags(ime_types::DecodeFlags::CORRECTION);
+        decoder.decode_into(
+            &mut scratch,
+            &request,
+            &lexicon,
+            &NoUser,
+            &InMemoryLm::new(),
+            None,
+            None,
+        );
         // The correction really is what the best path needed; the guard is exercised
         // only if the decode agrees.
         let corrected = scratch
@@ -869,7 +1021,15 @@ mod tests {
         let decoder = Decoder::default();
         let request = DecodeRequest::new("zhuji");
         let mut scratch = DecodeScratch::new();
-        decoder.decode_into(&mut scratch, &request, &lexicon, &NoUser, &InMemoryLm::new());
+        decoder.decode_into(
+            &mut scratch,
+            &request,
+            &lexicon,
+            &NoUser,
+            &InMemoryLm::new(),
+            None,
+            None,
+        );
         assert!(scratch.coin_pairs(usize::MAX).is_empty());
     }
 }

@@ -111,6 +111,9 @@ fn ordinary_report() -> ContextReport<'static> {
         program: None,
         password: false,
         sensitive: false,
+        // An ordinary application renders a client preedit: the negotiation
+        // leaves the configuration's answer standing.
+        preedit: true,
     }
 }
 
@@ -222,6 +225,10 @@ struct RecordingHost {
     frames: usize,
     /// The text of every commit, in order.
     commits: Vec<String>,
+    /// The text of every client preedit write, in order.
+    preedits: Vec<String>,
+    /// How many times the application's preedit area was written.
+    preedit_cleared: usize,
 }
 
 impl Default for RecordingHost {
@@ -236,6 +243,8 @@ impl Default for RecordingHost {
             cleared: 0,
             frames: 0,
             commits: Vec::new(),
+            preedits: Vec::new(),
+            preedit_cleared: 0,
         }
     }
 }
@@ -245,9 +254,12 @@ impl Host for RecordingHost {
         self.commits.push(String::from(text));
     }
 
-    fn set_preedit(&mut self, _ic: u64, _text: &str, _caret: u32) {}
+    fn set_preedit(&mut self, _ic: u64, text: &str, _caret: u32) {
+        self.preedits.push(text.to_owned());
+    }
 
     fn clear_preedit(&mut self, _ic: u64) {
+        self.preedit_cleared = self.preedit_cleared.saturating_add(1);
         self.cleared += 1;
     }
 
@@ -325,6 +337,9 @@ impl Fixture {
             lexicon: &self.lexicon,
             user_freq: &*self.user,
             lm: &self.lm,
+            english: None,
+            confusables: None,
+            symbols: None,
         }
     }
 
@@ -598,6 +613,72 @@ fn test_step_session_of_an_idle_mode_toggle_reports_only_the_flash() {
 // saves a phrase -- so these tests reach the store the startup sequence would install.
 
 #[test]
+fn test_client_preedit_negotiates_the_application_capability() {
+    // The user's configuration is the ceiling and the application's capability is
+    // the floor: a context the host reported as unable to render a preedit is
+    // never written one, while an ordinary context -- or one the host said
+    // nothing about -- keeps the behaviour the configuration asks for.
+    let fixture = Fixture::new("preedit-negotiation");
+    let config = RoutingConfig {
+        client_preedit: true,
+        ..RoutingConfig::default()
+    };
+    let mut router = KeyRouter::new(fixture.env(), shipped_privacy(), config);
+    let mut host = RecordingHost::default();
+
+    // An ordinary application: the inline preedit is written.
+    router.activate_reported(IC, ordinary_report());
+    type_ni(&mut router, &mut host);
+    assert!(
+        !host.preedits.is_empty(),
+        "a capable client receives the inline preedit"
+    );
+
+    // The same configuration over an application the host reported as unable to
+    // render one: the area is cleared, never written.
+    let limited = ContextReport::Reported {
+        program: None,
+        password: false,
+        sensitive: false,
+        preedit: false,
+    };
+    router.reset(IC, &mut host);
+    router.activate_reported(IC, limited);
+    let mut host = RecordingHost::default();
+    type_ni(&mut router, &mut host);
+    assert!(
+        host.preedits.is_empty(),
+        "a client without the capability never sees an inline string"
+    );
+    assert!(
+        host.preedit_cleared > 0,
+        "the area is emptied instead, so no earlier text is left behind"
+    );
+
+    // A context the host reported nothing about keeps the mainline behaviour:
+    // the negotiation narrows only when the host spoke.
+    router.reset(IC, &mut host);
+    router.activate(IC);
+    let mut host = RecordingHost::default();
+    type_ni(&mut router, &mut host);
+    assert!(
+        !host.preedits.is_empty(),
+        "an unreported capability does not narrow the configuration"
+    );
+}
+
+#[test]
+fn test_resolve_client_preedit_and_consolidates_the_ceiling_and_the_floor() {
+    // The truth table of the one-liner the negotiation runs, pinned on its own:
+    // both sides must agree before an inline string is written.
+    use super::context::resolve_client_preedit;
+    assert!(resolve_client_preedit(true, true));
+    assert!(!resolve_client_preedit(true, false), "the floor wins");
+    assert!(!resolve_client_preedit(false, true), "the ceiling wins");
+    assert!(!resolve_client_preedit(false, false));
+}
+
+#[test]
 fn test_key_event_labels_the_window_with_the_layout_the_configuration_names() {
     let fixture = Fixture::new("scheme-hint");
     let config = RoutingConfig {
@@ -730,6 +811,9 @@ fn test_multi_page_frame_carries_the_page_indicator() {
         lexicon: &lexicon,
         user_freq: &user,
         lm: &lm,
+        english: None,
+        confusables: None,
+        symbols: None,
     };
     let mut router = KeyRouter::new(env, shipped_privacy(), RoutingConfig::default());
     router.activate_reported(IC, ordinary_report());
@@ -841,9 +925,9 @@ fn test_script_toggle_converts_the_commit_and_toggles_back() {
     let fixture = Fixture::new("script");
     let handle = PhraseHandle::new(PhraseStore::load(None, 100, true));
     let mut router = fixture.router(handle);
-    router.use_script(std::sync::Arc::new(ime_dict::script::ScriptIndex::from_pairs(
-        &[("你", "妳")],
-    )));
+    router.use_script(std::sync::Arc::new(
+        ime_dict::script::ScriptIndex::from_pairs(&[("你", "妳")]),
+    ));
     router.activate_reported(IC, ordinary_report());
     let mut host = RecordingHost::default();
 

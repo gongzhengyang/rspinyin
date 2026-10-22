@@ -115,6 +115,9 @@ impl Fixture {
             lexicon: &self.lexicon,
             user_freq: &self.user,
             lm: &self.lm,
+            english: None,
+            confusables: None,
+            symbols: None,
         }
     }
 
@@ -137,6 +140,7 @@ fn ordinary_report() -> ContextReport<'static> {
         program: None,
         password: false,
         sensitive: false,
+        preedit: false,
     }
 }
 

@@ -116,6 +116,9 @@ struct Session<'a> {
     abbrev: bool,
     /// Whether every request carries the spelling-correction switch.
     correction: bool,
+    /// The flags the scenario's v2 `[decode]` section adds, inserted over the v1
+    /// switches.
+    extra: DecodeFlags,
     /// The input buffer, kept across steps the way a session keeps it.
     buffer: InputBuffer,
     /// The segmentation graph of the current input, kept so a step allocates nothing.
@@ -139,6 +142,7 @@ impl<'a> Session<'a> {
         fuzzy: DecodeFlags,
         abbrev: bool,
         correction: bool,
+        extra: DecodeFlags,
     ) -> Self {
         Self {
             decoder: Decoder::default(),
@@ -147,6 +151,7 @@ impl<'a> Session<'a> {
             fuzzy,
             abbrev,
             correction,
+            extra,
             buffer: InputBuffer::new(),
             dag: SyllableDag::new(),
         }
@@ -225,10 +230,13 @@ impl<'a> Session<'a> {
         // rather than replacing them: the class bits are the only thing a scenario
         // names, and the request's own switches are the harness's business. The
         // abbreviation switch is the same shape, set rather than inserted -- it is a
-        // single switch with no partial state to accumulate.
+        // single switch with no partial state to accumulate. The v2 section's flags are
+        // inserted last, over both: a scenario that names a switch the v1 fields also
+        // set is asking for the union, which is what it gets.
         request.flags.insert(self.fuzzy);
         request.flags.set(DecodeFlags::ABBREV, self.abbrev);
         request.flags.set(DecodeFlags::CORRECTION, self.correction);
+        request.flags.insert(self.extra);
         let result = self.decoder.decode(
             &request,
             self.sources.lexicon,
@@ -362,12 +370,22 @@ pub fn assert_repeatable(
 ///
 /// Never panics.
 fn trace(scenario: &Scenario, sources: &Sources<'_>) -> Result<Vec<StepPrint>, Divergence> {
+    // The flags are infallible here: the parse validated every name and every
+    // cross-section rule, so a scenario that reached the drive cannot fail the
+    // projection.
+    let extra = scenario
+        .decode
+        .flags
+        .iter()
+        .copied()
+        .fold(DecodeFlags::empty(), |acc, flag| acc.union(flag));
     let mut session = Session::new(
         *sources,
         scenario.dictionary.failure_codes(),
         fuzzy_flags(scenario)?,
         scenario.abbrev,
         scenario.correction,
+        extra,
     );
     let mut prints = Vec::with_capacity(scenario.steps.len());
     for (index, step) in scenario.steps.iter().enumerate() {

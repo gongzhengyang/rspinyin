@@ -19,12 +19,15 @@
 //! a key action breaks the build instead of silently falling into a catch-all arm.
 //! The `match` on [`SessionEvent`] in `on_event` does the same for the events.
 
-use ime_types::{HideReason, ImeError, KeyAction, PageDir, UiEvent};
+use ime_types::{Candidate, CandidateSource, HideReason, ImeError, KeyAction, PageDir, UiEvent};
 
 use crate::input::BackspaceOutcome;
-use crate::state::SessionConfig;
+use crate::preedit::build_preedit_into;
 use crate::state::effects::ModeBit;
 use crate::state::machine::{Ctx, Effect, PendingCommit, Session, SessionEvent, SessionState};
+use crate::state::outcome::write_boundaries;
+use crate::state::{ImSwitchPolicy, SessionConfig};
+use crate::symbols::SymbolTable;
 
 impl Session {
     /// Routes one event to the handler for the state the session is in.
@@ -36,8 +39,10 @@ impl Session {
             SessionEvent::FocusLost => self.on_focus_lost(ctx),
             // Shutting the plugin down has the same session-side effect as losing the
             // focus: nothing is committed and the window goes away. The engine posts
-            // `UiCommand::Shutdown` itself, which is not a session concern.
-            SessionEvent::Reset => self.on_focus_lost(ctx),
+            // `UiCommand::Shutdown` itself, which is not a session concern. The
+            // one difference a configuration can ask for is the switch-away policy:
+            // a user who chose to keep what they typed commits the raw input first.
+            SessionEvent::Reset => self.on_reset(ctx),
             SessionEvent::PreeditCleared => self.on_preedit_cleared(),
             SessionEvent::CommitDone => self.on_commit_done(ctx),
             SessionEvent::PinApplied => self.refresh_composing(ctx),
@@ -180,7 +185,20 @@ impl Session {
             KeyAction::Backspace => self.on_backspace(ctx),
             KeyAction::CommitHighlighted => self.commit_highlighted(ctx),
             KeyAction::CommitRaw => self.commit_raw(ctx),
-            KeyAction::SelectIndex(digit) => self.select_digit(digit, ctx),
+            KeyAction::SelectIndex(digit) => {
+                // Inside the panel the digit keys the code, and the one candidate
+                // interaction it replaces is selection: Space and the highlight
+                // keys still select, and the number keys build `v1` instead.
+                if self.symbol_mode {
+                    let ch = char::from(b'0' + digit.min(9));
+                    if self.push_char(ch, ctx) {
+                        self.refresh(ctx.env);
+                        self.emit_update(ctx);
+                    }
+                } else {
+                    self.select_digit(digit, ctx);
+                }
+            }
             KeyAction::PageNext => self.flip_page(PageDir::Next, ctx),
             KeyAction::PagePrev => self.flip_page(PageDir::Prev, ctx),
             KeyAction::PageFirst => self.flip_page_edge(false, ctx),
@@ -299,11 +317,17 @@ impl Session {
         // new input into the same buffers, and what the commit reports must be what the
         // user is looking at.
         let coins = self.coin_pairs_for(usize::from(self.paging.highlight));
-        self.set_pending(Some(PendingCommit {
-            key: text.clone(),
-            weight_hint,
-            coins,
-        }));
+        if self.symbol_mode {
+            // A panel candidate is chosen, not spelled: the commit lands like a
+            // raw one, with nothing recorded and nothing to coin.
+            self.set_pending(None);
+        } else {
+            self.set_pending(Some(PendingCommit {
+                key: text.clone(),
+                weight_hint,
+                coins,
+            }));
+        }
         self.state = SessionState::Committing;
         ctx.push(Effect::Commit(text));
     }
@@ -384,6 +408,93 @@ impl Session {
         ctx.push(Effect::ToggleUserPin { key, word });
     }
 
+    /// Answers whether the symbol table serves the input on screen.
+    ///
+    /// The panel is entered by the bare `v` -- that is how the mode is found --
+    /// and held by a code one of its categories names: `v1` stays in the panel
+    /// and `vzhishi` falls back to the ordinary decode, which is where the `v`
+    /// is dropped exactly as it was before the panel existed.
+    pub(super) fn symbol_table_serves(&self, table: &SymbolTable) -> bool {
+        let Some(code) = self.buf.raw().strip_prefix('v') else {
+            return false;
+        };
+        code.is_empty() || table.longest_prefix(code).is_some()
+    }
+
+    /// Assembles the symbol panel's candidates for the input on screen.
+    ///
+    /// The category the code names is the candidate list: one symbol each, in the
+    /// file order the table holds, labelled with the category's name. Nothing here
+    /// decodes, so the graph is emptied -- the preedit then shows the keystrokes
+    /// exactly as typed, `v1` and all -- and the highlight reconciliation and the
+    /// preedit rebuild run as they do after a decode, which is what keeps paging,
+    /// the number keys and the highlight working unchanged.
+    ///
+    /// The bare `v` assembles nothing: the panel is open with an empty list, and
+    /// the categories are one keystroke away. A code longer than the prefix that
+    /// serves it is the prefix's business and the rest is ignored, which the
+    /// symbol table documents.
+    pub(super) fn refresh_symbols(&mut self, table: &SymbolTable) {
+        self.symbol_mode = true;
+        self.clear_decode_graph();
+        // The lookup borrows the buffer; the candidates borrow the table. Both
+        // loans end before the workspace is written, which is why the two facts
+        // the candidates need from them are taken out first.
+        let code = self.buf.raw().strip_prefix('v').unwrap_or_default();
+        let hit = table.longest_prefix(code);
+        let consumed = u16::try_from(self.buf.raw().chars().count()).unwrap_or(u16::MAX);
+        {
+            let out = self.decoded_mut();
+            if let Some(hit) = hit {
+                for (position, symbol) in hit.symbols.iter().enumerate() {
+                    // The display number is the position, 1-based, and the slots
+                    // of a longer previous list are reused the way a decode
+                    // reuses them.
+                    let index = u16::try_from(position)
+                        .unwrap_or(u16::MAX)
+                        .saturating_add(1);
+                    match out.candidates.get_mut(position) {
+                        Some(slot) => {
+                            slot.index = index;
+                            slot.text.clear();
+                            slot.text.push(*symbol);
+                            slot.annotation = Some(String::from(hit.label));
+                            slot.source = CandidateSource::Symbol;
+                            slot.score = 0.0;
+                            slot.consumed_syllables = consumed;
+                        }
+                        None => out.candidates.push(Candidate {
+                            index,
+                            text: symbol.to_string(),
+                            annotation: Some(String::from(hit.label)),
+                            source: CandidateSource::Symbol,
+                            score: 0.0,
+                            consumed_syllables: consumed,
+                        }),
+                    }
+                }
+                out.candidates.truncate(hit.symbols.len());
+            } else {
+                out.candidates.clear();
+            }
+            // No decode ran, so no cut describes the input.
+            out.segments.clear();
+            out.degraded = false;
+        }
+        // The text the highlight was on, taken out before the reconciliation
+        // borrows the paging state mutably. The three writes below borrow
+        // disjoint fields of the session, the way the decode's own refresh does.
+        let prev = self
+            .previous
+            .candidates
+            .get(usize::from(self.paging.highlight))
+            .map(|held| held.text.as_str());
+        self.paging
+            .reconcile(prev, &self.scratch.result().candidates);
+        write_boundaries(&mut self.buf, self.scratch.dag());
+        build_preedit_into(&self.buf, self.scratch.dag(), &mut self.preedit);
+    }
+
     /// Refreshes a composition after the host has changed data it ranks with.
     fn refresh_composing(&mut self, ctx: &mut Ctx<'_>) {
         if self.state != SessionState::Composing {
@@ -391,6 +502,30 @@ impl Session {
         }
         self.refresh(ctx.env);
         self.emit_frame(ctx.cfg, ctx);
+    }
+
+    /// Ends the session the way an input-method switch asks for.
+    ///
+    /// `Clear` -- the shipped policy -- is exactly a focus loss: the composing
+    /// text is taken back and nothing reaches the application. `CommitRaw`
+    /// commits the raw input first, so the letters the user typed survive the
+    /// switch; the commit travels the ordinary effect, whose host-side execution
+    /// applies the conversion chain and hides the window, and the composition is
+    /// finished here, because a switch-away reset brings no `CommitDone` back.
+    fn on_reset(&mut self, ctx: &mut Ctx<'_>) {
+        if ctx.cfg.on_im_switch == ImSwitchPolicy::CommitRaw
+            && self.state == SessionState::Composing
+            && !self.buf.raw().is_empty()
+        {
+            let text = String::from(self.buf.raw());
+            self.set_pending(None);
+            self.state = SessionState::Committing;
+            ctx.push(Effect::Commit(text));
+            self.clear_session();
+            ctx.push(Effect::SetClientPreedit(None));
+            return;
+        }
+        self.on_focus_lost(ctx);
     }
 
     /// Takes the composition back without committing anything.
@@ -556,7 +691,9 @@ impl Session {
             // The pairs the reading confirmed follow the same landed-only rule as the
             // frequency record: a commit the host refused teaches nothing.
             if !pending.coins.is_empty() {
-                ctx.push(Effect::CoinUserWords { pairs: pending.coins });
+                ctx.push(Effect::CoinUserWords {
+                    pairs: pending.coins,
+                });
             }
         }
         ctx.push(Effect::SetClientPreedit(None));

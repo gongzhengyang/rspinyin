@@ -1,0 +1,78 @@
+# The expectation tables the dict_inject fixtures are held to. Every number here is a
+# property of the fixture word tables in `dict_inject/generate.rs` and of the corpus
+# snippet beside this file; a change to either is a change to this table, and the
+# generated containers must keep answering it.
+
+version = 1
+
+[synthetic]
+file = "synthetic.dict"
+words = 18
+keys = 12
+
+# Within-key order is the raw weight's, heaviest first: the within-key signal the
+# container encodes.
+[synthetic.order]
+"ni" = ["你", "尼", "妮"]
+"hao" = ["好", "号", "豪"]
+"ni'hao" = ["你好", "你号"]
+"shi'jian" = ["时间", "事件"]
+
+# The unigram channel is where the bands land: the heaviest word of the container
+# tops the Q12 mapping, the tail sits at its flat constant's share of it.
+[synthetic.prob]
+"你" = 4096
+"计算机" = 455
+
+[layered]
+file = "layered.dict"
+words = 9
+keys = 8
+
+# The normalization cases' subject: two-character words below the floor and the
+# three-character words share the tail flat weight no matter what their source
+# frequency said, while the core band keeps its frequency and single characters
+# keep theirs.
+char_band = ["你", "好"]
+core_band = ["我们", "时间", "你们"]
+tail_band = ["事件", "你号", "计算机", "图书馆"]
+
+[layered.prob]
+"你" = 4096
+"时间" = 1820
+"事件" = 455
+"计算机" = 455
+
+[bigram_present]
+file = "bigram-present.dict"
+words = 6
+keys = 6
+
+# Every adjacent pair the corpus snippet produces, 16 of them; the Q12 values are
+# `count * 4096 / right-marginal`, computed from the snippet's own pair table.
+# Right marginals: 经济 5, 发展 10, 市场 6, 银行 2, 公司 4.
+pairs = 16
+present = [
+  "中国 经济", "经济 发展", "中国 市场", "市场 发展", "经济 市场", "中国 银行",
+  "银行 公司", "公司 发展", "市场 经济", "公司 市场", "银行 发展", "中国 公司",
+  "中国 发展", "银行 市场", "经济 公司", "发展 市场",
+]
+
+[bigram_present.prob]
+"中国 银行" = 4096
+"中国 经济" = 2457
+"经济 发展" = 1228
+"经济 市场" = 682
+
+[staged_variant]
+file = "staged-variant.dict"
+words = 18
+keys = 12
+
+# Same keys as the synthetic build, inverted order: what makes a hot swap
+# observable in the candidates it serves.
+[staged_variant.order]
+"ni" = ["妮", "尼", "你"]
+"hao" = ["豪", "号", "好"]
+"ni'hao" = ["你号", "你好"]
+"shi'jian" = ["事件", "时间"]

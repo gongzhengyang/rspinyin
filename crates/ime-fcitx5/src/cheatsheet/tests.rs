@@ -132,8 +132,8 @@ fn test_build_default_config_yields_three_groups_with_a_fixed_entry_count() {
         .collect();
     assert_eq!(
         counts,
-        [3, 6, 5],
-        "组字: highlight, page, enter; 模式: four chords and two panels, the script switch among them; 编辑: five rows, the pin chord among them"
+        [3, 7, 6],
+        "组字: highlight, page, enter; 模式: four chords, two panels and the status row; 编辑: six rows, the pin chord and the symbol-panel row among them"
     );
 }
 
@@ -210,8 +210,13 @@ fn test_build_lists_the_mode_chords_the_engine_table_declares() {
     );
     assert_eq!(
         &named[4..],
-        &[("Ctrl+Shift+/", "命令面板"), ("Ctrl+Shift+P", "诊断面板")],
-        "the two fixed panel chords close the group"
+        &[
+            ("Ctrl+Shift+/", "命令面板"),
+            ("Ctrl+Shift+P", "诊断面板"),
+            ("状态条", "窗顶显示当前中英 · 简繁"),
+        ],
+        "the two fixed panel chords close the group, and the status row documents where \
+         the mode indicator lives"
     );
 }
 

@@ -134,6 +134,22 @@ abbrev = false
 # never corrected at all. Takes effect on reload: the switch latches with the scheme,
 # so a change answers the next composition and never re-reads one in progress.
 correction = false
+# Offer the English lexicon's entry for an input no pinyin reading cuts, so that
+# `github` reaches the word spelled `GitHub`. Off by default: a user who never asked
+# for English candidates must not have their compositions answered from a table they
+# did not know was there. Takes effect on reload: the switch latches with the scheme,
+# so a change answers the next composition and never re-reads one in progress.
+mixed_english = false
+# What happens to a live composition when the input method is switched away from
+# or reset. "clear" takes the composing text back and commits nothing; "commit_raw"
+# commits the raw input first, so a user who switches away mid-word keeps the
+# letters they typed. Takes effect on reload from the next switch away.
+on_im_switch = "clear"
+# Answer a dead-key sequence the host is composing -- an acute accent followed by
+# `e`, for one -- before the key table sees the key. Off by default: a pass that
+# swallows keys changes what a European keyboard types, and a host that offers no
+# compose support leaves the switch inert.
+compose = false
 # "context" keeps one session per input context; "program" shares one session across
 # every input context of the same application, so the Chinese/English mode and the
 # other mode bits survive a window switch inside one application. Applications are
@@ -144,6 +160,8 @@ share_state = "context"
 
 [ui]
 # Show the composing text in the application's preedit area instead of the window.
+# An application the host reports as unable to render a preedit area is never
+# written one, whatever this says: the candidate window's header takes over.
 # Takes effect on reload.
 client_preedit = false
 # Candidates per row, 3..=9. Takes effect on reload.
@@ -313,6 +331,9 @@ struct PartialEngine {
     verify_dict_on_load: Option<String>,
     abbrev: Option<bool>,
     correction: Option<bool>,
+    mixed_english: Option<bool>,
+    on_im_switch: Option<String>,
+    compose: Option<bool>,
     share_state: Option<String>,
 }
 
@@ -609,6 +630,9 @@ fn merge_engine(partial: Option<PartialEngine>, config: &mut Config, warnings: &
     );
     engine.abbrev = partial.abbrev.unwrap_or(engine.abbrev);
     engine.correction = partial.correction.unwrap_or(engine.correction);
+    engine.mixed_english = partial.mixed_english.unwrap_or(engine.mixed_english);
+    take_enum(partial.on_im_switch, &mut engine.on_im_switch, warnings);
+    engine.compose = partial.compose.unwrap_or(engine.compose);
     take_enum(partial.share_state, &mut engine.share_state, warnings);
 }
 

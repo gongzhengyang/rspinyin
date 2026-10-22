@@ -11,7 +11,10 @@ use ime_dict::format::SectionKind;
 use ime_dict::format::writer::DictWriter;
 use ime_types::{Candidate, CandidateSource};
 
-use super::{CORE_QUOTA, ExpectKind, SmokeCase, derive, evaluate, expectation, mount, parse_cases, run_cases, satisfied};
+use super::{
+    CORE_QUOTA, ExpectKind, SmokeCase, derive, evaluate, expectation, mount, parse_cases,
+    run_cases, satisfied,
+};
 use crate::dictc::build::{Band, compile};
 use crate::dictc::source::Word;
 
@@ -49,14 +52,30 @@ fn write_container(dir: &std::path::Path) -> std::path::PathBuf {
         threshold: u32::MAX,
         requested: 0,
     };
-    let compiled = compile(&words, band, 0, &[], crate::dictc::normalize::NormalizeRules::default())
-        .expect("compiling the fixture");
+    let compiled = compile(
+        &words,
+        band,
+        0,
+        &[],
+        crate::dictc::normalize::NormalizeRules::default(),
+    )
+    .expect("compiling the fixture");
     let mut writer = DictWriter::new();
-    writer.add_section(SectionKind::Fst, compiled.fst).expect("fst");
-    writer.add_section(SectionKind::Entries, compiled.entries).expect("entries");
-    writer.add_section(SectionKind::StrPool, compiled.strpool).expect("strpool");
-    writer.add_section(SectionKind::Unigram, compiled.unigram).expect("unigram");
-    writer.add_section(SectionKind::WordList, compiled.wordlist).expect("wordlist");
+    writer
+        .add_section(SectionKind::Fst, compiled.fst)
+        .expect("fst");
+    writer
+        .add_section(SectionKind::Entries, compiled.entries)
+        .expect("entries");
+    writer
+        .add_section(SectionKind::StrPool, compiled.strpool)
+        .expect("strpool");
+    writer
+        .add_section(SectionKind::Unigram, compiled.unigram)
+        .expect("unigram");
+    writer
+        .add_section(SectionKind::WordList, compiled.wordlist)
+        .expect("wordlist");
     let path = dir.join("base.dict");
     writer.finish(&path).expect("writing the fixture");
     path
@@ -76,7 +95,9 @@ fn case(id: &str, keys: &str, expect: ExpectKind) -> SmokeCase {
 fn expectation_for(kind: ExpectKind) -> super::Expectation {
     match kind {
         ExpectKind::First(text) => expectation(&text).expect("a first expectation"),
-        ExpectKind::Contains(text) => expectation(&format!("@contains:{text}")).expect("a contains expectation"),
+        ExpectKind::Contains(text) => {
+            expectation(&format!("@contains:{text}")).expect("a contains expectation")
+        }
         ExpectKind::Regex(_) => expectation("@regex:^你").expect("a regex expectation"),
     }
 }
@@ -130,9 +151,15 @@ fn test_expectation_reads_the_three_forms_and_refuses_an_unknown_one() {
         ExpectKind::Regex(_)
     ));
     // A bare column is the literal spelling of @first.
-    assert!(matches!(expectation("你好").expect("literal").kind, ExpectKind::First(_)));
+    assert!(matches!(
+        expectation("你好").expect("literal").kind,
+        ExpectKind::First(_)
+    ));
     let error = expectation("@fist:你好").expect_err("a misspelled prefix is refused");
-    assert!(error.to_string().contains("unknown expectation form"), "{error}");
+    assert!(
+        error.to_string().contains("unknown expectation form"),
+        "{error}"
+    );
     let error = expectation("@regex:(unclosed").expect_err("the pattern does not compile");
     assert!(error.to_string().contains("does not compile"), "{error}");
 }
@@ -142,14 +169,26 @@ fn test_satisfied_reads_first_contains_and_regex_against_the_page() {
     let page = texts(&["先生", "西安", "先", "县"]);
     assert!(satisfied(&ExpectKind::First(String::from("先生")), &page));
     assert!(!satisfied(&ExpectKind::First(String::from("西安")), &page));
-    assert!(satisfied(&ExpectKind::Contains(String::from("西安")), &page));
-    assert!(!satisfied(&ExpectKind::Contains(String::from("现实")), &page));
-    assert!(satisfied(&expectation("@regex:^先").expect("regex").kind, &page));
+    assert!(satisfied(
+        &ExpectKind::Contains(String::from("西安")),
+        &page
+    ));
+    assert!(!satisfied(
+        &ExpectKind::Contains(String::from("现实")),
+        &page
+    ));
+    assert!(satisfied(
+        &expectation("@regex:^先").expect("regex").kind,
+        &page
+    ));
     // The contains scan stops at the first page: a candidate past it cannot be
     // taken without a page turn.
     let mut deep = vec![String::from("占位"); 12];
     deep[10] = String::from("含西安的答案");
-    assert!(!satisfied(&ExpectKind::Contains(String::from("西安")), &deep));
+    assert!(!satisfied(
+        &ExpectKind::Contains(String::from("西安")),
+        &deep
+    ));
     assert!(satisfied(&ExpectKind::First(String::new()), &[]).eq(&false));
 }
 
@@ -168,7 +207,10 @@ fn test_evaluate_pins_the_first_commit_and_reports_the_got() {
     assert_eq!(report.passed, 2);
     assert_eq!(report.failures.len(), 1);
     assert_eq!(report.failures[0].id, "miss");
-    assert_eq!(report.failures[0].got, "你", "the failure names what the engine answered");
+    assert_eq!(
+        report.failures[0].got, "你",
+        "the failure names what the engine answered"
+    );
 }
 
 #[test]
@@ -177,10 +219,16 @@ fn test_run_cases_refuses_an_empty_set_and_a_broken_case() {
     let dict = write_container(&dir);
     let cases = dir.join("cases.tsv");
     fs::write(&cases, "# nothing but a header\n").expect("writing the empty set");
-    assert!(run_cases(&cases, &dict).is_err(), "a baseline of zero cases pins nothing");
+    assert!(
+        run_cases(&cases, &dict).is_err(),
+        "a baseline of zero cases pins nothing"
+    );
 
     fs::write(&cases, "a\tni\n").expect("writing the broken set");
-    assert!(run_cases(&cases, &dict).is_err(), "a set that does not parse is refused");
+    assert!(
+        run_cases(&cases, &dict).is_err(),
+        "a set that does not parse is refused"
+    );
 
     assert!(
         run_cases(&dir.join("absent.tsv"), &dict).is_err(),
@@ -193,8 +241,11 @@ fn test_run_cases_answers_a_report_over_a_real_container() {
     let dir = scratch("run");
     let dict = write_container(&dir);
     let cases = dir.join("cases.tsv");
-    fs::write(&cases, "hit\tni'hao\t@first:你好\npage\tni'hao\t@contains:拟好\tcore\n")
-        .expect("writing the set");
+    fs::write(
+        &cases,
+        "hit\tni'hao\t@first:你好\npage\tni'hao\t@contains:拟好\tcore\n",
+    )
+    .expect("writing the set");
     let report = run_cases(&cases, &dict).expect("the set runs");
     assert_eq!(report.total, 2);
     assert_eq!(report.passed, 2);
@@ -217,13 +268,22 @@ fn test_derive_keeps_the_handwritten_bands_and_fills_the_core_quota() {
     .expect("writing the holdout");
     let summary = derive(&cases, &holdout, &dict).expect("the derivation runs");
     assert_eq!(summary.scanned, 4);
-    assert_eq!(summary.derived, 2, "the third row is not answered, the fourth is a repeat");
+    assert_eq!(
+        summary.derived, 2,
+        "the third row is not answered, the fourth is a repeat"
+    );
     assert_eq!(summary.kept, 1, "the handwritten case survives the rewrite");
 
     let written = fs::read_to_string(&cases).expect("reading the rewritten set");
     let parsed = parse_cases(&written).expect("the rewritten set parses");
-    assert!(parsed.iter().any(|c| c.id == "amb_001"), "the handwritten id is still there");
-    let core: Vec<&SmokeCase> = parsed.iter().filter(|c| c.tags.iter().any(|t| t == "core")).collect();
+    assert!(
+        parsed.iter().any(|c| c.id == "amb_001"),
+        "the handwritten id is still there"
+    );
+    let core: Vec<&SmokeCase> = parsed
+        .iter()
+        .filter(|c| c.tags.iter().any(|t| t == "core"))
+        .collect();
     assert_eq!(core.len(), 2);
     assert_eq!(core[0].id, "core_001");
     assert_eq!(core[0].expect.raw, "@first:你");

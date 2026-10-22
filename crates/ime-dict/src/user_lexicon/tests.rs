@@ -3,7 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use ime_types::{ImeError, Lexicon, SyllableId, WordFlags, WordIter, WordRef};
+use ime_types::{ImeError, Lexicon, SyllableId, UserFreqSource as _, WordFlags, WordIter, WordRef};
+
+use crate::user_db::UserDb;
 
 use super::{COINED_BASE_WEIGHT, ChainedLexicon, UserLexicon};
 
@@ -18,12 +20,15 @@ impl TableLexicon {
     /// Adds one word under `key`, spilling the text into the table's own storage.
     fn with(mut self, key: &str, text: &str, weight: u32) -> Self {
         let spilled: &'static str = Box::leak(Box::from(text));
-        self.words.entry(String::from(key)).or_default().push(WordRef {
-            text: spilled,
-            weight,
-            syl_count: u8::try_from(key.split('\'').count()).unwrap_or(1),
-            flags: WordFlags::empty(),
-        });
+        self.words
+            .entry(String::from(key))
+            .or_default()
+            .push(WordRef {
+                text: spilled,
+                weight,
+                syl_count: u8::try_from(key.split('\'').count()).unwrap_or(1),
+                flags: WordFlags::empty(),
+            });
         self
     }
 }
@@ -75,10 +80,7 @@ fn test_chain_puts_the_coined_word_ahead_of_every_system_word_of_its_key() {
         .with("zhu'ji", "主级", 100);
     let chain = ChainedLexicon::new(&front, &back);
 
-    let words: Vec<_> = chain
-        .lookup("zhu'ji")
-        .expect("the chain answers")
-        .collect();
+    let words: Vec<_> = chain.lookup("zhu'ji").expect("the chain answers").collect();
     let spellings: Vec<String> = words.iter().map(|word| word.text.to_string()).collect();
     assert_eq!(spellings, vec!["诸暨", "主机", "主级"]);
     assert!(
@@ -109,7 +111,10 @@ fn test_chain_with_nothing_coined_answers_the_system_dictionary_directly() {
     let front = UserLexicon::new();
     let back = TableLexicon::default().with("zhu'ji", "主机", 500);
     let chain = ChainedLexicon::new(&front, &back);
-    assert_eq!(texts(chain.lookup("zhu'ji").expect("the chain answers")), vec!["主机"]);
+    assert_eq!(
+        texts(chain.lookup("zhu'ji").expect("the chain answers")),
+        vec!["主机"]
+    );
     assert_eq!(
         texts(chain.lookup("zzz").expect("the chain answers")),
         Vec::<String>::new()
@@ -126,9 +131,15 @@ fn test_forget_word_drops_every_entry_of_that_word() {
 
     assert!(lexicon.forget_word("诸暨"));
     assert!(!lexicon.knows_word("诸暨"));
-    assert!(lexicon.knows_word("主集"), "the same key's other word stays");
+    assert!(
+        lexicon.knows_word("主集"),
+        "the same key's other word stays"
+    );
     assert!(lexicon.knows_word("感谢"), "another key's word stays");
-    assert!(!lexicon.forget_word("诸暨"), "the second forget finds nothing");
+    assert!(
+        !lexicon.forget_word("诸暨"),
+        "the second forget finds nothing"
+    );
 }
 
 #[test]
@@ -160,4 +171,112 @@ fn test_pinned_entries_survive_an_eviction_the_table_size_forces() {
     // Unpinning releases it to the table's ordinary rules.
     lexicon.set_pinned("甲", false);
     assert!(lexicon.knows_word("甲"));
+}
+
+#[test]
+fn test_coined_words_round_trip_through_the_store() {
+    // The persistence half of the coin path: a word enrolled on one open is on the disk
+    // after the final commit, comes back as the next open's hydrate rows, answers the
+    // frozen trait's "did the user coin this", and leaves with the forget.
+    let directory = std::env::temp_dir().join(format!(
+        "rspinyin-user-lexicon-store-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("creating the scratch directory");
+    let path = directory.join("user.redb");
+
+    let coin_taken = {
+        let mut store = UserDb::open(&path).expect("opening the fresh store");
+        let taken = store.record_coin("zhu'ji", "诸暨");
+        store.final_commit().expect("the final commit");
+        taken
+    };
+    assert!(coin_taken, "a writable store takes the coin");
+
+    let mut reopened = UserDb::open(&path).expect("reopening the store");
+    let rows = reopened.coined_rows().expect("reading the coin rows back");
+    assert_eq!(
+        rows,
+        vec![(String::from("zhu'ji"), String::from("诸暨"), 1)],
+        "the row the flush wrote is the row the file holds"
+    );
+    use crate::user_db::ForgetOutcome;
+    assert!(
+        reopened.forget_with_outcome("诸暨") == ForgetOutcome::Removed,
+        "a coined word is a word the store can forget"
+    );
+    reopened.final_commit().expect("the forget's commit");
+    // The store's handle holds the file lock for its whole life, including the flush
+    // thread's; the third open waits for the second to be gone.
+    drop(reopened);
+
+    let after_forget = UserDb::open(&path).expect("reopening after the forget");
+    assert!(
+        after_forget
+            .coined_rows()
+            .expect("reading the rows")
+            .is_empty(),
+        "the forget emptied the table"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn test_handle_coin_enrols_through_the_store_into_the_table() {
+    // The wiring the commit path calls: the store takes the pair first, the in-memory
+    // table follows it, and the two agree about what exists.
+    let directory = std::env::temp_dir().join(format!(
+        "rspinyin-user-lexicon-handle-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("creating the scratch directory");
+
+    let db = UserDb::open(directory.join("user.redb")).expect("opening the store");
+    let handle = super::UserLexiconHandle::hydrate(db);
+    assert!(
+        handle.coin(&[(String::from("zhu'ji"), String::from("诸暨"))]),
+        "a writable store takes the coin"
+    );
+    assert!(handle.lock().knows_word("诸暨"));
+    // A second commit of the pair is accepted too -- every landed commit is one more
+    // confirmation the store counts -- and the table still holds exactly one entry.
+    assert!(handle.coin(&[(String::from("zhu'ji"), String::from("诸暨"))]));
+    let words = handle
+        .lock()
+        .lookup("zhu'ji")
+        .expect("the key serves")
+        .count();
+    assert_eq!(words, 1, "the confirmation confirmed, it did not duplicate");
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn test_handle_coin_leaves_a_readonly_store_and_its_table_untouched() {
+    let directory = std::env::temp_dir().join(format!(
+        "rspinyin-user-lexicon-readonly-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("creating the scratch directory");
+
+    let mut db = UserDb::open(directory.join("user.redb")).expect("opening the store");
+    db.record("ni'hao", 0);
+    crate::user_db::inject_failure();
+    assert!(
+        db.final_commit().is_err(),
+        "the injected failure degrades the store to read-only"
+    );
+
+    let handle = super::UserLexiconHandle::hydrate(db);
+    assert!(
+        !handle.coin(&[(String::from("zhu'ji"), String::from("诸暨"))]),
+        "a read-only store enrols nothing"
+    );
+    assert!(
+        !handle.lock().knows_word("诸暨"),
+        "the in-memory table follows the store, so it holds nothing either"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
 }

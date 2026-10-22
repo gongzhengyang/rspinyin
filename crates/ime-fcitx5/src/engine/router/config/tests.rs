@@ -236,13 +236,24 @@ fn test_from_config_projects_the_fuzzy_section_onto_the_session_mask() {
     config.fuzzy.zh_z = true;
     let (projected, warnings) = RoutingConfig::from_config(&config);
     assert!(warnings.is_empty(), "{warnings:?}");
-    assert!(projected.session.fuzzy.contains(ime_types::DecodeFlags::FUZZY_ZH_Z));
     assert!(
-        projected.session.fuzzy.contains(ime_types::DecodeFlags::FUZZY),
+        projected
+            .session
+            .fuzzy
+            .contains(ime_types::DecodeFlags::FUZZY_ZH_Z)
+    );
+    assert!(
+        projected
+            .session
+            .fuzzy
+            .contains(ime_types::DecodeFlags::FUZZY),
         "one class switches the master on"
     );
     assert!(
-        !projected.session.fuzzy.contains(ime_types::DecodeFlags::FUZZY_N_L),
+        !projected
+            .session
+            .fuzzy
+            .contains(ime_types::DecodeFlags::FUZZY_N_L),
         "a class the section did not name stays off"
     );
 
@@ -250,7 +261,12 @@ fn test_from_config_projects_the_fuzzy_section_onto_the_session_mask() {
     let mut config = Config::default();
     config.fuzzy.enabled = true;
     let (projected, _) = RoutingConfig::from_config(&config);
-    assert!(projected.session.fuzzy.contains(ime_types::DecodeFlags::FUZZY_F_H));
+    assert!(
+        projected
+            .session
+            .fuzzy
+            .contains(ime_types::DecodeFlags::FUZZY_F_H)
+    );
 
     // The shipped document selects nothing, and the session decodes as a build
     // before the section existed.

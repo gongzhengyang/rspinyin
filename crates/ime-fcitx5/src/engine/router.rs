@@ -74,16 +74,31 @@ use ime_core::privacy::InputContextKind;
 use ime_core::state::{SessionEnv, SessionEvent, SessionState};
 use ime_dict::hot_swap::{LexiconBundle, LexiconSlot};
 use ime_dict::script::ScriptIndex;
+use ime_dict::user_lexicon::{ChainedLexicon, UserLexiconHandle};
 use ime_types::{Anchor, KeyAction, UiEvent};
 
 use crate::engine::badge::BadgeState;
+use crate::engine::host::ComposeOutcome;
 use crate::engine::host::Host;
 use crate::engine::{
-    claims_key, is_policy_mark, is_shift_press, is_syllable_separator, leaves_temp_english,
-    translate_key,
+    carries_compose_blocking_modifier, claims_key, is_policy_mark, is_shift_press,
+    is_syllable_separator, leaves_temp_english, translate_key,
 };
 use crate::ffi::{FcitxKeyEvent, emit_diagnostic};
 use crate::privacy_impl::{ContextPrivacy, ContextReport, report_suppression};
+
+/// Extracts the client-preedit capability a host report carries.
+///
+/// A report that names no capability — the fail-closed shape the FFI layer sends
+/// when it could not read the flags — answers `true`, which is the behaviour every
+/// build before the negotiation had: the negotiation narrows only when the host
+/// spoke.
+fn client_preedit_of(report: ContextReport<'_>) -> bool {
+    match report {
+        ContextReport::Reported { preedit, .. } => preedit,
+        ContextReport::Unreported => true,
+    }
+}
 
 // The phrase document the engine saves into: the store the `AddPhrase` arm writes
 // through, which the startup sequence fills through `phrases::install`.
@@ -133,6 +148,15 @@ struct StepCtx<'a, 'b> {
     /// The process-local state the header's slot is resolved through when a frame is
     /// posted; the `engine::badge` module owns the resolution.
     badge: &'b mut BadgeState,
+    /// The word pairs a commit coined, waiting for the user-lexicon write the step's
+    /// dictionary lock forbids. Collected here, drained by the caller after the step.
+    coins: Vec<(String, String)>,
+    /// The words whose in-memory coin entries a forget must remove -- the store's half
+    /// travelled through the frozen trait while the step ran.
+    forget_words: Vec<String>,
+    /// The words whose pin a toggle flipped, for the lexicon's own eviction-protection
+    /// flag.
+    pin_changes: Vec<String>,
 }
 
 /// The environment one step runs against, over a possibly swapped-in dictionary.
@@ -149,10 +173,7 @@ struct StepCtx<'a, 'b> {
 /// # Panics
 ///
 /// Never.
-fn step_env<'a, 'b>(
-    env: SessionEnv<'a>,
-    bundle: Option<&'b Arc<LexiconBundle>>,
-) -> SessionEnv<'b>
+fn step_env<'a, 'b>(env: SessionEnv<'a>, bundle: Option<&'b Arc<LexiconBundle>>) -> SessionEnv<'b>
 where
     'a: 'b,
 {
@@ -162,6 +183,9 @@ where
             lexicon: bundle.lexicon(),
             user_freq: env.user_freq,
             lm: bundle.lm(),
+            english: env.english,
+            confusables: env.confusables,
+            symbols: env.symbols,
         },
         None => env,
     }
@@ -188,6 +212,9 @@ pub struct KeyRouter<'a> {
     /// a test router, or a router over a degraded start — decodes against [`KeyRouter::env`]
     /// as it stands.
     lexicon_slot: Option<&'a LexiconSlot>,
+    /// The user's own words, when the process assembled them: read under a lock held for
+    /// the length of a decode-bearing step, written by the drain that runs after it.
+    user_lexicon: Option<&'a UserLexiconHandle>,
     /// The per-context privacy decisions and the gate every commit's learning goes
     /// through.
     privacy: ContextPrivacy,
@@ -245,6 +272,7 @@ impl<'a> KeyRouter<'a> {
         Self {
             env,
             lexicon_slot: None,
+            user_lexicon: None,
             privacy,
             config,
             phrases: phrases::handle(),
@@ -268,6 +296,50 @@ impl<'a> KeyRouter<'a> {
     pub fn with_lexicon_slot(mut self, slot: &'a LexiconSlot) -> Self {
         self.lexicon_slot = Some(slot);
         self
+    }
+
+    /// Hands the router the user's own words, which every decode-bearing step reads ahead
+    /// of the system dictionary.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn with_user_lexicon(mut self, handle: &'a UserLexiconHandle) -> Self {
+        self.user_lexicon = Some(handle);
+        self
+    }
+
+    /// Writes what a step collected for the user's lexicon, after its dictionary lock has
+    /// gone.
+    ///
+    /// The step reads the lexicon under a lock it must hold to the end -- a decode may
+    /// not wait behind a writer -- so the writes the step was asked for wait instead, and
+    /// this is the drain: coins are enrolled into the memory table and the store's write
+    /// queue, a forgotten word leaves the memory table, and a pin toggle moves the flag
+    /// eviction honours. An empty set of changes is the ordinary case and costs one
+    /// branch.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    fn apply_user_lexicon_changes(
+        &mut self,
+        coins: Vec<(String, String)>,
+        forget_words: Vec<String>,
+        pin_changes: Vec<String>,
+    ) {
+        let Some(handle) = self.user_lexicon else {
+            return;
+        };
+        if !coins.is_empty() {
+            handle.coin(&coins);
+        }
+        for word in forget_words {
+            handle.forget_word(&word);
+        }
+        for word in pin_changes {
+            handle.toggle_pin(&word);
+        }
     }
 
     /// Installs `index` as the variant table the script mode converts through.
@@ -361,7 +433,14 @@ impl<'a> KeyRouter<'a> {
         // parked is the state this context starts from. Under the context tier the pool
         // never holds the key, so the lookup misses and the branch costs one hash probe.
         let context = match self.pool.remove(&key) {
-            Some(slot) => Context::adopted(ic, key, slot, self.phrases.clone(), self.script.clone()),
+            Some(slot) => Context::adopted(
+                ic,
+                key,
+                slot,
+                self.phrases.clone(),
+                self.script.clone(),
+                client_preedit_of(report),
+            ),
             None => {
                 let base = self.next_session_base;
                 self.next_session_base = self.next_session_base.saturating_add(SESSION_ID_STRIDE);
@@ -372,6 +451,7 @@ impl<'a> KeyRouter<'a> {
                     self.phrases.clone(),
                     self.script.clone(),
                     self.config.output,
+                    client_preedit_of(report),
                 )
             }
         };
@@ -409,6 +489,9 @@ impl<'a> KeyRouter<'a> {
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            coins: Vec::new(),
+            forget_words: Vec::new(),
+            pin_changes: Vec::new(),
         };
         if let Some(mut ctx) = self.contexts.remove(&ic) {
             ctx.run(SessionEvent::Reset, &mut step, host);
@@ -473,6 +556,9 @@ impl<'a> KeyRouter<'a> {
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            coins: Vec::new(),
+            forget_words: Vec::new(),
+            pin_changes: Vec::new(),
         };
         if let Some(ctx) = self.contexts.get_mut(&ic) {
             ctx.run(SessionEvent::Reset, &mut step, host);
@@ -538,6 +624,9 @@ impl<'a> KeyRouter<'a> {
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            coins: Vec::new(),
+            forget_words: Vec::new(),
+            pin_changes: Vec::new(),
         };
         if let Some(ctx) = self.contexts.get_mut(&ic) {
             ctx.run(SessionEvent::FocusLost, &mut step, host);
@@ -570,24 +659,95 @@ impl<'a> KeyRouter<'a> {
     /// # Panics
     ///
     /// Never.
+    /// Answers whether the compose step may ask the host about a key of this
+    /// context: only an idle session that is not passing keys through is
+    /// composing nothing of its own, and those are the keys a dead-key sequence
+    /// belongs to.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    fn compose_may_ask(&self, ic: u64) -> bool {
+        match self.contexts.get(&ic) {
+            Some(context) => {
+                context.session.state == SessionState::Idle && !context.session.temp_english
+            }
+            None => false,
+        }
+    }
+
     pub fn key_event(&mut self, ic: u64, key: &FcitxKeyEvent, host: &mut dyn Host) -> bool {
+        // The compose step runs before anything claims the key: a dead-key
+        // sequence the host is composing is the layout's, and a chord with Ctrl
+        // or Super held is the application's shortcut, never a letter to
+        // compose through. The step asks only for a press on an idle session --
+        // a composing session is never asked, which is what keeps the hot path
+        // free of the call -- and with the switch off it is never asked at all,
+        // so the default configuration routes every key byte for byte as a
+        // build before the step did.
+        if self.config.compose
+            && !key.is_release
+            && !carries_compose_blocking_modifier(key)
+            && self.compose_may_ask(ic)
+        {
+            match host.process_compose(ic, key) {
+                ComposeOutcome::Unsupported => {}
+                ComposeOutcome::Swallowed => return true,
+                ComposeOutcome::Committed(character) => {
+                    let mut text = [0u8; 4];
+                    host.commit(ic, character.encode_utf8(&mut text));
+                    return true;
+                }
+            }
+        }
         let action = translate_key(key, &self.config.keys);
         if !claims_key(action) || is_shift_press(key) {
             return false;
         }
+        // The dictionary the step decodes against is assembled here, once: the slot's
+        // current container, the user's own words locked ahead of it, and the environment
+        // over the two. The guard and the bundle are held to the end of the step -- a
+        // decode may not wait behind a writer, and the words a lookup hands back point
+        // into both -- which is what makes the writes the step collects wait for the
+        // drain at the end instead of running inside it.
+        let bundle = self.lexicon_slot.map(LexiconSlot::load);
+        let user = self.user_lexicon.map(UserLexiconHandle::lock);
+        let chain = match (&user, &bundle) {
+            (Some(user), Some(bundle)) => Some(ChainedLexicon::new(user, bundle.lexicon())),
+            (Some(user), None) => Some(ChainedLexicon::new(user, self.env.lexicon)),
+            _ => None,
+        };
+        let live_env = SessionEnv {
+            decoder: self.env.decoder,
+            lexicon: match (&chain, &bundle) {
+                (Some(chain), _) => chain,
+                (None, Some(bundle)) => bundle.lexicon(),
+                (None, None) => self.env.lexicon,
+            },
+            user_freq: self.env.user_freq,
+            lm: match &bundle {
+                Some(bundle) => bundle.lm(),
+                None => self.env.lm,
+            },
+            english: self.env.english,
+            confusables: self.env.confusables,
+            symbols: self.env.symbols,
+        };
         let Self {
             contexts,
-            env,
             config,
             privacy,
             badge,
             ..
         } = self;
         let mut step = StepCtx {
-            env,
+            env: &live_env,
             config,
             privacy,
             badge,
+            coins: Vec::new(),
+            forget_words: Vec::new(),
+            pin_changes: Vec::new(),
         };
         let Some(ctx) = contexts.get_mut(&ic) else {
             emit_diagnostic(STALE_IC_CODE);
@@ -699,7 +859,17 @@ impl<'a> KeyRouter<'a> {
         // `EnterTempEnglish` is the one action whose whole effect is a session flag: with
         // nothing composing it emits no effect, and the key would be handed back even
         // though the mode changed.
-        mode_acted || session_acted || ctx.session.temp_english
+        let acted = mode_acted || session_acted || ctx.session.temp_english;
+        // The dictionary lock outlived the step; the writes it deferred are the drain's
+        // now, and every borrow they waited behind ends here, oldest first.
+        let coins = std::mem::take(&mut step.coins);
+        let forget_words = std::mem::take(&mut step.forget_words);
+        let pin_changes = std::mem::take(&mut step.pin_changes);
+        drop(step);
+        drop(user);
+        drop(bundle);
+        self.apply_user_lexicon_changes(coins, forget_words, pin_changes);
+        acted
     }
 
     /// Routes one event from the candidate window.
@@ -727,15 +897,41 @@ impl<'a> KeyRouter<'a> {
     ///
     /// Never.
     pub fn ui_event(&mut self, ic: u64, event: UiEvent, host: &mut dyn Host) -> bool {
+        // The same assembly a key event runs: the slot's container and the user's words,
+        // locked and chained for the step's whole run, the writes drained after it.
         let bundle = self.lexicon_slot.map(LexiconSlot::load);
-        let env = step_env(self.env, bundle.as_ref());
+        let user = self.user_lexicon.map(UserLexiconHandle::lock);
+        let chain = match (&user, &bundle) {
+            (Some(user), Some(bundle)) => Some(ChainedLexicon::new(user, bundle.lexicon())),
+            (Some(user), None) => Some(ChainedLexicon::new(user, self.env.lexicon)),
+            _ => None,
+        };
+        let live_env = SessionEnv {
+            decoder: self.env.decoder,
+            lexicon: match (&chain, &bundle) {
+                (Some(chain), _) => chain,
+                (None, Some(bundle)) => bundle.lexicon(),
+                (None, None) => self.env.lexicon,
+            },
+            user_freq: self.env.user_freq,
+            lm: match &bundle {
+                Some(bundle) => bundle.lm(),
+                None => self.env.lm,
+            },
+            english: self.env.english,
+            confusables: self.env.confusables,
+            symbols: self.env.symbols,
+        };
         let mut step = StepCtx {
-            env: &env,
+            env: &live_env,
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            coins: Vec::new(),
+            forget_words: Vec::new(),
+            pin_changes: Vec::new(),
         };
-        match self.contexts.get_mut(&ic) {
+        let acted = match self.contexts.get_mut(&ic) {
             Some(ctx) => {
                 ctx.write_frame_context(&self.config);
                 ctx.run(SessionEvent::Ui(event), &mut step, host)
@@ -744,7 +940,15 @@ impl<'a> KeyRouter<'a> {
                 emit_diagnostic(STALE_IC_CODE);
                 false
             }
-        }
+        };
+        let coins = std::mem::take(&mut step.coins);
+        let forget_words = std::mem::take(&mut step.forget_words);
+        let pin_changes = std::mem::take(&mut step.pin_changes);
+        drop(step);
+        drop(user);
+        drop(bundle);
+        self.apply_user_lexicon_changes(coins, forget_words, pin_changes);
+        acted
     }
 
     /// Records where the host reports the caret, for the frames that follow.
@@ -804,6 +1008,9 @@ impl<'a> KeyRouter<'a> {
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            coins: Vec::new(),
+            forget_words: Vec::new(),
+            pin_changes: Vec::new(),
         };
         for ctx in self.contexts.values_mut() {
             ctx.write_frame_context(&self.config);
@@ -858,6 +1065,9 @@ impl<'a> KeyRouter<'a> {
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            coins: Vec::new(),
+            forget_words: Vec::new(),
+            pin_changes: Vec::new(),
         };
         match self.contexts.get_mut(&ic) {
             Some(ctx) => ctx.run(event, &mut step, host),

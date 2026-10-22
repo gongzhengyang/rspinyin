@@ -25,14 +25,16 @@
 //! picks the greatest name rather than the last one it happened to record: a run reported late
 //! -- or twice -- cannot move the pointer backwards onto a finished run.
 
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use super::error::{self, EvidenceError};
-use super::write::{CaseBundle, RunDir, refuse_legacy_layout, write_private};
+use super::error::EvidenceError;
+use super::report::{dedupe_runs, read_runs, register_run, registry_path};
+use super::write::{CaseBundle, RunDir, refuse_legacy_layout};
 use super::{
-    CaseEvidence, CaseStatus, INDEX_FORMAT_VERSION, RESULTS_DIR, RESULTS_INDEX_FILE, RUNS_DIR, Utc,
+    CaseEvidence, CaseStatus, Checklist, ChecklistRow, Dim, RESULTS_DIR, RESULTS_INDEX_FILE,
+    RUNS_DIR, Tier, Utc,
 };
+use crate::testd::env_gate::ELIGIBILITY_CLAIM;
 
 /// The verdict of a whole run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -85,16 +87,42 @@ pub struct CaseRow {
     pub healed: usize,
     /// Why the bundle is incomplete, when it is.
     pub gap: Option<String>,
+    /// The tier the case's v3 record declares, or `None` when it carried none.
+    pub tier: Option<Tier>,
+    /// The screenshots the case's v3 record declares and the bundle directory does not hold.
+    ///
+    /// A name here is a *platform defect* rather than a case failure: the case card declared
+    /// evidence the harness never wrote. The row stays red in the checklist, the batch's
+    /// verdict becomes flawed through [`BatchSummary::screenshot_gaps`], and the case's own
+    /// status is not rewritten.
+    pub screenshots_missing: Vec<String>,
+    /// How many claims the case's v3 record settled.
+    pub claims: usize,
+    /// How many of those claims did not hold.
+    pub failed_claims: usize,
+    /// How many screenshots the case's v3 record declares.
+    pub screenshots_expected: usize,
+    /// The gate's withheld state, when the case was skipped: `pending-impl` or
+    /// `needs-environment`.
+    pub withheld: Option<String>,
+    /// The coverage dimensions the case's v3 record declares.
+    pub dims: Vec<Dim>,
+    /// The budget keys the case's v3 record declares its thresholds from.
+    pub budget_keys: Vec<String>,
 }
 
 impl CaseRow {
-    /// Whether every artefact of the case's bundle was written.
+    /// Whether every artefact the case owes was written.
+    ///
+    /// Two losses keep a row red: a bundle the write could not produce, and a screenshot the
+    /// case's v3 record declares but its directory does not hold. Both are losses a green
+    /// summary cannot be allowed to hide, which is what this one predicate is for.
     ///
     /// # Panics
     ///
     /// Never.
     pub fn is_complete(&self) -> bool {
-        self.gap.is_none()
+        self.gap.is_none() && self.screenshots_missing.is_empty()
     }
 }
 
@@ -107,8 +135,21 @@ pub struct BatchSummary {
     pub failed: usize,
     /// Cases that could not be judged, or whose evidence could not be written.
     pub flawed: usize,
+    /// Cases the gate withheld before they ran.
+    ///
+    /// Neither a pass nor a failure -- nothing was judged -- so they are listed separately
+    /// and are counted by neither [`BatchSummary::cases`] nor the verdict: a batch whose
+    /// every case was skipped has judged nothing, and its counts say so.
+    pub skipped: usize,
     /// Cases whose bundle is incomplete.
     pub evidence_gaps: usize,
+    /// Cases whose v3 record declares screenshots the bundle directory does not hold.
+    ///
+    /// A declared screenshot that never landed is a platform defect, not a case failure, so it
+    /// is counted here rather than in [`BatchSummary::failed`] -- but a run that lost evidence
+    /// is still not a run that can be published green, which is what
+    /// [`BatchSummary::verdict`] decides.
+    pub screenshot_gaps: usize,
     /// Self-healing edits the run made.
     pub healed: usize,
 }
@@ -127,7 +168,9 @@ impl BatchSummary {
     ///
     /// A failure outranks a gap: a run in which one case failed and another lost its evidence
     /// is a failed run, and the gap is still reported beside it by
-    /// [`BatchSummary::evidence_gaps`].
+    /// [`BatchSummary::evidence_gaps`]. A screenshot the evidence declares but the directory
+    /// does not hold is the same class of loss -- the run's evidence is incomplete -- so it
+    /// holds the verdict at flawed by the same branch.
     ///
     /// # Panics
     ///
@@ -135,7 +178,7 @@ impl BatchSummary {
     pub fn verdict(&self) -> BatchVerdict {
         if self.failed > 0 {
             BatchVerdict::Fail
-        } else if self.flawed > 0 || self.evidence_gaps > 0 {
+        } else if self.flawed > 0 || self.evidence_gaps > 0 || self.screenshot_gaps > 0 {
             BatchVerdict::Flawed
         } else {
             BatchVerdict::Pass
@@ -171,6 +214,13 @@ impl RunJournal {
     /// failed marks the case flawed and carries the reason into the index, which is what makes
     /// the loss visible in the run's verdict rather than only in the output of the harness.
     ///
+    /// When the case carries a v3 record that declares screenshots, the names it declares are
+    /// checked against the bundle's own directory as it stands -- the one existence question a
+    /// journal can answer, because the directory it reads is the one the write just produced.
+    /// A declared name that is not there becomes the row's red list and counts the run's
+    /// screenshot gap, but the case's own verdict is not rewritten: missing evidence is a
+    /// platform defect, not a case failure.
+    ///
     /// # Panics
     ///
     /// Never.
@@ -179,6 +229,42 @@ impl RunJournal {
             Ok(bundle) => (evidence.status, bundle.trace.is_some(), None),
             Err(error) => (CaseStatus::Flawed, false, Some(error.reason())),
         };
+        // The existence probe reads only the directory the bundle names, and only for the names
+        // the case's own record declares; a case with no v3 record, or one that declares no
+        // screenshots, touches nothing.
+        let (tier, screenshots_missing, claims, failed_claims, screenshots_expected) =
+            match (&evidence.v3, &bundle) {
+                (Some(record), Ok(bundle)) => (
+                    Some(record.tier),
+                    record.missing_screenshots(&bundle.dir),
+                    record.claims.len(),
+                    record.failed_claims().count(),
+                    record.screenshots_expected.len(),
+                ),
+                (Some(record), Err(_)) => (
+                    Some(record.tier),
+                    Vec::new(),
+                    record.claims.len(),
+                    record.failed_claims().count(),
+                    record.screenshots_expected.len(),
+                ),
+                (None, _) => (None, Vec::new(), 0, 0, 0),
+            };
+        // The withheld state, the dimensions and the budget keys are the v3 record's own, so
+        // the checklist a report is regenerated from carries everything the report states.
+        let v3 = evidence.v3.as_ref();
+        let withheld = v3.and_then(|record| {
+            record
+                .claims
+                .iter()
+                .find(|claim| claim.name == ELIGIBILITY_CLAIM && !claim.pass)
+                .and_then(|claim| claim.actual.split(':').next())
+                .map(str::to_owned)
+        });
+        let dims = v3.map(|record| record.dims.clone()).unwrap_or_default();
+        let budget_keys = v3
+            .map(|record| record.budget_keys.clone())
+            .unwrap_or_default();
         self.rows.push(CaseRow {
             module: evidence.module.clone(),
             tc: evidence.tc.clone(),
@@ -189,6 +275,14 @@ impl RunJournal {
             trace,
             healed: evidence.healed.len(),
             gap,
+            tier,
+            screenshots_missing,
+            claims,
+            failed_claims,
+            screenshots_expected,
+            withheld,
+            dims,
+            budget_keys,
         });
     }
 
@@ -213,9 +307,13 @@ impl RunJournal {
                 CaseStatus::Pass => summary.passed += 1,
                 CaseStatus::Fail => summary.failed += 1,
                 CaseStatus::Flawed => summary.flawed += 1,
+                CaseStatus::Skipped => summary.skipped += 1,
             }
             if !row.is_complete() {
                 summary.evidence_gaps += 1;
+            }
+            if !row.screenshots_missing.is_empty() {
+                summary.screenshot_gaps += 1;
             }
             summary.healed += row.healed;
         }
@@ -233,28 +331,34 @@ impl RunJournal {
         text.push_str(&format!("# Run {}\n\n", run.name()));
         text.push_str(&format!("- started: {}\n", self.started.iso8601()));
         text.push_str(&format!(
-            "- cases: {} (pass {}, fail {}, flawed {})\n",
+            "- cases: {} (pass {}, fail {}, flawed {}, skipped {})\n",
             summary.cases(),
             summary.passed,
             summary.failed,
-            summary.flawed
+            summary.flawed,
+            summary.skipped
         ));
         text.push_str(&format!("- evidence gaps: {}\n", summary.evidence_gaps));
         text.push_str(&format!("- healed: {}\n", summary.healed));
         text.push_str(&format!("- verdict: {}\n\n", summary.verdict().label()));
         text.push_str(
-            "| module | case | status | duration | assertions | failed | trace | healed | evidence |\n",
+            "| module | case | tier | status | duration | assertions | failed | trace | healed | evidence |\n",
         );
-        text.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+        text.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
         for row in &self.rows {
-            let evidence = match &row.gap {
-                Some(reason) => format!("gap: {}", cell(reason)),
-                None => String::from("complete"),
+            let tier = row.tier.map(Tier::label).unwrap_or("-");
+            let evidence = match (&row.gap, row.screenshots_missing.is_empty()) {
+                (Some(reason), _) => format!("gap: {}", cell(reason)),
+                (None, true) => String::from("complete"),
+                (None, false) => {
+                    format!("missing: {}", cell(&row.screenshots_missing.join(", ")))
+                }
             };
             text.push_str(&format!(
-                "| {} | {} | {} | {} ms | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} ms | {} | {} | {} | {} | {} |\n",
                 cell(&row.module),
                 cell(&row.tc),
+                tier,
                 row.status.label(),
                 row.duration_ms,
                 row.assertions,
@@ -280,6 +384,41 @@ impl RunJournal {
         run.write_index(&self.render_index(run))
     }
 
+    /// Builds the batch checklist the run's directory holds.
+    ///
+    /// The rows are the journal's own: the checklist owns no state a second copy could drift
+    /// from, which is what lets a report be regenerated from the run directory alone.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn checklist(&self, run: &RunDir) -> Checklist {
+        let rows = self
+            .rows
+            .iter()
+            .map(|row| ChecklistRow {
+                module: row.module.clone(),
+                case: row.tc.clone(),
+                tier: row.tier,
+                status: row.status,
+                claims: row.claims,
+                failed_claims: row.failed_claims,
+                assertions: row.gap.is_none(),
+                trace: row.trace,
+                screenshots_expected: row.screenshots_expected,
+                screenshots_present: row
+                    .screenshots_expected
+                    .saturating_sub(row.screenshots_missing.len()),
+                screenshots_missing: row.screenshots_missing.clone(),
+                gap: row.gap.clone(),
+                withheld: row.withheld.clone(),
+                dims: row.dims.clone(),
+                budget_keys: row.budget_keys.clone(),
+            })
+            .collect();
+        Checklist::of(run.name(), self.summary().verdict(), rows)
+    }
+
     /// Writes the run's index and appends the run to the cross-run index.
     ///
     /// The two are written together because a run that appears in one and not the other is a
@@ -288,16 +427,19 @@ impl RunJournal {
     ///
     /// # Errors
     ///
-    /// As [`RunJournal::write_index`] and [`RunIndex::write`].
+    /// As [`RunJournal::write_index`] and [`register_run`].
     ///
     /// # Panics
     ///
     /// Never.
     pub fn publish(&self, run: &RunDir, results_root: &Path) -> Result<(), EvidenceError> {
         self.write_index(run)?;
-        let mut index = RunIndex::open(results_root)?;
-        index.record(self.entry(run));
-        index.write()
+        // The checklist is the batch's evidence-existence table; it is published beside the
+        // index so one run directory carries both the human table and the machine-checkable
+        // one, and neither can be had without the other.
+        let checklist = self.checklist(run);
+        run.write_checklist(&checklist.to_json()?)?;
+        register_run(&registry_path(results_root), self.entry(run))
     }
 
     /// The run as the cross-run index holds it.
@@ -348,42 +490,55 @@ pub struct RunEntry {
 }
 
 /// The cross-run index: every run the results tree holds, and which one is newest.
+///
+/// The registry the index reads is append-only -- one [`RunEntry`] per line, written by
+/// [`register_run`] -- so opening it never rewrites anything, and a line that cannot be
+/// parsed costs a warning and one lost entry rather than the whole history.
 #[derive(Clone, Debug)]
 pub struct RunIndex {
-    /// The file the document is read from and written to.
+    /// The file the registry is read from.
     path: PathBuf,
-    /// The document itself.
-    document: IndexDocument,
+    /// The runs the registry holds, deduplicated to the last line that named each run.
+    runs: Vec<RunEntry>,
+    /// The newest run the registry holds, the greatest run *name* among them.
+    latest_run: Option<String>,
 }
 
 impl RunIndex {
     /// Opens the cross-run index under `results_root`, reading it when it is there.
     ///
     /// A results tree with no index yet is a tree whose first run has not finished, so a
-    /// missing file opens an empty document. A file that is there and cannot be read is
-    /// refused instead of replaced: it holds every run before this one.
+    /// missing file opens an empty index. A line the registry holds that this build cannot
+    /// parse is skipped with a warning rather than refused: the entries around it survive,
+    /// and the file is left exactly as it was found.
     ///
     /// # Errors
     ///
-    /// Returns [`EvidenceError::LegacyLayout`] when the root is a flat layout,
-    /// [`EvidenceError::Index`] when the document is not one this build understands, and
-    /// [`EvidenceError::Io`] when it is there and cannot be read.
+    /// Returns [`EvidenceError::LegacyLayout`] when the root is a flat layout, and
+    /// [`EvidenceError::Io`] when the registry exists and cannot be read.
     ///
     /// # Panics
     ///
     /// Never.
     pub fn open(results_root: &Path) -> Result<Self, EvidenceError> {
         refuse_legacy_layout(results_root)?;
-        let path = results_root.join(RESULTS_INDEX_FILE);
-        let document = match std::fs::read_to_string(&path) {
-            Ok(text) => read_document(&path, &text)?,
-            Err(source) if source.kind() == ErrorKind::NotFound => IndexDocument::empty(),
-            Err(source) => return Err(EvidenceError::Io { path, source }),
-        };
-        Ok(Self { path, document })
+        let path = registry_path(results_root);
+        // A run that was published twice is one entry, and the line appended later is the
+        // more current statement about it.
+        let runs = dedupe_runs(read_runs(&path)?);
+        let latest_run = runs
+            .iter()
+            .map(|held| held.run.as_str())
+            .max()
+            .map(str::to_owned);
+        Ok(Self {
+            path,
+            runs,
+            latest_run,
+        })
     }
 
-    /// The file the index is read from and written to.
+    /// The file the registry is read from.
     ///
     /// # Panics
     ///
@@ -398,113 +553,17 @@ impl RunIndex {
     ///
     /// Never.
     pub fn latest_run(&self) -> Option<&str> {
-        self.document.latest_run.as_deref()
+        self.latest_run.as_deref()
     }
 
-    /// The runs the index holds, in the order they were recorded.
+    /// The runs the index holds, in the order they were first recorded.
     ///
     /// # Panics
     ///
     /// Never.
     pub fn runs(&self) -> &[RunEntry] {
-        &self.document.runs
+        &self.runs
     }
-
-    /// Records a run and moves the pointer to the newest run the index holds.
-    ///
-    /// A run already in the document is replaced rather than appended to, so a run published
-    /// twice is one entry and not two. The pointer is the greatest run *name* the document
-    /// holds rather than the one recorded last, so a run published late cannot move it
-    /// backwards onto a finished run.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub fn record(&mut self, entry: RunEntry) {
-        // The position is taken before anything is written: holding the mutable borrow a
-        // `find_mut` would return across the match is the borrow the compiler cannot split.
-        let position = self
-            .document
-            .runs
-            .iter()
-            .position(|held| held.run == entry.run);
-        match position {
-            Some(index) => self.document.runs[index] = entry,
-            None => self.document.runs.push(entry),
-        }
-        let newest = self
-            .document
-            .runs
-            .iter()
-            .map(|held| held.run.as_str())
-            .max()
-            .map(str::to_owned);
-        self.document.latest_run = newest;
-    }
-
-    /// Writes the document back to the results tree.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EvidenceError::Json`] when the document cannot be rendered, and
-    /// [`EvidenceError::Io`] when the file cannot be written or its mode cannot be set.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub fn write(&self) -> Result<(), EvidenceError> {
-        let text = error::encode(RESULTS_INDEX_FILE, &self.document)?;
-        write_private(&self.path, text.as_bytes())
-    }
-}
-
-/// The document `results/index.json` holds.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct IndexDocument {
-    /// Version of the document format this build writes.
-    format: u32,
-    /// The newest run the document holds.
-    latest_run: Option<String>,
-    /// Every run, in the order it was recorded.
-    runs: Vec<RunEntry>,
-}
-
-impl IndexDocument {
-    /// The document a results tree without an index opens as.
-    fn empty() -> Self {
-        Self {
-            format: INDEX_FORMAT_VERSION,
-            latest_run: None,
-            runs: Vec::new(),
-        }
-    }
-}
-
-/// Reads the cross-run document, refusing a format this build does not write.
-///
-/// # Errors
-///
-/// Returns [`EvidenceError::Index`] when the text is not the document this build understands.
-///
-/// # Panics
-///
-/// Never.
-fn read_document(path: &Path, text: &str) -> Result<IndexDocument, EvidenceError> {
-    let document: IndexDocument =
-        serde_json::from_str(text).map_err(|error| EvidenceError::Index {
-            path: path.to_path_buf(),
-            detail: error.to_string(),
-        })?;
-    if document.format != INDEX_FORMAT_VERSION {
-        return Err(EvidenceError::Index {
-            path: path.to_path_buf(),
-            detail: format!(
-                "it is written in format {} and this build writes {INDEX_FORMAT_VERSION}",
-                document.format
-            ),
-        });
-    }
-    Ok(document)
 }
 
 /// One cell of the run's table, with the two characters a cell cannot carry removed.

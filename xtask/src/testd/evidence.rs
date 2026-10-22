@@ -9,9 +9,10 @@
 //! results/
 //!   runs/run-YYYYMMDD-HHMMSS/        the run, named for the instant it started
 //!     index.md                       case -> evidence, one row per case
+//!     checklist.json                 the machine-checkable twin of that table
 //!     <module>/<TC-ID>/              one directory per case
 //!       01_default.png               written by the screenshot channel
-//!       assertions.json              always: the verdict and what it rests on
+//!       assertions.json              always: the verdict, its claims, what they rest on
 //!       trace.json                   only for a failed or flawed case
 //!       heal.patch                   only when the case healed something
 //!   index.json                       every run, plus the `latest_run` pointer
@@ -70,21 +71,22 @@
 //!
 //! # Modules
 //!
-//! [`write`] owns the tree -- the run directory, the case bundles and the file modes -- and
-//! [`index`] owns the two indexes and the batch verdict. [`error`] holds the refusals.
+//! [`write`] owns the tree -- the run directory, the case bundles and the file modes --
+//! [`index`] owns the two indexes and the batch verdict, and [`v3`] owns the tests-v3.0
+//! assertion record and the batch checklist. [`error`] holds the refusals.
 
-// The archive is exercised by the tests below and by nothing else yet: the case runner that
-// would write a bundle and the subcommand tree that would publish a run both live in files this
-// module does not own. Until that wiring lands, every item here is reported as dead code in a
-// non-test build, and the attribute goes away with those lines.
-//
-// `unused_imports` is covered by the same reasoning and for the same reason: the `pub use` lines
-// below are this module's surface, and a `pub use` in a *binary* crate is "unused" whenever
-// nothing in the crate names it.
+// The suite runner (`testd::suite`) consumes the write path and both indexes, and the report
+// tasks still ahead of this one consume the v3 query surface from their own side. What is not
+// yet named from outside this module -- the tier parser, the checklist's red-row query, the
+// dimension vocabulary -- is the contract those tasks are specified against, not leftovers; and
+// a `pub use` in a *binary* crate is "unused" whenever nothing in the crate names it. The
+// attribute narrows as those callers land.
 #![allow(dead_code, unused_imports)]
 
 mod error;
 mod index;
+mod report;
+mod v3;
 mod write;
 
 #[cfg(test)]
@@ -92,6 +94,11 @@ mod tests;
 
 pub use self::error::EvidenceError;
 pub use self::index::{BatchSummary, BatchVerdict, CaseRow, RunEntry, RunIndex, RunJournal};
+pub use self::report::{
+    Blocker, CaseOutcome, CaseVerdict, FinalReport, dedupe_runs, read_runs, register_run,
+    registry_path,
+};
+pub use self::v3::{AssertionV3, Checklist, ChecklistRow, Claim, Dim, Tier};
 pub use self::write::{CaseBundle, RunDir, refuse_legacy_layout};
 
 use std::path::Path;
@@ -119,6 +126,9 @@ pub const RESULTS_INDEX_FILE: &str = "index.json";
 /// Name of a case's verdict record.
 pub const ASSERTIONS_FILE: &str = "assertions.json";
 
+/// Name of the batch checklist, directly inside the run's directory.
+pub const CHECKLIST_FILE: &str = "checklist.json";
+
 /// Name of a case's failure trace.
 pub const TRACE_FILE: &str = "trace.json";
 
@@ -138,8 +148,8 @@ pub const LEGACY_SUBDIRS: [&str; 2] = ["screenshots", "traces"];
 /// nobody reads. [`LogExcerpt::total_lines`] keeps the count that the tail leaves out.
 pub const LOG_EXCERPT_LINES: usize = 200;
 
-/// Version of the cross-run index this build writes and reads.
-pub const INDEX_FORMAT_VERSION: u32 = 1;
+/// Version of the batch checklist this build writes.
+pub const CHECKLIST_FORMAT_VERSION: u32 = 3;
 
 /// A UTC instant, as the evidence layout writes it.
 ///
@@ -287,7 +297,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 /// How a case ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CaseStatus {
     /// Every assertion held.
@@ -296,6 +306,14 @@ pub enum CaseStatus {
     Fail,
     /// The case could not be judged, or part of its evidence could not be written.
     Flawed,
+    /// The gate withheld the case before it ran: its subject does not exist yet, or this
+    /// machine cannot exercise it.
+    ///
+    /// Neither a pass nor a failure -- nothing was judged -- so a skipped case is listed
+    /// separately in the batch's counts and leaves the verdict alone. What the case was
+    /// denied for lives in its own record: the eligibility claim names the anchor task or
+    /// the remedy, so a reader acts on the row without opening the gate's report.
+    Skipped,
 }
 
 impl CaseStatus {
@@ -309,6 +327,7 @@ impl CaseStatus {
             Self::Pass => "pass",
             Self::Fail => "fail",
             Self::Flawed => "flawed",
+            Self::Skipped => "skipped",
         }
     }
 
@@ -321,7 +340,7 @@ impl CaseStatus {
     ///
     /// Never.
     pub fn needs_trace(self) -> bool {
-        !matches!(self, Self::Pass)
+        !matches!(self, Self::Pass | Self::Skipped)
     }
 }
 
@@ -499,6 +518,14 @@ pub struct CaseEvidence {
     /// many were running. They come from the environment channel's own lines rather than from
     /// a second reading of the environment, so the two agree.
     pub environment: Vec<EnvironmentFact>,
+    /// The case's v3 record, when the case carries one.
+    ///
+    /// The v1 fields above stay untouched: the v3 record rides in the same document under its
+    /// own key, so a reader written before the field existed parses every bundle that predates
+    /// it. A case whose record declares screenshots has them checked against the bundle
+    /// directory when the run journal records the case -- see [`RunJournal::record`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub v3: Option<AssertionV3>,
 }
 
 impl CaseEvidence {

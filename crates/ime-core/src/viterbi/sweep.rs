@@ -38,9 +38,9 @@
 
 use core::cmp::Ordering;
 
-use ime_types::{Candidate, CandidateSource, DecodeResult, LanguageModel, Segment, UserFreqSource};
+use ime_types::{CandidateSource, LanguageModel, Segment, UserFreqSource};
 
-use crate::lm::{Q, Scorer};
+use crate::lm::Scorer;
 use crate::segment::MAX_NODES;
 use crate::viterbi::decoder::MAX_BEAM_K;
 use crate::viterbi::kbest::TopK;
@@ -51,9 +51,6 @@ const NO_EDGE: u32 = u32::MAX;
 
 /// Marks a path with no predecessor.
 const NO_SLOT: u16 = u16::MAX;
-
-/// The Q16.16 unit as a float, for the display-only candidate score.
-const Q16_ONE: f32 = (Q * Q) as f32;
 
 /// The inputs one sweep ranks against, grouped so the sweep's methods stay inside the
 /// parameter budget.
@@ -66,21 +63,27 @@ pub(super) struct Sources<'a, 'dict> {
     lm: &'a dyn LanguageModel,
     /// The user's frequencies the scorer queries.
     uf: &'a dyn UserFreqSource,
+    /// The key arena the lattice build wrote the canonical spelling of every looked-up
+    /// key into. The standard reading of a widened edge is read out of it by its own
+    /// range, which is what the `音:` hint shows.
+    keys: &'a [u8],
 }
 
 impl<'a, 'dict> Sources<'a, 'dict> {
-    /// Groups the four readers one sweep ranks against.
+    /// Groups the readers one sweep ranks against.
     pub(super) fn new(
         lattice: &'a Lattice<'dict>,
         scorer: &'a Scorer,
         lm: &'a dyn LanguageModel,
         uf: &'a dyn UserFreqSource,
+        keys: &'a [u8],
     ) -> Self {
         Self {
             lattice,
             scorer,
             lm,
             uf,
+            keys,
         }
     }
 
@@ -406,7 +409,12 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
     /// candidate of the best path follows them. Nothing is deduplicated or ordered here --
     /// [`finish`] does that -- so the drafts keep the generation order that breaks the
     /// score ties.
-    pub(super) fn collect_into(&self, terminal: usize, out: &mut Vec<Draft>, spans: &mut Vec<WordSpan>) {
+    pub(super) fn collect_into(
+        &self,
+        terminal: usize,
+        out: &mut Vec<Draft>,
+        spans: &mut Vec<WordSpan>,
+    ) {
         // The span arena serves exactly one collect: the ranges the drafts carry name
         // entries of it, so a stale span from the decode before would be read as this
         // decode's. The key ranges the spans carry name the build's own arena, which the
@@ -464,6 +472,7 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
         draft.source = CandidateSource::Dict;
         draft.syllables = 0;
         draft.corrected = false;
+        draft.readings.clear();
         draft.words = WordSpans::EMPTY;
         // No `reserve` here, deliberately. The slot's text is the same text it held on the
         // last decode of this input, so the capacity it already carries is enough, and a
@@ -493,11 +502,28 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
             spelled = spelled_end;
             draft.text.push_str(edge.word.text);
             draft.syllables = draft.syllables.saturating_add(u16::from(edge.syllables));
+            // The source folds along the path: a user word marks it wherever it sits,
+            // and an English edge marks a path no user word marked -- the label is the
+            // strongest claim any edge of the path makes, and the dictionary's own is
+            // the weakest.
             if edge.source == CandidateSource::UserDict {
                 draft.source = CandidateSource::UserDict;
+            } else if edge.source == CandidateSource::English
+                && draft.source == CandidateSource::Dict
+            {
+                draft.source = CandidateSource::English;
             }
             if edge.penalty_q8 == crate::segment::correct::CORRECTION_PENALTY_Q8 {
                 draft.corrected = true;
+            }
+            // A widened edge is one the exact walk did not produce, and the key its
+            // word was looked up under is how the word reads in standard pinyin --
+            // the fact the `音:` hint shows. The readings accumulate in path order,
+            // which is the order this reverse walk visits the edges in.
+            if is_widened(edge.penalty_q8) {
+                if let Some(range) = self.sources.lattice.full_key(*index) {
+                    append_standard_reading(&mut draft.readings, self.sources.keys, range);
+                }
             }
         }
         draft.words = WordSpans {
@@ -546,6 +572,7 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
         draft.syllables = u16::from(edge.syllables);
         draft.score = score;
         draft.corrected = edge.penalty_q8 == crate::segment::correct::CORRECTION_PENALTY_Q8;
+        draft.readings.clear();
         // A single-word path covers one span that starts at the root; the pair reader
         // refuses lists this short, so the entry is bookkeeping rather than a coining
         // source.
@@ -558,6 +585,14 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
             start: u32::try_from(arena_base).unwrap_or(u32::MAX),
             len: 1,
         };
+        // The one span's range is the word's own slice of the key; the whole
+        // spelling is what the lattice recorded for this edge, and it is the
+        // reading the hint shows.
+        if is_widened(edge.penalty_q8) {
+            if let Some(range) = self.sources.lattice.full_key(head) {
+                append_standard_reading(&mut draft.readings, self.sources.keys, range);
+            }
+        }
         true
     }
 
@@ -600,267 +635,27 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
     }
 }
 
-/// Where one word of a path sits: the byte range its characters occupy in the draft's
-/// text, and the byte range its key occupies in the normalized input.
+/// The draft list and its finishing pass: what one candidate is made of and how the
+/// drafts that spell the same text merge.
 ///
-/// The pair list a commit coins from is read off these ranges after the decode, which is
-/// why they are recorded here rather than resolved to strings during the sweep: the ranges
-/// cost two `u16` pairs per word, are cleared and refilled in buffers the draft already
-/// owns, and name bytes of the normalized input the workspace holds for exactly as long as
-/// the candidate list it produced.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct WordSpan {
-    /// Byte range in [`Draft::text`] the word's characters occupy.
-    pub(super) text: (u16, u16),
-    /// Byte range of the word's key in the workspace's key arena: the canonical
-    /// spelling the lattice walk built -- syllable texts joined with the separator --
-    /// which is what a later lookup of the same word spells. Empty for an edge whose
-    /// reading is not a key of its own, which the pair reader refuses.
-    pub(super) key: (u32, u16),
-}
+/// It lives in `sweep/draft.rs` because the draft is data rather than walk -- the
+/// sweep fills it, the result reads it, and its own file is at its line budget.
+mod draft;
 
-/// Where a draft's word spans sit in the workspace's span arena.
+pub(crate) use draft::finish;
+pub(crate) use draft::{Draft, WordSpan, WordSpans};
+
+/// The result assembly and the annotation each candidate carries: the hint channel's
+/// composition and the standard readings a widened edge is a fact about.
 ///
-/// A plain Copy range rather than a `Vec` per draft, because the drafts beyond the merge's
-/// keep-list are dropped and refilled on every decode: a buffer of their own would be
-/// re-allocated on every steady-state decode, and the allocation budget counts them. The
-/// arena the ranges name is cleared at the start of every collect and refilled by the same
-/// walk that writes the drafts, so a range is valid for exactly as long as the draft list
-/// it belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct WordSpans {
-    /// Arena index the draft's first span sits at.
-    start: u32,
-    /// How many spans the draft's path recorded.
-    len: u16,
-}
+/// It lives in `sweep/annotation.rs` because it is the one part of the sweep that
+/// speaks to the window, and because its inputs -- the finished drafts and the
+/// confusable table -- arrive from the caller rather than from the walk.
+mod annotation;
 
-impl WordSpans {
-    /// The range of a draft with no spans: the empty path, and the value every fresh
-    /// slot starts with.
-    pub(crate) const EMPTY: Self = Self { start: 0, len: 0 };
-}
-
-/// One candidate before it is numbered: what it spells, what it scored, and the two fields
-/// the window reads.
-#[derive(Debug)]
-pub(crate) struct Draft {
-    /// The text the candidate commits.
-    pub(crate) text: String,
-    /// Where the candidate came from.
-    pub(crate) source: CandidateSource,
-    /// Syllables it consumes.
-    pub(crate) syllables: u16,
-    /// Q16.16 score. The ordering is decided on this integer, never on the `f32` that is
-    /// written into the candidate.
-    pub(crate) score: i32,
-    /// Whether the path behind the draft used a spelling-correction edge.
-    ///
-    /// The edge is recognized by its penalty, the one mark a correction edge
-    /// carries through the lattice -- the same mark an abbreviation and a fuzzy
-    /// variant are told apart by. A candidate whose path needed no correction is
-    /// annotated with nothing.
-    pub(crate) corrected: bool,
-    /// Where each word of the path sits, as a range into the sweep's span arena.
-    ///
-    /// Refilled per decode by the same walk that writes the text; a single-word path
-    /// records its one word, which is what makes "fewer than two" the coining guard, and a
-    /// corrected path's spans are recorded too and ignored by the only reader, which
-    /// refuses to coin from a spelling the user did not type.
-    pub(crate) words: WordSpans,
-}
-
-impl Draft {
-    /// An empty draft: no text, no score, the dictionary label.
-    ///
-    /// Growing a list to a longer decode pushes these, which allocates nothing.
-    fn empty() -> Self {
-        Self {
-            text: String::new(),
-            source: CandidateSource::Dict,
-            syllables: 0,
-            score: 0,
-            corrected: false,
-            words: WordSpans::EMPTY,
-        }
-    }
-
-    /// The word spans of the path this draft came from, in path order, read out of the
-    /// arena they were recorded in.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub(crate) fn words<'spans>(&self, spans: &'spans [WordSpan]) -> &'spans [WordSpan] {
-        let start = usize::try_from(self.words.start).unwrap_or(usize::MAX);
-        spans
-            .get(start..)
-            .and_then(|spans| spans.get(..usize::from(self.words.len)))
-            .unwrap_or(&[])
-    }
-
-    /// Whether the path used a spelling-correction edge.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub(super) fn corrected(&self) -> bool {
-        self.corrected
-    }
-
-    /// The text the candidate commits.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub(super) fn text(&self) -> &str {
-        &self.text
-    }
-}
-
-/// Merges the drafts that spell the same text, orders them best first, and keeps at most
-/// `max_candidates` of them.
-pub(super) fn finish(drafts: &mut Vec<Draft>, max_candidates: u16) {
-    dedupe(drafts);
-    // A stable sort, so two drafts that score the same keep the order they were generated
-    // in, which is the order of the paths they came from. `sort_by_key` is stable too, so
-    // the tie-break is preserved by the `Reverse` rather than by the comparator's shape.
-    drafts.sort_by_key(|draft| std::cmp::Reverse(draft.score));
-    // Truncating keeps the capacity of the list itself; the text buffers of the drafts that
-    // are dropped go with them, which is the price of a shorter candidate list.
-    drafts.truncate(usize::from(max_candidates));
-}
-
-/// Merges the drafts that spell the same text into one.
-///
-/// The scan is a linear walk over the drafts kept so far rather than a map lookup: a decode
-/// produces at most `beam_k + 1` drafts, so the walk is a handful of comparisons, and a
-/// `HashMap` would put its iteration order -- or at least the burden of showing it cannot
-/// matter -- into a result that has to be byte-identical across runs.
-fn dedupe(drafts: &mut Vec<Draft>) {
-    let mut kept = 0usize;
-    for read in 0..drafts.len() {
-        let found = drafts[..kept]
-            .iter()
-            .position(|seen| seen.text == drafts[read].text);
-        match found {
-            Some(at) => {
-                let (left, right) = drafts.split_at_mut(read);
-                merge_into(&mut left[at], &right[0]);
-            }
-            None => {
-                drafts.swap(kept, read);
-                kept += 1;
-            }
-        }
-    }
-    drafts.truncate(kept);
-}
-
-/// Folds a second draft that spells the same text into the first.
-///
-/// The higher score wins. The one exception is a text the base dictionary and the user's own
-/// dictionary both hold: that is the strongest evidence there is that the user means it, so
-/// the two labels merge into `UserDict` and the two scores add up instead of one being
-/// thrown away.
-fn merge_into(target: &mut Draft, other: &Draft) {
-    let dictionary = |source: CandidateSource| {
-        matches!(source, CandidateSource::Dict | CandidateSource::UserDict)
-    };
-    target.corrected |= other.corrected;
-    if dictionary(target.source) && dictionary(other.source) && target.source != other.source {
-        target.source = CandidateSource::UserDict;
-        target.score = target.score.saturating_add(other.score);
-        return;
-    }
-    if other.score > target.score {
-        target.score = other.score;
-        target.source = other.source;
-        target.syllables = other.syllables;
-        // The winning reading's own cut travels with it: the two drafts spell the same
-        // text, but not necessarily out of the same words, and the pairs a commit coins
-        // from are the winner's pairs. The range is a `Copy`, so the winner's spans are
-        // adopted by value out of the shared arena.
-        target.words = other.words;
-    }
-}
-
-/// Turns the ordered drafts into the frozen result, reusing the buffers `out` already holds.
-///
-/// Every candidate is written through the slot it already occupies, which is what keeps the
-/// text buffers: a decode that produced the same number of candidates as the last one
-/// allocates nothing here, because each text is overwritten in place rather than replaced.
-/// A draft whose path used a correction edge is annotated with [`CORRECTION_ANNOTATION_PREFIX`]
-/// and the spelling the user typed, so the window can say why the candidate is there; an
-/// exact reading is annotated with nothing, and borrows nothing.
-///
-/// [`CORRECTION_ANNOTATION_PREFIX`]: crate::segment::correct::CORRECTION_ANNOTATION_PREFIX
-pub(super) fn result_of_into(
-    out: &mut DecodeResult,
-    drafts: &[Draft],
-    degraded: bool,
-    normalized: &str,
-) {
-    for (position, draft) in drafts.iter().enumerate() {
-        // The display number is the position, 1-based: the window draws it next to the
-        // number key that selects the candidate.
-        let index = u16::try_from(position)
-            .unwrap_or(u16::MAX)
-            .saturating_add(1);
-        // The one float in the pipeline, written last and read by nobody: a Q16.16
-        // score turned into the display score the window may show.
-        let score = draft.score as f32 / Q16_ONE;
-        match out.candidates.get_mut(position) {
-            Some(slot) => {
-                slot.index = index;
-                slot.text.clear();
-                slot.text.push_str(&draft.text);
-                if draft.corrected {
-                    // The slot's own buffer is reused, so a steady-state corrected
-                    // decode reallocates nothing; the allocation happens once, the
-                    // first time a slot carries an annotation at all.
-                    write_correction_annotation(
-                        slot.annotation.get_or_insert_with(String::new),
-                        normalized,
-                    );
-                } else {
-                    slot.annotation = None;
-                }
-                slot.source = draft.source;
-                slot.score = score;
-                slot.consumed_syllables = draft.syllables;
-            }
-            None => out.candidates.push(Candidate {
-                index,
-                text: draft.text.clone(),
-                annotation: draft.corrected.then(|| {
-                    let mut text = String::new();
-                    write_correction_annotation(&mut text, normalized);
-                    text
-                }),
-                source: draft.source,
-                score,
-                consumed_syllables: draft.syllables,
-            }),
-        }
-    }
-    // The list is cut to what this decode produced. A longer previous list gives its surplus
-    // candidates up, text buffers included: the contract says the list is exactly what the
-    // decode found.
-    out.candidates.truncate(drafts.len());
-    out.degraded = degraded;
-}
-
-/// Fills `text` with the annotation a corrected candidate carries: the Chinese prefix and
-/// the spelling the user typed, whose slip the path corrected.
-///
-/// The buffer is cleared first, so a candidate slot's own `String` can be reused across
-/// decodes, and the format has exactly one definition.
-fn write_correction_annotation(text: &mut String, normalized: &str) {
-    text.clear();
-    text.push_str(crate::segment::correct::CORRECTION_ANNOTATION_PREFIX);
-    text.push_str(normalized);
-}
+pub(crate) use crate::fuzzy::is_widened;
+pub(crate) use annotation::append_standard_reading;
+pub(crate) use annotation::result_of_into;
 
 /// Tests for the sweep, in a file of their own because this one is at its line budget.
 #[cfg(test)]

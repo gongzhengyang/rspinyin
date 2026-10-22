@@ -156,7 +156,11 @@ impl SyllableDag {
     /// # Panics
     ///
     /// Never.
-    pub fn build_for(&mut self, raw: &str, flags: ime_types::DecodeFlags) -> Result<(), DecodeError> {
+    pub fn build_for(
+        &mut self,
+        raw: &str,
+        flags: ime_types::DecodeFlags,
+    ) -> Result<(), DecodeError> {
         if raw.is_empty() {
             self.reset();
             return Err(DecodeError::EmptyInput);

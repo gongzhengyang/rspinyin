@@ -20,10 +20,9 @@ use ime_core::state::{FrameContext, Session};
 use ime_dict::script::ScriptIndex;
 use ime_types::Anchor;
 
-
+use super::RoutingConfig;
 use super::modes::{Modes, OutputProjection};
 use super::phrases::PhraseHandle;
-use super::RoutingConfig;
 
 /// The key a context's state is pooled by, from `[engine] share_state`.
 ///
@@ -114,6 +113,21 @@ impl ScriptState {
 }
 
 /// What the engine holds for one input context.
+/// Resolves the client-preedit decision for one input context.
+///
+/// The user's configuration is an upper bound and the application's capability is
+/// the floor: a client that cannot render a preedit area gets the candidate
+/// window's header instead, never a broken inline string. A `true` for the
+/// capability is also what an application the host reported nothing about gets,
+/// because the negotiation only ever narrows what the configuration asks for.
+///
+/// # Panics
+///
+/// Never.
+pub(super) fn resolve_client_preedit(cfg: bool, ic_has_preedit: bool) -> bool {
+    cfg && ic_has_preedit
+}
+
 pub(super) struct Context {
     /// The host's stable identity for this context, for the calls that go back to it.
     pub(super) ic: u64,
@@ -137,6 +151,11 @@ pub(super) struct Context {
     pub(super) phrases: PhraseHandle,
     /// The variant table the script mode converts through, or its absence.
     pub(super) script: ScriptState,
+    /// Whether the application behind this context can render a client-side
+    /// preedit, as the host reported at activation. A context the host said
+    /// nothing about holds `true`, which is the behaviour every build before the
+    /// negotiation had: the negotiation only ever narrows, never widens.
+    pub(super) preedit_supported: bool,
 }
 
 impl Context {
@@ -153,6 +172,7 @@ impl Context {
         phrases: PhraseHandle,
         script: ScriptState,
         output: OutputProjection,
+        preedit_supported: bool,
     ) -> Self {
         Self {
             ic,
@@ -165,6 +185,7 @@ impl Context {
             // origin of the first screen with no scaling; the cursor work replaces this
             // through `KeyRouter::set_anchor`.
             anchor: FrameContext::default().anchor,
+            preedit_supported,
         }
     }
 
@@ -173,7 +194,14 @@ impl Context {
     /// The session and the mode bits travel; the identity, the anchor and the shared
     /// handles are the new context's own, because the window that just took focus is a
     /// different window at a different caret, whatever it shares with its predecessor.
-    pub(super) fn adopted(ic: u64, key: PoolKey, slot: PoolSlot, phrases: PhraseHandle, script: ScriptState) -> Self {
+    pub(super) fn adopted(
+        ic: u64,
+        key: PoolKey,
+        slot: PoolSlot,
+        phrases: PhraseHandle,
+        script: ScriptState,
+        preedit_supported: bool,
+    ) -> Self {
         Self {
             ic,
             key,
@@ -181,6 +209,10 @@ impl Context {
             modes: slot.modes,
             phrases,
             script,
+            // The capability is the context's own, not the pool slot's: the window
+            // that just took focus is a different application's window, whatever
+            // its predecessor shared.
+            preedit_supported,
             anchor: FrameContext::default().anchor,
         }
     }

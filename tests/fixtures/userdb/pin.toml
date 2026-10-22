@@ -1,0 +1,7 @@
+# The user-store seed the add-shard scenarios run against: one word, committed often
+# enough that the user channel lifts it over the dictionary's own first candidate.
+version = 1
+
+[[words]]
+text = "你好"
+commits = 100

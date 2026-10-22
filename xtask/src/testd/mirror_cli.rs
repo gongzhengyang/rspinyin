@@ -37,6 +37,7 @@ use clap::Args;
 
 use crate::testd::uiframe::{FRAME_FILE, FrameError, FrameSnapshot, FrameWatch, Reading};
 use ime_types::UiFrame;
+use ime_types::ui::Script;
 
 /// How long a wait sleeps between two looks at the mirror.
 ///
@@ -69,17 +70,121 @@ pub struct MirrorArgs {
     /// Assert the newest frame carries no candidate at all.
     #[arg(long)]
     expect_empty: bool,
+    /// Assert the candidate at this 1-based position carries exactly this annotation, as
+    /// `INDEX=TEXT`; `INDEX=-` asserts it carries none. Repeatable.
+    ///
+    /// The annotation is the engine's own grey hint -- a correction, a fuzzy note, a symbol
+    /// category -- never user input, which is why a case may name it on the command line.
+    #[arg(long, value_name = "INDEX=TEXT|-")]
+    assert_annotation: Vec<String>,
+    /// Assert the frame's candidates carry exactly these texts, in this order,
+    /// comma-separated; an empty value asserts an empty list.
+    ///
+    /// The order is the property the pin and the ranking cases assert: a candidate promoted
+    /// to the front shows up here before it shows up anywhere a user could see.
+    #[arg(long, value_name = "TEXT[,TEXT]", conflicts_with = "expect_empty")]
+    assert_full_list: Option<String>,
+    /// Assert a mode-strip field carries this value, as `FIELD=VALUE`. Repeatable. The
+    /// fields are `mode-label`, `script`, `chinese`, `full-width`, `punctuation-full`,
+    /// `user-dict-hit` and `readonly`; the script reads `simplified` or `traditional`, the
+    /// flags read `true` or `false`, and the label reads any text.
+    #[arg(long, value_name = "FIELD=VALUE")]
+    assert_status: Vec<String>,
     /// Copy the snapshot JSON here, `0600`, for the case's evidence bundle.
     #[arg(long, value_name = "PATH")]
     json_out: Option<PathBuf>,
 }
 
+/// One annotation assertion: the candidate at this 1-based position carries this hint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AnnotationExpectation {
+    /// The candidate's 1-based position.
+    index: u16,
+    /// The annotation the candidate must carry, or `None` for none.
+    wanted: Option<String>,
+}
+
+/// Which mode-strip field a status assertion names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusField {
+    /// The strip's mode label.
+    ModeLabel,
+    /// The script the strip shows.
+    Script,
+    /// The strip's Chinese bit.
+    Chinese,
+    /// Full-width characters.
+    FullWidth,
+    /// Full-width punctuation.
+    PunctuationFull,
+    /// A hit from the user's own dictionary.
+    UserDictHit,
+    /// Read-only mode.
+    Readonly,
+}
+
+impl StatusField {
+    /// Reads the field a status assertion names.
+    ///
+    /// # Errors
+    ///
+    /// A message naming the fields the assertion knows when the name is none of them.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    fn parse(name: &str) -> Result<Self, String> {
+        match name {
+            "mode-label" => Ok(Self::ModeLabel),
+            "script" => Ok(Self::Script),
+            "chinese" => Ok(Self::Chinese),
+            "full-width" => Ok(Self::FullWidth),
+            "punctuation-full" => Ok(Self::PunctuationFull),
+            "user-dict-hit" => Ok(Self::UserDictHit),
+            "readonly" => Ok(Self::Readonly),
+            _ => Err(format!(
+                "unknown strip field {name:?}; the fields are mode-label, script, chinese, \
+                 full-width, punctuation-full, user-dict-hit and readonly"
+            )),
+        }
+    }
+
+    /// The field as a refusal names it.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    fn name(self) -> &'static str {
+        match self {
+            Self::ModeLabel => "mode-label",
+            Self::Script => "script",
+            Self::Chinese => "chinese",
+            Self::FullWidth => "full-width",
+            Self::PunctuationFull => "punctuation-full",
+            Self::UserDictHit => "user-dict-hit",
+            Self::Readonly => "readonly",
+        }
+    }
+}
+
+/// One status assertion: the named strip field carries this value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StatusExpectation {
+    /// The field the assertion names.
+    field: StatusField,
+    /// The value the field must carry, as the argument spelled it.
+    wanted: String,
+}
+
 /// What the run asserts about the frame it read.
 ///
-/// The three checks a case asks of the mirror -- which revision arrived, how many candidates
-/// it carried, whether it carried any -- named once so [`verdict`] stays the single place a
-/// refusal is worded from.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The checks a case asks of the mirror -- which revision arrived, how many candidates it
+/// carried, whether it carried any, what a candidate's hint reads, what order the
+/// candidates stand in, what the strip shows -- named once so [`verdict`] stays the single
+/// place a refusal is worded from. Every refusal names counts, positions and field names;
+/// the values a refusal would have to quote to be "helpful" are the frame's texts, and
+/// those stay out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Expectations {
     /// The revision the newest frame must carry.
     revision: Option<u32>,
@@ -87,20 +192,96 @@ struct Expectations {
     candidates: Option<usize>,
     /// Whether the newest frame must carry no candidate.
     empty: bool,
+    /// The annotation assertions, in the order the arguments named them.
+    annotations: Vec<AnnotationExpectation>,
+    /// The candidate texts the frame must carry, in order, when the full list is asserted.
+    full_list: Option<Vec<String>>,
+    /// The strip assertions, in the order the arguments named them.
+    status: Vec<StatusExpectation>,
 }
 
 impl Expectations {
     /// Reads the assertions the arguments asked for.
     ///
+    /// # Errors
+    ///
+    /// A message naming the offending argument when an annotation spec carries no `=` or a
+    /// position that is not a number, when a full list is not parseable, or when a status
+    /// spec names an unknown field or a value the field cannot carry.
+    ///
     /// # Panics
     ///
     /// Never.
-    fn from_args(args: &MirrorArgs) -> Self {
-        Self {
+    fn from_args(args: &MirrorArgs) -> Result<Self, String> {
+        let mut annotations = Vec::new();
+        for spec in &args.assert_annotation {
+            let (index, wanted) = spec
+                .split_once('=')
+                .ok_or_else(|| format!("{spec:?} does not read INDEX=TEXT"))?;
+            let index: u16 = index
+                .parse()
+                .map_err(|_| format!("{index:?} does not carry a candidate position"))?;
+            if index == 0 {
+                return Err(format!(
+                    "{index:?}: candidate positions are 1-based, so 0 names no candidate"
+                ));
+            }
+            let wanted = match wanted {
+                "-" => None,
+                text => Some(String::from(text)),
+            };
+            annotations.push(AnnotationExpectation { index, wanted });
+        }
+        // An empty value names an empty list, the order channel's "no candidate at all":
+        // `split(',')` on an empty string would yield one empty piece, which asserts a
+        // candidate whose text is the empty string instead.
+        let full_list = args
+            .assert_full_list
+            .as_ref()
+            .map(|list| {
+                if list.is_empty() {
+                    Vec::new()
+                } else {
+                    list.split(',').map(String::from).collect()
+                }
+            });
+        let mut status = Vec::new();
+        for spec in &args.assert_status {
+            let (name, wanted) = spec
+                .split_once('=')
+                .ok_or_else(|| format!("{spec:?} does not read FIELD=VALUE"))?;
+            let field = StatusField::parse(name)?;
+            // The label's value is free text, so it has no spelling to check; every other
+            // field reads one of two words, and a misspelled word is an argument error
+            // rather than an assertion that can never hold.
+            match field {
+                StatusField::ModeLabel => {}
+                StatusField::Script => {
+                    if !matches!(wanted, "simplified" | "traditional") {
+                        return Err(format!(
+                            "{name:?} reads simplified or traditional, not {wanted:?}"
+                        ));
+                    }
+                }
+                _ => {
+                    if !matches!(wanted, "true" | "false") {
+                        return Err(format!("{name:?} reads true or false, not {wanted:?}"));
+                    }
+                }
+            }
+            status.push(StatusExpectation {
+                field,
+                wanted: String::from(wanted),
+            });
+        }
+        Ok(Self {
             revision: args.expect_revision,
             candidates: args.expect_candidates,
             empty: args.expect_empty,
-        }
+            annotations,
+            full_list,
+            status,
+        })
     }
 }
 
@@ -109,16 +290,20 @@ impl Expectations {
 /// # Errors
 ///
 /// Returns an error when the mirror cannot be read, when no snapshot was published at the
-/// directory within the wait the arguments gave, when the frame misses an assertion, and
-/// when the `--json-out` copy cannot be written. None of the messages carries a text field
-/// of the frame: the snapshot holds what the user typed, and a refusal is printed into a
-/// terminal.
+/// directory within the wait the arguments gave, when an assertion's arguments do not
+/// parse, when the frame misses an assertion, and when the `--json-out` copy cannot be
+/// written. None of the messages carries a text field of the frame: the snapshot holds what
+/// the user typed, and a refusal is printed into a terminal.
+///
+/// The `ok` line each satisfied assertion group prints is the ledger's hook: a case table
+/// names it in an `@regex` expectation, and the suite's command channel lands it as one
+/// more claim in the case's v3 record.
 ///
 /// # Panics
 ///
 /// Never.
 pub fn run(args: MirrorArgs) -> Result<()> {
-    let expectations = Expectations::from_args(&args);
+    let expectations = Expectations::from_args(&args).map_err(anyhow::Error::msg)?;
     let window = args.wait_ms.map_or(Duration::ZERO, Duration::from_millis);
     let mut watch = FrameWatch::open(&args.dir.join(FRAME_FILE));
     let frame = wait_for_frame(&mut watch, window, expectations.revision)
@@ -126,6 +311,12 @@ pub fn run(args: MirrorArgs) -> Result<()> {
         .ok_or_else(|| no_snapshot(&args.dir, window))?;
     println!("{}", summary(&frame));
     verdict(&frame, &expectations).map_err(anyhow::Error::msg)?;
+    // One line per satisfied group, so a case table can pin each group it asked for
+    // without re-reading the whole summary. The wording is the command's contract with
+    // those tables -- the ledger's `@regex` hook -- so it is produced in one tested place.
+    for line in ok_lines(&expectations) {
+        println!("{line}");
+    }
     let rewinds = watch.rewinds();
     if rewinds > 0 {
         println!(
@@ -142,6 +333,39 @@ pub fn run(args: MirrorArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The `ok` lines a satisfied run prints, one per assertion group it was asked to check.
+///
+/// A case table pins each of these with an `@regex` expectation -- the ledger's hook into
+/// the command channel -- so the wording is part of the command's contract and is asserted
+/// by tests rather than reworded casually. A group the run did not ask for prints nothing,
+/// so a case that names a line knows the group ran and held.
+///
+/// # Panics
+///
+/// Never.
+fn ok_lines(expectations: &Expectations) -> Vec<String> {
+    let mut lines = Vec::new();
+    if !expectations.annotations.is_empty() {
+        lines.push(format!(
+            "test-mirror: assert annotation ok ({} checked)",
+            expectations.annotations.len()
+        ));
+    }
+    if let Some(list) = &expectations.full_list {
+        lines.push(format!(
+            "test-mirror: assert full-list ok ({} candidate(s))",
+            list.len()
+        ));
+    }
+    if !expectations.status.is_empty() {
+        lines.push(format!(
+            "test-mirror: assert status ok ({} checked)",
+            expectations.status.len()
+        ));
+    }
+    lines
 }
 
 /// Reads the mirror until a frame satisfying the revision expectation arrives, or the
@@ -224,7 +448,87 @@ fn verdict(frame: &UiFrame, want: &Expectations) -> Result<(), String> {
             frame.candidates.len()
         ));
     }
+    for expected in &want.annotations {
+        let Some(candidate) = frame.candidates.get(usize::from(expected.index - 1)) else {
+            return Err(format!(
+                "the newest frame holds {} candidate(s); the annotation assertion names \
+                 candidate {}",
+                frame.candidates.len(),
+                expected.index
+            ));
+        };
+        if candidate.annotation != expected.wanted {
+            return Err(format!(
+                "candidate {}'s annotation is not what the case asserted",
+                expected.index
+            ));
+        }
+    }
+    if let Some(wanted) = &want.full_list {
+        if frame.candidates.len() != wanted.len() {
+            return Err(format!(
+                "the newest frame holds {} candidate(s), not {}",
+                frame.candidates.len(),
+                wanted.len()
+            ));
+        }
+        // The first position where the order differs is named, and nothing else: the texts
+        // on either side of the difference are the user's input, and the refusal is a
+        // terminal's business.
+        for (position, (held, expected)) in frame.candidates.iter().zip(wanted).enumerate() {
+            if held.text != *expected {
+                return Err(format!(
+                    "the candidates differ from position {} onward",
+                    position + 1
+                ));
+            }
+        }
+    }
+    for expected in &want.status {
+        // The held value is read as the word the argument spelled, so a comparison is a
+        // comparison of spellings and never of parsed structures.
+        let held: &str = match expected.field {
+            StatusField::ModeLabel => frame.status.mode_label.as_str(),
+            StatusField::Script => script_word(frame.status.script),
+            StatusField::Chinese => strip_flag(frame.status.chinese),
+            StatusField::FullWidth => strip_flag(frame.status.full_width),
+            StatusField::PunctuationFull => strip_flag(frame.status.punctuation_full),
+            StatusField::UserDictHit => strip_flag(frame.status.has_user_dict_hit),
+            StatusField::Readonly => strip_flag(frame.status.readonly),
+        };
+        if held != expected.wanted {
+            return Err(format!(
+                "the strip's {} is not what the case asserted",
+                expected.field.name()
+            ));
+        }
+    }
     Ok(())
+}
+
+/// The flag as the word a status assertion spells it with.
+///
+/// # Panics
+///
+/// Never.
+fn strip_flag(held: bool) -> &'static str {
+    if held {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+/// The script as the word a status assertion spells it with.
+///
+/// # Panics
+///
+/// Never.
+fn script_word(script: Script) -> &'static str {
+    match script {
+        Script::Simplified => "simplified",
+        Script::Traditional => "traditional",
+    }
 }
 
 /// The observation a run prints: every structural fact of the frame, no text field.
@@ -361,302 +665,4 @@ fn remaining(deadline: Instant) -> Duration {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use ime_types::{
-        Anchor, Candidate, CandidateSource, LayoutHint, PageState, Placement, Preedit, RectI,
-        ScreenId, StatusStrip, UiFrame,
-    };
-
-    use super::*;
-    use crate::testd::uiframe::UiFrameMirror;
-
-    /// A scratch directory that removes itself when the test ends.
-    struct Scratch {
-        path: PathBuf,
-    }
-
-    impl Scratch {
-        /// Creates `<temp>/rspinyin-mirror-cli-<tag>-<pid>`, empty.
-        fn new(tag: &str) -> Self {
-            let name = format!("rspinyin-mirror-cli-{tag}-{}", std::process::id());
-            let path = std::env::temp_dir().join(name);
-            let _ = fs::remove_dir_all(&path);
-            fs::create_dir_all(&path).expect("creating the scratch directory");
-            Self { path }
-        }
-
-        /// The mirror directory of this scratch tree; it does not exist until a publish
-        /// creates it, which is the path an operator's first run takes too.
-        fn mirror_dir(&self) -> PathBuf {
-            self.path.join("runtime")
-        }
-
-        /// The snapshot file inside the mirror directory.
-        fn snapshot(&self) -> PathBuf {
-            self.mirror_dir().join(FRAME_FILE)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-
-    /// A frame with `count` candidates numbered from one, on a page sized for `page_size`.
-    fn frame(revision: u32, count: usize, page_size: u8) -> UiFrame {
-        UiFrame {
-            revision,
-            preedit: Preedit {
-                text: String::from("ni"),
-                caret: 2,
-                spans: Vec::new(),
-            },
-            candidates: candidates(count),
-            page: PageState {
-                current: 1,
-                total: 1,
-                page_size,
-            },
-            status: StatusStrip::default(),
-            anchor: anchor(),
-            layout: LayoutHint {
-                max_per_row: 5,
-                show_annotation: true,
-                max_width_dp: 720,
-            },
-            highlight: None,
-        }
-    }
-
-    /// `count` candidates, in the order a decoder would rank them.
-    fn candidates(count: usize) -> Vec<Candidate> {
-        (1..=count)
-            .map(|index| {
-                let number = u16::try_from(index).expect("a test candidate index fits in u16");
-                Candidate {
-                    index: number,
-                    text: format!("cand{number}"),
-                    annotation: None,
-                    source: CandidateSource::Dict,
-                    score: f32::from(number),
-                    consumed_syllables: 1,
-                }
-            })
-            .collect()
-    }
-
-    /// A cursor rectangle on the first screen.
-    fn anchor() -> Anchor {
-        Anchor {
-            cursor: RectI {
-                x: 100,
-                y: 200,
-                w: 2,
-                h: 20,
-            },
-            screen: ScreenId::new(0),
-            scale: 1.0,
-            placement: Placement::Below,
-        }
-    }
-
-    /// The arguments that read `dir` with nothing asserted and nothing copied.
-    fn plain_args(dir: PathBuf) -> MirrorArgs {
-        MirrorArgs {
-            dir,
-            wait_ms: None,
-            expect_revision: None,
-            expect_candidates: None,
-            expect_empty: false,
-            json_out: None,
-        }
-    }
-
-    #[test]
-    fn test_run_reports_a_published_frame_and_writes_a_private_copy() {
-        let scratch = Scratch::new("run-published");
-        let mirror = UiFrameMirror::at_mirror_dir(&scratch.mirror_dir());
-        mirror.publish(&frame(7, 2, 9));
-        let copy = scratch.path.join("snapshot.json");
-        let outcome = run(MirrorArgs {
-            dir: scratch.mirror_dir(),
-            wait_ms: None,
-            expect_revision: Some(7),
-            expect_candidates: Some(2),
-            expect_empty: false,
-            json_out: Some(copy.clone()),
-        });
-        assert!(outcome.is_ok(), "{outcome:?}");
-        use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(&copy)
-            .expect("the copy exists")
-            .permissions()
-            .mode();
-        assert_eq!(
-            mode & 0o777,
-            0o600,
-            "the copy holds user input and must be private"
-        );
-        let mut watch = FrameWatch::open(&copy);
-        match watch.read().expect("the copy parses") {
-            Reading::New(round_tripped) => assert_eq!(round_tripped.revision, 7),
-            reading => panic!("the copy must hold the frame, not {reading:?}"),
-        }
-    }
-
-    #[test]
-    fn test_run_fails_on_a_mirror_that_never_published() {
-        let scratch = Scratch::new("run-absent");
-        let mut args = plain_args(scratch.mirror_dir());
-        args.wait_ms = Some(1);
-        let error = run(args)
-            .expect_err("an absent mirror is a failed run")
-            .to_string();
-        assert!(error.contains("no frame snapshot"), "{error}");
-        assert!(error.contains("RSPINYIN_TEST_MIRROR_DIR"), "{error}");
-    }
-
-    #[test]
-    fn test_run_fails_when_the_frame_misses_an_expectation() {
-        let scratch = Scratch::new("run-miss");
-        let mirror = UiFrameMirror::at_mirror_dir(&scratch.mirror_dir());
-        mirror.publish(&frame(7, 2, 9));
-        let mut args = plain_args(scratch.mirror_dir());
-        args.expect_candidates = Some(3);
-        let error = run(args)
-            .expect_err("a missed count is a failed run")
-            .to_string();
-        assert!(error.contains("2 candidate(s), not 3"), "{error}");
-
-        let mut args = plain_args(scratch.mirror_dir());
-        args.expect_revision = Some(6);
-        let error = run(args)
-            .expect_err("a missed revision is a failed run")
-            .to_string();
-        assert!(error.contains("revision 7, not 6"), "{error}");
-    }
-
-    #[test]
-    fn test_verdict_accepts_a_frame_matching_every_expectation() {
-        let published = frame(7, 2, 9);
-        let want = Expectations {
-            revision: Some(7),
-            candidates: Some(2),
-            empty: false,
-        };
-        assert_eq!(verdict(&published, &want), Ok(()));
-        let empty_page = frame(8, 0, 9);
-        let want_empty = Expectations {
-            revision: Some(8),
-            candidates: None,
-            empty: true,
-        };
-        assert_eq!(verdict(&empty_page, &want_empty), Ok(()));
-    }
-
-    #[test]
-    fn test_verdict_names_counts_and_never_the_frame_text() {
-        let mut frame = frame(7, 2, 9);
-        frame.candidates[0].text = String::from("保密");
-        frame.preedit.text = String::from("mi");
-        let want = Expectations {
-            revision: Some(7),
-            candidates: Some(5),
-            empty: false,
-        };
-        let failure = verdict(&frame, &want).expect_err("a missed count is a refusal");
-        assert!(failure.contains("2 candidate(s), not 5"), "{failure}");
-        assert!(
-            !failure.contains("保密"),
-            "the refusal must not carry candidate text: {failure}"
-        );
-        let empty_want = Expectations {
-            revision: None,
-            candidates: None,
-            empty: true,
-        };
-        let failure =
-            verdict(&frame, &empty_want).expect_err("a non-empty page misses an empty assertion");
-        assert!(
-            failure.contains("2 candidate(s) where none were expected"),
-            "{failure}"
-        );
-        assert!(
-            !failure.contains("保密"),
-            "the refusal must not carry candidate text: {failure}"
-        );
-    }
-
-    #[test]
-    fn test_summary_reports_a_frame_without_its_text() {
-        let mut frame = frame(7, 2, 9);
-        frame.preedit.text = String::from("ni'hao");
-        frame.candidates[0].text = String::from("你好");
-        frame.status.mode_label = String::from("拼音");
-        frame.highlight = Some(1);
-        let report = summary(&frame);
-        assert!(report.contains("revision 7"), "{report}");
-        assert!(report.contains("2 candidate(s)"), "{report}");
-        assert!(report.contains("highlight Some(1)"), "{report}");
-        for secret in ["ni'hao", "你好", "拼音"] {
-            assert!(
-                !report.contains(secret),
-                "the summary must not carry {secret:?}: {report}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_wait_for_frame_returns_the_newest_frame_once_the_revision_matches() {
-        let scratch = Scratch::new("wait-match");
-        let mirror = UiFrameMirror::at_mirror_dir(&scratch.mirror_dir());
-        mirror.publish(&frame(3, 1, 9));
-        mirror.publish(&frame(5, 2, 9));
-        let mut watch = FrameWatch::open(&scratch.snapshot());
-        let frame = wait_for_frame(&mut watch, Duration::ZERO, Some(5))
-            .expect("the watch reads")
-            .expect("revision 5 was published");
-        assert_eq!(frame.revision, 5);
-        assert_eq!(
-            frame.candidates.len(),
-            2,
-            "the newest frame is the one returned"
-        );
-    }
-
-    #[test]
-    fn test_wait_for_frame_reports_an_absent_mirror_as_none() {
-        let scratch = Scratch::new("wait-absent");
-        let mut watch = FrameWatch::open(&scratch.snapshot());
-        let frame = wait_for_frame(&mut watch, Duration::ZERO, None).expect("the watch reads");
-        assert!(
-            frame.is_none(),
-            "an unpublished mirror is not a frame: {frame:?}"
-        );
-    }
-
-    #[test]
-    fn test_wait_for_frame_keeps_no_frame_when_the_file_rewinds() {
-        let scratch = Scratch::new("wait-rewind");
-        let mirror = UiFrameMirror::at_mirror_dir(&scratch.mirror_dir());
-        mirror.publish(&frame(5, 2, 9));
-        let mut watch = FrameWatch::open(&scratch.snapshot());
-        let first = wait_for_frame(&mut watch, Duration::ZERO, None)
-            .expect("the watch reads")
-            .expect("revision 5 was published");
-        assert_eq!(first.revision, 5);
-        // A second publisher with a fresh floor rewrites an older revision over the file,
-        // which is what a reset mirror directory looks like to a watch that stayed open.
-        let fresh = UiFrameMirror::at_mirror_dir(&scratch.mirror_dir());
-        fresh.publish(&frame(1, 1, 9));
-        let second = wait_for_frame(&mut watch, Duration::ZERO, None).expect("the watch reads");
-        assert!(
-            second.is_none(),
-            "a rewound frame is dropped, not handed to the caller: {second:?}"
-        );
-        assert_eq!(watch.rewinds(), 1, "the drop is counted as a rewind");
-    }
-}
+mod tests;

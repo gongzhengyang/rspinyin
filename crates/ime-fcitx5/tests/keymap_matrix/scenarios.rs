@@ -24,6 +24,7 @@
 //! | `SC-KEY-14` no focus steal | the walks above, throughout | `test_scenario_14_focus_window_id_never_changes` |
 //! | `SC-KEY-15` page jump | `n i h a o End Home Home` | `test_scenario_15_page_jumps_reach_the_ends_and_honor_the_boundaries` |
 //! | `SC-KEY-16` forget word | `n i h a o Ctrl+Delete`, then idle presses | `test_scenario_16_ctrl_delete_forgets_the_highlighted_word` |
+//! | `SC-KEY-17` compose | dead acute alone; dead acute then `e`, switch on and off | `test_scenario_17_compose_answers_before_the_table_when_the_switch_is_on` |
 //!
 //! # Determinism
 //!
@@ -47,11 +48,14 @@ use rspinyin::engine::{
     Consumed, Dispatcher, HoldOutcome, KeyBindings, KeyEvent, KeyRouter, Overlay, SessionView,
 };
 
+use rspinyin::engine::RoutingConfig;
+use rspinyin::engine::host::ComposeOutcome;
+
 use crate::support::{
-    CTRL, FOCUS_WINDOW_ID, Fixture, IC, KEY_1, KEY_3, KEY_A, KEY_BACKSPACE, KEY_COMMA, KEY_DELETE,
-    KEY_E, KEY_END, KEY_EQUAL, KEY_ESCAPE, KEY_H, KEY_HOME, KEY_I, KEY_LEFT, KEY_N, KEY_O,
-    KEY_PERIOD, KEY_RETURN, KEY_SHIFT_L, KEY_SPACE, KEY_TAB, RecordingHost, SHIFT, Situation,
-    press,
+    CTRL, FOCUS_WINDOW_ID, Fixture, IC, KEY_1, KEY_3, KEY_A, KEY_BACKSPACE, KEY_COMMA,
+    KEY_DEAD_ACUTE, KEY_DELETE, KEY_E, KEY_END, KEY_EQUAL, KEY_ESCAPE, KEY_H, KEY_HOME, KEY_I,
+    KEY_LEFT, KEY_N, KEY_O, KEY_PERIOD, KEY_RETURN, KEY_SHIFT_L, KEY_SPACE, KEY_TAB, RecordingHost,
+    SHIFT, Situation, press,
 };
 
 // ── The shared strokes ───────────────────────────────────────────────────────────
@@ -848,5 +852,64 @@ fn test_scenario_16_ctrl_delete_forgets_the_highlighted_word() {
     assert!(
         !router.key_event(IC, &press(KEY_DELETE, 0), &mut host),
         "the bare Delete was never the plugin's"
+    );
+}
+
+/// `SC-KEY-17`: the compose step. With the switch off -- the shipped default -- a
+/// dead key routes exactly as before and the host is never asked. With it on, the
+/// dead acute that opens a sequence is swallowed, the `e` that finishes it reaches
+/// the application as a direct commit, and no composition opened on either key.
+#[test]
+fn test_scenario_17_compose_answers_before_the_table_when_the_switch_is_on() {
+    // Off, the shipped default: the dead key routes as before and the host is
+    // never asked -- the walk asserts the key's own fate rather than the count.
+    let fixture = Fixture::default();
+    let mut host = RecordingHost::default();
+    let mut router = fixture.router(KeyBindings::default());
+    assert!(
+        !router.key_event(IC, &press(KEY_DEAD_ACUTE, 0), &mut host),
+        "an unbound dead key was never the plugin's, switch or no switch"
+    );
+    assert!(
+        host.compose.is_empty(),
+        "with the switch off the host is never asked: {}",
+        host.compose.len()
+    );
+
+    // On: the host owns the sequence. The dead acute opens one and is swallowed;
+    // the `e` finishes it and the produced character reaches the application as
+    // a direct commit, with no composition opened and no learning done.
+    let fixture = Fixture {
+        config: RoutingConfig {
+            compose: true,
+            ..RoutingConfig::default()
+        },
+        ..Fixture::default()
+    };
+    let mut host = RecordingHost::default();
+    host.compose.push_back(ComposeOutcome::Swallowed);
+    host.compose.push_back(ComposeOutcome::Committed('é'));
+    let mut router = fixture.router(KeyBindings::default());
+
+    assert!(
+        router.key_event(IC, &press(KEY_DEAD_ACUTE, 0), &mut host),
+        "the key that opens a sequence is swallowed, which is keeping it"
+    );
+    assert!(
+        host.commits.is_empty() && host.newest_frame.is_none(),
+        "an open sequence commits nothing and shows no window"
+    );
+    assert!(
+        router.key_event(IC, &press(KEY_E, 0), &mut host),
+        "the key that finishes a sequence is kept"
+    );
+    assert_eq!(
+        host.commits.last().map(String::as_str),
+        Some("é"),
+        "the finished sequence commits its character"
+    );
+    assert!(
+        host.newest_frame.is_none(),
+        "the compose path opens no composition"
     );
 }

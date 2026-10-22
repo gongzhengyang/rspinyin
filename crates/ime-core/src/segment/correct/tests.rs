@@ -40,9 +40,7 @@ fn is_one_edit_away(input: &str, output: &str) -> bool {
         [i] => neighbor_row(from[*i]).is_some_and(|row| row.contains(&to[*i])),
         // Two adjacent bytes differ: they must have been swapped, and the swap
         // must have moved something (two equal letters transpose to themselves).
-        [i, j] => {
-            *j == i + 1 && from[*i] == to[*j] && from[*j] == to[*i] && from[*i] != from[*j]
-        }
+        [i, j] => *j == i + 1 && from[*i] == to[*j] && from[*j] == to[*i] && from[*i] != from[*j],
         _ => false,
     }
 }
@@ -85,7 +83,11 @@ fn test_corrections_of_finds_the_transposition_and_the_substitution() {
         .collect();
     // Pinned in full because the order is contract: substitutions walk left to
     // right and take their neighbours in table order, transpositions follow.
-    assert_eq!(spelled, ["wo", "ei"], "the w/e slip is corrected: {spelled:?}");
+    assert_eq!(
+        spelled,
+        ["wo", "ei"],
+        "the w/e slip is corrected: {spelled:?}"
+    );
 }
 
 #[test]
@@ -99,7 +101,8 @@ fn test_corrections_of_answers_only_legal_syllables_within_the_cap() {
         );
         let mut seen = std::collections::HashSet::new();
         for id in out.iter().copied() {
-            let spelling = syllable_at(id).unwrap_or_else(|| panic!("{text} reached an id the table cannot spell"));
+            let spelling = syllable_at(id)
+                .unwrap_or_else(|| panic!("{text} reached an id the table cannot spell"));
             assert_eq!(lookup(spelling), Some(id), "{text} reached a stale id");
             assert!(seen.insert(id), "{text} reached {spelling} twice");
         }

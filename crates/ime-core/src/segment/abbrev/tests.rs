@@ -685,10 +685,7 @@ fn test_is_enabled_over_every_flag_combination_follows_the_abbrev_bit() {
     // `true` or always `false` could not have got through the loop above. Counted
     // against the namespace rather than pinned to `1 << 13`, which is what the
     // count was before ADR-0014 appended its bit and doubled the space.
-    assert_eq!(
-        enabled,
-        (usize::from(DecodeFlags::all().bits()) + 1) / 2
-    );
+    assert_eq!(enabled, (usize::from(DecodeFlags::all().bits()) + 1) / 2);
 }
 
 #[test]

@@ -26,12 +26,14 @@
 pub mod abbrev;
 pub mod correct;
 pub mod dag;
+pub mod english;
 pub mod syllable;
 
 pub use crate::segment::abbrev::{
     AbbrevReading, AbbrevSyllable, Readings, readings, readings_into,
 };
 pub use crate::segment::dag::{DagEdge, EdgeKind, SyllableDag};
+pub use crate::segment::english::{MIXED_ENGLISH_PENALTY_Q8, is_enabled as english_enabled};
 pub use crate::segment::syllable::{
     DROPPED_CAP, DroppedChars, MAX_NODES, MAX_NORMALIZED_LEN, MAX_RAW_LEN, MAX_SYLLABLE_LEN,
     NormalizedResult, SYLLABLE_COUNT, SYLLABLES, lookup, normalize, syllable_at,

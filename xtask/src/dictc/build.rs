@@ -154,10 +154,8 @@ pub(crate) fn apply_polyphone_rule(
             continue;
         }
         counts.flattened += 1;
-        flattened_keys.push(
-            compose_readings(&word.text, l1)
-                .and_then(|readings| baseline_key(&readings)),
-        );
+        flattened_keys
+            .push(compose_readings(&word.text, l1).and_then(|readings| baseline_key(&readings)));
     }
     for (word, key) in words.iter_mut().zip(flattened_keys) {
         if let Some(baseline) = key {
@@ -246,8 +244,10 @@ pub(crate) fn merge_two_char_layer(
     // jieba weight and takes the huayu reading in place, everything else
     // stays put. The admitted layer is indexed once: a linear find per jieba
     // word would be a quadratic walk over a quarter-million entries.
-    let admitted_by_text: BTreeMap<&str, &Word> =
-        admitted.iter().map(|word| (word.text.as_str(), word)).collect();
+    let admitted_by_text: BTreeMap<&str, &Word> = admitted
+        .iter()
+        .map(|word| (word.text.as_str(), word))
+        .collect();
     for word in jieba.iter_mut() {
         if let Some(&huayu_word) = admitted_by_text.get(word.text.as_str()) {
             word.key = huayu_word.key.clone();
@@ -273,7 +273,6 @@ pub(crate) fn merge_two_char_layer(
     jieba.append(&mut added);
     stats
 }
-
 
 /// What the compiler measured, for the build log.
 #[derive(Debug, Default)]
@@ -471,9 +470,7 @@ pub(crate) fn compile(
     // turns the ceiling from a number into a decision.
     let truncated = super::truncation::audit(&keys, MAX_WORDS_PER_KEY);
     stats.truncated_keys = truncated.len() as u64;
-    stats.worst_dropped_weight = truncated
-        .first()
-        .map_or(0, |row| row.best_dropped_weight);
+    stats.worst_dropped_weight = truncated.first().map_or(0, |row| row.best_dropped_weight);
     stats.truncated_worst = truncated
         .iter()
         .take(TRUNCATED_EXAMPLES)

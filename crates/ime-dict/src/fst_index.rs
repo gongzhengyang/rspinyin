@@ -43,8 +43,9 @@ use ime_types::{DictError, ImeError, Lexicon, SyllableId, WordFlags, WordIter, W
 use crate::entry::{EntryTable, MalformedEntry};
 use crate::format::{
     DictEntry, MAX_WORDS_PER_KEY, SectionEntry, SectionKind, UNIGRAM_ENTRY_SIZE, read_u16,
-    read_u32, unpack_fst_value,
+    read_u32,
     reader::{Reader, Verify},
+    unpack_fst_value,
 };
 use crate::mmap::{MappedFile, WordPool};
 
@@ -512,7 +513,9 @@ impl Lexicon for FstLexicon {
         let mut stream = self.fst.range().ge(prefix.as_bytes()).into_stream();
         while let Some((key, packed)) = stream.next() {
             let Ok(key) = core::str::from_utf8(key) else {
-                return Err(ImeError::DictCorrupt { path: self.path.clone() });
+                return Err(ImeError::DictCorrupt {
+                    path: self.path.clone(),
+                });
             };
             if !key.starts_with(prefix) {
                 break;

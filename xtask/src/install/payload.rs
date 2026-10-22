@@ -41,10 +41,12 @@ pub(super) struct Payload {
     pub(super) destination: Destination,
     /// Whether a missing artifact is skipped rather than reported.
     ///
-    /// No payload is optional: the icons are committed to the repository rather than
-    /// produced by the build, so an absent one is a broken checkout, and an install that
-    /// skipped it would leave `fcitx5-configtool` showing a placeholder for the input
-    /// method.
+    /// The icons are committed to the repository rather than produced by the build, so
+    /// an absent one is a broken checkout, and an install that skipped one would leave
+    /// `fcitx5-configtool` showing a placeholder for the input method -- they are
+    /// mandatory. The two data files after the dictionary are optional instead: they
+    /// serve features the addon degrades without, and an install from a checkout that
+    /// has not built them still produces a working input method.
     pub(super) optional: bool,
     /// The size budget the file is measured against, if it has one.
     pub(super) budget: Option<Budget>,
@@ -99,6 +101,27 @@ pub(super) const PAYLOADS: &[Payload] = &[
         destination: Destination::Data,
         optional: false,
         budget: Some(Budget::BaseDictionary),
+    },
+    Payload {
+        name: "eng.dict",
+        artifact: &["data/compiled/eng.dict"],
+        destination: Destination::Data,
+        optional: true,
+        budget: None,
+    },
+    Payload {
+        name: "confusable.tsv",
+        artifact: &["data/raw/confusable.tsv"],
+        destination: Destination::Data,
+        optional: true,
+        budget: None,
+    },
+    Payload {
+        name: "symbols.tsv",
+        artifact: &["data/raw/symbols.tsv"],
+        destination: Destination::Data,
+        optional: true,
+        budget: None,
     },
     Payload {
         name: "fcitx-rspinyin.png",

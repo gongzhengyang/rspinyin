@@ -22,17 +22,15 @@ use ime_diag::crash;
 use ime_diag::crash::context::CrashContextKey;
 use ime_diag::crash::record::{CRASH_DIR_MODE, CRASH_FILE_MODE};
 use ime_diag::probe::{MemorySnapshot, ProbeSnapshot, SNAPSHOT_FILE_NAME};
-use ime_dict::format::{
-    DictEntry, PROB_Q12_MAX, SectionKind, hash_word, pack_fst_value,
-};
 use ime_dict::format::writer::DictWriter;
+use ime_dict::format::{DictEntry, PROB_Q12_MAX, SectionKind, hash_word, pack_fst_value};
 use ime_dict::paths::{BaseDirs, MAX_PATH_BYTES, READONLY_CODE};
 use ime_types::{CandidateSource, DecodeRequest, ImeError, Lexicon as _, UiCommand};
 
 use crate::engine::host::Host;
 use crate::engine::router::RoutingConfig;
 use crate::ffi::FcitxKeyEvent;
-use crate::privacy_impl::{AppBlacklist, ContextPrivacy};
+use crate::privacy_impl::{AppBlacklist, ContextPrivacy, ContextReport};
 use crate::session_host;
 
 use super::{ROUTING_DOCUMENT, scratch_dir};
@@ -45,8 +43,8 @@ use super::super::diagnostics::{
 use super::super::layout::{layout, prepare_data_dirs_in};
 use super::super::probes;
 use super::super::session::{
-    MISSING_DICTIONARY, MISSING_LANGUAGE_MODEL, SessionSources, install_session_host,
-    lexicon_slot, load_lexicon, session_env, sources_for,
+    MISSING_DICTIONARY, MISSING_LANGUAGE_MODEL, SessionSources, install_session_host, lexicon_slot,
+    load_lexicon, session_env, session_sources, sources_for, user_lexicon_handle,
 };
 use super::super::user_store::take_user_store;
 use super::super::{lock, on_config_reload, routing_config};
@@ -91,8 +89,18 @@ fn privacy() -> ContextPrivacy {
 struct RecordingHost {
     /// Every text handed to [`Host::commit`], in order.
     commits: Vec<String>,
+    /// Every frame the window was sent, in order, for the tests that read the candidate
+    /// list the session produced.
+    frames: Vec<ime_types::UiFrame>,
     /// Whether the context is enabled, as the host reports it.
     enabled: bool,
+}
+
+impl RecordingHost {
+    /// The top candidate of the last frame, for the tests that read the order back.
+    fn top_candidate(&self) -> Option<String> {
+        Some(self.frames.last()?.candidates.first()?.text.clone())
+    }
 }
 
 impl Host for RecordingHost {
@@ -104,7 +112,11 @@ impl Host for RecordingHost {
 
     fn clear_preedit(&mut self, _ic: u64) {}
 
-    fn post_ui(&mut self, _ic: u64, _command: UiCommand) {}
+    fn post_ui(&mut self, _ic: u64, command: UiCommand) {
+        if let UiCommand::Frame(frame) = command {
+            self.frames.push(*frame);
+        }
+    }
 
     fn toggle_enabled(&mut self, _ic: u64) -> bool {
         self.enabled = !self.enabled;
@@ -468,7 +480,12 @@ fn test_session_host_over_the_empty_dictionary_commits_what_was_typed() {
         Box::leak(Box::new(sources_for(Some(dir.join("base.dict").as_path()))));
 
     assert!(
-        session_host::install(session_env(sources), privacy(), RoutingConfig::default(), None),
+        session_host::install(
+            session_env(sources),
+            privacy(),
+            RoutingConfig::default(),
+            session_host::RouterLexicons::default(),
+        ),
         "the slot was empty, so this install wins"
     );
 
@@ -513,7 +530,7 @@ fn test_load_lexicon_and_install_session_host_wire_the_process_host() {
             session_env(leaked_sources()),
             privacy(),
             RoutingConfig::default(),
-            None,
+            session_host::RouterLexicons::default(),
         ),
         "a second install is refused rather than replacing the router a key may be in"
     );
@@ -592,24 +609,67 @@ fn test_on_config_reload_without_a_store_reports_and_keeps_the_table() {
 // rejection tests are written to hold whichever container is live, so only the success
 // test cares.
 
-/// Encodes a one-word container image: `key` resolves to `text`, scored by the unigram
-/// table. The sections are the public format's own encoders, so the bytes are what a real
-/// compile produces.
-fn container_image(key: &str, text: &str) -> Vec<u8> {
+/// Encodes a container image: each `(key, text)` resolves as a one-syllable word, scored
+/// by the unigram table at the strongest probability. The sections are the public
+/// format's own encoders, so the bytes are what a real compile produces.
+fn container_image(words: &[(&str, &str)]) -> Vec<u8> {
+    container_image_at(words, PROB_Q12_MAX)
+}
+
+/// Encodes a container image whose every word scores `prob_q12` in the unigram table.
+///
+/// The language model the decoder ranks with reads this table, so the value decides how
+/// hard the words are to beat: the maximum is the score of the dictionary's most frequent
+/// word, and a realistic entry sits far below it.
+fn container_image_at(words: &[(&str, &str)], prob_q12: u16) -> Vec<u8> {
+    // Word ids are positions in hash order, which is the order the word list stores and
+    // the FST keys name.
+    let mut hashed: Vec<(u32, &str)> = words
+        .iter()
+        .map(|(_, text)| (hash_word(text), *text))
+        .collect();
+    hashed.sort_by_key(|(hash, text)| (*hash, *text));
+    let id_of: std::collections::BTreeMap<&str, u32> = hashed
+        .iter()
+        .enumerate()
+        .map(|(id, (_, text))| (*text, u32::try_from(id).expect("small fixture")))
+        .collect();
+
     let mut strpool = Vec::new();
-    strpool.extend_from_slice(text.as_bytes());
-    let entry = DictEntry::new(0, u16::try_from(text.len()).expect("small fixture"), 1, 0, 1);
-    let entries = entry.encode().to_vec();
+    let mut entries = Vec::new();
     let mut unigram = Vec::new();
-    unigram.extend_from_slice(&hash_word(text).to_le_bytes());
-    unigram.extend_from_slice(&PROB_Q12_MAX.to_le_bytes());
-    unigram.extend_from_slice(&0u16.to_le_bytes());
-    let packed = pack_fst_value(0, 1).expect("packing one word");
-    let mut fst_builder = fst::MapBuilder::memory();
-    fst_builder.insert(key.as_bytes(), packed).expect("one key");
-    let fst = fst_builder.into_inner().expect("finishing the FST");
     let mut wordlist = Vec::new();
-    wordlist.extend_from_slice(&0u32.to_le_bytes());
+    for (id, (_, text)) in hashed.iter().enumerate() {
+        let id = u32::try_from(id).expect("small fixture");
+        let offset = u32::try_from(strpool.len()).expect("small fixture");
+        strpool.extend_from_slice(text.as_bytes());
+        let entry = DictEntry::new(
+            offset,
+            u16::try_from(text.len()).expect("small fixture"),
+            1,
+            0,
+            1,
+        );
+        entries.extend_from_slice(&entry.encode());
+        unigram.extend_from_slice(&hash_word(text).to_le_bytes());
+        unigram.extend_from_slice(&prob_q12.to_le_bytes());
+        unigram.extend_from_slice(&0u16.to_le_bytes());
+        wordlist.extend_from_slice(&id.to_le_bytes());
+    }
+
+    // The FST builder takes keys in ascending byte order, which the fixture's is not, so
+    // the keys are sorted before it sees them.
+    let mut keys: Vec<(&str, u32)> = words
+        .iter()
+        .map(|(key, text)| (*key, id_of[text]))
+        .collect();
+    keys.sort_by_key(|(key, _)| key.as_bytes().to_vec());
+    let mut fst_builder = fst::MapBuilder::memory();
+    for (key, id) in keys {
+        let packed = pack_fst_value(u64::from(id), 1).expect("packing a word");
+        fst_builder.insert(key.as_bytes(), packed).expect("one key");
+    }
+    let fst = fst_builder.into_inner().expect("finishing the FST");
 
     let mut writer = DictWriter::new();
     for (kind, payload) in [
@@ -640,14 +700,19 @@ fn test_apply_staged_dictionary_swaps_a_valid_container_and_clears_the_key() {
     let dir = scratch_dir("staged-swap");
     let live = dir.join("live.dict");
     let staged = dir.join("staged.dict");
-    fs::write(&live, container_image("ni", "你")).expect("writing the live container");
-    fs::write(&staged, container_image("de", "地")).expect("writing the staged container");
+    fs::write(&live, container_image(&[("ni", "你")])).expect("writing the live container");
+    fs::write(&staged, container_image(&[("de", "地")])).expect("writing the staged container");
 
     // The process starts on the live container, which is what puts the slot in place.
     sources_for(Some(live.as_path()));
     let slot = lexicon_slot().expect("a start that mapped a container installed the slot");
     assert!(
-        slot.load().lexicon().lookup("ni").expect("looking up").count() > 0,
+        slot.load()
+            .lexicon()
+            .lookup("ni")
+            .expect("looking up")
+            .count()
+            > 0,
         "the live container is the one serving"
     );
 
@@ -659,13 +724,27 @@ fn test_apply_staged_dictionary_swaps_a_valid_container_and_clears_the_key() {
 
     on_config_reload();
 
-    assert_eq!(slot.load().path(), staged, "the slot serves the staged container");
+    assert_eq!(
+        slot.load().path(),
+        staged,
+        "the slot serves the staged container"
+    );
     assert!(
-        slot.load().lexicon().lookup("de").expect("looking up").count() > 0,
+        slot.load()
+            .lexicon()
+            .lookup("de")
+            .expect("looking up")
+            .count()
+            > 0,
         "a decode through the slot reads the new container"
     );
     assert!(
-        slot.load().lexicon().lookup("ni").expect("looking up").count() == 0,
+        slot.load()
+            .lexicon()
+            .lookup("ni")
+            .expect("looking up")
+            .count()
+            == 0,
         "and no longer the old one"
     );
     // The served swap is written back: the key is empty in the file the user saved, so the
@@ -687,7 +766,7 @@ fn test_apply_staged_dictionary_rejects_a_damaged_file_and_keeps_the_key() {
     let dir = scratch_dir("staged-reject");
     let live = dir.join("live.dict");
     let staged = dir.join("staged.dict");
-    fs::write(&live, container_image("ni", "你")).expect("writing the live container");
+    fs::write(&live, container_image(&[("ni", "你")])).expect("writing the live container");
     // The candidate is not a container at all, which the validation refuses.
     fs::write(&staged, b"not a dictionary").expect("writing the damaged file");
 
@@ -696,13 +775,16 @@ fn test_apply_staged_dictionary_rejects_a_damaged_file_and_keeps_the_key() {
     let serving = slot.load().path().to_path_buf();
 
     load_config_document(&dir, "[data]\ndict_staged_path = \"\"\n");
-    fs::write(dir.join("config.toml"), staged_document(&staged))
-        .expect("saving the edit");
+    fs::write(dir.join("config.toml"), staged_document(&staged)).expect("saving the edit");
 
     on_config_reload();
 
     // The live dictionary keeps serving, unchanged.
-    assert_eq!(slot.load().path(), serving, "the rejected swap changes nothing");
+    assert_eq!(
+        slot.load().path(),
+        serving,
+        "the rejected swap changes nothing"
+    );
     // The damaged bytes were moved aside, so they cannot sit in the staged path.
     assert!(!staged.exists(), "the staged path is empty");
     let quarantined: Vec<PathBuf> = fs::read_dir(&dir)
@@ -714,7 +796,11 @@ fn test_apply_staged_dictionary_rejects_a_damaged_file_and_keeps_the_key() {
                 .is_some_and(|name| name.contains(".corrupt."))
         })
         .collect();
-    assert_eq!(quarantined.len(), 1, "one quarantined sibling: {quarantined:?}");
+    assert_eq!(
+        quarantined.len(),
+        1,
+        "one quarantined sibling: {quarantined:?}"
+    );
     // The key stays, for the user to correct: the file still names the staged path.
     let written = fs::read_to_string(dir.join("config.toml")).expect("reading the file back");
     assert_eq!(written, staged_document(&staged), "{written}");
@@ -728,14 +814,20 @@ fn test_apply_staged_dictionary_without_a_container_rejects_and_keeps_the_key() 
     // No container mapped in this process: the reload reaches a swap with no slot to
     // serve it, which is refused with the same code and the same kept key.
     load_config_document(&dir, "[data]\ndict_staged_path = \"\"\n");
-    fs::write(dir.join("config.toml"), staged_document(&staged))
-        .expect("saving the edit");
+    fs::write(dir.join("config.toml"), staged_document(&staged)).expect("saving the edit");
 
     on_config_reload();
 
     let written = fs::read_to_string(dir.join("config.toml")).expect("reading the file back");
-    assert_eq!(written, staged_document(&staged), "the key stays: {written}");
-    assert!(!staged.exists(), "a missing candidate leaves nothing to quarantine");
+    assert_eq!(
+        written,
+        staged_document(&staged),
+        "the key stays: {written}"
+    );
+    assert!(
+        !staged.exists(),
+        "a missing candidate leaves nothing to quarantine"
+    );
 }
 
 #[test]
@@ -754,3 +846,344 @@ fn test_apply_staged_dictionary_with_an_empty_path_attempts_nothing() {
     let written = fs::read_to_string(dir.join("config.toml")).expect("reading the file back");
     assert_eq!(written, "[data]\ndict_staged_path = \"\"\n", "{written}");
 }
+
+#[test]
+fn test_committing_a_two_character_reading_coins_it_for_the_next_decode() {
+    // The walkthrough the card states, end to end: the dictionary holds the two
+    // characters but no word over them, the user commits the reading they spell, and the
+    // next composition of the same keys offers the pair as one word of the user's own.
+    let _ = session_host::shutdown();
+    let _ = take_user_store();
+    let dir = scratch_dir("user-coin");
+    let live = dir.join("base.dict");
+    // The two characters sit at a sixteenth of the strongest probability, the spread a
+    // real dictionary holds between its head words and ordinary characters. At the
+    // maximum the singles outrank anything a freshly coined word can score -- the
+    // language model has no entry for it -- which is the opposite of the shape the
+    // walkthrough starts from.
+    fs::write(
+        &live,
+        container_image_at(&[("zhu", "诸"), ("ji", "暨")], PROB_Q12_MAX / 16),
+    )
+    .expect("writing the live container");
+
+    // The store the coin persists through, and the lexicon assembled over it: both are
+    // the process slots the steps install, so the test installs them in the same order.
+    let db =
+        ime_dict::user_db::UserDb::open(dir.join("user.redb")).expect("opening the test store");
+    super::super::user_store::install_user_store(crate::addon::user_store::UserStore {
+        db: std::sync::Mutex::new(db),
+        backup: ime_dict::user_db::BackupConfig::disabled(dir.clone()),
+    });
+
+    sources_for(Some(live.as_path()));
+    let slot = lexicon_slot().expect("the start mapped a container");
+    let lexicon = lexicon_slot()
+        .and(user_lexicon_handle())
+        .expect("a store was installed, so the lexicon was assembled");
+
+    assert!(
+        session_host::install(
+            session_env(session_sources()),
+            privacy(),
+            RoutingConfig::default(),
+            session_host::RouterLexicons {
+                system: Some(slot),
+                user: Some(lexicon),
+            },
+        ),
+        "the slot was empty, so this install wins"
+    );
+
+    let mut host = RecordingHost::default();
+    // A host that reports the context as an ordinary one: learning is fail-closed for an
+    // unreported context, and the coin the walkthrough is about happens on the commit.
+    assert!(
+        session_host::activate_reported(
+            IC,
+            ContextReport::Reported {
+                program: Some("e2e-coin"),
+                password: false,
+                sensitive: false,
+                preedit: false,
+            },
+        ),
+        "the context is activated"
+    );
+    for sym in [KEY_Z, KEY_H, KEY_U, KEY_J, KEY_I] {
+        assert!(
+            session_host::key_event(IC, &press(sym), &mut host),
+            "every letter of a composition is the plugin's key"
+        );
+    }
+    assert!(
+        session_host::key_event(IC, &press(KEY_SPACE), &mut host),
+        "space commits the highlighted candidate"
+    );
+    assert_eq!(
+        host.commits,
+        [String::from("诸暨")],
+        "the reading commits whole"
+    );
+
+    // The commit coined the pair: the memory table holds it, under the key the input
+    // spelled.
+    assert!(
+        lexicon.lock().knows_word("诸暨"),
+        "the commit enrolled the pair into the user's lexicon"
+    );
+
+    // The next composition of the same keys offers the coined word first, labelled as
+    // the user's own.
+    let mut host = RecordingHost::default();
+    for sym in [KEY_Z, KEY_H, KEY_U, KEY_J, KEY_I] {
+        assert!(session_host::key_event(IC, &press(sym), &mut host));
+    }
+    assert_eq!(
+        host.top_candidate().as_deref(),
+        Some("诸暨"),
+        "the coined word is the first candidate of the next composition"
+    );
+    let _ = session_host::shutdown();
+}
+
+/// `FcitxKey_z`, the first letter of the walkthrough's reading.
+const KEY_Z: u32 = 0x007a;
+/// `FcitxKey_h`.
+const KEY_H: u32 = 0x0068;
+/// `FcitxKey_u`.
+const KEY_U: u32 = 0x0075;
+/// `FcitxKey_j`.
+const KEY_J: u32 = 0x006a;
+/// `FcitxKey_i`.
+const KEY_I: u32 = 0x0069;
+
+#[test]
+fn test_mixed_english_offers_the_english_word_for_an_input_no_pinyin_cuts() {
+    // The mixed-English walkthrough: the English container sits beside the dictionary
+    // in the data directory, the switch is on, and `github` -- which no pinyin reading
+    // cuts -- reaches the entry spelled `GitHub`, labelled as the English table's. An
+    // input the exact walk cuts keeps its pinyin answer, which is the switch's whole
+    // promise: English never competes with a reading that exists.
+    let _ = session_host::shutdown();
+    let dir = scratch_dir("mixed-english");
+    let live = dir.join("base.dict");
+    fs::write(&live, container_image(&[("ni'hao", "你好")])).expect("writing the live container");
+    // The layout is what names the data directory, so it is what makes the English
+    // container findable; the sources read it on their first assembly. The document
+    // turns the switch on and nothing else: the defaults keep full pinyin and the
+    // shipped key table, which is the shape the walkthrough runs in.
+    prepare_data_dirs_in(&base_dirs(&dir)).expect("the step never fails");
+    let data_dir = layout().expect("the step installed the layout").data_dir;
+    fs::write(
+        data_dir.join("eng.dict"),
+        container_image_at(&[("github", "GitHub")], PROB_Q12_MAX / 2),
+    )
+    .expect("writing the English container");
+
+    let path = config_document(&dir, "[engine]\nmixed_english = true\n");
+    load_config_at(Some(path.as_path())).expect("the step never fails");
+    init_key_bindings().expect("the step never fails");
+
+    sources_for(Some(live.as_path()));
+    let slot = lexicon_slot().expect("the start mapped a container");
+    assert!(
+        session_host::install(
+            session_env(session_sources()),
+            privacy(),
+            routing_config(),
+            session_host::RouterLexicons {
+                system: Some(slot),
+                user: None,
+            },
+        ),
+        "the slot was empty, so this install wins"
+    );
+
+    let mut host = RecordingHost::default();
+    assert!(session_host::activate(IC), "the context is activated");
+    for sym in [KEY_G, KEY_I, KEY_T, KEY_H, KEY_U, KEY_B] {
+        assert!(
+            session_host::key_event(IC, &press(sym), &mut host),
+            "every letter of `github` is the plugin's key"
+        );
+    }
+    let frame = host.frames.last().expect("the composition posted a frame");
+    let first = &frame.candidates[0];
+    assert_eq!(first.text, "GitHub");
+    assert_eq!(first.source, CandidateSource::English);
+    assert_eq!(first.annotation.as_deref(), Some("英文"));
+
+    // The control: an input the exact walk cuts is answered by the dictionary, and no
+    // English candidate exists beside it -- the pinyin reading was never competed with.
+    session_host::reset(IC, &mut host);
+    for sym in [KEY_N, KEY_I, KEY_H, KEY_A, KEY_O] {
+        assert!(session_host::key_event(IC, &press(sym), &mut host));
+    }
+    let frame = host.frames.last().expect("the composition posted a frame");
+    assert_eq!(frame.candidates[0].text, "你好");
+    assert_eq!(frame.candidates[0].source, CandidateSource::Dict);
+    assert!(
+        frame
+            .candidates
+            .iter()
+            .all(|candidate| candidate.source != CandidateSource::English),
+        "no English candidate exists for an input the exact walk cut"
+    );
+    let _ = session_host::shutdown();
+}
+
+#[test]
+fn test_confusable_hint_names_the_correct_form_in_the_frame() {
+    // The wrong-word hint walkthrough: the confusable table sits beside the dictionary
+    // in the data directory, and the candidate that spells one of its wrong forms --
+    // `按奈`, which the dictionary happily offers for `an'nai` -- carries the hint that
+    // names the correct form in the very frame the window draws. The switch the hints
+    // latch rides is `ui.show_annotation`, whose default is on, so the default
+    // configuration is the on case.
+    let _ = session_host::shutdown();
+    let dir = scratch_dir("confusable-hint");
+    let live = dir.join("base.dict");
+    fs::write(&live, container_image(&[("an'nai", "按奈")])).expect("writing the live container");
+    prepare_data_dirs_in(&base_dirs(&dir)).expect("the step never fails");
+    let data_dir = layout().expect("the step installed the layout").data_dir;
+    fs::write(data_dir.join("confusable.tsv"), "按奈\t按捺\n")
+        .expect("writing the confusable table");
+
+    // Every default is the walkthrough's own: full pinyin, annotations shown.
+    let path = config_document(&dir, "");
+    load_config_at(Some(path.as_path())).expect("the step never fails");
+    init_key_bindings().expect("the step never fails");
+
+    sources_for(Some(live.as_path()));
+    let slot = lexicon_slot().expect("the start mapped a container");
+    assert!(
+        session_host::install(
+            session_env(session_sources()),
+            privacy(),
+            routing_config(),
+            session_host::RouterLexicons {
+                system: Some(slot),
+                user: None,
+            },
+        ),
+        "the slot was empty, so this install wins"
+    );
+
+    let mut host = RecordingHost::default();
+    assert!(session_host::activate(IC), "the context is activated");
+    for sym in [KEY_A, KEY_N, KEY_N, KEY_A, KEY_I] {
+        assert!(
+            session_host::key_event(IC, &press(sym), &mut host),
+            "every letter of `annai` is the plugin's key"
+        );
+    }
+    let frame = host.frames.last().expect("the composition posted a frame");
+    let first = &frame.candidates[0];
+    assert_eq!(first.text, "按奈");
+    assert_eq!(
+        first.annotation.as_deref(),
+        Some("字:→按捺"),
+        "the wrong form names the correct one in the frame"
+    );
+    let _ = session_host::shutdown();
+}
+
+#[test]
+fn test_v_mode_serves_the_symbol_panel_in_the_frame() {
+    // The symbol-panel walkthrough: the table sits beside the dictionary in the
+    // data directory, `v1` opens the digit category, and the frame the window
+    // draws carries the symbols as ordinary candidates labelled with the
+    // category's name. `vzhishi` -- which names no category -- is echoed the way
+    // it was before the panel existed, which is the panel's whole promise: it
+    // never competes with an input it does not serve.
+    let _ = session_host::shutdown();
+    let dir = scratch_dir("symbol-panel");
+    let live = dir.join("base.dict");
+    fs::write(&live, container_image(&[("zhishi", "知识")])).expect("writing the live container");
+    prepare_data_dirs_in(&base_dirs(&dir)).expect("the step never fails");
+    let data_dir = layout().expect("the step installed the layout").data_dir;
+    fs::write(
+        data_dir.join("symbols.tsv"),
+        "1\t数字\t０１２３\nx\t箭头\t←↑→\n",
+    )
+    .expect("writing the symbol table");
+
+    // Every default is the walkthrough's own: full pinyin, annotations shown.
+    let path = config_document(&dir, "");
+    load_config_at(Some(path.as_path())).expect("the step never fails");
+    init_key_bindings().expect("the step never fails");
+
+    sources_for(Some(live.as_path()));
+    let slot = lexicon_slot().expect("the start mapped a container");
+    assert!(
+        session_host::install(
+            session_env(session_sources()),
+            privacy(),
+            routing_config(),
+            session_host::RouterLexicons {
+                system: Some(slot),
+                user: None,
+            },
+        ),
+        "the slot was empty, so this install wins"
+    );
+
+    let mut host = RecordingHost::default();
+    assert!(session_host::activate(IC), "the context is activated");
+    for sym in [KEY_V, KEY_1] {
+        assert!(
+            session_host::key_event(IC, &press(sym), &mut host),
+            "every key of `v1` is the plugin's key"
+        );
+    }
+    let frame = host.frames.last().expect("the composition posted a frame");
+    let texts: Vec<&str> = frame
+        .candidates
+        .iter()
+        .map(|candidate| candidate.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        ["０", "１", "２", "３"],
+        "file order is display order"
+    );
+    assert_eq!(
+        frame.preedit.text, "v1",
+        "the panel shows the keystrokes as typed"
+    );
+    assert_eq!(frame.candidates[0].annotation.as_deref(), Some("数字"));
+
+    // The control: an input no category names is answered as it always was.
+    session_host::reset(IC, &mut host);
+    for sym in [KEY_V, KEY_Z, KEY_H, KEY_I, KEY_S, KEY_H, KEY_I] {
+        assert!(session_host::key_event(IC, &press(sym), &mut host));
+    }
+    let frame = host.frames.last().expect("the composition posted a frame");
+    assert_eq!(frame.candidates[0].text, "vzhishi");
+    assert!(
+        frame
+            .candidates
+            .iter()
+            .all(|candidate| candidate.source != ime_types::CandidateSource::Symbol),
+        "no panel candidate exists for an input no category names"
+    );
+    let _ = session_host::shutdown();
+}
+
+/// `FcitxKey_v`, the first key of the symbol-panel walkthrough.
+const KEY_V: u32 = 0x0076;
+/// `FcitxKey_1`, the digit that names the panel's number category.
+const KEY_1: u32 = 0x0031;
+/// `FcitxKey_s`, a letter of the fall-through control.
+const KEY_S: u32 = 0x0073;
+/// `FcitxKey_g`, the first letter of the mixed-English walkthrough.
+const KEY_G: u32 = 0x0067;
+/// `FcitxKey_t`.
+const KEY_T: u32 = 0x0074;
+/// `FcitxKey_b`.
+const KEY_B: u32 = 0x0062;
+/// `FcitxKey_a`.
+const KEY_A: u32 = 0x0061;
+/// `FcitxKey_o`.
+const KEY_O: u32 = 0x006f;

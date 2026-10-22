@@ -138,3 +138,39 @@ spdx = "CC0-1.0"
 retrieved = "2026-10-19"
 sha256 = "41beef9b3265cfa790702d10e2917ec91c0370a0722ec0ded183cf0525638604"
 permissive = true
+
+
+[[source]]
+id = "melt-eng"
+kind = "derived"
+layer = "L5"
+url = "https://github.com/gongzhengyang/rspinyin"
+license = "Project-owned (MIT OR Apache-2.0)"
+spdx = "MIT OR Apache-2.0"
+retrieved = ""
+sha256 = ""
+permissive = true
+
+
+[[source]]
+id = "confusable"
+kind = "derived"
+layer = "L5"
+url = "https://github.com/gongzhengyang/rspinyin"
+license = "Project-owned (MIT OR Apache-2.0)"
+spdx = "MIT OR Apache-2.0"
+retrieved = ""
+sha256 = ""
+permissive = true
+
+
+[[source]]
+id = "symbols"
+kind = "derived"
+layer = "L5"
+url = "https://github.com/gongzhengyang/rspinyin"
+license = "Project-owned (MIT OR Apache-2.0)"
+spdx = "MIT OR Apache-2.0"
+retrieved = ""
+sha256 = ""
+permissive = true
