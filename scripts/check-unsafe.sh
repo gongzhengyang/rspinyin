@@ -108,8 +108,13 @@ ALLOWED_DIRS = (
     "crates/alloc-count/src/",
 )
 
+# `remarks` holds the checked-out upstream reference codebases the comparison
+# reports quote from (rime-ice, librime, fcitx5-rime, WindInput). They are study
+# material, not shipped sources: 0.4 rule 3 governs this repository's own code,
+# so a reference tree whose Rust sources use `unsafe` wholesale must not fail the
+# audit any more than `target` would.
 SKIP_DIRS = frozenset(
-    {".git", ".cargo", "target", "node_modules", "vendor", "dist", "build"}
+    {".git", ".cargo", "target", "node_modules", "vendor", "dist", "build", "remarks"}
 )
 
 KEYWORDS = re.compile(r"\b(unsafe|extern)\b")

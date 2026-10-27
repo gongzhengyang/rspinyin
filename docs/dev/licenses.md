@@ -52,8 +52,8 @@
 <!-- BEGIN GENERATED: dependency inventory -->
 <!-- 由 `scripts/gen-licenses.sh --write` 生成；请勿手工编辑本块 -->
 
-- 包总数：**432**（与 `cargo metadata` 报告一致，含工作区自身 10 个）
-- 第三方依赖：**422**；随 `librspinyin.so` 发布的 Linux 构建闭包：**361** 个包（不含 dev / build 依赖与 `xtask`）
+- 包总数：**433**（与 `cargo metadata` 报告一致，含工作区自身 10 个）
+- 第三方依赖：**423**；随 `librspinyin.so` 发布的 Linux 构建闭包：**362** 个包（不含 dev / build 依赖与 `xtask`）
 - 禁止的许可证：**0**（`GPL-*`、`AGPL-*`、未知/缺失一律禁止）；书面豁免：**0**
 
 ### 第一方（工作区成员，`MIT OR Apache-2.0`）
@@ -71,7 +71,7 @@
 | `ime-ui-addon` | 0.1.0 | `MIT OR Apache-2.0` | `MIT` | 本项目自有 |
 | `xtask` | 0.1.0 | `MIT OR Apache-2.0` | `MIT` | 本项目自有 |
 
-### 第三方（按声明表达式分组，共 422 个包）
+### 第三方（按声明表达式分组，共 423 个包）
 
 | 声明表达式 | 数量 | 主张分支 | 结论 | 包 |
 |---|---|---|---|---|
@@ -93,7 +93,7 @@
 | `ISC` | 1 | `ISC` | 允许 | `libloading` |
 | `MIT` | 86 | `MIT` | 允许 | `aligned-vec`、`alloca`、`arg_enum_proc_macro`、`av-scenechange`、`bincode`、`built`、`bytes`、`calloop`、`calloop`、`cfg_aliases`、`clru`、`color_quant`、`convert_case`、`core_maths`、`derive_more`、`derive_more-impl`、`dlib`、`drm`、`drm-ffi`、`drm-fourcc`、`drm-sys`、`endi`、`equator`、`equator-macro`、`fax`、`float-cmp`、`fontconfig-parser`、`fontdb`、`generic-array`、`imagesize`、`input`、`input-sys`、`libm`、`libudev-sys`、`linereader`、`loop9`、`maybe-rayon`、`memoffset`、`new_debug_unreachable`、`nix`、`nom`、`noop_proc_macro`、`nu-ansi-term`、`oorandom`、`pico-args`、`pin-weak`、`plotters`、`plotters-backend`、`plotters-svg`、`polib`、`pulp`、`pulp-wasm-simd-flag`、`raw-cpuid`、`reborrow`、`rgb`、`rustybuzz`、`sharded-slab`、`simd-adler32`、`simd_helpers`、`slab`、`strict-num`、`strsim`、`strum`、`strum_macros`、`synstructure`、`tiff`、`tracing`、`tracing-appender`、`tracing-attributes`、`tracing-core`、`tracing-log`、`tracing-subscriber`、`udev`、`winnow`、`winnow`、`xkbcommon`、`xkbcommon-dl`、`xmlwriter`、`y4m`、`zbus`、`zbus_macros`、`zbus_names`、`zmij`、`zvariant`、`zvariant_derive`、`zvariant_utils` |
 | `MIT / Apache-2.0` | 1 | `MIT` | 允许 | `copypasta` |
-| `MIT OR Apache-2.0` | 184 | `MIT` | 允许 | `aligned`、`allocator-api2`、`anes`、`anstream`、`anstyle`、`anstyle-parse`、`anstyle-query`、`anyhow`、`arrayvec`、`as-slice`、`async-broadcast`、`async-trait`、`base64`、`bitflags`、`block-buffer`、`borsh`、`bumpalo`、`by_address`、`cast`、`cc`、`cfg-if`、`chrono`、`clap`、`clap_builder`、`clap_derive`、`clap_lex`、`colorchoice`、`const-field-offset`、`const-field-offset-macro`、`countme`、`cpufeatures`、`crc32fast`、`critical-section`、`crossbeam-channel`、`crossbeam-deque`、`crossbeam-epoch`、`crossbeam-utils`、`crypto-common`、`data-url`、`deranged`、`digest`、`displaydoc`、`either`、`enumflags2`、`enumflags2_derive`、`errno`、`euclid`、`fdeflate`、`field-offset`、`find-msvc-tools`、`flate2`、`form_urlencoded`、`futures`、`futures-channel`、`futures-core`、`futures-executor`、`futures-io`、`futures-macro`、`futures-sink`、`futures-task`、`futures-util`、`getrandom`、`getrandom`、`gif`、`gif`、`half`、`hashbrown`、`hashbrown`、`hashbrown`、`hashbrown`、`heck`、`hex`、`iana-time-zone`、`idna`、`image`、`image-webp`、`is_terminal_polyfill`、`itertools`、`itertools`、`itoa`、`jobserver`、`lazy_static`、`libc`、`log`、`lyon_algorithms`、`lyon_extra`、`lyon_geom`、`lyon_path`、`memmap2`、`num-bigint`、`num-complex`、`num-conv`、`num-derive`、`num-integer`、`num-rational`、`num-traits`、`once_cell`、`ordered-stream`、`paste`、`pastey`、`percent-encoding`、`pin-utils`、`piper`、`pkg-config`、`png`、`png`、`powerfmt`、`ppv-lite86`、`proc-macro-crate`、`proc-macro2`、`profiling`、`profiling-procmacros`、`proptest`、`quote`、`rand`、`rand_chacha`、`rand_core`、`rand_xorshift`、`rayon`、`rayon-core`、`redb`、`regex`、`regex-automata`、`regex-syntax`、`rowan`、`roxmltree`、`rustc_version`、`rustversion`、`scopeguard`、`semver`、`serde`、`serde_core`、`serde_derive`、`serde_json`、`serde_repr`、`serde_spanned`、`sha2`、`shlex`、`signal-hook-registry`、`siphasher`、`smallvec`、`smol_str`、`smol_str`、`softbuffer`、`stable_deref_trait`、`syn`、`syn`、`sys-locale`、`tempfile`、`text-size`、`thiserror`、`thiserror`、`thiserror-impl`、`thiserror-impl`、`thread_local`、`time`、`time-core`、`time-macros`、`toml`、`toml_datetime`、`toml_datetime`、`toml_edit`、`toml_edit`、`toml_parser`、`toml_writer`、`ttf-parser`、`typed-index-collections`、`typenum`、`unarray`、`unicode-bidi`、`unicode-script`、`unicode-segmentation`、`unicode-xid`、`unty`、`url`、`vtable`、`vtable-macro`、`wasm-bindgen`、`wasm-bindgen-macro`、`wasm-bindgen-macro-support`、`wasm-bindgen-shared`、`weezl`、`x11rb`、`x11rb-protocol` |
+| `MIT OR Apache-2.0` | 185 | `MIT` | 允许 | `aligned`、`allocator-api2`、`anes`、`anstream`、`anstyle`、`anstyle-parse`、`anstyle-query`、`anyhow`、`arc-swap`、`arrayvec`、`as-slice`、`async-broadcast`、`async-trait`、`base64`、`bitflags`、`block-buffer`、`borsh`、`bumpalo`、`by_address`、`cast`、`cc`、`cfg-if`、`chrono`、`clap`、`clap_builder`、`clap_derive`、`clap_lex`、`colorchoice`、`const-field-offset`、`const-field-offset-macro`、`countme`、`cpufeatures`、`crc32fast`、`critical-section`、`crossbeam-channel`、`crossbeam-deque`、`crossbeam-epoch`、`crossbeam-utils`、`crypto-common`、`data-url`、`deranged`、`digest`、`displaydoc`、`either`、`enumflags2`、`enumflags2_derive`、`errno`、`euclid`、`fdeflate`、`field-offset`、`find-msvc-tools`、`flate2`、`form_urlencoded`、`futures`、`futures-channel`、`futures-core`、`futures-executor`、`futures-io`、`futures-macro`、`futures-sink`、`futures-task`、`futures-util`、`getrandom`、`getrandom`、`gif`、`gif`、`half`、`hashbrown`、`hashbrown`、`hashbrown`、`hashbrown`、`heck`、`hex`、`iana-time-zone`、`idna`、`image`、`image-webp`、`is_terminal_polyfill`、`itertools`、`itertools`、`itoa`、`jobserver`、`lazy_static`、`libc`、`log`、`lyon_algorithms`、`lyon_extra`、`lyon_geom`、`lyon_path`、`memmap2`、`num-bigint`、`num-complex`、`num-conv`、`num-derive`、`num-integer`、`num-rational`、`num-traits`、`once_cell`、`ordered-stream`、`paste`、`pastey`、`percent-encoding`、`pin-utils`、`piper`、`pkg-config`、`png`、`png`、`powerfmt`、`ppv-lite86`、`proc-macro-crate`、`proc-macro2`、`profiling`、`profiling-procmacros`、`proptest`、`quote`、`rand`、`rand_chacha`、`rand_core`、`rand_xorshift`、`rayon`、`rayon-core`、`redb`、`regex`、`regex-automata`、`regex-syntax`、`rowan`、`roxmltree`、`rustc_version`、`rustversion`、`scopeguard`、`semver`、`serde`、`serde_core`、`serde_derive`、`serde_json`、`serde_repr`、`serde_spanned`、`sha2`、`shlex`、`signal-hook-registry`、`siphasher`、`smallvec`、`smol_str`、`smol_str`、`softbuffer`、`stable_deref_trait`、`syn`、`syn`、`sys-locale`、`tempfile`、`text-size`、`thiserror`、`thiserror`、`thiserror-impl`、`thiserror-impl`、`thread_local`、`time`、`time-core`、`time-macros`、`toml`、`toml_datetime`、`toml_datetime`、`toml_edit`、`toml_edit`、`toml_parser`、`toml_writer`、`ttf-parser`、`typed-index-collections`、`typenum`、`unarray`、`unicode-bidi`、`unicode-script`、`unicode-segmentation`、`unicode-xid`、`unty`、`url`、`vtable`、`vtable-macro`、`wasm-bindgen`、`wasm-bindgen-macro`、`wasm-bindgen-macro-support`、`wasm-bindgen-shared`、`weezl`、`x11rb`、`x11rb-protocol` |
 | `MIT OR Apache-2.0 OR Zlib` | 9 | `MIT` | 允许 | `cursor-icon`、`fontdue`、`raw-window-handle`、`xkeysym`、`zune-core`、`zune-core`、`zune-inflate`、`zune-jpeg`、`zune-jpeg` |
 | `MIT OR Zlib OR Apache-2.0` | 2 | `MIT` | 允许 | `miniz_oxide`、`miniz_oxide` |
 | `MIT/Apache-2.0` | 18 | `MIT` | 允许 | `bitflags`、`bitstream-io`、`codemap`、`codemap-diagnostic`、`linked-hash-map`、`page_size`、`qoi`、`quick-error`、`quick-error`、`rusty-fork`、`scoped-tls-hkt`、`symlink`、`unicode-bidi-mirroring`、`unicode-ccc`、`unicode-properties`、`unicode-vo`、`version_check`、`wait-timeout` |
@@ -110,7 +110,7 @@
 <!-- BEGIN GENERATED: dictionary sources -->
 <!-- 由 `scripts/gen-licenses.sh --write` 生成；请勿手工编辑本块 -->
 
-- 来源数：**8**；`permissive = false` 的来源数：**0**（ADR-0000 决策 2 要求为 0）
+- 来源数：**11**；`permissive = false` 的来源数：**0**（ADR-0000 决策 2 要求为 0）
 
 | id | kind | layer | 许可证 | SPDX | 获取日期 | SHA256 | permissive |
 |---|---|---|---|---|---|---|---|
@@ -122,6 +122,9 @@
 | `phrase` | derived | L5 | Project-owned (MIT OR Apache-2.0) | `MIT OR Apache-2.0` | — | （衍生数据，不固定哈希） | true |
 | `thuocl` | upstream | L4 | MIT | `MIT` | 2026-10-19 | 5495acaa243879eb7714c05e524c089182822cb4462d21ff969ab010b08ba187 | true |
 | `huayu` | upstream | L2 | Public Domain (huayu system wordlist) | `CC0-1.0` | 2026-10-19 | 41beef9b3265cfa790702d10e2917ec91c0370a0722ec0ded183cf0525638604 | true |
+| `melt-eng` | derived | L5 | Project-owned (MIT OR Apache-2.0) | `MIT OR Apache-2.0` | — | （衍生数据，不固定哈希） | true |
+| `confusable` | derived | L5 | Project-owned (MIT OR Apache-2.0) | `MIT OR Apache-2.0` | — | （衍生数据，不固定哈希） | true |
+| `symbols` | derived | L5 | Project-owned (MIT OR Apache-2.0) | `MIT OR Apache-2.0` | — | （衍生数据，不固定哈希） | true |
 
 <!-- END GENERATED: dictionary sources -->
 
@@ -136,7 +139,7 @@
 | 义务 | 条款依据（许可原文摘录） | 核对方式 | 复核结论 |
 |---|---|---|---|
 | `OB-1` 归属展示 | (b) Display the [Slint attribution badge](https://github.com/slint-ui/slint/tree/master/logo/MadeWithSlint-logo-whitebg.png) on a public webpage, preferably where the binaries of your Application can be downloaded from, in such a way that it can be easily found by any visitor to that page. | 断言 `README.md` 与 `README.zh.md` 含 Slint 归属徽章与 `https://slint.dev` 链接（`--check-links` 时另做可达性探测） | 已达成（README.md 与 README.zh.md 的第一个二级标题之前均含 Slint 归属徽章，链接 https://slint.dev；公开页面 https://github.com/gongzhengyang/rspinyin） |
-| `OB-2` 不得单独分发 Slint | The License does not permit to distribute or make the Software publicly available alone and without integration into an Application. For this purpose you may use the Software under the GNU General Public License, version 3. | 扫描 `packaging/` 与构建产物，断言不存在独立的 Slint 库文件（只允许 `librspinyin.so`） | 已达成（`packaging/` 与构建产物中均无独立 Slint 库） |
+| `OB-2` 不得单独分发 Slint | The License does not permit to distribute or make the Software publicly available alone and without integration into an Application. For this purpose you may use the Software under the GNU General Public License, version 3. | 扫描 `packaging/` 与构建产物，断言不存在独立的 Slint 库文件（只允许 `librspinyin.so`） | 已达成（`packaging/` 中无独立 Slint 库；构建产物尚未生成，未核对 target/） |
 | `OB-3` 不得用于嵌入式系统 | The License does not permit the use of the Software within Embedded Systems. An **Embedded System** is a computer system designed to perform a specific task within a larger mechanical or electrical system. | 断言本文件第 6 节含显式的嵌入式/自助终端/车机排除声明 | 已达成（第 6 节声明） |
 | `OB-4` 不得暴露 Slint API | The License does not permit the distribution of Application that exposes the APIs, in part or in total, of the Software. | 由 `scripts/check-slint-leak.sh` 解析 `cargo public-api -p ime-ui` 强制（0.4 规则 11） | 已达成（`scripts/check-slint-leak.sh` 强制） |
 | `OB-5` 不得移除许可声明 | You may not remove or alter any license notices (including copyright notices, disclaimers of warranty, or limitations of liability) contained within the source code form of the Software. | 断言 `LICENSES/` 存在且非空、其中的许可原文与 Slint 发行包内的同名原文逐字一致、`docs/dev/NOTICE` 引用的每个 `LICENSES/` 路径都真实存在，并断言 `git status` 无 `LICENSES/` 下的改动 | 已达成（LICENSES/ 下 `LicenseRef-Slint-Royalty-free-2.0.md` 与 Slint 发行包内的原文一致，且无本地改动） |

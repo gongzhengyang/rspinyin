@@ -235,16 +235,13 @@ impl Expectations {
         // An empty value names an empty list, the order channel's "no candidate at all":
         // `split(',')` on an empty string would yield one empty piece, which asserts a
         // candidate whose text is the empty string instead.
-        let full_list = args
-            .assert_full_list
-            .as_ref()
-            .map(|list| {
-                if list.is_empty() {
-                    Vec::new()
-                } else {
-                    list.split(',').map(String::from).collect()
-                }
-            });
+        let full_list = args.assert_full_list.as_ref().map(|list| {
+            if list.is_empty() {
+                Vec::new()
+            } else {
+                list.split(',').map(String::from).collect()
+            }
+        });
         let mut status = Vec::new();
         for spec in &args.assert_status {
             let (name, wanted) = spec
@@ -512,11 +509,7 @@ fn verdict(frame: &UiFrame, want: &Expectations) -> Result<(), String> {
 ///
 /// Never.
 fn strip_flag(held: bool) -> &'static str {
-    if held {
-        "true"
-    } else {
-        "false"
-    }
+    if held { "true" } else { "false" }
 }
 
 /// The script as the word a status assertion spells it with.

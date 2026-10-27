@@ -97,3 +97,25 @@ lto = "thin"
 # 注意：不得设置 `panic = "abort"`。2.2.3 要求所有 `extern "C"` 边界用
 # `std::panic::catch_unwind` 兜底（跨 FFI 边界 unwind 是 UB），而 abort 会让
 # catch_unwind 无法捕获。
+
+# The software renderer's inner loops are where the test suite spends its wall
+# clock: a single full repaint of the candidate panel costs tens of milliseconds
+# in a debug build and single-digit ones optimized, and every surface, adapter
+# and addon test pays it per frame. `i-slint-core` is a third-party algorithm
+# crate at the bottom of the dependency graph, so optimizing it under `dev`
+# (which the `test` profile inherits) speeds those tests up across the board
+# without distorting any workspace crate's own build, and its one-time compile
+# cost is paid by the dependency build that already exists.
+[profile.dev.package.i-slint-core]
+opt-level = 2
+
+# The two text crates the software renderer drives are the same story with
+# bigger constants: glyph rasterization (fontdue) and shaping (rustybuzz) run
+# per laid-out text run, a show/hide alternation re-lays-out the panel every
+# frame, and debug builds of the shaper alone cost more per run than the
+# renderer does. Both are third-party leaf algorithm crates.
+[profile.dev.package.fontdue]
+opt-level = 2
+
+[profile.dev.package.rustybuzz]
+opt-level = 2

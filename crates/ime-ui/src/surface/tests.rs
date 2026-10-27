@@ -198,10 +198,16 @@ fn test_surface_rapid_show_hide_alternations_leave_no_residual() {
     let (mapped_throughout, settled_hidden) = with_surface(|surface, state| {
         show_and_draw(surface, 9);
         let mut now = Instant::now();
-        // A hundred Show/Hide pairs faster than any fade can run: every Show cancels the
-        // staged unmap of the Hide before it, every Hide restages from wherever the fade
-        // was, and neither may leave the window stuck half way or unmapped early.
-        for step in 0..100u32 {
+        // Alternation pairs faster than any fade can run: every Show cancels the
+        // staged unmap of the Hide before it, every Hide restages from wherever the
+        // fade was, and neither may leave the window stuck half way or unmapped
+        // early. The pair count is derived, not sampled: a pair costs two 4 ms steps,
+        // the exit fade is the production default `disappear_ms` of 90 ms
+        // (`ime-config`'s built-in `ui.animation`), so twelve pairs span exactly that
+        // first fade window -- every Show lands in flight, and their cancel points
+        // sweep the fade's start, middle and end. Pairs beyond that would only repeat
+        // the same cancel inside later, identical windows.
+        for step in 0..12u32 {
             surface
                 .apply(SurfaceUpdate::Show {
                     revision: step * 2 + 2,

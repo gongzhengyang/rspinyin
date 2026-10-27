@@ -485,7 +485,12 @@ fn buffer_strategy() -> impl Strategy<Value = InputBuffer> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(10_000))]
+    // A debug build costs about 0.36 ms per case, so 10,000 cases took 3.6 s -- a slow
+    // test the suite cannot afford per run. 2,048 cases keep every branch of
+    // `build_preedit` under test: the strategy is shape-stable, the buffer it builds is
+    // already capped at `MAX_RAW_LEN`, and the persisted regression seeds (if any fail)
+    // are replayed before the novel cases regardless of this count.
+    #![proptest_config(ProptestConfig::with_cases(2_048))]
 
     #[test]
     fn test_build_preedit_preserves_the_invariants_for_any_session(buf in buffer_strategy()) {

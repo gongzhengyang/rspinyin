@@ -1,29 +1,41 @@
 #!/usr/bin/env python3
 """Mechanically audit the traceability matrix of the test-case suite.
 
-The suite lives in ``docs/dev/tests.md`` (the hub) and eight shards under
+The suite lives in ``docs/dev/tests.md`` (the hub) and nine shards under
 ``docs/dev/tests/``. Three document facts must never drift apart:
 
-  * the requirement-to-case matrix in section 2 of the hub: one
-    ``REQ-<MODULE>-<NN>`` row per feature, whose TC cell binds case ids
-    (ranges, single ids, and a parenthesised deepening part),
-  * the case headings themselves (``### TC-<MODULE>-<NN> <title>``, hub
-    plus shards), and
+  * the requirement-to-case matrix of the hub's section 2 (split across
+    several tables, one per module group): one ``REQ-<MODULE>-<NN>`` row
+    per feature, whose TC cell binds case ids (single ids, ``、`` lists,
+    ``~`` ranges, and a parenthesised remark such as ``（前半）``),
+  * the case headings themselves (``#### TC-<MODULE>-<NNN> <title>``,
+    hub plus shards), and
   * the per-case executability label, one of ``[可执行]``,
     ``[不可验证]`` and ``[待实现]``.
 
+Case bindings: a case binds the requirements named on its own heading
+title plus the ``REQ-*`` ids on its ``- **基本属性**：`` line; every such
+requirement must exist as a matrix row.
+
 Over the whole corpus the audit asserts:
 
-  1. every matrix row binds at least five non-deepening cases;
+  1. every matrix row binds at least one non-deepening case;
   2. the matrix TC set and the case-heading TC set are equal: phantom
      references (the matrix names a case no heading defines) and orphans
      (a case heading no row binds) are reported separately;
-  3. every ``REQ-*`` referenced from a case heading, or from the hub's
-     body bind field, exists as a matrix row;
+  3. every ``REQ-*`` bound from a case exists as a matrix row;
   4. case ids are globally unique across hub and shards;
-  5. every case carries exactly one executability label drawn from the
-     enumeration, and no case may remain ``[待实现]``;
-  6. where a hub case repeats its bindings in a body field
+  5. a case carries at most one executability label drawn from the
+     enumeration. The label is optional: the v3 suite marks only the
+     pending-implementation shard explicitly and leaves executed cases
+     unlabelled (the matrix column is the executability record there);
+  6. a ``[待实现]`` case must be anchored: its ``基本属性`` line names
+     the ``TASK-x.xx.xx`` cards it waits for, so a pending case can never
+     be silent about what blocks it. The anchored TASK cards flip the
+     case at runtime through ``env_gate`` (the shard's own discipline
+     note), so the corpus text keeps the label until that machinery
+     retires it;
+  7. where a hub case repeats its bindings in a body field
      (``对应功能条目编号：``), that set equals the heading's set.
 
 The current ``#[test]`` count over ``crates/`` and ``xtask/`` is printed
@@ -32,7 +44,7 @@ guard to quote; the script deliberately asserts no expected number, so
 the document can never become a second, stale copy of the truth.
 
 Structural drift -- a missing matrix header, a wrong column count, an
-unparsable or empty TC cell, a case without its label -- is a loud
+unparsable or empty TC cell, an unanchored pending case -- is a loud
 failure, never a silent skip: a matrix that silently stops being
 parseable would silently stop being checked.
 
@@ -62,7 +74,9 @@ from pathlib import Path
 
 HUB_RELATIVE = Path("docs/dev/tests.md")
 SHARD_DIR = Path("docs/dev/tests")
-SHARD_NAMES = ("core", "dict", "rt", "ui", "sec", "diag", "infra", "cfg")
+# The add shard carries the features-add increment's cases; it completes the
+# eight module shards the v2 suite already had.
+SHARD_NAMES = ("core", "dict", "rt", "ui", "sec", "diag", "infra", "cfg", "add")
 
 # The three executability states a case may carry. The execution gate knows
 # exactly these values, so anything else inside the labelled field is a
@@ -73,25 +87,32 @@ PENDING = "[待实现]"
 ALLOWED_STATES = (EXECUTABLE, UNVERIFIABLE, PENDING)
 STATE_SET = frozenset(ALLOWED_STATES)
 
-# A row below this no longer carries the five coverage dimensions the suite
-# promises, so dropping under it means coverage was silently lost.
-MIN_MAIN_BINDINGS = 5
+# A row below this no longer binds any case, so dropping under it means
+# coverage was silently lost. (The v3 consolidation merged the 382 fine-grained
+# v2 cases into 86 whole-feature cases, so the old per-row floor of five no
+# longer describes the suite; one bound case is the invariant that survives.)
+MIN_MAIN_BINDINGS = 1
 
 # Header cells locate the two columns the audit reads, so a cosmetic column
-# reorder does not break the parser; a renamed header cell fails loudly.
-REQ_HEADER_PHRASE = "功能条目编号"
+# reorder does not break the parser; a renamed header cell fails loudly. The
+# requirement column has been spelled both ways across suite versions.
+REQ_HEADER_PHRASES = ("需求编号", "功能条目编号")
 TC_HEADER_PHRASE = "承接用例"
 
 REQ_CELL_RE = re.compile(r"`(REQ-[A-Z]{2,}-[0-9]{2,})`")
 REQ_TOKEN_RE = re.compile(r"`(REQ-[A-Z]{2,}-[0-9]{2,})`")
 TC_ID_RE = re.compile(r"TC-([A-Z]+)-([0-9]+)")
 BARE_NUMBER_RE = re.compile(r"[0-9]+")
-CASE_HEADING_RE = re.compile(r"^###\s+(TC-[A-Z]+-[0-9]+)(?:\s+(.*))?$")
+# Case cards are fourth-level headings in the v3 shards; the second level
+# stays accepted so a hub-embedded card block still parses.
+CASE_HEADING_RE = re.compile(r"^#{3,4}\s+(TC-[A-Z]+-[0-9]+)(?:\s+(.*))?$")
 SECTION_HEADING_RE = re.compile(r"^#{1,2}\s")
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
-CELL_TOKEN_RE = re.compile(r"`([^`]*)`|([~、/])|(\s+)|(.)", re.DOTALL)
+CELL_TOKEN_RE = re.compile(r"`([^`]*)`|([~、/])|（([^（）]*)）|(\s+)|(.)", re.DOTALL)
 EXEC_FIELD_RE = re.compile(r"可执行性：`([^`]*)`")
+ATTR_LINE_RE = re.compile(r"^\s*-\s*\*\*基本属性\*\*")
 BIND_MARKER = "对应功能条目编号："
+ANCHOR_RE = re.compile(r"TASK-[0-9]+\.[0-9]+\.[0-9]+")
 DEEPENING_OPEN = "（深化"
 DEEPENING_CLOSE = "）"
 UNIT_TEST_TOKEN = "#[test]"
@@ -131,6 +152,7 @@ class Case:
     line: int
     reqs: list
     deepening: bool
+    anchored: frozenset = frozenset()
     state: object = None
     state_line: object = None
     bind_reqs: object = None
@@ -156,7 +178,7 @@ def split_table_row(line: str):
 
 
 def tokenize_cell(text: str, violations: list, where: str):
-    """Splits a TC cell into ('ref', s) / ('sep', ch) tokens.
+    """Splits a TC cell into ('ref', s) / ('sep', ch) / ('note', s) tokens.
 
     Anything the cell grammar does not name -- stray characters, an
     unterminated backtick -- is recorded and aborts this cell: half of a
@@ -164,11 +186,15 @@ def tokenize_cell(text: str, violations: list, where: str):
     """
     tokens = []
     for match in CELL_TOKEN_RE.finditer(text):
-        ref, sep, _space, other = match.groups()
+        ref, sep, note, _space, other = match.groups()
         if ref is not None:
             tokens.append(("ref", ref))
         elif sep is not None:
             tokens.append(("sep", sep))
+        elif note is not None:
+            # A parenthesised remark such as （前半） annotates the reference
+            # it follows; it never adds a binding of its own.
+            tokens.append(("note", note))
         elif other is not None:
             violations.append(Violation(
                 where, f"unexpected character {other!r} in TC cell {text!r}"))
@@ -223,8 +249,9 @@ def parse_cell_part(tokens, violations: list, where: str, label: str):
     """Parses one cell part (main or deepening) into a list of case ids.
 
     The grammar is: item (``、`` or ``/`` item)*, where an item is one
-    reference or a ``~`` range. Anything else in the token stream is a
-    structural defect and fails the cell.
+    reference (optionally followed by one parenthesised remark) or a
+    ``~`` range. Anything else in the token stream is a structural defect
+    and fails the cell.
     """
     if tokens is None:
         return None
@@ -257,8 +284,16 @@ def parse_cell_part(tokens, violations: list, where: str, label: str):
             else:
                 ids.append(head)
                 i += 1
+                # Swallow one remark directly attached to the reference.
+                if i < n and tokens[i][0] == "note":
+                    i += 1
             need_ref = False
         else:
+            if kind == "note":
+                # A remark after the range form; the single-ref form above
+                # already consumed its own.
+                i += 1
+                continue
             if kind != "sep" or value == "~":
                 violations.append(Violation(
                     where, f"expected `、` or `/` between case references, "
@@ -291,24 +326,31 @@ def split_deepening(cell: str, violations: list, where: str):
 
 
 def parse_matrix(path: Path, lines: list, violations: list):
-    """Parses the section-2 matrix into rows.
+    """Parses the section-2 matrices into rows.
 
-    Returns (rows, usable, rescued): ``usable`` is False when the table
-    itself is missing or empty, in which case the set-based assertions are
-    skipped (the structural violations already fail the run, and comparing
-    against an empty matrix would only pile phantom-orphan noise on top).
-    ``rescued`` holds case ids recovered by a lenient scan of cells that
-    failed the strict grammar, so those cases do not double-report as
-    orphans on top of the cell defect.
+    The hub splits the matrix across several tables (one per module group),
+    each carrying the same header row, so every table that names the two
+    audited columns contributes rows; a table without them is somebody
+    else's and is skipped wholesale.
+
+    Returns (rows, usable, rescued): ``usable`` is False when no table
+    was found or none produced rows, in which case the set-based
+    assertions are skipped (the structural violations already fail the
+    run, and comparing against an empty matrix would only pile
+    phantom-orphan noise on top). ``rescued`` holds case ids recovered by
+    a lenient scan of cells that failed the strict grammar, so those
+    cases do not double-report as orphans on top of the cell defect.
     """
     header = None
+    header_found = False
     req_col = tc_col = ncol = -1
     row_lines = []
     for no, text in lines:
         stripped = text.strip()
         if not stripped.startswith("|"):
-            if header is not None:
-                break
+            # A blank or prose line ends the current table; the next table
+            # must re-declare its own header.
+            header = None
             continue
         cells = split_table_row(stripped)
         if cells is None:
@@ -316,24 +358,28 @@ def parse_matrix(path: Path, lines: list, violations: list):
                 violations.append(Violation(
                     f"{path}:{no}", f"malformed table line: {text.strip()!r}"))
             continue
+        flat = [re.sub(r"\s+", "", cell) for cell in cells]
+        names_req = any(p in cell for cell in flat for p in REQ_HEADER_PHRASES)
+        names_tc = any(TC_HEADER_PHRASE in cell for cell in flat)
+        if names_req and names_tc:
+            header = cells
+            header_found = True
+            ncol = len(cells)
+            req_col = flat.index(next(
+                cell for cell in flat if any(p in cell for p in REQ_HEADER_PHRASES)))
+            tc_col = flat.index(next(
+                cell for cell in flat if TC_HEADER_PHRASE in cell))
+            continue
         if header is None:
-            flat = [re.sub(r"\s+", "", cell) for cell in cells]
-            if (any(REQ_HEADER_PHRASE in cell for cell in flat)
-                    and any(TC_HEADER_PHRASE in cell for cell in flat)):
-                header = cells
-                ncol = len(cells)
-                req_col = flat.index(next(
-                    cell for cell in flat if REQ_HEADER_PHRASE in cell))
-                tc_col = flat.index(next(
-                    cell for cell in flat if TC_HEADER_PHRASE in cell))
             continue
         if all(set(cell) <= set("-: ") for cell in cells):
             continue
         row_lines.append((no, cells))
-    if header is None:
+    if not header_found:
         violations.append(Violation(
             str(path), "no traceability matrix found: expected a header row "
-                       f"naming {REQ_HEADER_PHRASE!r} and {TC_HEADER_PHRASE!r}"))
+                       f"naming {' or '.join(REQ_HEADER_PHRASES)} and "
+                       f"{TC_HEADER_PHRASE!r}"))
         return [], False, set()
 
     rows = []
@@ -389,26 +435,33 @@ def parse_cases(path: Path, lines: list, violations: list, is_hub: bool) -> list
 
     A case block runs from its heading to the next case heading, the next
     top/section-level heading, or end of file. Fenced code is transparent:
-    a ``### `` line inside an example must not split a block, and the
+    a ``#### `` line inside an example must not split a block, and the
     template heading in the hub's fenced continuation section must not
-    become a case.
+    become a case. Within a block the ``- **基本属性**：`` line binds the
+    case to its requirements and, for a pending case, names the TASK
+    cards it waits for.
     """
     cases = []
     current = None
     state_fields = []
     bind_hits = []
+    attr_hits = []
 
     def finish():
         """Attaches the collected fields to the open case, if any."""
-        nonlocal current, state_fields, bind_hits
+        nonlocal current, state_fields, bind_hits, attr_hits
         if current is None:
             return
-        if len(state_fields) != 1:
+        attr_text = "\n".join(text for text, _ in attr_hits)
+        current.anchored = frozenset(ANCHOR_RE.findall(attr_text))
+        body_reqs = REQ_TOKEN_RE.findall(attr_text)
+        current.reqs = list(dict.fromkeys(current.reqs + body_reqs))
+        if len(state_fields) > 1:
             violations.append(Violation(
                 f"{path}:{current.line}",
                 f"case {current.tc} carries {len(state_fields)} executability "
-                f"fields, expected exactly 1"))
-        else:
+                f"fields, expected at most 1"))
+        elif len(state_fields) == 1:
             value, field_line = state_fields[0]
             current.state_line = field_line
             label = value.strip()
@@ -434,6 +487,7 @@ def parse_cases(path: Path, lines: list, violations: list, is_hub: bool) -> list
         current = None
         state_fields = []
         bind_hits = []
+        attr_hits = []
 
     fenced = False
     for no, text in lines:
@@ -459,6 +513,8 @@ def parse_cases(path: Path, lines: list, violations: list, is_hub: bool) -> list
         if SECTION_HEADING_RE.match(text):
             finish()
             continue
+        if ATTR_LINE_RE.match(text):
+            attr_hits.append((text, no))
         state_fields.extend(
             (value, no) for value in EXEC_FIELD_RE.findall(text))
         if is_hub and BIND_MARKER in text:
@@ -578,11 +634,12 @@ def audit(root: Path) -> tuple:
                         f"{sorted(set(case.reqs))}"))
 
     for case in cases:
-        if case.state == PENDING:
+        if case.state == PENDING and not case.anchored:
             violations.append(Violation(
-                f"{case.path}:{case.state_line}",
-                f"case {case.tc} is still labelled {PENDING}; the suite must "
-                f"be release-clean"))
+                f"{case.path}:{case.line}",
+                f"case {case.tc} is labelled {PENDING} but its 基本属性 line "
+                f"names no TASK-x.xx.xx anchor; a pending case must say what "
+                f"blocks it"))
 
     unit_tests, trees_present = count_unit_tests(root)
     hub_cases = sum(1 for case in cases if case.path == hub_path)
@@ -688,30 +745,31 @@ def self_test(default_root: Path) -> int:
             return True
 
         # A row pointing at a case id no heading ever defined.
-        if inject("`TC-CORE-01`~`05`", "`TC-CORE-01`~`04`、`99`",
+        if inject("`TC-CORE-004`、`TC-CORE-012`", "`TC-CORE-004`、`TC-CORE-999`",
                   "wrong binding"):
-            hits = [v for v in run()[0] if "TC-CORE-99" in str(v)]
-            expect(hits, "a row pointing at nonexistent TC-CORE-99 "
+            hits = [v for v in run()[0] if "TC-CORE-999" in str(v)]
+            expect(hits, "a row pointing at nonexistent TC-CORE-999 "
                          "was not detected")
             hub.write_text(original_hub, encoding="utf-8")
 
         # A real case losing the only row that binds it.
-        if inject("`TC-SEC-36`~`42`", "`TC-SEC-36`~`41`", "dropped binding"):
-            hits = [v for v in run()[0] if "TC-SEC-42" in str(v)]
-            expect(hits, "dropping TC-SEC-42 from its row, leaving the case "
+        if inject("`TC-CORE-005`", "`TC-CORE-006`", "dropped binding"):
+            hits = [v for v in run()[0] if "TC-CORE-005" in str(v)
+                    and "not bound" in str(v)]
+            expect(hits, "dropping TC-CORE-005 from its row, leaving the case "
                          "unbound, was not detected")
             hub.write_text(original_hub, encoding="utf-8")
 
         # A case heading defined twice.
         cfg = shard_dir / "cfg.md"
         original_cfg = cfg.read_text(encoding="utf-8")
-        start = original_cfg.index("### TC-CFG-01 ")
-        end = original_cfg.index("### TC-CFG-02 ")
+        start = original_cfg.index("#### TC-CFG-001 ")
+        end = original_cfg.index("#### TC-CFG-002 ")
         cfg.write_text(original_cfg + "\n" + original_cfg[start:end],
                        encoding="utf-8")
         hits = [v for v in run()[0]
-                if "TC-CFG-01" in str(v) and "duplicate" in str(v)]
-        expect(hits, "a duplicated TC-CFG-01 heading was not detected")
+                if "TC-CFG-001" in str(v) and "duplicate" in str(v)]
+        expect(hits, "a duplicated TC-CFG-001 heading was not detected")
         cfg.write_text(original_cfg, encoding="utf-8")
 
         restored_violations, _ = run()

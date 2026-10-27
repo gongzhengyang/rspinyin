@@ -465,21 +465,20 @@ fn test_add_phrase_accepts_a_row_the_document_cannot_take() {
 
 /// A user source that answers nothing and keeps the pin requests it is given, so the
 /// router's pin branch can be asserted from the outside.
+/// The log of `(key, word)` pairs the pinned source records, shared with the test.
+type RequestLog = std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>;
+
 #[derive(Default)]
 struct PinningUser {
     /// Every `(key, word)` pair the source was asked to pin, in order. Behind a shared
     /// handle because the fixture owns the source and the test reads the log.
-    requests: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    requests: RequestLog,
 }
 
 impl PinningUser {
     /// Builds the source and the handle its requests land in.
-    fn new() -> (
-        Self,
-        std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
-    ) {
-        let requests: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> =
-            std::sync::Arc::default();
+    fn new() -> (Self, RequestLog) {
+        let requests: RequestLog = std::sync::Arc::default();
         (
             Self {
                 requests: requests.clone(),

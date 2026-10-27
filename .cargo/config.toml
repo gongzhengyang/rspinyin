@@ -43,3 +43,18 @@ rustflags = [
     "-C", "link-arg=-Wl,--as-needed",
     "-C", "link-arg=-Wl,-z,noexecstack",
 ]
+
+# Hermetic font database for every process cargo spawns, tests included.
+#
+# Slint's software renderer resolves text through `fontdb`, which on Linux
+# reads the directories fontconfig lists. Left to the machine, that is the
+# desktop's whole font set, and the rendering tests were never hermetic: on a
+# workstation carrying the full Noto CJK family, fontdue's eager whole-file
+# parse of the 19 MB CJK collection costs over 25 s per thread per process in
+# a debug build, which alone pushes every surface and addon test past the
+# nextest kill threshold. Pointing `FONTCONFIG_FILE` at the fixture config
+# under `testdata/fonts/` swaps the machine's fonts for the committed subset,
+# which parses in milliseconds and carries exactly the glyphs the test scenes
+# draw. See `testdata/fonts/README.md` for provenance and regeneration.
+[env]
+FONTCONFIG_FILE = { value = "testdata/fonts/fonts.conf", relative = true }

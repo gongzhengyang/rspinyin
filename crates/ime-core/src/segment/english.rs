@@ -70,8 +70,15 @@ mod tests {
     fn test_mixed_english_penalty_is_positive_and_below_the_correction_ladder() {
         // The sign convention is the lattice's own (subtracted from the score), and
         // the ladder holds: an English edge is priced far below a corrected one.
-        assert!(MIXED_ENGLISH_PENALTY_Q8 > 0);
-        assert!(MIXED_ENGLISH_PENALTY_Q8 < crate::fuzzy::FUZZY_PENALTY_Q8);
-        assert!(MIXED_ENGLISH_PENALTY_Q8 < crate::segment::correct::CORRECTION_PENALTY_Q8);
+        // Clippy reads the operands as constants and the assertion as constant-valued,
+        // which is true today and is exactly the state the pin guards: a retuning that
+        // broke the ladder must fail here, so the lint is silenced rather than the
+        // relationship being restated as literals that could drift from the constants.
+        #[allow(clippy::assertions_on_constants)]
+        {
+            assert!(MIXED_ENGLISH_PENALTY_Q8 > 0);
+            assert!(MIXED_ENGLISH_PENALTY_Q8 < crate::fuzzy::FUZZY_PENALTY_Q8);
+            assert!(MIXED_ENGLISH_PENALTY_Q8 < crate::segment::correct::CORRECTION_PENALTY_Q8);
+        }
     }
 }

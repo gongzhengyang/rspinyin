@@ -15,7 +15,8 @@
   - 关键路径：`CP: 否`
   - 并行通道：`Track B 断言引擎`
   - 代码落地锚点 (Code Anchor)：`xtask/src/testd/capture.rs`、`tests/fixtures/golden/`（基线库，新增）
-  - 任务状态：`[ ] 待开始`
+  - 任务状态：`[x] 已完成`
+- 落地证据：['契约: VisualJudgement{Structural|GoldenDiff{baseline,max_diff_pixels}} + DiffReport{baseline,diff_pixels,first_diff_rect} 落在 xtask/src/testd/golden.rs；judge(): Structural 不比较，GoldenDiff 载入基线→尺寸不符先拒绝（DimensionMismatch）→逐像素 RGBA 比较（计数+首差异行主序 bbox）；read_rgba 补齐 capture/encode.rs 的 PNG 解码半边', '基线库: tests/fixtures/golden/ 首批 12 张 = default/hover/selected × dark/light × @1x/@2x，由 fixture raster（golden/raster.rs，closed-world 整数运算、无文字无模糊、同参同字节）经 `xtask golden --bless-raster` 生成入库；名称文法 <subject>_<W>x<H>_<theme>[@Sx].png 右锚解析，尺寸/主题/缩放三参数锁进文件名（状态入 subject：grid_hover_…）', '--bless 纪律: 三入口 --bless-raster（fixture 批量）/ --bless-from PNG --as NAME（采集帧）/ --judge PNG --against NAME（含 --max-diff）；bless 拒绝名称与帧尺寸不符（尺寸变更=新名新基线，NameFrameMismatch）；同尺寸重 bless=有意更新，人工执行+验收记录，CI 无 bless 权限', '账本对接: Claim{name:"golden-diff", expect:"diff_pixels <= N", actual:"M differing pixels", pass}；DiffReport 经 AssertionV3.diffs（serde default，旧记录兼容解析）随 assertions.json 结构化落盘；golden tests 含 v3 往返与无 diffs 键兼容测试', '环境相关帧: 模糊/字体回退帧不入库（库内只收构造可复现帧）；此类用例声明 Structural 并在卡注记——跳过是声明不是静默通过', '测试: cargo nextest run -p xtask => 1264 run / 1264 passed / 9 skipped（fmt 后重建热窗实测稳定）；diff 对确定性输入零差异、注入单像素必红（diff=1, box=(x,y,1,1)）、双区域 bbox 跨度正确、缺基线/尺寸不符为两种不同拒绝、名称文法 12 例拒绝、首批 12 名互异', '物理产物: `xtask golden --judge` 对入库基线判 0 diff PASS（实测 grid_hover_1200x280_light@2x.png）；基线 12 文件已入库待提交', '性能: 1200×280@2x 单帧 diff min(20) ≤ 30ms 通过（纯比较计时，PNG IO 不在预算量内）；不进生产路径（xtask 工具链）', '修复记录: 基线名曾不含状态致三状态同名互覆（批次 distinct 断言抓出）→ 状态入 subject；read_rgba 曾用含 filter 字节的 raw_bytes 计量致读回帧多 140 零字节（PNG 往返测试抓出）→ 改用 output_buffer_size+truncate', '偏差1: 首批基线由 fixture raster 而非生产渲染器生成——xtask 不链 slint/ime-ui（与 dict_inject 的 DictFixture 同型 closed-world 折中）；生产渲染器基线经 --bless-from 采集入库，门已开', '偏差2: golden.rs 按 capture.rs 先例带窄化 #![allow(dead_code, unused_imports)]——CLI 未命名的用例侧 API（claim 映射、Structural 变体）由 suite 通道任务落地时消费', 'clippy: xtask 零新警告（manual_repeat_n 已修）；ime-core/ime-dict 存量警告属本次运行前序任务，留待阶段4统一清算']
 - **MCP 能力映射与协议报文契约**：`capture_viewport_screenshot` 增判定模式：
 
 ```rust
@@ -64,7 +65,8 @@ pub struct DiffReport {
   - 关键路径：`CP: 否`
   - 并行通道：`Track B 断言引擎`
   - 代码落地锚点 (Code Anchor)：`crates/ime-diag/src/uiframe/schema.rs`、`crates/ime-types/src/ui.rs`（契约侧，**只读**）、`xtask/src/testd/mirror_cli.rs`（断言面扩展）
-  - 任务状态：`[ ] 待开始`
+  - 任务状态：`[x] 已完成`
+- 落地证据：xtask/src/testd/mirror_cli.rs 与 mirror_cli/tests.rs：新增 --assert-annotation/--assert-full-list/--assert-status 断言面（Expectations::from_args/verdict/ok_lines），11 个新测试；task_check xtask mirror 19/19 绿、ime-diag --features uiframe uiframe 22/22 绿；偏差登记：卡前提 schema v2 过时——uiframe 快照格式已是 format 3，annotation/score/全量候选/status 逐字落盘、写端零丢失，真实缺口是断言 CLI 而非 schema；镜像 JSON 写增量仅 annotation 字符串约 ≤1KB；置顶可见性端到端=add-user-pin 重放 + --assert-full-list 顺序断言
 - **MCP 能力映射与协议报文契约**：`runtime://ui_frame` 的镜像 schema 为 features-add 增量字段预留判定面（**镜像 schema 是诊断面，冻结契约 `ime-types` 不动**——新增字段来自既有 `Candidate.annotation`/`StatusStrip`/`score` 的透传，不新增契约类型）：
 
 ```rust

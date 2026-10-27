@@ -733,8 +733,19 @@ fn lock_ui_startup() -> MutexGuard<'static, Option<UiStartup>> {
 /// under [`UI_SHUTDOWN_TIMEOUT_CODE`]: dropping its handle leaves it to finish on its own,
 /// which is the only option left once the host is tearing the process down.
 fn stop_ui_startup(startup: UiStartup) -> bool {
+    stop_ui_startup_within(startup, UI_SHUTDOWN_TIMEOUT)
+}
+
+/// Stops the UI thread, waiting at most `deadline` for it to answer.
+///
+/// The deadline is a parameter rather than [`stop_ui_startup`] reading the constant
+/// directly so the timeout branch of the contract — a thread that does not answer is
+/// detached and reported — can be exercised at test speed: waiting out the widened
+/// test-build bound would cost a multiple of `nextest`'s kill threshold on every run,
+/// and the branch's meaning does not depend on how long the deadline is.
+fn stop_ui_startup_within(startup: UiStartup, deadline: Duration) -> bool {
     let UiStartup { thread, .. } = startup;
-    let delivered = thread.shutdown(UI_SHUTDOWN_TIMEOUT).is_ok();
+    let delivered = thread.shutdown(deadline).is_ok();
     // The thread counts a join that ran out in its own statistics, because a shutdown that
     // gives up is still a successful call: the request was delivered, the answer was not.
     let timed_out = thread.stats().shutdown_timeouts > 0;

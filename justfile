@@ -342,6 +342,21 @@ smoke:
     fi
     cargo run --quiet -p xtask -- testd-smoke
 
+# The acceptance tier of the E2E case suite: the smoke tier first, as a gate, then the
+# acceptance tier, serially -- the acceptance cases claim a real display and an exclusive
+# X server, so they run one at a time and only after every fast case passed. A case that
+# declares a screen requirement is skipped, not failed, on a machine that has none: the
+# gate's verdict lands in the batch report and the exit stays green, which is what makes
+# this recipe safe to hang in a headless CI job as the acceptance tier's headless subset.
+check-e2e-acceptance:
+    cargo run --quiet -p xtask -- testd-suite --tier acceptance
+
+# The stress tier of the E2E case suite: soak, allocation and scale cards. It refuses to
+# start unless the machine is idle -- a soak sampled under load measures the load -- so
+# this recipe is machine-exclusive by construction and is never a CI gate.
+check-e2e-stress:
+    cargo run --quiet -p xtask -- testd-suite --tier stress
+
 ci: check audits check-host smoke
 
 # `just ci` with the host-ABI half required rather than optional: the same suite, but

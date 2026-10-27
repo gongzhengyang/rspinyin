@@ -793,7 +793,7 @@ fn test_v2_flags_reach_the_request() {
     // The v2 channel names the switch, and the switch does what the v1 field's own
     // scenario shows it doing: the initials reach the full spelling.
     let scenario = parse_scenario(ABBREV_V2).expect("the v2 scenario parses");
-    assert!(scenario.abbrev == false, "the v1 field stays clear");
+    assert!(!scenario.abbrev, "the v1 field stays clear");
     let fixture = EngineFixture::new(scenario).expect("the fixture assembles");
     run_scenario(
         &fixture.scenario,

@@ -91,7 +91,7 @@ pub use crate::viterbi::lattice::{
     FALLBACK_SINGLES, Lattice, LatticeEdge, MAX_LATTICE_NODES, MAX_WORD_SYLLABLES, WORDS_PER_KEY,
     build_lattice, build_lattice_into,
 };
-pub use crate::viterbi::scratch::DecodeScratch;
+pub use crate::viterbi::scratch::{DecodeScratch, DecodeSources};
 
 /// Tests for the decode pipeline, driven through the one entry point this tree exposes.
 ///

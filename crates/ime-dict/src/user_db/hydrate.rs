@@ -95,12 +95,15 @@ pub(super) fn load_committed(db: &Database, path: &Path, cap: u64, v1: bool) -> 
 /// moves a pin -- and a store's pins are a handful of rows whatever its record count,
 /// so the read costs nothing next to the load it accompanies.
 ///
+/// The pin tables one read of the store produces: the pinned keys and their pinned forms.
+///
+/// A type alias rather than a repeated tuple because the pair crosses three signatures, and
+/// a reader who meets the shape once named does not re-derive which set is which.
+pub(super) type PinTables = (HashSet<Box<str>>, HashMap<Box<str>, Box<str>>);
+
 /// # Errors
 /// Returns [`ImeError::DictUnavailable`] when either pin table fails.
-pub(super) fn read_pins(
-    txn: &redb::ReadTransaction,
-    path: &Path,
-) -> Result<(HashSet<Box<str>>, HashMap<Box<str>, Box<str>>), ImeError> {
+pub(super) fn read_pins(txn: &redb::ReadTransaction, path: &Path) -> Result<PinTables, ImeError> {
     let mut pinned = HashSet::new();
     let meta = txn
         .open_table(USER_META)
@@ -132,11 +135,7 @@ pub(super) fn read_pins(
 ///
 /// # Errors
 /// Returns [`ImeError::DictUnavailable`] when the read transaction or a table fails.
-pub(super) fn load_pins(
-    db: &Database,
-    path: &Path,
-    v1: bool,
-) -> (HashSet<Box<str>>, HashMap<Box<str>, Box<str>>) {
+pub(super) fn load_pins(db: &Database, path: &Path, v1: bool) -> PinTables {
     if v1 {
         return (HashSet::new(), HashMap::new());
     }
@@ -299,7 +298,7 @@ pub(super) fn load_coined(db: &Database, path: &Path) -> HashMap<Box<str>, Vec<B
         return HashMap::new();
     };
     let mut coined: HashMap<Box<str>, Vec<Box<str>>> = HashMap::new();
-    let walk = table.iter().map(|walk| walk);
+    let walk = table.iter();
     if let Ok(mut rows) = walk {
         while let Some(Ok((row_key, row))) = rows.next() {
             let composite: Box<str> = Box::from(row_key.value());

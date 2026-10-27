@@ -52,6 +52,10 @@ mod document;
 
 use self::document::{CoinedExport, ExportDocument, Parsed, parse_export};
 
+/// The pending coin tables one snapshot of the pending lock produces: the coins keyed by
+/// their source word, and the tombstones of the removed ones.
+type CoinTables = (HashMap<Box<str>, (Box<str>, u32)>, HashSet<Box<str>>);
+
 /// Ceiling on one export document, in bytes (`ASM-A-09`).
 ///
 /// The same number bounds an import: a document larger than this is not one of ours, and
@@ -272,7 +276,7 @@ impl Inner {
         // into its row instead of doubling it, and the iteration is the map's key order
         // rather than whatever order the two sources were read in.
         let mut merged: BTreeMap<Box<str>, CoinedExport> = BTreeMap::new();
-        if let Ok(mut iter) = rows.iter().map(|walk| walk) {
+        if let Ok(mut iter) = rows.iter() {
             while let Some(Ok((row_key, row))) = iter.next() {
                 let composite = Box::<str>::from(row_key.value());
                 if removed.contains(composite.as_ref()) {
@@ -327,7 +331,7 @@ impl Inner {
     /// The same reason [`Inner::pending_snapshot`] copies: the scan must not hold the
     /// delta lock across a read transaction. The maps are bounded by the pending
     /// capacity, so the copy is bounded by it too.
-    fn coin_snapshot(&self) -> (HashMap<Box<str>, (Box<str>, u32)>, HashSet<Box<str>>) {
+    fn coin_snapshot(&self) -> CoinTables {
         let pending = lock(&self.pending);
         (pending.coined.clone(), pending.coined_removed.clone())
     }

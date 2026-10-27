@@ -28,6 +28,10 @@ use super::environment::{Environment, wsl_of};
 use super::error::SuiteError;
 use super::verdict;
 
+// The tier ladder's own tests -- selection, planning, the gate, the withheld case -- live
+// beside these, so this file stays inside the line limit.
+mod tier;
+
 /// A scratch directory that removes itself when the test ends.
 #[derive(Debug)]
 struct Scratch {

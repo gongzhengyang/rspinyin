@@ -17,7 +17,8 @@
   - 对标参考锚点 (Benchmark Reference)：rime-ice 三层归一化——`remarks/rime-ice/cn_dicts/base.dict.yaml`（两字词真实语料词频 1~1,926 万）与 `ext.dict.yaml`/`tencent.dict.yaml`（3+ 字词全部压平为 100）；词长梯度数据见 [rime-ice.md](../compare/rime-ice.md) §2.2~§2.3
   - 本项目代码落地锚点 (Code Anchor)：新增 `xtask/src/dictc/normalize.rs`；修改 `xtask/src/dictc/build.rs:115`（`compile` 管线内、L3c 纠音之后、五段写出之前插入归一化 pass）；`xtask/src/main.rs` 注册 `mod normalize`（模块根文件归主代理）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：xtask/src/dictc/normalize.rs (test_normalize_two_char_true_freq_is_kept, test_normalize_core_clamp_caps_the_head, test_normalize_long_words_are_flattened, test_normalize_low_freq_two_char_drops_into_the_tail)；build.rs 归一化 pass 接线于纠音后、五段写出前
 - **目标与价值**：jieba 词频是单一真实分布（1 ~ 千万级）直接进 Q8.8 排序，3+ 字长尾词的频次噪声与两字头部真频同权竞争，是 top1 73.8% 的重要损耗源。本卡在 dictc 编译期把权重划分成「两字真频带 / 3+ 字压平带 / 字表真频带」三层，并校验词长梯度——**容器格式零变更**，排序输入质量直接提升。rime-ice 用同样的数据策略把「同音先短词」做成了数据保证而非引擎逻辑。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：`compile()` 的词条收集完成后、`prob_q12` 映射（`build.rs:308`）之前，按词长与来源对权重归一化：
@@ -103,7 +104,8 @@
   - 对标参考锚点 (Benchmark Reference)：rime-ice 的数据工程纪律——`others/script/` Go 校验链 + 基于 `rime_api_console` 的端到端冒烟（[rime-ice.md](../compare/rime-ice.md) §8）；本项目既有 `dictc/quality.rs:349` `measure<L: Lexicon>` 留出集测量
   - 本项目代码落地锚点 (Code Anchor)：修改 `xtask/src/dictc/quality.rs`（`QualityReport` 增词长分带 top1）、`xtask/src/tune.rs:119`（`run` 的搜索空间接入新默认权重）、留出集再生成脚本 `xtask/src/bin/`（若拆分为 holdout 子命令则改 `main.rs` 分派）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：xtask/src/dictc/quality.rs report 模块 Top1Band/LengthBandAccuracy 词长分带 top1 审计；xtask/src/tune/holdout.rs + tune/tests.rs (test_generate_holdout_is_stratified_attributed_and_reproducible, test_generate_holdout_writes_rows_that_avoid_the_evaluation_set)
 - **目标与价值**：归一化与后续 bigram/词源改动都需要「可回归的排序质量基线」。现状 `quality.rs` 只报总 top1/top9，无法定位「两字词层 vs 长尾层」各自的损耗，调参（`xtask tune`）也缺少分带反馈。本卡把质量门升级为分带审计 + 门禁值上移，是 CP-2 的收口动作。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：
@@ -167,7 +169,8 @@
   - 对标参考锚点 (Benchmark Reference)：librime `algo/dynamics.h:6-15`（`formula_d` 指数衰减 + `formula_p` 概率映射）与 `user_db.cc:22-26` 的 `c=<commits> d=<dee> t=<tick>` 记录形态；逻辑时钟见 [librime.md](../compare/librime.md) §5.2
   - 本项目代码落地锚点 (Code Anchor)：修改 `crates/ime-dict/src/user_db.rs`（表定义 :176-184、水合结构、`record`/`freq`/`commit` 路径、打开时迁移）；`user_db/backup.rs` 备份兼容确认（只读整文件拷贝，无需改）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-dict/src/user_db.rs schema v2 (dee/tick) + user_db/open.rs 打开时迁移；user_db/tests/migration.rs (test_user_db_migrates_v1_rows_once_and_preserves_their_values, test_user_db_migrates_an_empty_v1_store_without_writes, test_a_migrated_store_hydrates_and_lists_its_rows, test_user_db_failed_v1_migration_degrades_readonly_and_can_retry)
 - **目标与价值**：现状 `user_words: &str -> (u32 commits, u64 last_used_ms)`（`user_db.rs:17,176`）单调递增，多年前的词与本周的词同权。本卡把存储升级为带**衰减累加器 dee 与逻辑时钟 tick** 的 v2 记录，为 `TASK-1.02.02` 的衰减数学提供数据基座。librime 用同一套 `c/d/t` 记录支撑了十年可用的动态调频，其「按音节逻辑时钟衰减」的数学是直接可移植的成熟设计。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：新表与迁移（redb 表宽度固定，加字段必须换表；旧文件迁移放在打开路径的一个写事务里，失败则原文件不动）：
@@ -233,7 +236,8 @@
   - 对标参考锚点 (Benchmark Reference)：librime `algo/dynamics.h` 全文（`formula_d(d,t,da,ta)=d+da·exp((ta−t)/200)`；`formula_p` 概率映射；`dee ≤ 1e-200` 丢弃）与 `user_dictionary.cc:535-574` 的读侧折叠（[librime.md](../compare/librime.md) §5.2）
   - 本项目代码落地锚点 (Code Anchor)：新增 `crates/ime-dict/src/user_db/decay.rs`；修改 `crates/ime-dict/src/user_db.rs`（`freq` 惰性折叠）、`crates/ime-core/src/lm/score.rs:250-257`（user 项输入说明与饱和注释）
   - 引入依赖白名单：`无`（exp 用分段查表近似，与既有 `log2_q8` 同手法，不引入 `libm`）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-dict/src/user_db/decay.rs (test_fold_half_life_is_exact_to_one_half, test_fold_is_monotonic_and_bounded_by_the_floor, test_fold_treats_a_rewound_tick_as_unaged, test_fold_saturates_an_extreme_tick_gap_at_the_floor)；user_db/tests.rs (test_user_db_decay_sinks_an_aged_word_below_a_fresh_one, test_user_db_idle_fold_advances_a_flushed_record_to_the_current_tick)
 - **目标与价值**：给用户词频加上「按使用量衰减」的时间维：久未上屏的词权重自然回落，新词能浮上来——这是真实使用中最先被感知的排序劣化的根治。librime 的衰减数学（半衰期 ≈139 次上屏）经过十年验证，本项目把它移植为**整数定点**实现，遵守 3.8 的「f32 不得驱动排序」约束。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：
@@ -302,7 +306,8 @@
   - 对标参考锚点 (Benchmark Reference)：librime 的衰减参数内置于公式；本项目把参数外化为配置（对齐 ime-config 的「坏值修默认」哲学）——无直接对标代码，属本地化适配
   - 本项目代码落地锚点 (Code Anchor)：修改 `crates/ime-config/src/schema.rs` + `reload.rs`（`[data]` 节新增 `decay_half_life_ticks`/`decay_floor`）+ `DEFAULT_CONFIG_TOML` 模板；修改 `crates/ime-dict/src/user_db.rs`（`evict` sweep 内批量前向折叠）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-config/src/schema/tests.rs (test_data_section_reads_the_decay_keys_from_a_document, test_data_section_repairs_decay_values_a_document_writes_out_of_range)；user_db/tests.rs evict 批量前向折叠 (test_user_db_evicts_the_oldest_records, test_user_db_eviction_forgets_the_evicted_counts)
 - **目标与价值**：让衰减行为可调（重度用户可加快遗忘、轻量用户可加长记忆），并保证 on-demand 懒折叠的代价有界：空闲期 sweep 把磁盘上的 dee/tick 前向折叠到接近当前 tick，单次懒折叠的 `elapsed` 永远有限。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：`[data]` 节新增键（三态标注「reload 生效」）：
@@ -345,7 +350,8 @@
   - 对标参考锚点 (Benchmark Reference)：librime `.table.bin` 的 log 域词频存储与四级索引思想（[librime.md](../compare/librime.md) §4.2）；librime-octagram 的「Grammar 槽 + 插件注入」形态（本卡只取「bigram 概率表」这一最小数据形态，不引模型文件）
   - 本项目代码落地锚点 (Code Anchor)：修改 `crates/ime-dict/src/format/mod.rs`（v2 header/flag 语义、`BigramRecord`）、`crates/ime-dict/src/format/reader.rs`（v2 验收 + v1 永久兼容）；新增 `xtask/src/dictc/bigram.rs`（共现统计与段生成）；修改 `xtask/src/dictc/build.rs`（接线一行）、`xtask/src/dictc/budget.rs`（Bigram scope 份额启用，`budget.rs:196` 的 scope 已存在）、`data/sources.toml` + `xtask/fetch.sh`（语料源登记）
   - 引入依赖白名单：`无`（语料切分用自编译词表做最大正向匹配，不引入分词 crate）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-dict/src/format/reader/ v2 BIGRAM 段验收 (test_parse_rejects_a_bigram_section_in_a_version_one_container, test_round_trip_reads_back_every_section_byte_for_byte)；xtask/src/dictc/bigram.rs (test_count_cooccurrence_segments_known_adjacent_words_and_skips_unknown_text, test_build_records_cuts_quantizes_and_sorts_deterministically, test_build_records_honours_the_score_floor_and_empty_input)
 - **目标与价值**：`DictLm::bigram` 恒 miss（`fst_index/dict_lm.rs:207-214`）把排序上限钉死在一元。本卡交付 BIGRAM 段的完整生产链：语料 → 自词表切分 → 相邻共现计数 → 按 PMI·count 裁剪 top-N → `(pair, prob_q12)` 有序段 → v2 容器。这是 CP-1 的重活，也是长句 top1 的最大单杠杆。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：段记录与读取视图：
@@ -424,7 +430,8 @@
   - 对标参考锚点 (Benchmark Reference)：librime poet 的有 LM 形态（按前词分桶束搜索，`poet.cc:134-168`）——本项目解码骨架已是 K-best Viterbi，只把 `Grammar::Query` 的等价物（bigram 查表）接进既有打分；librime.md §7 的消费点清单
   - 本项目代码落地锚点 (Code Anchor)：修改 `crates/ime-dict/src/fst_index/dict_lm.rs`（段视图 + `bigram` 真查）、`crates/ime-dict/src/fst_index.rs`（`DictLm` 装配传段）；`crates/ime-core/src/lm/mod.rs` 的 `InMemoryLm`（测试 double 支持真 pair，保同序契约可测）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-dict/src/fst_index/tests.rs (test_dict_lm_bigram_hit_matches_the_in_memory_model_and_ranking, test_dict_lm_bigram_falls_back_to_the_unigram_minus_the_miss_penalty, test_dict_lm_v1_has_no_bigram_section_and_preserves_the_miss_path)；ime-core lm/ngram.rs + lm/score.rs (test_edge_score_uses_the_bigram_when_a_predecessor_is_given)
 - **目标与价值**：把 `fn bigram` 从「恒 miss」换成真查表，使 5 权重中沉睡的 `bi = 154(0.6)` 通道真正生效——两字词序列获得上下文消歧（「中国/银行」类接续），长句 top1 直接受益。`LanguageModel` trait 冻结不动（`ASM-A-10`），本卡是纯实现替换。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：
@@ -488,7 +495,8 @@
   - 对标参考锚点 (Benchmark Reference)：rime-ice `pin_cand_filter.lua:1-380`（「编码⇥词」置顶、纯重排不造词、自动派生简码键——[rime-ice.md](../compare/rime-ice.md) §4）；librime 用户词「同码长用户词优先」的排序语义（`script_translator.cc:626-633`）
   - 本项目代码落地锚点 (Code Anchor)：修改 `crates/ime-types/src/lexicon.rs`（`UserFreqSource` 增 `set_pinned` 默认方法——**冻结契约增项**）、`crates/ime-core/src/state/transitions.rs:203-204`（`PinHighlighted` 转正）与 `crates/ime-core/src/state/effects.rs`（`Effect` 增变体）、`crates/ime-dict/src/user_db.rs`（`set_pinned` 真实现 + `freq` 置顶封顶）、`crates/ime-fcitx5/src/effects.rs`（执行器分支）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-types/src/lexicon.rs UserFreqSource::set_pinned 默认方法；state/tests/transitions.rs (test_pin_highlighted_arm_toggles_the_highlighted_word_for_the_input, test_pin_highlighted_arm_does_nothing_without_a_composition, test_pin_applied_event_refreshes_a_composing_session)；user_db set_pinned 真实现 + ime-fcitx5 effects 执行器分支
 - **目标与价值**：置顶是「成本最低的用户可感知改进」（对比报告 P0-4）：用户对高亮候选按 Pin 键，该词在其编码下从此排第一。存储侧 `user_meta.pinned` 与内存 `pinned: Mutex<HashSet<Box<str>>>`（`user_db.rs:177,336`）已就绪，状态机与 trait 只差最后一跳。rime-ice 用 380 行 Lua 实现的语义，本项目在引擎内只需一个 effect + 一个打分封顶。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：契约增项（默认实现模式与 `list`/`export_tsv` 的 ADR-0005 先例一致——测试 double 与其他实现零负担）：
@@ -558,7 +566,8 @@
   - 对标参考锚点 (Benchmark Reference)：rime-ice `pin_cand_filter.lua` 的配置文件「编码⇥词」可读格式与使用说明传统（文件头大篇幅说明书）；librime `UserDbMerger` 之外的管理面（forget/list）语义
   - 本项目代码落地锚点 (Code Anchor)：修改 `crates/ime-dict/src/user_db.rs`（`list`/`export_tsv` 增置顶标记）、`crates/ime-fcitx5/src/cheatsheet.rs`（键位说明补 Pin 行为）、`crates/ime-diag`（probe 计数器 `user_pins` 若探针注册表需扩展）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-dict/src/user_db/manage_tests.rs (test_forget_of_a_pinned_word_clears_the_pin_and_deletes_the_record, test_list_words_reads_an_old_record_as_unpinned_and_unstamped)；ime-fcitx5 addon/session/sources.rs (test_store_source_receives_the_pin_toggle)；export/list 置顶标记与 cheatsheet 键位说明
 - **目标与价值**：置顶若无管理面就是黑洞：用户不知道自己置顶过什么、导出的词库丢失置顶信息、诊断无法回答「为什么这个词总在第一」。本卡把置顶接入既有管理出口，形成闭环。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：`export_tsv` 的 TSV 增列（头注释登记 v2 格式）：

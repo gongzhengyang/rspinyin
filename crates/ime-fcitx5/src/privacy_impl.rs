@@ -125,6 +125,7 @@ pub enum ContextReport<'a> {
 ///     program: Some("keepassxc"),
 ///     password: true,
 ///     sensitive: false,
+///     preedit: false,
 /// };
 /// assert!(classify(password_box, &blacklist).forbids_learning());
 /// // Nothing reported: the fail-closed answer.

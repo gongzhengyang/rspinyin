@@ -169,6 +169,11 @@ passthrough_url = true
 max_raw_len = 64                # 1..=64
 verify_dict_on_load = "full"    # "full" or "header"
 abbrev = false                  # `nh` reaches `你好`
+correction = false              # one-step neighbour-slip correction, `zhegn` -> `zheng`
+mixed_english = false           # raw ASCII words become candidates while composing
+on_im_switch = "clear"          # "clear" or "commit" the preedit when the IM flips
+compose = false                 # dead-key compose sequences
+share_state = "context"         # "context" or "global" composing state
 
 [ui]
 client_preedit = false          # show the composing text in the application instead
@@ -200,6 +205,17 @@ scheme = "full"                 # "full", or a double-pinyin layout
 show_hint = true                # name the layout in the window's header
 keep_full_pinyin = true
 
+[fuzzy]
+enabled = false                 # master switch of the nine classes below
+zh_z = false                    # zh/z, ch/c, sh/s, n/l, f/h, an/ang, en/eng, in/ing
+ch_c = false
+sh_s = false
+n_l = false
+f_h = false
+an_ang = false
+en_eng = false
+in_ing = false
+
 [phrases]
 enabled = true
 file = ""                       # empty: the default location
@@ -209,9 +225,12 @@ max_entries = 5000              # 1..=50000
 durability = "eventual"         # "eventual" batches writes, "immediate" flushes each
 backup_enabled = true           # copy the learned words automatically
 backup_keep = 3                 # 1..=32 generations
+dict_staged_path = ""           # dictionary the next reload swaps in whole
 
 [diagnostics]
 level = "info"                  # "error" .. "trace"
+decay_half_life_ticks = 139     # user-word decay half-life, in commits
+decay_floor = 65536             # Q16.16; at or below it a learned word stops ranking
 log_rotation_mb = 8
 log_keep_files = 3
 log_input_content = false       # accepted, no effect: input is never logged

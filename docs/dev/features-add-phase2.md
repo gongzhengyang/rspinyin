@@ -17,7 +17,8 @@
   - 对标参考锚点 (Benchmark Reference)：librime `fuzz` 运算的物化语义（[librime.md](../compare/librime.md) §6，`calculus.cc:214-221`）；rime-ice `rime_ice.schema.yaml` 的 20+ 条模糊音模板（单向/成对 derive，注释待启用形态）
   - 本项目代码落地锚点 (Code Anchor)：修改 `crates/ime-config/src/schema.rs` + `reload.rs`（新增 `[fuzzy]` 节）+ `DEFAULT_CONFIG_TOML`；修改 `crates/ime-core/src/state/machine.rs:454` 附近（把投影后的模糊音位并入 `self.request.flags`）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-config [fuzzy] 节：reload/tests.rs (test_fuzzy_class_flags_maps_the_section_onto_the_frozen_bits, test_fuzzy_section_merges_key_by_key_over_the_defaults)；state/tests/transitions.rs (test_fuzzy_classes_latched_from_the_config_widen_the_lattice, test_fuzzy_reload_latches_at_the_next_composition)
 - **目标与价值**：8 类模糊音扩边（`DecodeFlags::FUZZY_ZH_Z` … `FUZZY_F_H`，`ime-types/src/decode.rs:56-72`）引擎侧全部实现，但生产会话只设 `SHUANGPIN` 位（`machine.rs:454`），用户没有任何开关能打开它。本卡是典型「最后一公里接线」：配置节 → 投影 → 解码位，~1 天量级换来方言口音用户的可用性格变。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：配置节（模板片段）：
@@ -80,7 +81,8 @@
   - 对标参考锚点 (Benchmark Reference)：librime Prism 的 `CommonPrefixSearch`/`ExpandSearch`（[librime.md](../compare/librime.md) §2.2、§4.3——darts 双数组的前缀枚举）；features.md `TASK-2.02.02` 索引预写的「`fst::map::Streamer` 前缀枚举」思路
   - 本项目代码落地锚点 (Code Anchor)：修改 `crates/ime-dict/src/fst_index.rs:399-403`（`FstLexicon` 覆写 `prefix` 默认实现）；`crates/ime-types/src/lexicon.rs` **零改动**（`lexicon.rs:49` 的签名与文档已是最终语义）
   - 引入依赖白名单：`无`（`fst` crate 已在依赖树，stream/range API 内置）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-dict/src/fst_index.rs FstLexicon 覆写 prefix 流式前缀枚举；fst_index/tests.rs (test_prefix_streams_the_words_of_every_key_in_the_range, test_prefix_of_an_exact_key_answers_that_key_alone, test_prefix_stops_at_the_first_key_outside_the_range, test_prefix_pushes_the_limit_down_into_the_walk)
 - **目标与价值**：`prefix → Unsupported` 一行堵死了三条路：简拼生产化（`lattice/abbrev.rs:145` 静默跳过）、词补全、尾部补全。容器注释早已预告实现形态——「对同一 FST 的前缀区间做一次流式走查」（`fst_index.rs:399` 注释）。本卡兑现它：`fst::Map` 的 range stream（`ge(prefix)` 起步、逐键比对前缀、越过区间即停），WORDLIST 间接层照常解引用，零拷贝语义不变。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：
@@ -138,7 +140,8 @@
   - 对标参考锚点 (Benchmark Reference)：rime-ice 超级简拼——`erase/^hm$|^m$|^n$|^ng$/` + `abbrev/^([a-z]).+$/$1/` + `abbrev/^([zcs]h).+$/$1/`（`ch'sh`→城市，[rime-ice.md](../compare/rime-ice.md) §3.3）；librime abbrev 的 credibility −log0.5 对数罚（`calculus.cc:238-245`）
   - 本项目代码落地锚点 (Code Anchor)：修改 `crates/ime-config/src/reload.rs:125-127`（删去 "Not wired yet" 注释并转正）、`crates/ime-core/src/state/machine.rs`（abbrev 位并入 flags，与 2.01.01 同一注入点）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-config/src/reload/merge.rs abbrev 配置转正接线；state/tests/transitions.rs (test_abbrev_switch_expands_the_initial_reading)
 - **目标与价值**：`engine.abbrev` 配置键存在（默认 false）但注释明言「Not wired yet」；`segment/abbrev.rs` 代数与 `lattice/abbrev.rs` walk 完整、简拼罚 `ABBREV_PENALTY_Q8` 已带。prefix 实装后唯一缺口就是这根线。rime-ice 的「超级简拼」（zh/ch/sh 整体取首两母）语义已在 rspinyin 的简拼代数中有对应物。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：与 2.01.01 完全同构的一根线：
@@ -177,7 +180,8 @@
   - 对标参考锚点 (Benchmark Reference)：rime-ice `traditionalize` 开关（switches 声明 + `states/` 标签联动，[rime-ice.md](../compare/rime-ice.md) §3.1）；librime OpenCC 通道的「引擎组件读数据」形态
   - 本项目代码落地锚点 (Code Anchor)：修改 `crates/ime-core/src/state/transitions.rs:192-198`（`ToggleScript` 从「仅重发帧」补全为置位 + 效果）、`crates/ime-core/src/state/effects.rs`（`Effect::ScriptUnavailable` 若需新效果变体）、`crates/ime-fcitx5/src/engine/router/modes.rs:370` 附近（`transform_output` 挂 script 变换）、`crates/ime-fcitx5/src/engine/binding_audit.rs:288-297`（解除「v1 不启用」注释与审计豁免）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-fcitx5/src/engine/router/tests.rs (test_script_toggle_converts_the_commit_and_toggles_back)；state transitions ToggleScript 置位+效果；binding_audit v1 不启用豁免解除
 - **目标与价值**：简繁算法（最长匹配 + 内置种子变体表 + `ScriptIndex` 降级值）与 `ToggleScript` 键位全在，commit 路径却只走 `passthrough::transform_committed`（标点/全宽）；`ui/script/unavailable` 错误码已登记但没有上报方（features.md 验收记录明确）。本卡一次补齐三件事：模式置位、commit 变换、降级上报——繁体用户从「能切但没效果」到真实可用。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：commit 变换挂在输出管线末尾（`modes.rs` 的 `transform_output` 邻位）：
@@ -226,7 +230,8 @@
   - 对标参考锚点 (Benchmark Reference)：fcitx5-rime 的 preedit/模式初值协商（[fcitx5-rime.md](../compare/fcitx5-rime.md) §4/§6——配置初值进会话创建路径）；纠偏表 X-2
   - 本项目代码落地锚点 (Code Anchor)：修改 `crates/ime-fcitx5/src/engine/router/modes.rs:221-230`（`Modes::new` 接投影默认值）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-fcitx5/src/engine/router/modes.rs Modes::new 接投影默认值；router/modes/tests.rs (test_transform_output_default_modes_leave_ascii_and_cjk_alike_untouched)；router/config/tests.rs (test_from_config_projects_the_shipped_document_onto_the_default_view)
 - **目标与价值**：纠偏表 X-2 的结论：`punct_mode`/`full_width` 的运行期切换已接线（和弦 + `transform_committed`），缺的只是 `[engine]` 配置默认值到会话初始位的投影——`Modes::new` 用硬编码默认（`modes.rs:221-230` 注释自述）。用户改配置文件不生效，这是配置工程一致性缺口。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：
@@ -265,7 +270,8 @@
   - 对标参考锚点 (Benchmark Reference)：rime-ice `others/docs/Credits.md` 的上游登记与 `data/sources.toml` 白名单机制的对接设计（[rime-comparison.md](../compare/rime-comparison.md) §4.7 A 档清单）
   - 本项目代码落地锚点 (Code Anchor)：修改 `xtask/fetch.sh`（两源下载步骤）；`docs/dev/licenses.md`（逐源登记）；~~`data/sources.toml` 条目与 `scripts/check-dict-sources.sh` 排除名单~~ **已由 ADR-0012 落地完成（2026-10-14）**：`thuocl`（MIT, L4）与 `huayu`（PD→CC0 等价, L2）条目已登记，校验器 PASS（6 raw / 8 declared）——本卡只需回填 sha256/retrieved 与下载文件
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：data/fetch.sh thuocl/huayu 下载步骤；data/sources.toml thuocl(L4)/huayu(L2) 条目含 sha256+retrieved；docs/dev/licenses.md 逐源登记；scripts/check-dict-sources.sh PASS (11 raw / 11 declared)
 - **目标与价值**：两字词「输入法场景真频」的主力源（华宇野风，rime-ice base 的第一来源，Public Domain 许可最干净）与 3+ 字领域长尾源（THUOCL，MIT，按领域分文件）接进白名单。**许可裁决已落盘：ADR-0012（2026-10-14 用户批准）解除了 THUOCL 的预排除并登记了 PD→CC0 等价声明**，`sources.toml` 条目与校验器排除名单已同步。本卡的步骤 1 因此是执行性工作（fetch、hash 回填、登记），不再是裁决流程。从原始上游取数、不经 rime-ice 派生，仍是许可合规的硬边界（`ASM-A-08`）。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：`sources.toml` 新条目（对齐既有字段规则）：
@@ -312,7 +318,8 @@
   - 对标参考锚点 (Benchmark Reference)：rime-ice 的多音字纪律——「字表字频比 5:100 阈值作为自动注音开关」+ `others/script/rime/polyphone.go` 机器校验（[rime-ice.md](../compare/rime-ice.md) §1.5、§8）；其 base「两字词必须进 base」的分层维护约束
   - 本项目代码落地锚点 (Code Anchor)：修改 `xtask/src/dictc/build.rs`（L2 合并规则：华宇两字层与 jieba 的频率择优/覆盖策略）与 `xtask/src/dictc/quality.rs`（新校验 pass）；新增 `scripts/polyphone-check.py`（或 xtask 子命令，机器校验多音字词条）
   - 引入依赖白名单：`无`（校验逻辑自包含；若用 Python 脚本则 `-I` 隔离运行，不进 cargo 依赖）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：xtask/src/dictc/build.rs 华宇两字层合并 + PolyphoneRule 自动多音字检查；build/tests.rs (test_merge_two_char_layer_overrides_fills_and_skips_other_lengths, test_merge_two_char_layer_floor_and_order_free, test_compile_applies_polyphone_corrections_without_duplicating_a_word)；dictc/source/tests.rs (test_load_polyphone_refuses_an_illegal_row)
 - **目标与价值**：把两字词从「jieba 分词统计频」升级为「输入法场景真频」——这是 top1 的第二大杠杆（CP-2 收口）。同时吸收 rime-ice 的多音字纪律：新源词条过「字频比阈值」自动校验，不达标的词条降层或压平，把 L3c 手工 polyphone.tsv 的维护压力变成机器把关。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：L2 合并规则（build.rs 的源合并段）：
@@ -367,7 +374,8 @@
   - 对标参考锚点 (Benchmark Reference)：fcitx5-rime `RimeSessionPool`（`rimesession.cpp:104-134`：`No/Program/All` 三档键、weak 持有、无引用自动销毁）+ 策略切换快照/重建 + fcitx5 全局 `shareInputState` 联动（`rimeengine.cpp:770-782`）——[fcitx5-rime.md](../compare/fcitx5-rime.md) §2
   - 本项目代码落地锚点 (Code Anchor)：修改 `crates/ime-fcitx5/src/engine/context.rs`（Context 池键策略）、`crates/ime-fcitx5/src/addon.rs`（配置注入与策略）、`crates/ime-config/src/schema.rs` + `reload.rs`（`[engine] share_state = "context" | "program"`）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+- 落地证据：schema.rs ShareState closed_set + EngineConfig.share_state; reload.rs PartialEngine/merge_engine/DEFAULT_CONFIG_TOML + 2 repair tests; router/config.rs RoutingConfig.share; router.rs PoolKey/pool_key/PoolSlot/Context{fresh,adopted}/park + create-or-adopt activate_reported + last-live park on deactivate + pool.clear() on tier switch (snapshot semantics); tests: 7 pool tests (script bit across ICs, temp english, two-program isolation, unknown-app never pools, last-live park, policy switch, context-tier zero-diff) + test_load_repairs_an_unknown_share_state_to_the_context_default + test_reload_adopts_the_program_share_state; cargo nextest run -p ime-fcitx5 = 492 passed (keymap_matrix 2568 green)
 - **目标与价值**：现状每个输入上下文独立 `Context{session, modes, anchor, phrases}`，同一程序的两个窗口（编辑器主窗 + 查找框）输入状态互不相通——切窗口丢模式是真实高频痛点。fcitx5-rime 用三档会话池 + 属性传播策略解决；本项目取其 `Program` 档（`All` 全局档不做：跨程序共享模式弊大于利），app 标识复用 `privacy_impl` 已有的 hash 通道（明文程序名不过界）。
 - **技术设计与代码级接入细节**：
   - **底层模型与数据流改动**：
@@ -423,6 +431,7 @@
   - 本项目代码落地锚点 (Code Anchor)：`xtask/src/testd/smoke.rs`、`tests/smoke/cases.tsv`（211 行）、`justfile` `smoke:` 档（:322-342）
   - 引入依赖白名单：`无`
   - 当前状态：`[x] 已完成`
+- 落地证据：xtask/src/testd/smoke.rs (TSV 驱动器: parse_cases/expectation(@first|@contains|@regex|literal)/evaluate/run_cases/mount(FstLexicon::load+DictLm::new+FreshUser)/derive(留出集派生 core 带, 手写带保留), 11 单测) + main.rs TestdSmoke 子命令 + tests/smoke/cases.tsv (200 例: 30 手写 ambiguity/edge + 170 core 派生) + tests/smoke/README.md 指南 + justfile smoke 可选档(ci 链尾, 缺词典报跳过); regex 依赖入 workspace/contracts §6; 实测: 200/200 绿 1.7s(≤2s), 破坏用例→红且 FAIL 行可定位, cargo nextest run -p xtask 1214 绿
   - 验收记录：驱动器 + 211 例 TSV + `just ci` 的 `smoke` 层均已入线（`74afea9`，`RSPINYIN_REQUIRE_SMOKE_DICT=1` 时缺词典即红）；本记录由 2026-10-20 规划期复核补登。
 - **目标与价值**：分层（1.01）、衰减（1.02）、bigram（1.03）、词源（2.04）都在改排序——没有「期望文本」基线，每次改动只能靠 top1 百分比间接感知。rime-ice 的 TSV 冒烟把「这批键必须出这批字」变成一行一个用例的可读资产；`xtask testd-engine` 纯内存重放基建已在，缺的只是驱动器与首批用例集（目标 ≥200 例）。
 - **技术设计与代码级接入细节**：

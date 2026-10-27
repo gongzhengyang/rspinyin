@@ -119,10 +119,9 @@ fn annotation_of(
         // table's wrong forms, so the lookup runs before anything is allocated:
         // a miss costs one binary search and no string, and a hit is the whole
         // annotation.
-        return match hints.and_then(|table| table.lookup(&draft.text)) {
-            None => None,
-            Some(correct) => Some(format!("{CONFUSABLE_ANNOTATION_PREFIX}{correct}")),
-        };
+        return hints
+            .and_then(|table| table.lookup(&draft.text))
+            .map(|correct| format!("{CONFUSABLE_ANNOTATION_PREFIX}{correct}"));
     }
     let mut text = String::new();
     write_hinted_annotation(&mut text, draft, normalized, hints);

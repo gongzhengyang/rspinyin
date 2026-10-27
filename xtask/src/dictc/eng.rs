@@ -109,13 +109,8 @@ pub fn run(args: EngArgs) -> Result<()> {
     let id_of: BTreeMap<&str, u32> = hashed
         .iter()
         .enumerate()
-        .map(|(id, (_, row))| {
-            (
-                row.word.as_str(),
-                u32::try_from(id).expect("word ids fit u32"),
-            )
-        })
-        .collect();
+        .map(|(id, (_, row))| Ok((row.word.as_str(), u32::try_from(id)?)))
+        .collect::<Result<_, anyhow::Error>>()?;
 
     let max_weight = hashed.iter().map(|(_, row)| row.weight).max().unwrap_or(1);
     let mut strpool = Vec::new();
@@ -123,10 +118,11 @@ pub fn run(args: EngArgs) -> Result<()> {
     let mut unigram = Vec::with_capacity(count * UNIGRAM_ENTRY_SIZE);
     let mut wordlist = Vec::with_capacity(count * 4);
     for (id, (_, row)) in hashed.iter().enumerate() {
-        let id = u32::try_from(id).expect("word ids fit u32");
-        let offset = u32::try_from(strpool.len()).expect("the string pool fits u32");
+        let id = u32::try_from(id)?;
+        let offset = u32::try_from(strpool.len()).context("the string pool does not fit u32")?;
         strpool.extend_from_slice(row.word.as_bytes());
-        let characters = u8::try_from(row.word.chars().count()).expect("an ASCII word fits u8");
+        let characters = u8::try_from(row.word.chars().count())
+            .context("a mixed-English word does not fit the u8 character field")?;
         entries.extend_from_slice(
             // One syllable is the field's shape for a single-key word; the TERM bit is
             // what marks the entry as a term of the mixed-English table. The character
@@ -155,8 +151,8 @@ pub fn run(args: EngArgs) -> Result<()> {
     keys.sort_by_key(|(key, _)| key.as_bytes().to_vec());
     let mut fst_builder = fst::MapBuilder::memory();
     for (key, id) in keys {
-        let packed = pack_fst_value(u64::from(id), 1).expect("packing a word");
-        fst_builder.insert(key.as_bytes(), packed).expect("one key");
+        let packed = pack_fst_value(u64::from(id), 1)?;
+        fst_builder.insert(key.as_bytes(), packed)?;
     }
     let fst = fst_builder.into_inner()?;
 

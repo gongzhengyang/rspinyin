@@ -310,8 +310,8 @@ impl UiSurface for RecordingSurface {
 ///
 /// This is the half of the pointer path the surface's own descriptor unlocks -- without
 /// it the loop can only notice input when it wakes for some other reason. Nothing is ever
-/// posted on this path, so `apply` is a no-op: the delivery is complete when the loop has
-/// left its wait and handed the surface its drain call.
+/// posted on this path, so `apply` is a no-op: the delivery is complete when the drain
+/// has consumed the descriptor's counter.
 struct PointerSurface {
     probe: Arc<Probe>,
     connection: Wakeup,
@@ -327,7 +327,19 @@ impl UiSurface for PointerSurface {
     }
 
     fn drain_events(&mut self, _events: &UiEventQueue, _limit: usize) -> Result<(), ImeError> {
-        self.probe.observe();
+        // The loop calls this on every iteration, and only a drain that consumed
+        // the counter is a delivery: an iteration a signal or the loop's own
+        // waker caused reads an empty descriptor and leaves no sample, which is
+        // what keeps one wake one sample. Consuming the counter here is also
+        // what lets the loop block again afterwards -- a descriptor left ready
+        // would spin it for the rest of the measurement.
+        let delivered = self
+            .connection
+            .drain()
+            .map_err(|_| ImeError::UiChannelClosed)?;
+        if delivered {
+            self.probe.observe();
+        }
         Ok(())
     }
 

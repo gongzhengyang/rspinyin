@@ -789,7 +789,7 @@ fn test_apply_staged_dictionary_rejects_a_damaged_file_and_keeps_the_key() {
     assert!(!staged.exists(), "the staged path is empty");
     let quarantined: Vec<PathBuf> = fs::read_dir(&dir)
         .expect("reading the scratch directory")
-        .filter_map(|entry| Some(entry.expect("an entry").path()))
+        .map(|entry| entry.expect("an entry").path())
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())

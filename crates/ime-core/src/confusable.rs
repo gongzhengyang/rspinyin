@@ -314,7 +314,7 @@ fn row_of(line: &str) -> Result<Option<Row>, String> {
 /// phrase table applies, and what lets a later document override a shipped one.
 /// Returns the table and how many rows a later definition replaced.
 fn assemble(mut rows: Vec<Row>) -> (ConfusableTable, usize) {
-    rows.sort_by(|left, right| (*left.key).cmp(&*right.key));
+    rows.sort_by_key(|row| row.key.clone());
     let mut unique: Vec<Row> = Vec::with_capacity(rows.len());
     let mut overridden = 0usize;
     for row in rows {

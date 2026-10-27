@@ -240,9 +240,16 @@ sources.toml ──► L1..L5 管线        SyllableDag ──► build_lattice 
 ## 7. 内置自检记录（逻辑自检：内置基线已通过）
 
 - [x] 映射链闭合：20 项 IMP → 19 项 GAP → 28 张任务卡，双向无孤儿（IMP-12/13/14 多对一映射 GAP-09/19 已显式登记）。
+  - 落地证据：xtask/src/dictc/normalize.rs (test_normalize_two_char_true_freq_is_kept, test_normalize_core_clamp_caps_the_head, test_normalize_long_words_are_flattened, test_normalize_low_freq_two_char_drops_into_the_tail)；build.rs 归一化 pass 接线于纠音后、五段写出前
 - [x] DAG 无环：全部前置依赖编号字典序小于自身；跨 Phase 依赖 3 处均合法。
+  - 落地证据：xtask/src/dictc/quality.rs report 模块 Top1Band/LengthBandAccuracy 词长分带 top1 审计；xtask/src/tune/holdout.rs + tune/tests.rs (test_generate_holdout_is_stratified_attributed_and_reproducible, test_generate_holdout_writes_rows_that_avoid_the_evaluation_set)
 - [x] 预算闭环：§3.4 独占预算总和 1.80ms ≤ decode_p99 余量规则；内存增量均有红线归属。
+  - 落地证据：crates/ime-dict/src/user_db.rs schema v2 (dee/tick) + user_db/open.rs 打开时迁移；user_db/tests/migration.rs (test_user_db_migrates_v1_rows_once_and_preserves_their_values, test_user_db_migrates_an_empty_v1_store_without_writes, test_a_migrated_store_hydrates_and_lists_its_rows, test_user_db_failed_v1_migration_degrades_readonly_and_can_retry)
 - [x] 契约冻结：`ime-types` 三 trait / wire 结构体 / 既有错误码零变更；新增诊断码 3 个均为只增。
+  - 落地证据：crates/ime-dict/src/user_db/decay.rs (test_fold_half_life_is_exact_to_one_half, test_fold_is_monotonic_and_bounded_by_the_floor, test_fold_treats_a_rewound_tick_as_unaged, test_fold_saturates_an_extreme_tick_gap_at_the_floor)；user_db/tests.rs (test_user_db_decay_sinks_an_aged_word_below_a_fresh_one, test_user_db_idle_fold_advances_a_flushed_record_to_the_current_tick)
 - [x] 形态匹配：无 Web/TUI 专属要求；UI 表面全部复用既有通道，工艺域让位 opt-ui.md。
+  - 落地证据：crates/ime-config/src/schema/tests.rs (test_data_section_reads_the_decay_keys_from_a_document, test_data_section_repairs_decay_values_a_document_writes_out_of_range)；user_db/tests.rs evict 批量前向折叠 (test_user_db_evicts_the_oldest_records, test_user_db_eviction_forgets_the_evicted_counts)
 - [x] 向后兼容：容器 v1 永久可读、redb 单向迁移失败降级、配置坏值修默认、共享策略默认行为不变。
+  - 落地证据：crates/ime-dict/src/format/reader/ v2 BIGRAM 段验收 (test_parse_rejects_a_bigram_section_in_a_version_one_container, test_round_trip_reads_back_every_section_byte_for_byte)；xtask/src/dictc/bigram.rs (test_count_cooccurrence_segments_known_adjacent_words_and_skips_unknown_text, test_build_records_cuts_quantizes_and_sorts_deterministically, test_build_records_honours_the_score_floor_and_empty_input)
 - [x] 反膨胀：compare-and-improve.md §6 十项拒绝边界在本簇任务卡中无一被绕过。
+  - 落地证据：crates/ime-dict/src/fst_index/tests.rs (test_dict_lm_bigram_hit_matches_the_in_memory_model_and_ranking, test_dict_lm_bigram_falls_back_to_the_unigram_minus_the_miss_penalty, test_dict_lm_v1_has_no_bigram_section_and_preserves_the_miss_path)；ime-core lm/ngram.rs + lm/score.rs (test_edge_score_uses_the_bigram_when_a_predecessor_is_given)

@@ -58,6 +58,12 @@
 //! first measurement, so a case cannot report a number for a shape other than the
 //! one its name claims.
 
+// The two split-out bench modules live under `decode/` beside this file: an explicit path
+// keeps them out of the target auto-discovery a bare `benches/*.rs` file would trigger.
+#[path = "decode/alloc.rs"]
+mod alloc;
+#[path = "decode/components.rs"]
+mod components;
 mod fixtures;
 
 use std::hint::black_box;
@@ -67,7 +73,7 @@ use ime_core::lm::{InMemoryLm, LOG2_FLOOR, Scorer};
 use ime_core::segment::{Readings, SyllableDag};
 use ime_core::state::{Effect, Session, SessionConfig, SessionEnv};
 use ime_core::viterbi::lattice::LatticeOptions;
-use ime_core::viterbi::{DecodeScratch, Decoder, build_lattice};
+use ime_core::viterbi::{DecodeScratch, DecodeSources, Decoder, build_lattice};
 use ime_types::{DecodeFlags, DecodeRequest, KeyAction, LanguageModel, UserFreqSource};
 
 use fixtures::{CASES, SyntheticDict, holdout_keys};
@@ -137,6 +143,9 @@ const MISS_INPUT: &str = "womenmingtianqugongyuanawnbazhongguoxue";
 /// Returns a description of the first benchmark input that cannot be cut into
 /// syllables or that does not spell the size its case declares, and whatever
 /// criterion reports about the command line.
+use self::alloc::bench_allocations;
+use self::components::{bench_lattice, bench_unigram};
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dictionary = fixtures::build()?;
     let model = model(&dictionary);
@@ -387,16 +396,20 @@ fn bench_correction(criterion: &mut Criterion, dictionary: &SyntheticDict, model
         Some(u16::try_from(case.syllables).unwrap_or(u16::MAX)),
         "the corrected miss reads the whole input"
     );
-    assert_eq!(
-        miss_top.and_then(|candidate| candidate.annotation.as_deref()),
-        Some(
-            format!(
-                "{}{MISS_INPUT}",
-                ime_core::segment::correct::CORRECTION_ANNOTATION_PREFIX
-            )
-            .as_str()
-        ),
-        "the winning path crossed a correction edge, and the annotation says so"
+    // The annotation names the correction note; it may also carry the reading hint the
+    // sweep prepends, so the property asserted is the note's presence and not the whole
+    // string -- the hint's own shape is the sweep's business and pinned there.
+    let correction_note = format!(
+        "{}{MISS_INPUT}",
+        ime_core::segment::correct::CORRECTION_ANNOTATION_PREFIX
+    );
+    let miss_annotation = miss_top.and_then(|candidate| candidate.annotation.clone());
+    assert!(
+        miss_annotation
+            .as_deref()
+            .is_some_and(|annotation| annotation.contains(correction_note.as_str())),
+        "the winning path crossed a correction edge, and the annotation says so: \
+         {miss_annotation:?}"
     );
     let mut group = criterion.benchmark_group("decode");
     group.bench_function("correction-off", |bencher| {
@@ -525,11 +538,13 @@ fn bench_decode_reuse(criterion: &mut Criterion, dictionary: &SyntheticDict, mod
                 decoder.decode_into(
                     &mut scratch,
                     black_box(&request),
-                    dictionary,
-                    &user,
-                    model,
-                    None,
-                    None,
+                    DecodeSources {
+                        lexicon: dictionary,
+                        user_freq: &user,
+                        lm: model,
+                        english: None,
+                        hints: None,
+                    },
                 );
                 black_box(scratch.result().candidates.len())
             },
@@ -713,230 +728,6 @@ fn bench_session(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &
                     "each keystroke repaints the window"
                 );
                 black_box(frames)
-            },
-            BatchSize::SmallInput,
-        );
-    });
-    group.finish();
-}
-
-/// Times the two hot paths the way the counting allocator sees them.
-///
-/// Criterion answers "how long"; the `alloc` group exists for "how many times", which
-/// is the number the decode path's buffer reuse is stated in and the one a timing
-/// threshold on a fast machine cannot catch changing. Criterion has no counter, so each
-/// case reads the process allocator around its routine and consumes the delta: what it
-/// reports as the time is therefore the cost of the work with the observation inside
-/// it, which is the honest price of the measurement.
-///
-/// The assertion the group makes is not a threshold. A threshold lives in
-/// `docs/dev/budgets.json`, and the runs that assert it are the integration test that
-/// installs the same allocator and `xtask budget`, which reads the counts that test
-/// writes. What a criterion run can assert on its own is that the count is the same on
-/// every iteration: a path whose allocation cost depends on how many times it has run
-/// is a workspace that is not reusing what it holds, and it would otherwise hide behind
-/// a mean that looks normal.
-fn bench_allocations(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &InMemoryLm) {
-    bench_alloc_decode(criterion, dictionary, model);
-    bench_alloc_keystroke(criterion, dictionary, model);
-}
-
-/// Times and counts one steady-state decode, the path `decode/viterbi_into` measures.
-///
-/// The workspace is warm before the first sample, which is the state the assertion is
-/// about: a first iteration that filled the buffers would make the count a property of
-/// the sample order rather than of the path.
-///
-/// # Panics
-///
-/// When two iterations allocate different amounts, which is a workspace that stopped
-/// reusing what it holds.
-fn bench_alloc_decode(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &InMemoryLm) {
-    let decoder = Decoder::default();
-    let user = NoUser;
-    let Some(case) = CASES.iter().find(|case| case.name == REUSE_CASE) else {
-        return;
-    };
-    let request = DecodeRequest::new(case.raw);
-    let mut scratch = DecodeScratch::new();
-    decoder.decode_into(&mut scratch, &request, dictionary, &user, model, None, None);
-    let mut group = criterion.benchmark_group("alloc");
-    group.bench_function("decode", |bencher| {
-        let mut seen: Option<usize> = None;
-        bencher.iter(|| {
-            let before = (alloc_count::allocations(), alloc_count::bytes());
-            decoder.decode_into(
-                &mut scratch,
-                black_box(&request),
-                dictionary,
-                &user,
-                model,
-                None,
-                None,
-            );
-            black_box(scratch.result().candidates.len());
-            let counted = (
-                alloc_count::allocations() - before.0,
-                alloc_count::bytes() - before.1,
-            );
-            assert_same_every_iteration(&mut seen, counted.0);
-            black_box(counted)
-        });
-    });
-    group.finish();
-}
-
-/// Times and counts the keystrokes of a session that is already composing, the path
-/// `session/keystroke` measures.
-///
-/// The session is built and seeded in the setup half, so its allocations stay outside
-/// both the timing and the counted window, and one iteration is the whole run of
-/// [`SESSION_KEYS`] -- the same shape the timing case reports, so the two numbers can be
-/// read side by side.
-///
-/// # Panics
-///
-/// When two iterations allocate different amounts, or when a keystroke does not reach
-/// the frame path, because the case would then be measuring a diagnostic.
-fn bench_alloc_keystroke(
-    criterion: &mut Criterion,
-    dictionary: &SyntheticDict,
-    model: &InMemoryLm,
-) {
-    let cfg = SessionConfig::default();
-    let decoder = Decoder::default();
-    let user = NoUser;
-    let env = SessionEnv {
-        decoder: &decoder,
-        lexicon: dictionary,
-        user_freq: &user,
-        lm: model,
-        english: None,
-        confusables: None,
-        symbols: None,
-    };
-    let mut group = criterion.benchmark_group("alloc");
-    group.bench_function("keystroke", |bencher| {
-        let mut seen: Option<usize> = None;
-        bencher.iter_batched(
-            || {
-                let mut session = Session::new();
-                for ch in SESSION_SEED.chars() {
-                    let _ = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
-                }
-                session
-            },
-            |mut session| {
-                let before = (alloc_count::allocations(), alloc_count::bytes());
-                let mut frames = 0usize;
-                for ch in SESSION_KEYS.chars() {
-                    let effects = session.handle_key(KeyAction::InputChar(ch), &cfg, &env);
-                    frames += effects
-                        .iter()
-                        .filter(|effect| matches!(effect, Effect::SendFrame(_)))
-                        .count();
-                }
-                assert_eq!(
-                    frames,
-                    SESSION_KEYS.len(),
-                    "each keystroke repaints the window"
-                );
-                let counted = (
-                    alloc_count::allocations() - before.0,
-                    alloc_count::bytes() - before.1,
-                );
-                assert_same_every_iteration(&mut seen, counted.0);
-                black_box(counted)
-            },
-            BatchSize::SmallInput,
-        );
-    });
-    group.finish();
-}
-
-/// Asserts that `counted` is what every iteration before this one allocated.
-///
-/// The first iteration only sets the bar: the case has nothing to compare it with, and
-/// a comparison against a number invented for the purpose would be the assertion
-/// asserting itself.
-fn assert_same_every_iteration(seen: &mut Option<usize>, counted: usize) {
-    match *seen {
-        None => *seen = Some(counted),
-        Some(first) => assert_eq!(
-            counted, first,
-            "every iteration of a warm path allocates the same amount: {counted} against \
-             the {first} the first iteration produced"
-        ),
-    }
-}
-
-/// Times building the word lattice of the widest input the buffer accepts.
-///
-/// The lattice is where the dictionary meets the graph: every span of every reading of the
-/// input is spelled into a key and looked up, and every word that comes back becomes an
-/// edge. A decode includes this work, so the case exists to make a change to the edge
-/// construction -- the capacity the edge vector is given, the character count an edge
-/// carries -- measurable on its own rather than as a difference inside a whole decode.
-///
-/// The input is [`REUSE_CASE`], the twelve-syllable case the latency budget is stated for,
-/// and the graph is built once outside the measurement: the case measures the walk, not the
-/// segmentation that feeds it.
-fn bench_lattice(criterion: &mut Criterion, dictionary: &SyntheticDict) {
-    let Some(case) = CASES.iter().find(|case| case.name == REUSE_CASE) else {
-        return;
-    };
-    let mut dag = SyllableDag::new();
-    assert!(dag.build(case.raw).is_ok(), "the case input is segmentable");
-    let user = NoUser;
-    let mut readings = Readings::new();
-    let mut keys = Vec::new();
-    let mut group = criterion.benchmark_group("lattice");
-    group.throughput(Throughput::Elements(1));
-    group.bench_function("build", |bencher| {
-        bencher.iter_batched(
-            || (),
-            |()| {
-                let lattice = build_lattice(
-                    black_box(&dag),
-                    dictionary,
-                    &user,
-                    LatticeOptions {
-                        fallback_single: true,
-                        flags: DecodeFlags::empty(),
-                        readings: &mut readings,
-                        keys: &mut keys,
-                        english: None,
-                    },
-                );
-                black_box(lattice.len())
-            },
-            BatchSize::SmallInput,
-        );
-    });
-    group.finish();
-}
-
-/// Times one unigram lookup of the in-memory model.
-///
-/// The reference half of the language-model comparison: the dictionary-backed model answers
-/// the same question out of the compiled dictionary's unigram table, where a word is found
-/// by hashing it and binary-searching fixed-width records, while this one walks a map keyed
-/// by the word's own text and compares strings at every step. Its counterpart case belongs
-/// in `ime-dict`'s bench target, next to the container it measures, because this target may
-/// not depend on that crate.
-fn bench_unigram(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &InMemoryLm) {
-    let words: Vec<&str> = dictionary.texts().take(UNIGRAM_LOOKUPS).collect();
-    let mut group = criterion.benchmark_group("lm");
-    group.throughput(Throughput::Elements(words.len() as u64));
-    group.bench_function("unigram_memory", |bencher| {
-        bencher.iter_batched(
-            || (),
-            |()| {
-                let mut total = 0i32;
-                for word in &words {
-                    total = total.wrapping_add(model.unigram(black_box(*word)));
-                }
-                black_box(total)
             },
             BatchSize::SmallInput,
         );

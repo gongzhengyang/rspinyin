@@ -179,12 +179,18 @@ fn test_user_db_decay_sinks_an_aged_word_below_a_fresh_one() {
         db.record("fresh", 0);
     }
     // The loop crossed the batch size several times, so the flush thread has been
-    // draining while the records arrived. The reads below answer the map the last
-    // flush adopted, and a read that lands between a flush's drain and its adopt
-    // undercounts by one window -- which is the one window that can put the fresh
-    // word below the aged one. Committing first pins the read to a known generation.
+    // draining while the records arrived. A read that lands between a flush's drain and
+    // its adopt sees the batch in neither half of the answer -- the store's documented
+    // one-window gap -- and a fresh word caught in that gap reads as zero, which is
+    // exactly what would sink it below the aged one. `final_commit` narrows the gap to
+    // its bounded wait for the thread but does not close it: on a busy machine that wait
+    // can expire with the thread still inside the flush that already drained the map, and
+    // the commit's own flush then finds nothing to write and returns first. Settling the
+    // thread before the reads is the deterministic pin: once it is idle, every drain it
+    // took has been written and adopted, so both reads answer one settled generation.
     let mut db = db;
     db.final_commit().expect("flushing the whole batch");
+    db.wait_for_flush();
     assert!(db.freq("old") < db.freq("fresh"));
 }
 

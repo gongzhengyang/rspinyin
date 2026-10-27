@@ -56,7 +56,7 @@ use std::path::{Path, PathBuf};
 
 use alloc_count::Counting;
 use ime_core::lm::InMemoryLm;
-use ime_core::viterbi::{DecodeScratch, Decoder};
+use ime_core::viterbi::{DecodeScratch, DecodeSources, Decoder};
 use ime_types::{
     DecodeRequest, ImeError, LanguageModel, Lexicon, SyllableId, UserFreqSource, WordFlags,
     WordIter, WordRef,
@@ -236,18 +236,30 @@ fn steady_state(
     lm: &dyn LanguageModel,
 ) -> (usize, usize, bool) {
     let mut scratch = DecodeScratch::new();
-    decoder.decode_into(&mut scratch, request, lexicon, &NoUser, lm, None, None);
+    decoder.decode_into(
+        &mut scratch,
+        request,
+        DecodeSources {
+            lexicon,
+            user_freq: &NoUser,
+            lm,
+            english: None,
+            hints: None,
+        },
+    );
     let degraded = scratch.result().degraded;
     let before_allocations = alloc_count::allocations();
     let before_bytes = alloc_count::bytes();
     decoder.decode_into(
         &mut scratch,
         black_box(request),
-        lexicon,
-        &NoUser,
-        lm,
-        None,
-        None,
+        DecodeSources {
+            lexicon,
+            user_freq: &NoUser,
+            lm,
+            english: None,
+            hints: None,
+        },
     );
     black_box(scratch.result().candidates.len());
     (
@@ -344,11 +356,13 @@ fn test_decode_into_first_decode_costs_more_than_the_steady_state() {
     decoder.decode_into(
         &mut scratch,
         &request,
-        &Everywhere,
-        &NoUser,
-        &lm,
-        None,
-        None,
+        DecodeSources {
+            lexicon: &Everywhere,
+            user_freq: &NoUser,
+            lm: &lm,
+            english: None,
+            hints: None,
+        },
     );
     let cold = alloc_count::allocations() - before;
     assert!(
@@ -453,7 +467,17 @@ fn test_decode_into_steady_state_costs_the_budgeted_allocation() {
     // The first decode is the cold-start figure the report records: what filling the
     // workspace once costs, which is the number the reuse is worth.
     let before = alloc_count::allocations();
-    decoder.decode_into(&mut scratch, &long, &Everywhere, &NoUser, &lm, None, None);
+    decoder.decode_into(
+        &mut scratch,
+        &long,
+        DecodeSources {
+            lexicon: &Everywhere,
+            user_freq: &NoUser,
+            lm: &lm,
+            english: None,
+            hints: None,
+        },
+    );
     let cold = alloc_count::allocations() - before;
     assert!(
         !scratch.result().degraded,

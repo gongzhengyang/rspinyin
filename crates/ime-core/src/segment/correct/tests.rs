@@ -159,8 +159,15 @@ fn test_correction_penalty_far_exceeds_fuzzy_and_gates_on_its_bit() {
     // The value is spelled 998 << 8 to keep the shifted shape of its sibling
     // penalties; pinned here so a silent retuning shows up as a test failure.
     assert_eq!(CORRECTION_PENALTY_Q8, 998 << 8);
-    assert!(CORRECTION_PENALTY_Q8 > fuzzy::FUZZY_PENALTY_Q8);
-    assert!(fuzzy::FUZZY_PENALTY_Q8 > segment::abbrev::ABBREV_PENALTY_Q8);
+    // The ladder relationships read as constant-valued assertions for the same
+    // reason the pin above does not: the operands are constants, and the pin is
+    // the point -- a retuning that broke the ordering must fail here. Silenced
+    // rather than restated as literals, which could drift from the constants.
+    #[allow(clippy::assertions_on_constants)]
+    {
+        assert!(CORRECTION_PENALTY_Q8 > fuzzy::FUZZY_PENALTY_Q8);
+        assert!(fuzzy::FUZZY_PENALTY_Q8 > segment::abbrev::ABBREV_PENALTY_Q8);
+    }
     assert!(!is_enabled(DecodeFlags::default()));
     assert!(!is_enabled(DecodeFlags::FUZZY | DecodeFlags::ABBREV));
     assert!(is_enabled(DecodeFlags::CORRECTION | DecodeFlags::USER_DICT));

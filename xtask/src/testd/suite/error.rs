@@ -48,6 +48,34 @@ pub enum SuiteError {
         module: String,
     },
 
+    /// The tier the run asked for holds no case of this module.
+    ///
+    /// A tier asked for by name is a claim about a set of cases, and a set of zero is not a
+    /// green run waiting to happen: refusing names the ladder's actual state instead of letting
+    /// a recipe report a verification of nothing. The acceptance tier's *gate* phase refuses
+    /// the same way, because an acceptance run whose fast set is empty has no gate at all.
+    #[error(
+        "no case of module `{module}` is filed under the {tier} tier, so this run would have \
+         nothing to judge; tiers arrive as edits to the case table's own tier column"
+    )]
+    EmptyTier {
+        /// The tier that selected nothing, as its label spells it.
+        tier: &'static str,
+        /// The module code that holds no case of the tier.
+        module: String,
+    },
+
+    /// The stress tier refused to start because the machine is not exclusive.
+    ///
+    /// The stress tier measures the machine, so a number it collected under load would be a
+    /// number about the load; refusing names what the machine was doing instead of collecting
+    /// it anyway.
+    #[error("the stress tier refuses a busy machine: {reason}")]
+    MachineBusy {
+        /// What the machine was doing when it was sampled.
+        reason: String,
+    },
+
     /// The batch held no case at all.
     ///
     /// The last gate before a run's exit status, and it fails closed: a batch of zero cases is a
@@ -95,6 +123,8 @@ impl SuiteError {
         match self {
             Self::UnknownCase { .. } => "suite/case/unknown",
             Self::NoCases { .. } => "suite/selection/empty",
+            Self::EmptyTier { .. } => "suite/tier/empty",
+            Self::MachineBusy { .. } => "suite/purity/busy",
             Self::EmptyBatch => "suite/batch/empty",
             Self::BatchNotGreen { .. } => "suite/batch/not-green",
         }

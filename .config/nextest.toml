@@ -1,0 +1,32 @@
+# Slow-test marking and hang circuit-breaker for the workspace test suite.
+# `period = "1s"`: any test still running after 1s is flagged SLOW in the output,
+# which is what the >1s slow-test optimization pass keys off of.
+# `terminate-after = 15`: a test still running after 15 one-second periods is
+# killed and reported as TIMEOUT, so a deadlock cannot stall the whole run.
+[profile.default]
+# Criterion benches are `harness = false` binaries whose whole point is to run
+# their benchmark loops for minutes; nextest sees each as one test and the 15 s
+# circuit-breaker above kills them mid-run. The canonical gate command
+# (`cargo nextest run --workspace --all-features`) never builds them; this
+# default filter keeps that scope when a caller adds `--all-targets`, so the
+# benches stay where they belong: `cargo bench` / `just`, not the test gate.
+default-filter = "not (binary(decode) or binary(input) or binary(passthrough) or binary(dict) or binary(script) or binary(userdb) or binary(transport) or binary(frame) or binary(wakeup_latency))"
+slow-timeout = { period = "1s", terminate-after = 15, grace-period = "1s" }
+fail-fast = false
+
+# Acceptance profile: a single test that takes longer than 1s is itself a
+# failure, used for the final strict regression pass.
+[profile.strict]
+default-filter = "not (binary(decode) or binary(input) or binary(passthrough) or binary(dict) or binary(script) or binary(userdb) or binary(transport) or binary(frame) or binary(wakeup_latency))"
+slow-timeout = { period = "1s", terminate-after = 1, grace-period = "500ms" }
+fail-fast = false
+
+# The golden-diff budget gate times the fastest of twenty diffs against a
+# 30 ms bound. A diff is sub-millisecond of CPU, but neighbours on the run
+# queue can steal the core between two timed runs, and one stolen slice lands
+# in the fastest sample the assertion keeps. Reserving half the machine for
+# this one test is scheduling-level isolation: the assertion and its budget
+# are untouched, and every other test still runs one thread at a time.
+[[profile.default.overrides]]
+filter = "test(test_a_judgement_at_1200x280_stays_within_its_time_budget)"
+threads-required = 8

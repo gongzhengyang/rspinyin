@@ -232,7 +232,7 @@ impl Inner {
             .open_table(USER_LEXICON)
             .map_err(|error| store_error(&self.path, &error))?;
         let mut rows = Vec::new();
-        let walk = table.iter().map(|walk| walk);
+        let walk = table.iter();
         if let Ok(mut iter) = walk {
             while let Some(Ok((row_key, row))) = iter.next() {
                 let composite = row_key.value();

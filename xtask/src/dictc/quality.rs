@@ -52,11 +52,17 @@
 //! table produce the same rates on every machine, which is what lets one run record a
 //! baseline and a later run claim an improvement over it.
 
+mod corrections;
+mod report;
 mod tables;
+
+pub use self::corrections::{Correction, Origin, OriginMix, load_corrections};
+pub use self::report::{HoldoutCase, LengthBandAccuracy, QualityReport, Top1Band};
 
 #[cfg(test)]
 mod tests;
 
+use self::report::Tally;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -174,129 +180,6 @@ impl ReadingSource {
             Self::L3b => "L3b",
             Self::L3c => "L3c",
         }
-    }
-}
-
-/// One row of the held-out set, resolved to the key the container is queried with.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HoldoutCase {
-    /// The `'`-separated key the row's pinyin column segments into.
-    pub key: String,
-    /// The word that has to rank first for the row to count as a first-choice hit.
-    pub expected: String,
-    /// The layer the row is attributed to, for the per-layer breakdown.
-    pub source: ReadingSource,
-}
-
-/// Quality of one decode over the whole hold-out set.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
-pub struct QualityReport {
-    /// Fraction of cases whose first candidate is the expected word.
-    pub top1_rate: f64,
-    /// Fraction of cases where the expected word appears in the first nine
-    /// candidates. This is the reachability half: L3b fixes this one.
-    pub top9_rate: f64,
-    /// Cases the decoder could not spell at all, reported separately so a
-    /// missing word is never confused with a badly ranked one.
-    pub unreachable: u32,
-    /// Fraction of the cases the key serves whose first candidate is the expected word.
-    ///
-    /// [`QualityReport::top1_rate`] divides by every case, so a word the dictionary does
-    /// not hold counts against it exactly like a word it ranks second. This rate divides
-    /// by the cases the key serves, which is what isolates the ordering from the coverage:
-    /// a dictionary that gains a word moves this number while the other stays where it is,
-    /// and a dictionary that reorders its candidates moves both.
-    pub served_top1_rate: f64,
-    /// Top-1 accuracy by the expected word's length, matching the normalization bands.
-    pub length_bands: LengthBandAccuracy,
-}
-
-/// Top-1 accuracy attributed by word length.
-///
-/// The bands mirror the normalization bands so a regression can name its layer instead of
-/// surfacing as an anonymous drop in the total.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-pub struct LengthBandAccuracy {
-    /// Single-character cases.
-    pub single: Top1Band,
-    /// Two-character cases: the normalization pipeline's true-frequency core.
-    pub two: Top1Band,
-    /// Three-or-more-character cases: the flattened tail.
-    pub long: Top1Band,
-}
-
-/// One word-length band's hit count and sample size.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-pub struct Top1Band {
-    /// Cases in the band.
-    pub cases: u64,
-    /// Cases whose expected word came first.
-    pub first: u64,
-}
-
-impl Top1Band {
-    /// The band's top-1 rate; `None` when it is empty, so a report never presents a
-    /// misleading 0% for a layer the hold-out set does not exercise.
-    pub fn top1(self) -> Option<f64> {
-        (self.cases > 0).then(|| self.first as f64 / self.cases as f64)
-    }
-
-    /// Records one case and whether it hit.
-    pub(crate) fn note(&mut self, first: bool) {
-        self.cases += 1;
-        self.first += u64::from(first);
-    }
-}
-
-/// What one pass counted, before the rates were divided out.
-///
-/// The counts are kept alongside the rates rather than only as rates so that a per-layer
-/// line can state how many cases it stands on. A rate over a handful of cases and a rate
-/// over five thousand print the same way; the count is what tells them apart.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Tally {
-    /// Cases the pass looked at.
-    cases: u64,
-    /// Cases whose expected word came first.
-    first: u64,
-    /// Cases whose expected word was inside the reported page.
-    within: u64,
-    /// Cases whose expected word the key does not serve at all.
-    missing: u64,
-    /// Cases grouped by the expected word's length.
-    length_bands: LengthBandAccuracy,
-}
-
-impl Tally {
-    /// The rates the counts imply; an empty pass reports zero rather than dividing by
-    /// zero.
-    fn report(self) -> QualityReport {
-        if self.cases == 0 {
-            return QualityReport::default();
-        }
-        let total = self.cases as f64;
-        QualityReport {
-            top1_rate: self.first as f64 / total,
-            top9_rate: self.within as f64 / total,
-            unreachable: u32::try_from(self.missing).unwrap_or(u32::MAX),
-            served_top1_rate: self.served_first(),
-            length_bands: self.length_bands,
-        }
-    }
-
-    /// Cases the key serves at all, which is the subset an ordering can be read from.
-    fn served(self) -> u64 {
-        self.cases.saturating_sub(self.missing)
-    }
-
-    /// Fraction of the cases the key serves whose expected word came first; a pass that
-    /// served nothing answers zero rather than dividing by zero.
-    fn served_first(self) -> f64 {
-        let served = self.served();
-        if served == 0 {
-            return 0.0;
-        }
-        self.first as f64 / served as f64
     }
 }
 
@@ -456,169 +339,6 @@ fn rank_of<L: Lexicon>(lexicon: &L, key: &str, expected: &str) -> Result<Option<
         }
     }
     Ok(None)
-}
-
-/// Where a correction row's reading came from.
-///
-/// The column exists so that a reader of the table can tell a reading derived from a
-/// permissively licensed source from one this project wrote, without consulting the
-/// allowlist: `unihan` rows carry the Unicode licence and no further obligation,
-/// `manual` rows are project-owned, and `corpus` rows are counted from the project's own
-/// word list.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Origin {
-    /// Derived from `data/raw/unihan.tsv`.
-    Unihan,
-    /// Written by hand for this project.
-    Manual,
-    /// Counted from the project's own word list.
-    Corpus,
-    /// Carried over from the huayu word list's own readings.
-    Huayu,
-}
-
-impl Origin {
-    /// Parses the `origin` column.
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw {
-            "unihan" => Some(Self::Unihan),
-            "manual" => Some(Self::Manual),
-            "corpus" => Some(Self::Corpus),
-            "huayu" => Some(Self::Huayu),
-            _ => None,
-        }
-    }
-}
-
-/// One row of the L3c correction table.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Correction {
-    /// The word the row corrects.
-    pub word: String,
-    /// The reading the row states, spelled as the file spells it.
-    pub reading: String,
-    /// The weight column; absent in the two-column form.
-    pub weight: Option<u32>,
-    /// The origin column; absent in the two- and three-column forms.
-    pub origin: Option<Origin>,
-}
-
-/// The origin mix of one correction table.
-///
-/// A row with no `origin` column is counted separately rather than folded onto one of the
-/// three values: "this row states no origin" and "this row states that it came from
-/// Unihan" are different claims, and only one of them is a licence statement.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct OriginMix {
-    /// Rows carrying no `origin` column.
-    pub unspecified: u32,
-    /// Rows marked `unihan`.
-    pub unihan: u32,
-    /// Rows marked `manual`.
-    pub manual: u32,
-    /// Rows marked `corpus`.
-    pub corpus: u32,
-    /// Rows marked `huayu`.
-    pub huayu: u32,
-}
-
-impl OriginMix {
-    /// Tallies one table.
-    pub fn of(rows: &[Correction]) -> Self {
-        let mut mix = Self::default();
-        for row in rows {
-            mix.record(row.origin);
-        }
-        mix
-    }
-
-    /// Records one row's origin.
-    pub fn record(&mut self, origin: Option<Origin>) {
-        let slot = match origin {
-            None => &mut self.unspecified,
-            Some(Origin::Unihan) => &mut self.unihan,
-            Some(Origin::Manual) => &mut self.manual,
-            Some(Origin::Corpus) => &mut self.corpus,
-            Some(Origin::Huayu) => &mut self.huayu,
-        };
-        *slot = slot.saturating_add(1);
-    }
-
-    /// Rows the mix accounts for.
-    pub fn total(&self) -> u32 {
-        self.unspecified
-            .saturating_add(self.unihan)
-            .saturating_add(self.manual)
-            .saturating_add(self.corpus)
-            .saturating_add(self.huayu)
-    }
-
-    /// Rows of one origin.
-    pub fn count(&self, origin: Origin) -> u32 {
-        match origin {
-            Origin::Unihan => self.unihan,
-            Origin::Manual => self.manual,
-            Origin::Corpus => self.corpus,
-            Origin::Huayu => self.huayu,
-        }
-    }
-}
-
-/// Reads the L3c correction table.
-///
-/// Three column counts are accepted, and they are the three the format has had:
-/// `word<TAB>reading` (the original), `word<TAB>reading<TAB>weight`, and
-/// `word<TAB>reading<TAB>weight<TAB>origin`. A row reads the same way whatever its column
-/// count, so a table that gains the `origin` column keeps compiling exactly as it did
-/// before, which is what lets the column be added without a flag day. A row past the
-/// fourth column is refused rather than ignored: an unread column is a column whose
-/// content nobody validated, and an origin nobody validated is worse than none.
-///
-/// The reading itself is not re-parsed here. The compiler's own reader asserts that every
-/// row is a legal syllable sequence for its word before the table can affect a build, and
-/// a second implementation of that check would be a second answer to the same question.
-///
-/// # Errors
-///
-/// Returns an error when the file cannot be read or has not been fetched, when a row
-/// holds fewer than two or more than [`MAX_CORRECTION_COLUMNS`] columns, when its word or
-/// reading column is empty, when the weight column is not an unsigned integer, or when
-/// the origin column is not one of `unihan` / `manual` / `corpus`.
-pub fn load_corrections(path: &Path) -> Result<Vec<Correction>> {
-    let text = super::source::read_source(path)?;
-    let mut rows = Vec::new();
-    for (number, line) in data_lines(&text) {
-        let columns: Vec<&str> = line.split('\t').map(str::trim).collect();
-        ensure!(
-            (2..=MAX_CORRECTION_COLUMNS).contains(&columns.len()),
-            "{}:{number}: a correction row holds 2 to {MAX_CORRECTION_COLUMNS} columns, \
-             found {}",
-            path.display(),
-            columns.len()
-        );
-        let word = columns.first().copied().unwrap_or_default();
-        let reading = columns.get(1).copied().unwrap_or_default();
-        ensure!(
-            !word.is_empty() && !reading.is_empty(),
-            "{}:{number}: a correction row needs a word column and a reading column",
-            path.display()
-        );
-        let weight = match columns.get(2).copied() {
-            Some(raw) if !raw.is_empty() => parse_weight(path, number, raw)?,
-            _ => None,
-        };
-        let origin = match columns.get(3).copied() {
-            Some(raw) if !raw.is_empty() => Some(parse_origin(path, number, raw)?),
-            _ => None,
-        };
-        rows.push(Correction {
-            word: word.to_owned(),
-            reading: reading.to_owned(),
-            weight,
-            origin,
-        });
-    }
-    Ok(rows)
 }
 
 /// Command-line surface of the quality closure.

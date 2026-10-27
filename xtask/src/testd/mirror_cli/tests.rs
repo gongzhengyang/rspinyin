@@ -7,8 +7,8 @@
 use std::fs;
 
 use ime_types::{
-    Anchor, Candidate, CandidateSource, LayoutHint, PageState, Placement, Preedit, RectI,
-    ScreenId, StatusStrip, UiFrame,
+    Anchor, Candidate, CandidateSource, LayoutHint, PageState, Placement, Preedit, RectI, ScreenId,
+    StatusStrip, UiFrame,
 };
 
 use super::*;
@@ -541,7 +541,10 @@ fn test_from_args_refuses_malformed_assertions() {
     let failure = status(&["chinese=yes"]).expect_err("a flag reads true or false");
     assert!(failure.contains("reads true or false"), "{failure}");
     let failure = status(&["script=both"]).expect_err("the script reads one of two words");
-    assert!(failure.contains("reads simplified or traditional"), "{failure}");
+    assert!(
+        failure.contains("reads simplified or traditional"),
+        "{failure}"
+    );
 }
 
 #[test]

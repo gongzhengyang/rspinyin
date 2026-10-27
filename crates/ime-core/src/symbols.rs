@@ -186,7 +186,7 @@ impl SymbolTable {
         }
         let (table, overridden) = assemble(rows);
         report.overridden = overridden;
-        report.loaded = usize::try_from(table.len()).unwrap_or(usize::MAX);
+        report.loaded = table.len();
         (table, report)
     }
 

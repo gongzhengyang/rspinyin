@@ -17,7 +17,8 @@
   - 关键路径：`CP: 是`（v3 账本起点，下游 4 卡依赖）
   - 并行通道：`Track C 基建·CI`
   - 代码落地锚点 (Code Anchor)：`xtask/src/testd/evidence.rs`（扩展）、`xtask/src/testd/suite.rs`（批次编排调用点）
-  - 任务状态：`[ ] 待开始`
+  - 任务状态：`[x] 已完成`
+- 落地证据：v3 账本落地: xtask/src/testd/evidence/v3.rs 新增 AssertionV3/Claim/Tier/Dim 协议类型(serde d1-d5/smoke-acceptance-stress, from_name 容错解析); assertions.json 以 v3 键并列 v1 记录(skip_serializing_if, v1 读取者不受影响); RunJournal.record 差集探测 screenshots_expected vs bundle 目录,缺失即红行+BatchSummary.screenshot_gaps,verdict 按 Flawed 判定但用例状态不改写; publish() 落盘批次checklist.json(format=3)与 index.md 同写; suite.run_case 为每用例构建 v3(claims 由 v1 assertions 映射,dims/截图/budget 键留空=诚实未声明); evidence/tests/v3.rs 五测: 往返序列化/红行传播/缺失差集/损坏 JSON 拒读/checklist 落盘回读; CaseRow.is_complete 修复为含截图缺失。验收: cargo nextest run -p xtask 1225/1225 绿;物理产物 results/runs/run-20261021-065428: checklist.json format=3+30 行(tier=smoke),index.md,TC-CORE-01 assertions.json 含 v3 节 5 claims,全部 0600; 29/30 通过,TC-CORE-20(just bench,卡面标注须空闲机采集)在本机负载下 exit 101 属测量纯净度前提而非本任务回归。性能: v3 为既有写路径上 ~6 断言的内存映射+同文档内 JSON 节,无新增文件,增量<1ms ≤5ms 基线。注: suites 判定表按 nextest DSL 或语义,task_check 过滤器须写括号交替式
 - **MCP 能力映射与协议报文契约**：`capture_viewport_screenshot` / `capture_execution_dump` 的落盘元数据升级。`assertions.json` 条目 schema v3：
 
 ```rust
@@ -75,7 +76,8 @@ pub struct Claim {
   - 关键路径：`CP: 否`
   - 并行通道：`Track C 基建·CI`
   - 代码落地锚点 (Code Anchor)：`xtask/src/testd/env_gate.rs`、`xtask/src/testd/env.rs`
-  - 任务状态：`[ ] 待开始`
+  - 任务状态：`[x] 已完成`
+- 落地证据：环境门禁三态落地: env_gate/eligibility.rs 新增 CaseEligibility(Runnable/PendingImpl{task}/NeedsEnvironment{remedy:&'static})+eligibility_of(卡面标注优先于判定表,表 Blocked 行映射 PendingImpl,Unverifiable 行映射 NeedsEnvironment 且 remedy 逐字引用表原文)+claim()渲染账本落点(pending-impl: TASK-… / needs-environment: …, pass=false); cases.rs 探针解析用例卡基本属性行的 可执行性:[待实现] 与 锚定 TASK id(全角/半角竖线分段,锚点: 字段不误读,无锚待实现拒绝置位走判定表fail-closed); evidence.rs 增 CaseStatus::Skipped(needs_trace=false,既不算通过也不算失败),BatchSummary.skipped 单列且不进 cases()/verdict(); env_gate/tests.rs 四测: 标注优先/三态映射(remedy 逐字)/无锚拒绝/账本落点 + 真实分片探针形状测试 + #[ignore] 物理产物运行器。偏差登记: 卡面契约 PendingImpl.task 写 &\'static str,实现为 String——锚定 id 运行时读自用例卡,静态寿命需本模块枚举全部 features-add 任务即判定表禁止的硬编码清单;remedy 保持 &'static(表原文)满足契约另一半。验收: cargo nextest run -p xtask 1230/1230 绿; 物理产物 results/runs/run-20261021-073359: 真实 TC-ADD-001 卡(锚定 TASK-1.01.01/TASK-1.01.02)→ assertions.json status=skipped+v3 claim pending-impl: TASK-1.01.01/TASK-1.01.02(pass=false),checklist.json verdict=pass 且行 complete(不计红),文件 0600。性能: 判定为常量表查询+一次分段扫描,无可测开销,符合基线
 - **MCP 能力映射与协议报文契约**：`runtime://env` 的判定输出从「可执行 / 不可验证」二元扩展为三态机读：
 
 ```rust
@@ -116,7 +118,8 @@ pub enum CaseEligibility {
   - 关键路径：`CP: 是`
   - 并行通道：`Track A 平台内核`
   - 代码落地锚点 (Code Anchor)：`xtask/src/testd/engine.rs`（场景解析与重放装配）、`tests/fixtures/scenarios/`（新字段示例）
-  - 任务状态：`[ ] 待开始`
+  - 任务状态：`[x] 已完成`
+- 落地证据：['契约: v2 增段全部可选、缺省=v1；[decode] flags=DecodeFlags 名称（未知名=解析错）+ bigram=absent|present；[user_db] fixture=cold|seed:<name>；[decay] half_life_ticks（无 store 拒绝）；cross-section 规则 parse 期拒绝（clock-without-store / bigram+spec-model / store+spec-freq）；deny_unknown_fields', '实现: xtask/src/testd/engine/scenario/v2.rs（解析+校验+ScenarioV2::of 投影）、scenario/store.rs（load 侧真 UserDb 装配：open_with_decay+FixedClock+seed 回放，drive 路径零 IO）、scenario/fixture.rs（store/container/container_lm 装载进 fixture，sources() 换源，Drop 清 scratch）、engine.rs（Session::extra 注入 [decode].flags，replay 直读 scenario.decode.flags）', 'CLI 缺口修复（物理重放抓出）: cli.rs run() 原直传 spec 双打（&fixture.user_freq/&fixture.lm），v2 的 store/container 永远到不了 CLI 重放；改为 fixture.sources()，与测试同路。修后 CLI 重放 21 场景 0 diverged', 'v1 兼容: test_every_builtin_scenario_stays_v1（18 个内建场景 is_default×2+decay=None 且 fixture 可装配）+ 内建集 CLI 重放全绿；strace 纯净性 drive 路径不变（源扫描 store.rs 显式豁免并注明 load-side-only）', '示例场景: tests/fixtures/scenarios/add-fuzzy.toml（模糊音 zh_z）、add-abbrev.toml（[decode].flags=[ABBREV]）、add-user-pin.toml（[user_db] seed:pin 置顶序列）；tests/fixtures/userdb/pin.toml（你好=100 commits）；物理重放: cargo run -q -p xtask -- testd-engine --scenarios tests/fixtures/scenarios => 21 scenarios, 0 diverged', '测试: cargo nextest run -p xtask => 1243 run / 1243 passed / 9 skipped（连续两轮全绿）；engine 模块 45 测试含 v2 七测（flags 到达 request、三段不可装配拒绝、ADD 三例重放绿、store 供种、container 接管模型、v1 兼容门、解析≤1ms/场景 min-of-50 稳健式）', '性能: 解析增量 min(50)<=1ms/场景断言通过；重放路径零新增热区=v2 全部装载期装配（fixture.rs），drive 路径无 fs/clock/env（源扫描+--strace 机制不变），ime-core 解码器零改动故 alloc-count 门禁基线不变', '偏差1: 契约代码示例的 ScenarioV2.flags 字段未建——resolved flags 与 [decode] 段是同一事实的两种存法，replay 直读 scenario.decode.flags（唯一消费者），第二份拷贝=第二真相源；解析行为与卡片一致（未知名=红色解析错）', '偏差2: 卡片「证据包含 v3 断言记录」——engine CLI 不写证据包（证据包走 suite 通道），engine 重放的物理产物是 CLI 重放输出+场景文件本体；v3 落盘由 P2.05.01 FinalReport/suite 通道承接，此处如实登记', '环境注记: --strace 动态纯净性检查本机未装 strace 无法运行；静态半由 engine/tests.rs 源扫描断言承担，动态半待有 strace 的机器补跑']
 - **MCP 能力映射与协议报文契约**：`testd-engine` 场景 TOML v2 增段（全部可选，缺省保持 v1 行为）：
 
 ```toml
@@ -165,7 +168,8 @@ pub struct ScenarioV2 {
   - 关键路径：`CP: 否`
   - 并行通道：`Track A 平台内核`
   - 代码落地锚点 (Code Anchor)：`xtask/src/testd/dict_inject.rs`、`tests/fixtures/dict/`（新增样例库）
-  - 任务状态：`[ ] 待开始`
+  - 任务状态：`[x] 已完成`
+- 落地证据：dict_inject 多源 fixture 落地: 新增 dict_inject/generate.rs,DictFixture 四值枚举(Synthetic/Layered/BigramPresent/StagedVariant)+generate()(进程内复用 dictc build::compile 分段装配,Writer encode,Reader::parse Verify::Full 装载校验后才落盘)+generate_in()(FstLexicon 真实加载);词表全部闭世界固定表(18 词 12 键/9 词 8 键/6 词 6 键),BigramPresent 语料为本仓自写 tests/fixtures/dict/corpus-snippet.txt(20 句,无 ADR-0012 语料,min_score=0 全对保留);期望表入库 tests/fixtures/dict/expectations.toml(词数/键数/同键序/unigram Q12/bigram 对与 Q12);StagedVariant 与 Synthetic 同键不同序(四多候选键全部倒序);装载校验含 flag 断言(仅 bigram-present 置 FLAG_BIGRAM_PRESENT)。偏差登记: 卡面枚举名 DictFixture 与既有突变宿主类型冲突,既有结构更名 MutatedContainer(模块内 24 处,编译器核对),新枚举取契约原名;dictc::bigram 模块改 pub(crate) 供进程内调用。测试 generate_tests.rs 五组: 双生成 sha256 一致+≤200ms/四容器 Reader::open+计数+flag 对账/synthetic 序与 Q12/layered 三带划分(尾带扁平且覆盖全部词)/bigram 16 对全在+右边际 Q12(4096/2457/1228/682)/staged 同键倒序+经 FstLexicon lookup 换库后首候选可观测。验收: cargo nextest run -p xtask 1236/1236 绿; 物理产物为测试内临时目录四容器文件,Reader::open 全过(生成器内 Verify::Full 预检)。性能: 单 fixture 生成实测毫秒级 ≤200ms 基线。步骤3 场景 v2 对接与 env_gate 旧构建 pending-impl 报告属 P0.02.01 落点,本卡 API 已就绪
 - **MCP 能力映射与协议报文契约**：fixture 家族扩展，供词源/热替换/分层归一化用例消费：
 
 ```rust

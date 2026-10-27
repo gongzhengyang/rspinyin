@@ -148,6 +148,11 @@ passthrough_url = true
 max_raw_len = 64                # 1..=64
 verify_dict_on_load = "full"    # "full" 或 "header"
 abbrev = false                  # 展开首字母缩写，`nh` 可达 `你好`
+correction = false              # 一步邻键纠错，`zhegn` 可达 `zheng`
+mixed_english = false           # 编码中的裸 ASCII 单词进入候选
+on_im_switch = "clear"          # 输入法切换时清空或上屏："clear" 或 "commit"
+compose = false                 # 死键 compose 序列
+share_state = "context"         # 编码状态共享粒度："context" 或 "global"
 
 [ui]
 client_preedit = false          # 把编码串显示在应用内而不是候选框中
@@ -179,6 +184,17 @@ scheme = "full"                 # "full" 或某个双拼布局
 show_hint = true                # 在候选框头部显示当前布局名
 keep_full_pinyin = true
 
+[fuzzy]
+enabled = false                 # 下面九组模糊音的总开关
+zh_z = false                    # zh/z、ch/c、sh/s、n/l、f/h、an/ang、en/eng、in/ing
+ch_c = false
+sh_s = false
+n_l = false
+f_h = false
+an_ang = false
+en_eng = false
+in_ing = false
+
 [phrases]
 enabled = true
 file = ""                       # 留空：使用默认位置
@@ -188,9 +204,12 @@ max_entries = 5000              # 1..=50000
 durability = "eventual"         # "eventual" 批量写盘，"immediate" 每次立即写盘
 backup_enabled = true           # 自动备份学习成果
 backup_keep = 3                 # 保留 1..=32 代
+dict_staged_path = ""           # 下次重载整体换入的词库文件
 
 [diagnostics]
 level = "info"                  # "error" .. "trace"
+decay_half_life_ticks = 139     # 用户词衰减半衰期，按提交次数计
+decay_floor = 65536             # Q16.16；不高于该值的词条停止参与排序
 log_rotation_mb = 8
 log_keep_files = 3
 log_input_content = false       # 接受但无效果：输入内容绝不会被记录

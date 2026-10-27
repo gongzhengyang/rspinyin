@@ -28,7 +28,7 @@
 use ime_types::{DecodeRequest, DecodeResult, ImeError, LanguageModel, Lexicon, UserFreqSource};
 
 use crate::lm::{ScoreWeights, Scorer};
-use crate::viterbi::scratch::DecodeScratch;
+use crate::viterbi::scratch::{DecodeScratch, DecodeSources};
 
 /// Widest beam a configuration may ask for.
 pub const MAX_BEAM_K: u16 = 32;
@@ -211,7 +211,17 @@ impl Decoder {
         lm: &dyn LanguageModel,
     ) -> DecodeResult {
         let mut scratch = DecodeScratch::new();
-        self.decode_into(&mut scratch, req, lx, uf, lm, None, None);
+        self.decode_into(
+            &mut scratch,
+            req,
+            DecodeSources {
+                lexicon: lx,
+                user_freq: uf,
+                lm,
+                english: None,
+                hints: None,
+            },
+        );
         scratch.into_result()
     }
 }

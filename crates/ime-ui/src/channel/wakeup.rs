@@ -93,7 +93,12 @@ impl Wakeup {
         }
     }
 
-    /// Consumes every pending wakeup.
+    /// Consumes every pending wakeup, reporting whether any existed.
+    ///
+    /// The report is what lets a caller that drains on every iteration -- the
+    /// event loop, a surface draining its own connection -- tell a delivery
+    /// from an iteration a signal or an unrelated descriptor caused: an empty
+    /// drain is no event, and the caller counts nothing for it.
     ///
     /// # Errors
     ///
@@ -103,15 +108,16 @@ impl Wakeup {
     /// # Panics
     ///
     /// This function does not panic.
-    pub fn drain(&self) -> Result<(), UiError> {
+    pub fn drain(&self) -> Result<bool, UiError> {
         let mut buf = [0u8; 8];
+        let mut consumed = false;
         loop {
             match read(self.fd.as_fd(), &mut buf[..]) {
                 // Each read returns the accumulated counter and resets it, so
                 // stopping after the first one would lose every wakeup that
                 // arrived while this loop was running.
-                Ok(_) => {}
-                Err(Errno::AGAIN) => return Ok(()),
+                Ok(_) => consumed = true,
+                Err(Errno::AGAIN) => return Ok(consumed),
                 Err(_) => return Err(UiError::ChannelClosed),
             }
         }
@@ -198,10 +204,16 @@ mod tests {
     fn test_wakeup_wake_then_drain_consumes_the_counter() {
         let wakeup = Wakeup::new().expect("an eventfd can be created");
         wakeup.wake().expect("the counter accepts a write");
-        // The first drain consumes the pending value, the second finds the
-        // counter empty and must return rather than block or fail.
-        wakeup.drain().expect("the pending wakeup is consumed");
-        wakeup.drain().expect("an empty counter is not an error");
+        // The first drain consumes the pending value and reports it, the second
+        // finds the counter empty and must return rather than block or fail.
+        assert!(
+            wakeup.drain().expect("the pending wakeup is consumed"),
+            "a posted wakeup is what the drain found"
+        );
+        assert!(
+            !wakeup.drain().expect("an empty counter is not an error"),
+            "an empty drain is not a wakeup"
+        );
     }
 
     #[test]
@@ -212,8 +224,8 @@ mod tests {
         }
         // One drain must clear all sixty-four: the counter accumulates and the
         // read resets it, so a second drain is not a second wakeup.
-        wakeup.drain().expect("the burst is consumed");
-        wakeup.drain().expect("the counter is empty afterwards");
+        assert!(wakeup.drain().expect("the burst is consumed"));
+        assert!(!wakeup.drain().expect("the counter is empty afterwards"));
     }
 
     #[test]
@@ -221,10 +233,13 @@ mod tests {
         let producer = Wakeup::new().expect("an eventfd can be created");
         let consumer = producer.clone();
         producer.wake().expect("the counter accepts a write");
-        consumer
-            .drain()
-            .expect("a clone observes the same counter and clears it");
-        consumer.drain().expect("the counter is empty afterwards");
+        assert!(
+            consumer
+                .drain()
+                .expect("a clone observes the same counter and clears it"),
+            "the clone consumed the shared counter's value"
+        );
+        assert!(!consumer.drain().expect("the counter is empty afterwards"));
     }
 
     #[test]

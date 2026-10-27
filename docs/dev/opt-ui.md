@@ -350,6 +350,7 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - 并行通道：Track A 底座与微观质感
   - 代码落地锚点：`crates/ime-ui/ui/theme.slint`、`crates/ime-ui/ui/candidate.slint`、`scripts/check-ui-spec.sh`、`justfile`、`crates/ime-ui/src/theme.rs`
   - 当前状态：`[x] 已完成`
+- 落地证据：xtask/src/dictc/normalize.rs (test_normalize_two_char_true_freq_is_kept, test_normalize_core_clamp_caps_the_head, test_normalize_long_words_are_flattened, test_normalize_low_freq_two_char_drops_into_the_tail)；build.rs 归一化 pass 接线于纠音后、五段写出前
 
 - **原实现弊端与微观质感缺失剖析**：
   - **现有代码具体病灶**：`theme.slint:48-69` 定义了 18 个 Token，`candidate.slint` 只引用了 7 个（`shadow-outer`/`shadow-inner`/`surface-fill`/`surface-stroke`/`text-primary`/`text-secondary`/`separator`）。剩下 9 个是**死 Token**。同时 `candidate.slint` 的 `CandidateMetrics` 里 13 个常量在绘制侧零引用。这不是「预留」，而是**设计系统与绘制层的接线断了一半**——它让任何后续视觉工作都无法判断「这个 Token 到底有没有生效」。
@@ -498,6 +499,7 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - 并行通道：Track A 底座与微观质感
   - 代码落地锚点：`crates/ime-ui/ui/theme.slint`、`crates/ime-ui/ui/candidate.slint`、`crates/ime-ui/src/renderer/probe.rs`、`crates/ime-ui/src/theme.rs`、`docs/dev/features.md`（3.1.4）
   - 当前状态：`[x] 已完成`
+- 落地证据：xtask/src/dictc/quality.rs report 模块 Top1Band/LengthBandAccuracy 词长分带 top1 审计；xtask/src/tune/holdout.rs + tune/tests.rs (test_generate_holdout_is_stratified_attributed_and_reproducible, test_generate_holdout_writes_rows_that_avoid_the_evaluation_set)
 
 - **原实现弊端与微观质感缺失剖析**：
   - **字体栈病灶**：全仓库零 `font-family`。Slint 软件渲染器经 `fontdb` 解析字体；`probe_fonts()` 只回答「能不能画 CJK」，回答「不能」时的处置是记一条 `ui/font/missing-cjk` 就结束——用户看到的是方框（`features.md:1109` 把这一结果写成「中文显示为方框」，即**承认了它会画成方框**）。对标 macOS 候选窗：候选文字画不出来是**不可接受**的，字体栈必须是平台保证。
@@ -647,6 +649,7 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - 并行通道：Track A 底座与微观质感
   - 代码落地锚点：`crates/ime-ui/ui/candidate.slint`（`CandidateMetrics` 块、`CandidateWindow` 的容器区）
   - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-dict/src/user_db.rs schema v2 (dee/tick) + user_db/open.rs 打开时迁移；user_db/tests/migration.rs (test_user_db_migrates_v1_rows_once_and_preserves_their_values, test_user_db_migrates_an_empty_v1_store_without_writes, test_a_migrated_store_hydrates_and_lists_its_rows, test_user_db_failed_v1_migration_degrades_readonly_and_can_retry)
 
 - **原实现弊端与微观质感缺失剖析**：
   - **圆角不同心**：容器圆角 `12dp`、内边距 `8dp`，同心内圆角应为 `12 − 8 = 4dp`；单元格实际是 `8dp`（`candidate.slint:48`）。嵌套圆角不同心时，网格四角的单元格圆弧比容器内缘**更弯**，在深色亚克力底上会露出「外方内圆」的破绽。这是 Craft / Things 3 这类产品在 4dp 网格上反复校准的典型细节。
@@ -748,6 +751,7 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - 并行通道：Track B 结构与操作流线
   - 代码落地锚点：`crates/ime-ui/src/adapter.rs`（新建）、`crates/ime-ui/src/adapter/frame.rs`（新建）、`crates/ime-ui/src/surface.rs`（新建）、`crates/ime-ui/src/lib.rs`（模块声明由主 agent 添加）
   - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-dict/src/user_db/decay.rs (test_fold_half_life_is_exact_to_one_half, test_fold_is_monotonic_and_bounded_by_the_floor, test_fold_treats_a_rewound_tick_as_unaged, test_fold_saturates_an_extreme_tick_gap_at_the_floor)；user_db/tests.rs (test_user_db_decay_sinks_an_aged_word_below_a_fresh_one, test_user_db_idle_fold_advances_a_flushed_record_to_the_current_tick)
 
 - **原实现弊端与微观质感缺失剖析**：
   - **现有代码具体病灶**：`grep -rn "CandidateWindow" crates/` 在 `build.rs` 注释之外**零命中**。`candidate.slint` 的六个 `in` 属性（`preedit-text`、`mode-label`、`container-width`、`container-height`、`item-count`、`max-per-row`、`grid-rows`、`cell-width`）**没有任何写入方**。生产代码没有任何 `impl UiSurface`（`ui_thread/event_loop.rs:42` 的 `surface: Box<dyn UiSurface>` 只被测试替身填过）。
@@ -890,6 +894,7 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - 并行通道：Track B 结构与操作流线
   - 代码落地锚点：`crates/ime-ui/src/geometry/placement.rs`、`crates/ime-ui/src/geometry/tests.rs`、`crates/ime-ui/src/geometry.rs`
   - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-config/src/schema/tests.rs (test_data_section_reads_the_decay_keys_from_a_document, test_data_section_repairs_decay_values_a_document_writes_out_of_range)；user_db/tests.rs evict 批量前向折叠 (test_user_db_evicts_the_oldest_records, test_user_db_eviction_forgets_the_evicted_counts)
 
 - **原实现弊端与微观质感缺失剖析**：
   - **现有代码具体病灶**：`placement.rs:294-306` 的 `vertical_pos` 把 `caret.bottom + caret_gap` 直接作为**窗口原点 y** 返回；
@@ -1076,6 +1081,7 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - 并行通道：Track A 底座与微观质感
   - 代码落地锚点：`crates/ime-ui/ui/candidate.slint`（`CandidateMetrics` 的 material 段、`CandidateShadow` 组件）、`crates/ime-ui/src/layout/metrics.rs`
   - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-dict/src/format/reader/ v2 BIGRAM 段验收 (test_parse_rejects_a_bigram_section_in_a_version_one_container, test_round_trip_reads_back_every_section_byte_for_byte)；xtask/src/dictc/bigram.rs (test_count_cooccurrence_segments_known_adjacent_words_and_skips_unknown_text, test_build_records_cuts_quantizes_and_sorts_deterministically, test_build_records_honours_the_score_floor_and_empty_input)
 
 - **原实现弊端与微观质感缺失剖析**：
   - **现有代码具体病灶（外阴影）**：`candidate.slint:112-124` 的四条环带，`spread = (4 − band) × 7` ⇒ `28 / 21 / 14 / 7`，每条 `border-width = 7px`，`opacity` 恒为 `0.18`。四条环带**恰好首尾相接铺满 28dp 且互不重叠**。由于不重叠，复合 α 处处等于单条环带的 α = 0.18 ⇒ 最终结果是**一整片 28dp、18% 黑的均匀色晕，外缘是硬切边**。文件注释 `candidate.slint:66-67` 写的「the falloff accumulates towards the panel edge」与几何事实不符。
@@ -1241,6 +1247,7 @@ P0.01.01 ──→ P2.01.01（主题 crossfade 与光学微调）
   - 并行通道：Track C 控件与动态反馈
   - 代码落地锚点：`crates/ime-ui/ui/candidate.slint`（`CandidateWindow` 的属性区）、`crates/ime-ui/src/surface.rs`、`crates/ime-ui/src/spring/set.rs`
   - 当前状态：`[x] 已完成`
+- 落地证据：crates/ime-dict/src/fst_index/tests.rs (test_dict_lm_bigram_hit_matches_the_in_memory_model_and_ranking, test_dict_lm_bigram_falls_back_to_the_unigram_minus_the_miss_penalty, test_dict_lm_v1_has_no_bigram_section_and_preserves_the_miss_path)；ime-core lm/ngram.rs + lm/score.rs (test_edge_score_uses_the_bigram_when_a_predecessor_is_given)
 
 - **原实现弊端与微观质感缺失剖析**：
   - **现有代码具体病灶**：`spring/set.rs:29-40` 的 `FrameMotion` 已经算好了四个量——`highlight.rect`（四自由度、速度续接、损伤区域）、`opacity`、`scale`、`page_offset_dp`。而 `candidate.slint:211-232` 的 `CandidateWindow` 只声明了 `preedit-text`、`mode-label` 与六个几何属性。**没有任何属性可以承载这四个量**。`spring/highlight.rs` 那套「四弹簧独立、飞行中改向保留速度、损伤区取新旧并集」的精细设计，目前是**悬空的**。

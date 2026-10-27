@@ -85,7 +85,7 @@
 | `REQ-RT-09` | 跨 addon 帧通道（ADR-0011） | `crates/ime-ui-addon/src/ffi/` | `P0.02.01` | `TC-RT-009` | ①② | S | ✅ |
 | `REQ-RT-10` | 模式位/焦点/挂起/日志热切换 | `crates/ime-fcitx5/src/{session_host,engine/context}.rs` | `P0.02.01` | `TC-RT-010` | ①② | A | ✅ |
 | `REQ-UI-01` | X11 窗口与焦点零抢占 | `crates/ime-ui/src/platform/x11.rs` | `P0.02.01` | `TC-UI-001` | ①②④ | S | ✅ |
-| `REQ-UI-02` | Slint Platform 与软件光栅 | `crates/ime-ui/src/slint_platform.rs`、`renderer.rs` | `P0.02.01` | `TC-UI-002`、`TC-UI-004` | ①④ | S/A | ✅ |
+| `REQ-UI-02` | Slint Platform 与软件光栅 | `crates/ime-ui/src/slint_platform.rs`、`renderer.rs` | `P0.02.01` | `TC-UI-002`、`TC-UI-004`、`TC-UI-005` | ①④ | S/A | ✅ |
 | `REQ-UI-03` | UI 线程与通道语义 | `crates/ime-ui/src/{ui_thread,channel}.rs` | `P0.02.01` | `TC-UI-003` | ②④ | A | ✅ |
 | `REQ-UI-04` | 布局与候选网格 | `crates/ime-ui/ui/candidate*.slint`、`layout.rs` | `P0.02.01`、`P1.03.01` | `TC-UI-006` | ①③④ | A | ✅ |
 | `REQ-UI-05` | 主题/深浅色/亚克力 | `crates/ime-ui/src/theme.rs`、`x11/blur.rs` | `P0.02.01` | `TC-UI-007` | ④ | A | ✅（真实模糊子项 🚫） |

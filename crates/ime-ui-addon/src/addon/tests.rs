@@ -467,13 +467,23 @@ fn test_ui_startup_without_a_backend_starts_no_thread() {
     assert!(!ui_impl::is_available());
 }
 
+/// The shutdown deadline the stop tests run against.
+///
+/// The production bound is [`super::UI_SHUTDOWN_TIMEOUT`], and the widened test-build
+/// value of it exists for stops that race a real frame. This test's subject is the branch
+/// the deadline guards, not the duration itself, so the stop is driven through
+/// [`super::stop_ui_startup_within`] at a deadline the whole test fits inside
+/// `nextest`'s kill threshold with: a parked thread still has to stop inside it, and a
+/// thread still building still has to miss it.
+const STOP_TEST_DEADLINE: Duration = Duration::from_millis(150);
+
 #[test]
 fn test_stop_ui_startup_reports_whether_the_thread_stopped() {
     let quick = startup_with(|| Box::new(IdleSurface));
     assert!(quick.is_some(), "the test thread must start");
     if let Some(quick) = quick {
         assert!(
-            stop_ui_startup(quick),
+            stop_ui_startup_within(quick, STOP_TEST_DEADLINE),
             "a thread parked on its wakeup counter must stop inside the deadline"
         );
     }
@@ -481,13 +491,13 @@ fn test_stop_ui_startup_reports_whether_the_thread_stopped() {
     // whatever the machine's speed: the loop cannot even reach its wait, which is what a
     // surface that takes too long to build looks like.
     let slow = startup_with(|| {
-        thread::sleep(UI_SHUTDOWN_TIMEOUT * 3);
+        thread::sleep(STOP_TEST_DEADLINE * 3);
         Box::new(IdleSurface)
     });
     assert!(slow.is_some(), "the test thread must start");
     if let Some(slow) = slow {
         assert!(
-            !stop_ui_startup(slow),
+            !stop_ui_startup_within(slow, STOP_TEST_DEADLINE),
             "a thread still building at the deadline must be reported and detached"
         );
     }
