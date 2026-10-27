@@ -505,7 +505,11 @@ fn chord_label(action: KeyAction) -> Option<&'static str> {
         | KeyAction::Ignore
         | KeyAction::ForgetHighlighted
         | KeyAction::PinHighlighted
-        | KeyAction::AddPhrase => None,
+        | KeyAction::AddPhrase
+        | KeyAction::SelectFirstChar
+        | KeyAction::SelectLastChar
+        | KeyAction::ReduceFrequency
+        | KeyAction::HideCandidate => None,
     }
 }
 

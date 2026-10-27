@@ -74,3 +74,12 @@ fn set_pinned(&self, key: &str, word: Option<&str>) -> Result<(), ImeError> {
 - `xtask quality`：`QualityReport.length_bands` 分带审计 + JSON 新键（1.01.02）
 - `xtask testd-smoke`：TSV 驱动器 + `tests/smoke/cases.tsv`（2.06.01）
 - `xtask dict stage <file>`：热替换辅助命令（3.03.02）
+
+## 8. Round-2 契约增量（features-add phase4/5/6 · 24 卡）
+
+> Round-2 的冻结契约载体集中在 TASK-4.01.01（ADR-0017 批次 + 配置骨架）；下表仅作指针，规范 SSOT 仍在各任务卡「技术设计与代码级接入细节」小节。
+
+- `crates/ime-types`（TASK-4.01.01 定义，ADR-0017）：`CandidateSource::Assoc`（4.04.01 消费）、`KeyAction::SelectFirstChar`/`SelectLastChar`（6.02.01 消费）、`KeyAction::ReduceFrequency`/`HideCandidate`（6.03.01 消费）
+- 时钟/随机注入：`ClockSource`/`RngSource`（5.01.01 定义，`engine/host.rs` 为 ime-core 内部 trait，非冻结契约；5.01.02 七类翻译器与 5.03.01 sweep 消费）
+- `ime-config`：Round-2 配置骨架（4.01.01）；`RETIRED_KEYS` 退役键机制（6.09.01 交付；6.12.01 同文件键操作，串行防冲突）
+- 数据/构建面：词典辅码列与拆字表（6.06.01 交付，6.07.01 复用）；构建期排序标记（6.05.01，受 4.01.02 体积治理前置）；冒烟 TSV v2 断言语法（5.05.01，`tests/smoke/cases.tsv` + `xtask testd-smoke` 扩展）

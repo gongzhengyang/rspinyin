@@ -49,6 +49,11 @@ enum Command {
     /// Boxed for the same reason as `Dictc`: the argument struct is much larger than the
     /// other variants and the enum is built once at startup.
     Quality(Box<dictc::quality::QualityArgs>),
+    /// Audit the per-band value of a compiled dictionary: what every band costs
+    /// in bytes, what it contributes to held-out ranking, and what a trim pass
+    /// under `--trim-target-mib` would drop. The audit channel beside
+    /// `quality`; the compile-time trim pass is `dictc --trim-target-mib`.
+    Audit(dictc::audit::AuditArgs),
     /// Tune the language-model weights, or derive the held-out evaluation set.
     ///
     /// Boxed for the same reason as `Dictc`: the argument struct is much larger than the
@@ -183,6 +188,7 @@ fn main() -> anyhow::Result<()> {
         },
         Command::Dictc(args) => dictc::run(*args),
         Command::Quality(args) => dictc::quality::run(*args),
+        Command::Audit(args) => dictc::audit::run(args).map(|_| ()),
         Command::Tune(args) => tune::run(*args),
         Command::Install(args) => install::run(*args),
         Command::Package(args) => package::run(*args),

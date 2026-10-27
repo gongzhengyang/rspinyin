@@ -373,6 +373,10 @@ pub fn action_name(action: KeyAction) -> String {
         KeyAction::ForgetHighlighted => String::from("forget-highlighted"),
         KeyAction::PinHighlighted => String::from("pin-highlighted"),
         KeyAction::AddPhrase => String::from("add-phrase"),
+        KeyAction::SelectFirstChar => String::from("select-first-char"),
+        KeyAction::SelectLastChar => String::from("select-last-char"),
+        KeyAction::ReduceFrequency => String::from("reduce-frequency"),
+        KeyAction::HideCandidate => String::from("hide-candidate"),
         KeyAction::PageFirst => String::from("page-first"),
         KeyAction::PageLast => String::from("page-last"),
     }

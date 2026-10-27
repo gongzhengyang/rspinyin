@@ -12,8 +12,9 @@
 //! runs. Every diagnostic is English and none of them contains user input.
 //!
 //! The module is split by responsibility: this root holds the command line, the
-//! source allowlist and the pipeline, [`source`] reads the raw text formats, and
-//! [`build`] assembles the container.
+//! source allowlist and the pipeline, [`source`] reads the raw text formats,
+//! [`build`] assembles the container, and [`audit`] holds the per-entry value
+//! model the audit channel reports and the trim pass plans with.
 //!
 //! # Why the expansion is bounded
 //!
@@ -24,6 +25,7 @@
 //! threshold, and the build fails when the measured key growth passes
 //! `--max-key-growth`.
 
+pub(crate) mod audit;
 pub(crate) mod bigram;
 mod budget;
 // `pub(crate)` because the smoke baseline's fixture compiles its container through
@@ -51,9 +53,9 @@ use ime_dict::format::{BigramRecord, MAX_WORDS_PER_KEY, SectionKind, collision_l
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::dictc::build::{Band, Stats, compile};
+use crate::dictc::build::{Band, Compiled, Stats, compile};
 use crate::dictc::source::{
-    Skips, apply_polyphone, load_l1, load_polyphone, load_words, read_source, synth_words,
+    Skips, Word, apply_polyphone, load_l1, load_polyphone, load_words, read_source, synth_words,
 };
 
 /// Default word list, relative to the repository root.
@@ -158,6 +160,13 @@ pub struct DictcArgs {
     /// the core band.
     #[arg(long, default_value_t = 20)]
     core_min_freq: u32,
+    /// Container target for the trim pass, in mebibytes. When the compiled
+    /// container is past it, the least valuable tail-band words are dropped --
+    /// deterministically, by the audit module's value model -- and the build is
+    /// recompiled from the trimmed list. Omitted means no trim, which keeps the
+    /// default build byte-identical with untrimmed history.
+    #[arg(long)]
+    trim_target_mib: Option<f64>,
     /// Compile N synthetic words instead of reading the input file.
     #[arg(long, hide = true)]
     synth: Option<u32>,
@@ -299,17 +308,47 @@ pub fn run(args: DictcArgs) -> Result<()> {
     // carries the per-band audit out in its stats.
     let mut compiled = compile(&words, band, args.expand_cap, &corrections, normalize_rules)?;
     compiled.stats.polyphone_unmatched = unmatched;
-    let index = bigram::WordIndex::new(words.iter().map(|word| word.text.as_str()));
-    let corpus = fs::read_to_string(&args.corpus).unwrap_or_default();
-    let counts = bigram::count_cooccurrence(&corpus, &index);
-    let records = bigram::build_records(
-        counts,
-        bigram::BigramConfig {
-            max_pairs: args.max_bigram_pairs,
-            min_score: args.min_bigram_score,
-        },
+    fill_bigram(
+        &mut compiled,
+        &words,
+        &args.corpus,
+        args.max_bigram_pairs,
+        args.min_bigram_score,
     );
-    compiled.bigram = records.into_iter().flat_map(BigramRecord::encode).collect();
+    // The trim pass plans against the first build's exact size: the projection
+    // is the writer's own layout arithmetic over these very payloads, so the
+    // decision to trim and the drop set are a function of the inputs alone. A
+    // trim recompiles from the surviving list; the second build's stats, not
+    // the first's, are what the report and the manifest describe.
+    if let Some(target) = args.trim_target_mib {
+        let projected = audit::projected_container_bytes(&compiled);
+        let target_bytes = audit::target_bytes(target)?;
+        if projected > target_bytes {
+            let trim_report = normalize::trim_words(
+                &mut words,
+                normalize_rules,
+                band.threshold,
+                target,
+                projected,
+            )?;
+            let mut rebuilt = compile(&words, band, args.expand_cap, &corrections, normalize_rules)?;
+            rebuilt.stats.polyphone_unmatched = unmatched;
+            fill_bigram(
+                &mut rebuilt,
+                &words,
+                &args.corpus,
+                args.max_bigram_pairs,
+                args.min_bigram_score,
+            );
+            rebuilt.stats.weight_bands.trim = trim_report;
+            compiled = rebuilt;
+        } else {
+            compiled.stats.weight_bands.trim = normalize::TrimReport {
+                requested_target_mib: Some(target),
+                ..normalize::TrimReport::default()
+            };
+        }
+    }
     let built = Instant::now();
 
     // The section budgets are checked before anything is written: a container that is
@@ -388,6 +427,32 @@ pub fn run(args: DictcArgs) -> Result<()> {
     Ok(())
 }
 
+/// Counts adjacent-word co-occurrence for one word list and installs the
+/// encoded section in `compiled`.
+///
+/// A separate step rather than inline in [`run`] because a trim build compiles
+/// twice: the section describes the final word list, so it is rebuilt from the
+/// survivors exactly once, after the trim decision.
+fn fill_bigram(
+    compiled: &mut Compiled,
+    words: &[Word],
+    corpus: &Path,
+    max_pairs: u32,
+    min_score: f32,
+) {
+    let index = bigram::WordIndex::new(words.iter().map(|word| word.text.as_str()));
+    let text = fs::read_to_string(corpus).unwrap_or_default();
+    let counts = bigram::count_cooccurrence(&text, &index);
+    let records = bigram::build_records(
+        counts,
+        bigram::BigramConfig {
+            max_pairs,
+            min_score,
+        },
+    );
+    compiled.bigram = records.into_iter().flat_map(BigramRecord::encode).collect();
+}
+
 /// Prints the build log: what went in, what came out, and what was dropped.
 fn report(
     output: &Path,
@@ -432,6 +497,21 @@ fn report(
         normalize_rules.tail_flat_weight,
         normalize_rules.core_min_freq
     );
+    // The trim record, when the build ran one: the target, what dropped, and
+    // the floor bytes the drops provably freed. The two protected-band counts
+    // are printed as the invariant witnesses they are.
+    if let Some(target) = stats.weight_bands.trim.requested_target_mib {
+        let trim = &stats.weight_bands.trim;
+        println!(
+            "dictc: trim pass: target {target:.2} MiB, {} entries dropped \
+             (char-freq {}, 2char-core {}, tail-flat {}), floor freed {}",
+            trim.dropped,
+            trim.dropped_char_freq,
+            trim.dropped_core_true_freq,
+            trim.dropped_tail_flat,
+            human_size(trim.freed_floor_bytes)
+        );
+    }
     println!(
         "dictc: {} polyphone-risk words (a character of the word has several readings)",
         stats.polyphone_risk

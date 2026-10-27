@@ -242,6 +242,36 @@ pub struct PhraseConfig {
     pub max_entries: u32,
 }
 
+/// The `[assoc]` section: next-word association candidates offered after a commit.
+///
+/// Skeleton of the frozen-contract batch (ADR-0017): the typed shape the assoc
+/// work projects into a session, with the shipped defaults. The keys are not read
+/// from a document yet -- the document merge learns the section when the assoc
+/// wiring lands, and until then a table a user already wrote keeps the built-in
+/// defaults, exactly like any other key nothing reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AssocConfig {
+    /// `enabled`: whether a commit is followed by association candidates at all.
+    ///
+    /// Off by default: candidates appearing after every commit change what the
+    /// window shows without the user asking for it, so the feature arrives as an
+    /// explicit opt-in.
+    pub enabled: bool,
+    /// `max_candidates`: how many association candidates one commit may offer,
+    /// at most.
+    ///
+    /// Five is a page's worth at the shipped layout; a bound rather than a stream,
+    /// so an over-eager source cannot flood the window after every commit.
+    pub max_candidates: u8,
+    /// `history_depth`: how many recent commits the in-session history source may
+    /// look back through.
+    ///
+    /// Session memory only -- the ring holds no more than this and is never
+    /// persisted, so the bound is also the privacy statement: nothing outside the
+    /// live session is readable from it.
+    pub history_depth: u8,
+}
+
 /// The whole configuration, after the defaults, the user's document and validation
 /// have been applied.
 ///
@@ -271,6 +301,8 @@ pub struct Config {
     pub data: DataConfig,
     /// The `[diagnostics]` section.
     pub diagnostics: DiagnosticsConfig,
+    /// The `[assoc]` section.
+    pub assoc: AssocConfig,
 }
 
 impl Default for Config {
@@ -353,6 +385,54 @@ impl Default for Config {
                 log_input_content: false,
                 probes: true,
             },
+            // Off and empty: a session that has committed nothing offers nothing
+            // after the commit, which is what every configuration that predates
+            // the section behaves like.
+            assoc: AssocConfig {
+                enabled: false,
+                max_candidates: 5,
+                history_depth: 8,
+            },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_default_assoc_section_is_disabled_with_shipped_bounds() {
+        // The values the section ships with, pinned here so a default that moves
+        // is a conscious edit: the section is an opt-in feature, and a default
+        // that drifted to enabled would put candidates after every commit for
+        // users who never asked for them. The document-level drift test in
+        // `reload` covers the same defaults from the template side; this one
+        // holds the type side on its own.
+        let assoc = Config::default().assoc;
+        assert!(!assoc.enabled);
+        assert_eq!(assoc.max_candidates, 5);
+        assert_eq!(assoc.history_depth, 8);
+    }
+
+    #[test]
+    fn test_config_default_assoc_section_needs_no_repair() {
+        // The shipped section sits inside every range the repair rules hold, so
+        // validating the defaults reports nothing: a fresh install never opens
+        // with a repaired-value notice it did nothing to earn.
+        assert!(Config::default().validate().is_empty());
+    }
+
+    #[test]
+    fn test_document_assoc_section_before_the_merge_lands_keeps_defaults() {
+        // The typed section exists, but the document merge does not read it yet:
+        // a user who writes the table ahead of the wiring gets the built-in
+        // defaults and no diagnostic, the same answer any not-yet-read key gets.
+        // The merge that learns these keys replaces this expectation with repair
+        // and projection tests of its own.
+        let document = "[assoc]\nenabled = true\nmax_candidates = 9\nhistory_depth = 16\n";
+        let (config, warnings) = Config::from_document(document).expect("the document parses");
+        assert!(warnings.is_empty(), "nothing is reported yet: {warnings:?}");
+        assert_eq!(config.assoc, Config::default().assoc);
     }
 }

@@ -197,6 +197,9 @@ pub enum SourceName {
     /// An entry of the English lexicon, offered for an input no pinyin
     /// reading cuts.
     English,
+    /// Next-word association candidate produced by an assoc source after a
+    /// commit.
+    Assoc,
 }
 
 impl SourceName {
@@ -211,6 +214,7 @@ impl SourceName {
             CandidateSource::Phrase => Self::Phrase,
             CandidateSource::Script => Self::Script,
             CandidateSource::English => Self::English,
+            CandidateSource::Assoc => Self::Assoc,
         }
     }
 
@@ -225,6 +229,7 @@ impl SourceName {
             Self::Phrase => CandidateSource::Phrase,
             Self::Script => CandidateSource::Script,
             Self::English => CandidateSource::English,
+            Self::Assoc => CandidateSource::Assoc,
         }
     }
 }

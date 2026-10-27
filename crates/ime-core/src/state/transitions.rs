@@ -151,7 +151,8 @@ impl Session {
             //
             // The user-word actions have no highlight to act on here for the same reason
             // `CommitHighlighted` does not: there is no candidate list and no session to
-            // change.
+            // change. The selection and feedback actions appended beside them act on a
+            // highlight too, so they wait in the same bucket.
             KeyAction::Backspace
             | KeyAction::CommitHighlighted
             | KeyAction::CommitRaw
@@ -167,6 +168,10 @@ impl Session {
             | KeyAction::ForgetHighlighted
             | KeyAction::PinHighlighted
             | KeyAction::AddPhrase
+            | KeyAction::SelectFirstChar
+            | KeyAction::SelectLastChar
+            | KeyAction::ReduceFrequency
+            | KeyAction::HideCandidate
             | KeyAction::Escape
             | KeyAction::Ignore => {}
         }
@@ -222,6 +227,17 @@ impl Session {
             KeyAction::PinHighlighted => self.toggle_pin(ctx),
             KeyAction::ForgetHighlighted => self.forget_highlighted(ctx),
             KeyAction::AddPhrase => self.add_phrase(ctx),
+            // The character-selection and feedback routes do not exist yet, and
+            // reporting that through `dict/unsupported` is what the contract
+            // reserves that code for; the work that adds each route replaces its
+            // arm. A silent no-op here would look to the user like a key that
+            // does nothing, with no diagnostic to explain it.
+            KeyAction::SelectFirstChar
+            | KeyAction::SelectLastChar
+            | KeyAction::ReduceFrequency
+            | KeyAction::HideCandidate => {
+                ctx.push(Effect::Diagnose(ImeError::Unsupported));
+            }
             // The host decides what `Ignore` means, and the session agrees: nothing.
             KeyAction::Ignore => {}
         }

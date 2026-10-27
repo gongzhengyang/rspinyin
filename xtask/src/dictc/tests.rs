@@ -115,6 +115,7 @@ fn scratch_args(root: &Path) -> DictcArgs {
         min_bigram_score: 1.0,
         tail_flat_weight: 100,
         core_min_freq: 20,
+        trim_target_mib: None,
         synth: None,
     }
 }
@@ -321,6 +322,141 @@ fn test_growth_percent_and_the_guard_boundary() {
     assert_eq!(growth_percent(115, 100), 15.0);
     assert_eq!(growth_percent(130, 100), 30.0);
     assert!(growth_percent(131, 100) > 30.0);
+}
+
+/// The L1 character table of the trim fixture repository.
+const TRIM_L1: &str = "中\tzhong\n国\tguo\n心\txin\n不\tbu\n像\txiang\n话\thua\n\
+                       东\tdong\n西\txi\n行\txing,hang\n";
+
+/// The word list of the trim fixture repository, spanning all three bands: one
+/// single-character word, two head two-character words, and three tail words
+/// whose floor savings together cover the padding slack a trim asks for.
+const TRIM_WORDS: &str = "中\t\t800000\n中国\t\t5000\n中心\t\t4000\n东西\t\t19\n\
+                          不像话\t\t30\n行心\t\t3\n";
+
+/// Writes a repository holding the trim fixture: the same four files the
+/// compiler reads, with an empty correction table.
+fn trim_repository(tag: &str) -> PathBuf {
+    let root = scratch(tag);
+    let _ = fs::remove_dir_all(&root);
+    let raw = root.join("data/raw");
+    let docs = root.join("docs/dev");
+    fs::create_dir_all(&raw).expect("creating data/raw");
+    fs::create_dir_all(&docs).expect("creating docs/dev");
+    fs::write(raw.join("pinyin-data.tsv"), TRIM_L1).expect("writing the L1 source");
+    fs::write(raw.join("jieba-dict.tsv"), TRIM_WORDS)
+        .expect("writing the word and frequency source");
+    fs::write(raw.join("polyphone.tsv"), "").expect("writing the correction table");
+    fs::write(docs.join("budgets.json"), BUDGETS_FIXTURE).expect("writing the budgets");
+    let allowlist = format!(
+        "[[source]]\nid = \"pinyin-data\"\nkind = \"upstream\"\nlayer = \"L1\"\n\
+             url = \"https://example.invalid/pinyin-data\"\nlicense = \"MIT\"\nspdx = \"MIT\"\n\
+             retrieved = \"2026-09-29\"\nsha256 = \"{}\"\npermissive = true\n\n\
+             [[source]]\nid = \"jieba-dict\"\nkind = \"upstream\"\nlayer = \"L2\"\n\
+             url = \"https://example.invalid/jieba-dict\"\nlicense = \"MIT\"\nspdx = \"MIT\"\n\
+             retrieved = \"2026-09-29\"\nsha256 = \"{}\"\npermissive = true\n\n\
+             [[source]]\nid = \"polyphone\"\nkind = \"derived\"\nlayer = \"L3c\"\n\
+             url = \"https://example.invalid/polyphone\"\nlicense = \"Project-owned\"\n\
+             spdx = \"MIT OR Apache-2.0\"\npermissive = true\n",
+        hex(&Sha256::digest(TRIM_L1.as_bytes())),
+        hex(&Sha256::digest(TRIM_WORDS.as_bytes())),
+    );
+    fs::write(root.join("data/sources.toml"), allowlist).expect("writing the allowlist");
+    root
+}
+
+/// The arguments one trim fixture build uses, rooted at `root`.
+fn trim_args(root: &Path) -> DictcArgs {
+    DictcArgs {
+        root: Some(root.to_path_buf()),
+        input: PathBuf::from(DEFAULT_INPUT),
+        output: PathBuf::from(DEFAULT_OUTPUT),
+        polyphone: PathBuf::from(DEFAULT_POLYPHONE),
+        l1: PathBuf::from(DEFAULT_L1),
+        l4: PathBuf::from(DEFAULT_L4),
+        l2: root.join("data/raw/absent-l2.tsv"),
+        l2_min_freq: 0,
+        polyphone_freq_ratio: 5,
+        sources: PathBuf::from(DEFAULT_SOURCES),
+        corpus: root.join("data/raw/corpus/absent.txt"),
+        expand_top: 2,
+        expand_cap: 4,
+        expand_min_weight: None,
+        max_key_growth: 500.0,
+        max_bigram_pairs: 200_000,
+        min_bigram_score: 1.0,
+        tail_flat_weight: 100,
+        core_min_freq: 20,
+        trim_target_mib: None,
+        synth: None,
+    }
+}
+
+#[test]
+fn test_run_trim_is_deterministic_and_reaches_its_target() {
+    let root = trim_repository("trim-run");
+    let output = root.join(DEFAULT_OUTPUT);
+
+    run(trim_args(&root)).expect("the untrimmed baseline build");
+    let untrimmed = fs::read(&output).expect("reading the untrimmed container");
+
+    // A target ten bytes past the baseline asks for 74 floor bytes with the
+    // padding slack; the three tail words free 93, so all of them go and the
+    // three protected words stay.
+    let target_bytes = (untrimmed.len() - 10) as f64 / (1024.0 * 1024.0);
+    let mut args = trim_args(&root);
+    args.trim_target_mib = Some(target_bytes);
+    run(args).expect("the trimmed build");
+    let trimmed = fs::read(&output).expect("reading the trimmed container");
+
+    assert!(trimmed.len() < untrimmed.len(), "the trim must shrink the container");
+    assert!(
+        (trimmed.len() as f64 / (1024.0 * 1024.0)) <= target_bytes,
+        "the trimmed container fits its target"
+    );
+
+    // The survivors are the protected bands; the tail left nothing behind.
+    let reader = Reader::open(&output).expect("opening the trimmed container");
+    assert_eq!(reader.entry_count(), 3);
+    assert_eq!(reader.key_words("zhong'guo").expect("lookup"), vec!["中国"]);
+    assert_eq!(reader.key_words("zhong").expect("lookup"), vec!["中"]);
+    assert!(
+        reader.key_words("dong'xi").expect("lookup").is_empty(),
+        "a dropped tail word leaves no key behind"
+    );
+
+    // And the trim is a function of the inputs: a second run over the same
+    // arguments rebuilds the same bytes, which is what the double-compile gate
+    // demands of a pass that rewrites the word list.
+    let mut rerun = trim_args(&root);
+    rerun.trim_target_mib = Some(target_bytes);
+    run(rerun).expect("the second trimmed build");
+    let rebuilt = fs::read(&output).expect("reading the rebuilt container");
+    assert_eq!(trimmed, rebuilt, "the trim must be reproducible");
+
+    fs::remove_dir_all(&root).expect("cleaning up");
+}
+
+#[test]
+fn test_run_refuses_a_trim_target_below_the_protected_floor() {
+    let root = trim_repository("trim-floor");
+    let output = root.join(DEFAULT_OUTPUT);
+    run(trim_args(&root)).expect("the untrimmed baseline build");
+
+    // The whole tail frees 93 floor bytes; a target at half the container
+    // asks for more than that plus the slack, so the build refuses rather
+    // than cut into the protected bands.
+    let unreachable = (fs::metadata(&output).expect("measuring").len() / 2) as f64
+        / (1024.0 * 1024.0);
+    let mut args = trim_args(&root);
+    args.trim_target_mib = Some(unreachable);
+    let refusal = run(args).expect_err("a target below the protected floor must be refused");
+    assert!(
+        refusal.to_string().contains("below the floor the protected bands set"),
+        "the refusal names the floor: {refusal}"
+    );
+
+    fs::remove_dir_all(&root).expect("cleaning up");
 }
 
 #[test]

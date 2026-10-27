@@ -287,7 +287,20 @@ fn bindable_counts() -> (usize, usize) {
 ///   could read or write, so a chord here could only swallow the key.
 /// * [`KeyAction::AddPhrase`] -- waiting on the phrase-editor delivery, which binds it
 ///   when the workflow it belongs to exists.
-const UNBOUND_WHITELIST: [KeyAction; 2] = [KeyAction::ToggleLang, KeyAction::AddPhrase];
+/// * [`KeyAction::SelectFirstChar`] and [`KeyAction::SelectLastChar`] -- waiting on the
+///   character-selection work, which binds the pair when the commit-one-character route
+///   exists.
+/// * [`KeyAction::ReduceFrequency`] and [`KeyAction::HideCandidate`] -- waiting on the
+///   negative-feedback work, which binds the pair when the penalty bit and the
+///   session-hidden set exist for the routes to act on.
+const UNBOUND_WHITELIST: [KeyAction; 6] = [
+    KeyAction::ToggleLang,
+    KeyAction::AddPhrase,
+    KeyAction::SelectFirstChar,
+    KeyAction::SelectLastChar,
+    KeyAction::ReduceFrequency,
+    KeyAction::HideCandidate,
+];
 
 /// Every variant of the frozen action enum, with a representative payload for the ones
 /// that carry one.
@@ -295,7 +308,7 @@ const UNBOUND_WHITELIST: [KeyAction; 2] = [KeyAction::ToggleLang, KeyAction::Add
 /// Spelled out and sized by hand, like [`WHITELIST`]: a variant nobody adds here is
 /// exactly the gap the assertions below exist to catch, and the explicit size is what
 /// makes adding one a conscious edit rather than an accident of enumeration.
-const EVERY_ACTION: [KeyAction; 21] = [
+const EVERY_ACTION: [KeyAction; 25] = [
     KeyAction::InputChar('a'),
     KeyAction::Backspace,
     KeyAction::CommitHighlighted,
@@ -317,6 +330,10 @@ const EVERY_ACTION: [KeyAction; 21] = [
     KeyAction::ForgetHighlighted,
     KeyAction::PinHighlighted,
     KeyAction::AddPhrase,
+    KeyAction::SelectFirstChar,
+    KeyAction::SelectLastChar,
+    KeyAction::ReduceFrequency,
+    KeyAction::HideCandidate,
 ];
 
 /// The canonical form of `action`, exhaustively matched over the frozen enum.
@@ -352,6 +369,10 @@ fn canonical(action: KeyAction) -> KeyAction {
         KeyAction::ForgetHighlighted => KeyAction::ForgetHighlighted,
         KeyAction::PinHighlighted => KeyAction::PinHighlighted,
         KeyAction::AddPhrase => KeyAction::AddPhrase,
+        KeyAction::SelectFirstChar => KeyAction::SelectFirstChar,
+        KeyAction::SelectLastChar => KeyAction::SelectLastChar,
+        KeyAction::ReduceFrequency => KeyAction::ReduceFrequency,
+        KeyAction::HideCandidate => KeyAction::HideCandidate,
     }
 }
 

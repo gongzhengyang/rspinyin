@@ -23,6 +23,7 @@
 | `0014` | 增量契约扩展：`DecodeFlags::CORRECTION` 位（拼写纠错） | 已接受 | `docs/dev/features-add-phase3.md` 的 `TASK-3.01.01` | [0014-decode-flags-correction-bit.md](0014-decode-flags-correction-bit.md) |
 | `0015` | 词库容器格式 v2 与 BIGRAM 段 | 已接受 | `docs/dev/features-add-phase1.md` 的 `TASK-1.03.01` | [0015-dict-container-format-v2.md](0015-dict-container-format-v2.md) |
 | `0016` | 增量契约扩展：`DecodeFlags::ENGLISH` 位 + `CandidateSource::English`（混输） | 已接受 | `docs/dev/features-add-phase3.md` 的 `TASK-3.05.01` | [0016-mixed-english-contract-bits.md](0016-mixed-english-contract-bits.md) |
+| `0017` | 第二轮契约增量批次：`CandidateSource::Assoc` + `KeyAction::{SelectFirstChar, SelectLastChar, ReduceFrequency, HideCandidate}` | 已接受 | `docs/dev/features-add-phase4.md` 的 `TASK-4.01.01` | [0017-round2-contract-batch.md](0017-round2-contract-batch.md) |
 
 ## 编号冲突的由来
 

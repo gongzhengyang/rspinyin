@@ -509,6 +509,7 @@ fn source(code: u32) -> Option<CandidateSource> {
         5 => Some(CandidateSource::Phrase),
         6 => Some(CandidateSource::Script),
         7 => Some(CandidateSource::English),
+        8 => Some(CandidateSource::Assoc),
         _ => None,
     }
 }

@@ -328,6 +328,10 @@ fn idle(action: KeyAction) -> Executability {
         | KeyAction::ForgetHighlighted
         | KeyAction::PinHighlighted
         | KeyAction::AddPhrase
+        | KeyAction::SelectFirstChar
+        | KeyAction::SelectLastChar
+        | KeyAction::ReduceFrequency
+        | KeyAction::HideCandidate
         | KeyAction::Escape
         | KeyAction::Ignore => Executability::Inert,
     }
@@ -364,6 +368,13 @@ fn composing(session: &Session, action: KeyAction, cfg: &SessionConfig) -> Execu
         KeyAction::ForgetHighlighted => has_highlight(session),
         KeyAction::AddPhrase => add_phrase(session),
         KeyAction::PinHighlighted => has_highlight(session),
+        // The selection and feedback routes do not exist yet; the session answers
+        // them with a diagnostic, which is acting on the key, so the chord is kept
+        // rather than leaked through to the application as a typed character.
+        KeyAction::SelectFirstChar
+        | KeyAction::SelectLastChar
+        | KeyAction::ReduceFrequency
+        | KeyAction::HideCandidate => Executability::Executable,
         KeyAction::Ignore => Executability::Inert,
     }
 }

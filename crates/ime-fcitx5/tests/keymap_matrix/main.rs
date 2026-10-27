@@ -1062,13 +1062,14 @@ const PAGEABLE: [(&str, u32, FlipSet, KeyAction); 6] = [
 
 /// The actions the routing table can reach.
 ///
-/// The frozen enum carries twenty-one variants; four of them are named by no key. The
+/// The frozen enum carries twenty-five variants; eight of them are named by no key. The
 /// script switch ships unbound by decision, the pin set has no UI yet and the phrase
 /// chord belongs to the phrase-manager work; the language switch is the host's own
 /// hotkey, whose key the plugin could only have swallowed, because Fcitx5's headers
-/// expose no state for the engine to switch. The list is written out rather than
-/// derived, because a variant that gained a key without anyone adding a row here is
-/// exactly the drift the coverage case exists to catch.
+/// expose no state for the engine to switch; the two character-selection keys and the
+/// two feedback keys wait for the routes that will bind them. The list is written out
+/// rather than derived, because a variant that gained a key without anyone adding a row
+/// here is exactly the drift the coverage case exists to catch.
 const ROUTABLE_ACTIONS: [&str; 17] = [
     "input-char",
     "backspace",
@@ -1114,6 +1115,10 @@ fn action_name(action: KeyAction) -> &'static str {
         KeyAction::ForgetHighlighted => "forget-highlighted",
         KeyAction::PinHighlighted => "pin-highlighted",
         KeyAction::AddPhrase => "add-phrase",
+        KeyAction::SelectFirstChar => "select-first-char",
+        KeyAction::SelectLastChar => "select-last-char",
+        KeyAction::ReduceFrequency => "reduce-frequency",
+        KeyAction::HideCandidate => "hide-candidate",
         KeyAction::PageFirst => "page-first",
         KeyAction::PageLast => "page-last",
     }

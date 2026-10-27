@@ -71,6 +71,30 @@ pub enum KeyAction {
     PinHighlighted,
     /// Save the highlighted candidate as a phrase the user typed on purpose.
     AddPhrase,
+    /// Commit the first character of the highlighted candidate (以词定字).
+    ///
+    /// Appended by ADR-0017, defined ahead of its route: until the character
+    /// selection work lands, the session answers it with a diagnostic and the
+    /// key is consumed rather than passed through as a typed character.
+    SelectFirstChar,
+    /// Commit the last character of the highlighted candidate (以词定字).
+    ///
+    /// Appended by ADR-0017 with the same definition-ahead-of-route status as
+    /// [`KeyAction::SelectFirstChar`].
+    SelectLastChar,
+    /// Penalize the highlighted candidate's user frequency (negative feedback).
+    ///
+    /// Appended by ADR-0017. A penalty is recoverable -- later commits of the
+    /// word lift it again -- which is what keeps it distinct from
+    /// [`KeyAction::ForgetHighlighted`], the delete.
+    ReduceFrequency,
+    /// Suppress the highlighted candidate for the rest of this session.
+    ///
+    /// Appended by ADR-0017. The suppression lives in session memory only and
+    /// never reaches the store: hiding across sessions is
+    /// [`KeyAction::ForgetHighlighted`]'s job, so the two do not duplicate one
+    /// mechanism.
+    HideCandidate,
 }
 
 #[cfg(test)]
@@ -102,6 +126,10 @@ mod tests {
             KeyAction::ForgetHighlighted => "forget-highlighted",
             KeyAction::PinHighlighted => "pin-highlighted",
             KeyAction::AddPhrase => "add-phrase",
+            KeyAction::SelectFirstChar => "select-first-char",
+            KeyAction::SelectLastChar => "select-last-char",
+            KeyAction::ReduceFrequency => "reduce-frequency",
+            KeyAction::HideCandidate => "hide-candidate",
         }
     }
 
@@ -119,5 +147,21 @@ mod tests {
         assert_ne!(KeyAction::PageFirst, KeyAction::PageLast);
         assert_ne!(KeyAction::Ignore, KeyAction::Escape);
         assert_eq!(KeyAction::Backspace, KeyAction::Backspace);
+    }
+
+    #[test]
+    fn test_key_action_feedback_variants_are_distinct_and_payload_free() {
+        // The two selection actions share one semantic family and one direction
+        // each; the two feedback actions answer different questions about the
+        // same highlighted word (trust vs. presence), so none of the four may
+        // collapse onto another or onto an existing variant.
+        assert_ne!(KeyAction::SelectFirstChar, KeyAction::SelectLastChar);
+        assert_ne!(KeyAction::ReduceFrequency, KeyAction::HideCandidate);
+        assert_ne!(KeyAction::SelectFirstChar, KeyAction::CommitHighlighted);
+        assert_ne!(KeyAction::ReduceFrequency, KeyAction::ForgetHighlighted);
+        assert_eq!(label(KeyAction::SelectFirstChar), "select-first-char");
+        assert_eq!(label(KeyAction::SelectLastChar), "select-last-char");
+        assert_eq!(label(KeyAction::ReduceFrequency), "reduce-frequency");
+        assert_eq!(label(KeyAction::HideCandidate), "hide-candidate");
     }
 }

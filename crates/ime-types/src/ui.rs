@@ -222,11 +222,11 @@ pub struct Candidate {
 
 /// Where a candidate came from; drives the source label and the diagnostics.
 ///
-/// `Phrase` and `Script` were appended by ADR-0005, `English` by ADR-0016.
-/// Appending a variant makes every `match` on this enum non-exhaustive, which is
-/// deliberate: the compiler lists the places that have to decide what the new
-/// source looks like. `Symbol` is the precedent -- it was defined ahead of its
-/// implementation for the same reason.
+/// `Phrase` and `Script` were appended by ADR-0005, `English` by ADR-0016,
+/// `Assoc` by ADR-0017. Appending a variant makes every `match` on this enum
+/// non-exhaustive, which is deliberate: the compiler lists the places that have
+/// to decide what the new source looks like. `Symbol` is the precedent -- it was
+/// defined ahead of its implementation for the same reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CandidateSource {
     Dict,
@@ -242,6 +242,10 @@ pub enum CandidateSource {
     /// An entry of the English lexicon, offered for an input no pinyin reading
     /// cuts (ADR-0016).
     English,
+    /// Next-word association candidate produced by an assoc source after a
+    /// commit (see ADR-0017). Rendered with the same candidate widgets; the
+    /// marker lets the UI annotate "联想" without a new frame field.
+    Assoc,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -596,6 +600,45 @@ mod tests {
             }],
             selected: None,
             query: String::new(),
+        }
+    }
+
+    // Exhaustively names every source variant, so adding or removing one breaks
+    // the build instead of silently changing the frozen contract.
+    fn source_label(source: CandidateSource) -> &'static str {
+        match source {
+            CandidateSource::Dict => "dict",
+            CandidateSource::UserDict => "user-dict",
+            CandidateSource::Learned => "learned",
+            CandidateSource::Passthrough => "passthrough",
+            CandidateSource::Symbol => "symbol",
+            CandidateSource::Phrase => "phrase",
+            CandidateSource::Script => "script",
+            CandidateSource::English => "english",
+            CandidateSource::Assoc => "assoc",
+        }
+    }
+
+    #[test]
+    fn test_candidate_source_variants_are_named_and_distinct() {
+        // The assoc marker is payload-free like its siblings, so two candidates
+        // of one source compare equal and of different sources never do.
+        assert_eq!(source_label(CandidateSource::Assoc), "assoc");
+        assert_eq!(CandidateSource::Assoc, CandidateSource::Assoc);
+        assert_ne!(CandidateSource::Assoc, CandidateSource::Dict);
+        assert_ne!(CandidateSource::Assoc, CandidateSource::English);
+        for (source, label) in [
+            (CandidateSource::Dict, "dict"),
+            (CandidateSource::UserDict, "user-dict"),
+            (CandidateSource::Learned, "learned"),
+            (CandidateSource::Passthrough, "passthrough"),
+            (CandidateSource::Symbol, "symbol"),
+            (CandidateSource::Phrase, "phrase"),
+            (CandidateSource::Script, "script"),
+            (CandidateSource::English, "english"),
+            (CandidateSource::Assoc, "assoc"),
+        ] {
+            assert_eq!(source_label(source), label);
         }
     }
 }
