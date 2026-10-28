@@ -144,7 +144,7 @@ const MISS_INPUT: &str = "womenmingtianqugongyuanawnbazhongguoxue";
 /// syllables or that does not spell the size its case declares, and whatever
 /// criterion reports about the command line.
 use self::alloc::bench_allocations;
-use self::components::{bench_lattice, bench_unigram};
+use self::components::{bench_lattice, bench_rank_decay, bench_unigram};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dictionary = fixtures::build()?;
@@ -156,6 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     bench_decode(&mut criterion, &dictionary, &model);
+    bench_candidate_supply(&mut criterion, &dictionary, &model);
     bench_decode_reuse(&mut criterion, &dictionary, &model);
     bench_fuzzy(&mut criterion, &dictionary, &model);
     bench_correction(&mut criterion, &dictionary, &model);
@@ -166,6 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     bench_segment(&mut criterion);
     bench_correction_build(&mut criterion);
     bench_lattice(&mut criterion, &dictionary);
+    bench_rank_decay(&mut criterion);
     bench_edge_score(&mut criterion, &dictionary, &model);
     bench_unigram(&mut criterion, &dictionary, &model);
 
@@ -232,6 +234,49 @@ fn bench_decode(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &I
                 |request| {
                     let result = decoder.decode(black_box(&request), dictionary, &user, model);
                     black_box(result.candidates.len())
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
+/// Times the three rungs of the candidate-materialization supply ladder.
+///
+/// Each case is the full decode the session would pay when paging reaches that depth.
+/// The growing totals make the extra materialization visible; the report is criterion's,
+/// while `xtask budget --check` remains the authority for comparing it with a budget.
+fn bench_candidate_supply(
+    criterion: &mut Criterion,
+    dictionary: &SyntheticDict,
+    model: &InMemoryLm,
+) {
+    let Some(case) = CASES.iter().find(|case| case.name == REUSE_CASE) else {
+        return;
+    };
+    let request = DecodeRequest::new(case.raw);
+    let decoder = Decoder::default();
+    let user = NoUser;
+    let mut group = criterion.benchmark_group("decode");
+    group.throughput(Throughput::Elements(1));
+    for quota in [
+        ime_core::viterbi::decoder::INITIAL_CANDIDATE_QUOTA,
+        ime_core::viterbi::decoder::EXPANDED_CANDIDATE_QUOTA,
+        ime_core::viterbi::decoder::SUPPLY_CANDIDATE_CAP,
+    ] {
+        group.bench_function(format!("supply-{quota}"), |bencher| {
+            bencher.iter_batched(
+                || request.clone(),
+                |request| {
+                    let result = decoder.decode_with_candidate_quota(
+                        black_box(&request),
+                        dictionary,
+                        &user,
+                        model,
+                        quota,
+                    );
+                    black_box(result.map(|decoded| decoded.candidates.len()))
                 },
                 BatchSize::SmallInput,
             );

@@ -171,9 +171,129 @@ impl<T: Ord> TopK<'_, T> {
     }
 }
 
+/// Fixed per-rank cutoff falloff, in Q8.8.
+///
+/// The value models librime's `cutoff_threshold * (1 - 1/N)` behaviour with integer
+/// arithmetic: each whole-sentence rank gets a floor one step lower than the rank before
+/// it, so a clearly weaker tail stops occupying candidate slots.
+pub const DECAY_STEP_Q88: i32 = 24;
+
+/// Returns the lowest whole-sentence score that `rank` may retain.
+///
+/// `rank` is zero-based in candidate order, so the first sentence uses `base` itself.
+/// Saturating arithmetic keeps an unusually deep rank or an already-small base from
+/// overflowing; a saturated floor is still monotonic in rank.
+///
+/// # Panics
+///
+/// Never panics.
+pub fn decay_floor(rank: usize, base: i32) -> i32 {
+    let rank = i32::try_from(rank).unwrap_or(i32::MAX);
+    base.saturating_sub(rank.saturating_mul(DECAY_STEP_Q88))
+}
+
+/// Truncates weak whole-sentence candidates by the rank-decay floor.
+///
+/// The sentence predicate separates whole sentences from word-level candidates. A stable
+/// score sort can interleave the two, so decay counts sentence ranks independently and
+/// leaves every word candidate in place. Once a sentence misses its floor, the weaker
+/// sentence tail is dropped; the retained sentence prefix keeps its original order. The
+/// function returns the number of sentences removed.
+///
+/// The caller supplies scores in Q8.8 and must provide candidates in descending score
+/// order; a caller that cannot guarantee that order must not call this helper.
+///
+/// # Panics
+///
+/// Never panics: an empty list, an absent sentence prefix and a first-sentence miss are
+/// all safe.
+pub fn retain_rank_decayed_sentences<T>(
+    candidates: &mut Vec<T>,
+    is_sentence: impl Fn(&T) -> bool,
+    score: impl Fn(&T) -> i32,
+) -> usize {
+    let original_len = candidates.len();
+    let Some((_, base)) = candidates
+        .iter()
+        .find(|candidate| is_sentence(candidate))
+        .map(|candidate| (candidate, score(candidate)))
+    else {
+        return 0;
+    };
+    let mut retained_count = 0usize;
+    let mut sentence_count = 0usize;
+    let mut decay_stopped = false;
+    for candidate in candidates.iter() {
+        if !is_sentence(candidate) {
+            continue;
+        }
+        let rank = sentence_count;
+        sentence_count += 1;
+        // Once one sentence misses, the whole weaker sentence tail is dropped even though
+        // word candidates interleaved with it remain eligible.
+        if !decay_stopped && score(candidate) >= decay_floor(rank, base) {
+            retained_count += 1;
+        } else {
+            decay_stopped = true;
+        }
+    }
+
+    // Compact in place, preserving every retained candidate's relative position. Sentence
+    // ranks are counted independently because word candidates may share the score band.
+    let mut write = 0usize;
+    let mut seen_sentences = 0usize;
+    for read in 0..original_len {
+        let retain = !is_sentence(&candidates[read]) || seen_sentences < retained_count;
+        if is_sentence(&candidates[read]) {
+            seen_sentences += 1;
+        }
+        if retain {
+            candidates.swap(write, read);
+            write += 1;
+        }
+    }
+    candidates.truncate(write);
+    sentence_count - retained_count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in for a materialized candidate: text carries identity, `score_q88`
+    /// carries the rank-decision value, and the flag separates sentence paths.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Item {
+        text: &'static str,
+        score_q88: i32,
+        is_sentence: bool,
+    }
+
+    impl Item {
+        fn sentence(text: &'static str, score_q88: i32) -> Self {
+            Self {
+                text,
+                score_q88,
+                is_sentence: true,
+            }
+        }
+
+        fn word(text: &'static str, score_q88: i32) -> Self {
+            Self {
+                text,
+                score_q88,
+                is_sentence: false,
+            }
+        }
+    }
+
+    fn decay(items: &mut Vec<Item>) -> usize {
+        retain_rank_decayed_sentences(
+            items,
+            |item| item.is_sentence,
+            |item| item.score_q88,
+        )
+    }
 
     /// Offers `values` to a heap of `cap` slots and returns the survivors, best
     /// first.
@@ -308,5 +428,86 @@ mod tests {
         assert_eq!(top.len(), 2, "the capacity is what the storage holds");
         top.sort_desc();
         assert_eq!(&slots[..len], &[5, 4]);
+    }
+
+    #[test]
+    fn test_rank_decay_floor_is_monotonic_in_rank() {
+        assert_eq!(decay_floor(0, 1_000), 1_000);
+        assert_eq!(decay_floor(1, 1_000), 976);
+        assert_eq!(decay_floor(2, 1_000), 952);
+        assert!(decay_floor(1, 1_000) > decay_floor(2, 1_000));
+        assert!(decay_floor(usize::MAX, i32::MIN) == i32::MIN);
+    }
+
+    #[test]
+    fn test_rank_decay_keeps_a_stable_prefix_and_frees_only_the_weak_tail() {
+        let original = vec![
+            Item::sentence("s0", 1_000),
+            Item::sentence("s1", 976),
+            Item::sentence("s2", 500),
+            Item::sentence("s3", 480),
+            Item::word("w0", 470),
+            Item::word("w1", 460),
+        ];
+        let expected = vec![
+            original[0], original[1], original[4], original[5],
+        ];
+        let mut actual = original;
+        assert_eq!(decay(&mut actual), 2);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_rank_decay_retains_a_score_at_its_floor_and_keeps_order_bit_for_bit() {
+        let original = vec![
+            Item::sentence("best", 900),
+            Item::sentence("floor", 876),
+            Item::sentence("below", 851),
+            Item::word("word", 800),
+        ];
+        let mut actual = original.clone();
+        assert_eq!(decay(&mut actual), 1);
+        assert_eq!(
+            actual,
+            vec![original[0], original[1], original[3]],
+            "the retained prefix must be unchanged"
+        );
+        assert_eq!(actual[0].score_q88.to_le(), original[0].score_q88.to_le());
+        assert_eq!(actual[1].score_q88.to_le(), original[1].score_q88.to_le());
+    }
+
+    #[test]
+    fn test_rank_decay_with_k_one_is_identical_to_the_undecayed_list() {
+        let one = vec![Item::sentence("only", i32::MIN + 1)];
+        let mut actual = one.clone();
+        assert_eq!(decay(&mut actual), 0);
+        assert_eq!(actual, one);
+    }
+
+    #[test]
+    fn test_rank_decay_is_safe_for_empty_and_word_only_lists() {
+        let mut empty: Vec<Item> = Vec::new();
+        assert_eq!(decay(&mut empty), 0);
+        assert!(empty.is_empty());
+
+        let mut words = vec![Item::word("w0", 10), Item::word("w1", 0)];
+        assert_eq!(decay(&mut words), 0);
+        assert_eq!(words, vec![Item::word("w0", 10), Item::word("w1", 0)]);
+    }
+
+    #[test]
+    fn test_rank_decay_never_visits_candidates_after_the_sentence_prefix() {
+        // Even a very low word cannot open a new decay walk or be removed: the scope is
+        // established by the leading contiguous sentence segment, not by score.
+        let mut candidates = vec![
+            Item::sentence("s0", 100),
+            Item::sentence("s1", 10),
+            Item::word("w0", -1_000),
+        ];
+        assert_eq!(decay(&mut candidates), 1);
+        assert_eq!(
+            candidates,
+            vec![Item::sentence("s0", 100), Item::word("w0", -1_000)]
+        );
     }
 }

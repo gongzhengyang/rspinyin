@@ -49,7 +49,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, ensure};
 use clap::Args;
 use ime_dict::format::writer::DictWriter;
-use ime_dict::format::{BigramRecord, MAX_WORDS_PER_KEY, SectionKind, collision_limit};
+use ime_dict::format::{MAX_WORDS_PER_KEY, SectionKind, collision_limit};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -150,6 +150,10 @@ pub struct DictcArgs {
     /// Minimum `count * PMI` a bigram pair needs to survive the cut.
     #[arg(long, default_value_t = 1.0)]
     min_bigram_score: f32,
+    /// Candidate `min_score:max_pairs` working points to measure and report instead of
+    /// writing a dictionary.
+    #[arg(long, value_name = "MIN_SCORE:MAX_PAIRS")]
+    bigram_scan: Option<Vec<String>>,
     /// The constant every tail-band word receives after weight normalization:
     /// three-or-more character words, and two-character words below
     /// `--core-min-freq`.
@@ -320,6 +324,7 @@ pub fn run(args: DictcArgs) -> Result<()> {
     // decision to trim and the drop set are a function of the inputs alone. A
     // trim recompiles from the surviving list; the second build's stats, not
     // the first's, are what the report and the manifest describe.
+    let mut trim_context: Option<(f64, u64)> = None;
     if let Some(target) = args.trim_target_mib {
         let projected = audit::projected_container_bytes(&compiled);
         let target_bytes = audit::target_bytes(target)?;
@@ -341,6 +346,7 @@ pub fn run(args: DictcArgs) -> Result<()> {
                 args.min_bigram_score,
             );
             rebuilt.stats.weight_bands.trim = trim_report;
+            trim_context = Some((target, projected));
             compiled = rebuilt;
         } else {
             compiled.stats.weight_bands.trim = normalize::TrimReport {
@@ -350,6 +356,18 @@ pub fn run(args: DictcArgs) -> Result<()> {
         }
     }
     let built = Instant::now();
+
+    // A scan is an explicitly requested report, never a build: returning here leaves the
+    // output path and every existing container byte untouched while reusing the same
+    // word list, corpus segmenter, scorer and cut that `fill_bigram` would use.
+    if let Some(specs) = args.bigram_scan.as_deref() {
+        let configs = bigram::parse_working_points(specs)?;
+        let counts = bigram_counts(&words, &args.corpus);
+        for point in bigram::scan_records(&counts, &configs) {
+            bigram::report_working_point(&point);
+        }
+        return Ok(());
+    }
 
     // The section budgets are checked before anything is written: a container that is
     // over its ceiling is one to refuse, not one to emit and then complain about.
@@ -365,6 +383,31 @@ pub fn run(args: DictcArgs) -> Result<()> {
     let output_path = root.join(&args.output);
     writer.finish(&output_path)?;
     let written = Instant::now();
+
+    // The manifest's trim record pairs the first build's projection with the size
+    // actually written, both of which exist only here: after the recompile replaced
+    // `compiled` and after the container reached the disk.
+    let trim_record = match trim_context {
+        Some((target, bytes_before)) => {
+            let bytes_after = std::fs::metadata(&output_path)
+                .with_context(|| {
+                    format!("dictc: cannot size the written container {}", output_path.display())
+                })?
+                .len();
+            let trim = &compiled.stats.weight_bands.trim;
+            Some(manifest::TrimRecord {
+                requested_target_mib: target,
+                bytes_before,
+                bytes_after,
+                dropped: trim.dropped,
+                dropped_tail_flat: trim.dropped_tail_flat,
+                dropped_core_true_freq: trim.dropped_core_true_freq,
+                dropped_char_freq: trim.dropped_char_freq,
+                freed_floor_bytes: trim.freed_floor_bytes,
+            })
+        }
+        None => None,
+    };
 
     // The manifest is written beside the container and describes what produced it: which
     // sources, at which layer, under which licence, and what the expansion band did. It
@@ -398,6 +441,7 @@ pub fn run(args: DictcArgs) -> Result<()> {
             manual: auto_counts.manual,
             total: auto_counts.total,
         },
+        trim: trim_record,
         keys: compiled.stats.keys,
     };
     manifest::record_build(&root, &output_path, &ledger, facts)?;
@@ -427,12 +471,14 @@ pub fn run(args: DictcArgs) -> Result<()> {
     Ok(())
 }
 
-/// Counts adjacent-word co-occurrence for one word list and installs the
-/// encoded section in `compiled`.
-///
-/// A separate step rather than inline in [`run`] because a trim build compiles
-/// twice: the section describes the final word list, so it is rebuilt from the
-/// survivors exactly once, after the trim decision.
+/// Segments corpus text with the compiler's own vocabulary and counts adjacent pairs.
+fn bigram_counts(words: &[Word], corpus: &Path) -> std::collections::BTreeMap<u64, u32> {
+    let index = bigram::WordIndex::new(words.iter().map(|word| word.text.as_str()));
+    let text = fs::read_to_string(corpus).unwrap_or_default();
+    bigram::count_cooccurrence(&text, &index)
+}
+
+/// Counts the corpus once and installs the selected bigram records in `compiled`.
 fn fill_bigram(
     compiled: &mut Compiled,
     words: &[Word],
@@ -440,17 +486,15 @@ fn fill_bigram(
     max_pairs: u32,
     min_score: f32,
 ) {
-    let index = bigram::WordIndex::new(words.iter().map(|word| word.text.as_str()));
-    let text = fs::read_to_string(corpus).unwrap_or_default();
-    let counts = bigram::count_cooccurrence(&text, &index);
-    let records = bigram::build_records(
+    let counts = bigram_counts(words, corpus);
+    bigram::fill_section(
+        compiled,
         counts,
         bigram::BigramConfig {
             max_pairs,
             min_score,
         },
     );
-    compiled.bigram = records.into_iter().flat_map(BigramRecord::encode).collect();
 }
 
 /// Prints the build log: what went in, what came out, and what was dropped.

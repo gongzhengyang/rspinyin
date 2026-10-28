@@ -35,6 +35,9 @@ impl Session {
     /// syllable grid is written from the rewrite's own alignment, so Backspace and the
     /// caret stay on the units the user pressed.
     pub(in crate::state) fn refresh(&mut self, env: &SessionEnv<'_>) {
+        // A changed input invalidates the wider supply materialized for its predecessor.
+        // Starting at the first ladder rung is what keeps ordinary keystrokes cheap.
+        self.candidate_supply = SessionConfig::INITIAL_CANDIDATE_QUOTA;
         let parked = core::mem::replace(&mut self.previous, self.scratch.take_result());
         self.scratch.recycle(parked);
         self.request.raw.clear();
@@ -89,7 +92,8 @@ impl Session {
         // the switch off the table is `None` all the way down, which is the whole
         // cost of the switch being off.
         let hints = if self.hints { env.confusables } else { None };
-        env.decoder.decode_into(
+        let quota = self.candidate_supply;
+        env.decoder.decode_into_with_candidate_quota(
             &mut self.scratch,
             &self.request,
             DecodeSources {
@@ -99,6 +103,7 @@ impl Session {
                 english: env.english,
                 hints,
             },
+            quota,
         );
         // The context re-rank is the session's own post-pass, and it runs before the
         // repairs below read the list: the order the user sees, the order the
@@ -110,7 +115,8 @@ impl Session {
         // candidates came from have to be permuted by the same moves, and those are
         // the workspace's own type.
         if let Some(context) = self.context_word.as_deref() {
-            self.scratch.rerank_with_context(Some(context), env.lm);
+            self.scratch
+                .rerank_with_context_band(Some(context), env.lm, self.context_band);
         }
         self.paging
             .reconcile(prev, &self.scratch.result().candidates);
@@ -126,6 +132,64 @@ impl Session {
             write_boundaries(&mut self.buf, self.scratch.dag());
         }
         build_preedit_into(&self.buf, self.scratch.dag(), &mut self.preedit);
+    }
+
+    /// Decodes the current request at one candidate-supply quota.
+    ///
+    /// The context re-rank always follows the decode so that a wider supply remains the
+    /// deterministic prefix produced by the narrower run rather than a separately ranked
+    /// list.
+    fn decode_current(
+        &mut self,
+        env: &SessionEnv<'_>,
+        hints: Option<&ConfusableTable>,
+        quota: u16,
+    ) {
+        env.decoder.decode_into_with_candidate_quota(
+            &mut self.scratch,
+            &self.request,
+            DecodeSources {
+                lexicon: env.lexicon,
+                user_freq: env.user_freq,
+                lm: env.lm,
+                english: env.english,
+                hints,
+            },
+            quota,
+        );
+        if let Some(context) = self.context_word.as_deref() {
+            self.scratch
+                .rerank_with_context_band(Some(context), env.lm, self.context_band);
+        }
+    }
+
+    /// Materializes the next ladder rung when paging asks past the current supply.
+    ///
+    /// The wider run replaces the scratch result; its hook guarantees the narrower list
+    /// is retained as a duplicate-free prefix. The return value says whether new
+    /// candidates became available.
+    pub(in crate::state) fn expand_candidate_supply(&mut self, env: &SessionEnv<'_>) -> bool {
+        let materialized = self.candidate_supply;
+        let quota = SessionConfig::candidate_supply_quota(materialized);
+        if quota == materialized {
+            return false;
+        }
+        let hints = if self.hints { env.confusables } else { None };
+        // The engine's quota hook guarantees that a wider decode contains the narrower
+        // one as its prefix, so replacing the scratch result is itself duplicate free.
+        self.decode_current(env, hints, quota);
+        self.candidate_supply = quota;
+        true
+    }
+
+    /// Reports whether the next page may require a wider candidate supply.
+    pub(in crate::state) fn can_expand_next_page(&self) -> bool {
+        let materialized = self.candidate_supply;
+        let requested = self
+            .paging
+            .page_start()
+            .saturating_add(u16::from(self.paging.page_size));
+        SessionConfig::has_more_candidate_supply(materialized, requested)
     }
 
     /// Rewrites the request's input through the active layout.

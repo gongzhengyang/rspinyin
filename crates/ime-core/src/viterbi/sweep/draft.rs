@@ -73,6 +73,12 @@ pub(crate) struct Draft {
     /// variant are told apart by. A candidate whose path needed no correction is
     /// annotated with nothing.
     pub(crate) corrected: bool,
+    /// Whether this draft covers the request's final syllable.
+    ///
+    /// Rank decay applies only to complete sentence paths. Recording the fact at
+    /// collection time avoids inferring it from syllable counts after the list has
+    /// been sorted and merged.
+    pub(crate) whole_sentence: bool,
     /// The standard readings of the widened edges the path used, joined with the
     /// key separator.
     ///
@@ -103,6 +109,7 @@ impl Draft {
             syllables: 0,
             score: 0,
             corrected: false,
+            whole_sentence: false,
             readings: String::new(),
             words: WordSpans::EMPTY,
         }
@@ -152,6 +159,16 @@ pub(crate) fn finish(drafts: &mut Vec<Draft>, max_candidates: u16) {
     // Truncating keeps the capacity of the list itself; the text buffers of the drafts that
     // are dropped go with them, which is the price of a shorter candidate list.
     drafts.truncate(usize::from(max_candidates));
+    // Scores are Q16.16 while the decay contract is Q8.8; shifting first keeps the
+    // published step meaningful without changing candidate ordering.
+    let dropped = crate::viterbi::kbest::retain_rank_decayed_sentences(
+        drafts,
+        |draft| draft.whole_sentence,
+        |draft| draft.score >> 8,
+    );
+    if dropped > 0 {
+        tracing::trace!(dropped_sentences = dropped, "rank decay truncated candidates");
+    }
 }
 
 /// Merges the drafts that spell the same text into one.

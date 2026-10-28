@@ -8,6 +8,7 @@
 
 use ime_config::KeyName;
 use ime_config::keymap::{FlipSet, HighlightSet};
+use ime_core::viterbi::context::ContextBand;
 use ime_types::SchemeId;
 
 use super::*;
@@ -70,6 +71,31 @@ fn test_from_config_carries_every_setting_the_routing_layer_acts_on() {
         projected.scheme_hint,
         Some("小鹤"),
         "the header names the layout the document declares"
+    );
+}
+
+#[test]
+fn test_from_config_projects_context_tie_band_onto_the_session() {
+    // The shipped Q16.16 width is pinned in both layers so a silent default drift cannot
+    // change re-ranking while the configuration still parses.
+    let (projected, warnings) = RoutingConfig::from_config(&Config::default());
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(projected.session.context_band, ContextBand::default());
+    assert_eq!(projected.session.context_band.q16, 1 << 8);
+
+    // A repaired caller may still hand over a bypassed bad value; the projection falls
+    // back to the shipped band rather than making zero a legal width.
+    let mut config = Config::default();
+    config.data.context_tie_band_q16 = 0;
+    let (projected, _) = RoutingConfig::from_config(&config);
+    assert_eq!(projected.session.context_band, ContextBand::default());
+
+    config.data.context_tie_band_q16 = 1 << 12;
+    let (projected, warnings) = RoutingConfig::from_config(&config);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(
+        projected.session.context_band,
+        ContextBand::new(1 << 12).expect("a positive width builds")
     );
 }
 

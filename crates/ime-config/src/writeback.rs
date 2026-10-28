@@ -48,7 +48,9 @@ use std::path::{Path, PathBuf};
 
 use ime_types::ImeError;
 
-use crate::schema::{Config, DataConfig, DigitZero, Durability, KeyName, KeysConfig};
+use crate::schema::{
+    AssocConfig, Config, DataConfig, DigitZero, Durability, KeyName, KeysConfig,
+};
 
 /// The stable code a refused write carries when the file no longer holds the values the
 /// caller loaded.
@@ -170,6 +172,32 @@ pub fn write_keys(
     }
 }
 
+/// Replaces the `[assoc]` table of the configuration file at `path`.
+///
+/// # Errors
+///
+/// As [`write_keys`].
+///
+/// # Panics
+///
+/// Never: every failure is a returned error.
+pub fn write_assoc(
+    path: &Path,
+    previous: &AssocConfig,
+    new: &AssocConfig,
+) -> Result<(), WritebackError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(WritebackError::Io(error)),
+    };
+    let rendered = render_assoc(new);
+    match text {
+        Some(text) => rewrite_assoc(path, &text, previous, &rendered),
+        None => create(path, &rendered),
+    }
+}
+
 /// Rewrites the `[keys]` region of `text` and puts the result back at `path`.
 fn rewrite(
     path: &Path,
@@ -193,6 +221,33 @@ fn rewrite(
         return Err(WritebackError::Refused {
             reason: format!(
                 "the document this write would produce does not parse, so the [keys] \
+                 region was not where this module expected it and nothing was written: \
+                 {error}"
+            ),
+        });
+    }
+    replace_file(path, &composed).map_err(WritebackError::from)
+}
+
+/// Rewrites the `[assoc]` region of `text` and puts the result back at `path`.
+fn rewrite_assoc(
+    path: &Path,
+    text: &str,
+    previous: &AssocConfig,
+    rendered: &str,
+) -> Result<(), WritebackError> {
+    let span = locate_table(text, "assoc");
+    if let Err(reason) = region_matches_previous_assoc(text, span, previous) {
+        return Err(WritebackError::Race { reason });
+    }
+    let composed = match span {
+        Some(span) => compose_replacement(text, span, rendered),
+        None => compose_append(text, rendered),
+    };
+    if let Err(error) = Config::from_document(&composed) {
+        return Err(WritebackError::Refused {
+            reason: format!(
+                "the document this write would produce does not parse, so the [assoc] \
                  region was not where this module expected it and nothing was written: \
                  {error}"
             ),
@@ -387,6 +442,33 @@ fn rewrite_data(
         });
     }
     replace_file(path, &composed).map_err(WritebackError::from)
+}
+
+/// Verifies the `[assoc]` region about to be replaced still resolves to the values
+/// the caller loaded. A file with no table matches the built-in defaults alone.
+fn region_matches_previous_assoc(
+    text: &str,
+    span: Option<KeysSpan>,
+    previous: &AssocConfig,
+) -> Result<(), String> {
+    let Some(span) = span else {
+        if *previous == Config::default().assoc {
+            return Ok(());
+        }
+        return Err(String::from(
+            "the file has no [assoc] table, so it no longer holds the values this session \
+             loaded",
+        ));
+    };
+    let fragment = &text[span.start..span.end];
+    let (parsed, _) = Config::from_document(fragment)
+        .map_err(|error| format!("the [assoc] table no longer parses: {error}"))?;
+    if parsed.assoc != *previous {
+        return Err(String::from(
+            "the [assoc] table no longer holds the values this session loaded",
+        ));
+    }
+    Ok(())
 }
 
 /// Verifies the `[data]` region about to be replaced still resolves to the values the
@@ -612,12 +694,14 @@ fn render_data(data: &DataConfig) -> String {
          backup_keep = {}\n\
          decay_half_life_ticks = {}\n\
          decay_floor = {}\n\
+         context_tie_band_q16 = {}\n\
          dict_staged_path = \"{}\"\n",
         durability_spelling(data.durability),
         data.backup_enabled,
         data.backup_keep,
         data.decay_half_life_ticks,
         data.decay_floor,
+        data.context_tie_band_q16,
         data.dict_staged_path,
     )
 }
@@ -632,6 +716,17 @@ fn durability_spelling(value: Durability) -> &'static str {
         Durability::Eventual => "eventual",
         Durability::Immediate => "immediate",
     }
+}
+
+/// Renders the `[assoc]` table in the documented template order.
+fn render_assoc(assoc: &AssocConfig) -> String {
+    format!(
+        "[assoc]\n\
+         enabled = {}\n\
+         max_candidates = {}\n\
+         history_depth = {}\n",
+        assoc.enabled, assoc.max_candidates, assoc.history_depth,
+    )
 }
 
 /// Replaces the span with `rendered`, keeping the text before and after it verbatim.

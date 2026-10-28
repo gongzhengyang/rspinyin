@@ -244,11 +244,9 @@ pub struct PhraseConfig {
 
 /// The `[assoc]` section: next-word association candidates offered after a commit.
 ///
-/// Skeleton of the frozen-contract batch (ADR-0017): the typed shape the assoc
-/// work projects into a session, with the shipped defaults. The keys are not read
-/// from a document yet -- the document merge learns the section when the assoc
-/// wiring lands, and until then a table a user already wrote keeps the built-in
-/// defaults, exactly like any other key nothing reads.
+/// The typed `[assoc]` section projected into a session by the engine. The
+/// document merge, repair rules and writeback all treat it like every other
+/// internal (non-frozen) configuration section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AssocConfig {
     /// `enabled`: whether a commit is followed by association candidates at all.
@@ -376,6 +374,7 @@ impl Default for Config {
                 backup_keep: DEFAULT_BACKUP_KEEP,
                 decay_half_life_ticks: DEFAULT_DECAY_HALF_LIFE_TICKS,
                 decay_floor: 1 << 16,
+                context_tie_band_q16: DEFAULT_CONTEXT_TIE_BAND_Q16,
                 dict_staged_path: String::new(),
             },
             diagnostics: DiagnosticsConfig {
@@ -424,15 +423,21 @@ mod tests {
     }
 
     #[test]
-    fn test_document_assoc_section_before_the_merge_lands_keeps_defaults() {
-        // The typed section exists, but the document merge does not read it yet:
-        // a user who writes the table ahead of the wiring gets the built-in
-        // defaults and no diagnostic, the same answer any not-yet-read key gets.
-        // The merge that learns these keys replaces this expectation with repair
-        // and projection tests of its own.
-        let document = "[assoc]\nenabled = true\nmax_candidates = 9\nhistory_depth = 16\n";
+    fn test_document_assoc_section_is_parsed_and_repaired_by_key() {
+        let document = concat!(
+            "[assoc]\n",
+            "enabled = true\n",
+            "max_candidates = 0\n",
+            "history_depth = 65\n",
+        );
         let (config, warnings) = Config::from_document(document).expect("the document parses");
-        assert!(warnings.is_empty(), "nothing is reported yet: {warnings:?}");
-        assert_eq!(config.assoc, Config::default().assoc);
+
+        assert!(config.assoc.enabled);
+        assert_eq!(config.assoc.max_candidates, 5);
+        assert_eq!(config.assoc.history_depth, 8);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        for (warning, key) in warnings.iter().zip(["assoc.max_candidates", "assoc.history_depth"]) {
+            assert!(warning.to_string().contains(key), "{warning}");
+        }
     }
 }

@@ -61,6 +61,7 @@ use crate::input::InputBuffer;
 use crate::preedit::build_preedit_into;
 use crate::segment::SyllableDag;
 use crate::state::SessionConfig;
+use crate::viterbi::context::ContextBand;
 use crate::state::outcome::{clear_result, empty_preedit, renumber, write_boundaries};
 use crate::state::paging::Paging;
 use crate::state::scheme::SchemeSession;
@@ -182,12 +183,19 @@ pub struct Session {
     /// reload mid composition must not change what the user is looking at, and with
     /// the switch off the whole hint chain short-circuits at the decode.
     hints: bool,
+    /// The context re-rank band in effect now, latched like the other decode switches.
+    pub(super) context_band: ContextBand,
     /// Whether the composition on screen is the symbol panel's: the input starts
     /// with `v` and names a category of the symbol table, so the candidate list
     /// was assembled from the table rather than decoded. The one reader is the
     /// commit path, which records nothing for a panel candidate -- a symbol is
     /// chosen, not spelled, and no frequency is learned from choosing it.
     pub(super) symbol_mode: bool,
+    /// How much of the decoder's deterministic candidate supply is materialized now.
+    ///
+    /// This is the session's position on the fixed ladder, not user configuration. It
+    /// resets with every refresh and advances only when paging asks past what is visible.
+    pub(super) candidate_supply: u16,
     /// The word the user's last landed commit ended with, and the one piece of
     /// context that crosses compositions.
     ///
@@ -336,7 +344,9 @@ impl Session {
             correction: false,
             english: false,
             hints: false,
+            context_band: ContextBand::default(),
             symbol_mode: false,
+            candidate_supply: SessionConfig::INITIAL_CANDIDATE_QUOTA,
             context_word: None,
             context_keys: 0,
             next_session_id: next,
@@ -543,6 +553,19 @@ impl Session {
         }
     }
 
+    /// Reports whether a page request can still widen the deterministic supply.
+    ///
+    /// The host asks this before a key that would otherwise look like the materialized
+    /// list's last page; the session performs the actual ladder expansion while handling
+    /// the event.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn has_page_supply(&self) -> bool {
+        self.can_expand_next_page()
+    }
+
     /// Returns the context word, for the tests that pin its life cycle.
     ///
     /// The field is session-private by design; the tests read it through this door.
@@ -571,6 +594,7 @@ impl Session {
         let _ = self.scratch.take_result();
         clear_result(&mut self.previous);
         self.paging.reset();
+        self.candidate_supply = SessionConfig::INITIAL_CANDIDATE_QUOTA;
         self.preedit = empty_preedit();
         self.pending = None;
         // An empty input has no graph, which is exactly what the session should hold
@@ -673,6 +697,7 @@ pub fn step(
         sess.correction = cfg.correction;
         sess.english = cfg.english;
         sess.hints = cfg.show_annotation;
+        sess.context_band = cfg.context_band;
     }
     let mut ctx = Ctx::new(cfg, env);
     sess.on_event(ev, &mut ctx);

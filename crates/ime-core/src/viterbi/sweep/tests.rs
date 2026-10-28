@@ -58,6 +58,7 @@ fn ranked_drafts(count: usize) -> Vec<Draft> {
             syllables: 1,
             score: i32::try_from(count - index).expect("the test counts are small"),
             corrected: false,
+            whole_sentence: false,
             readings: String::new(),
             words: WordSpans::EMPTY,
         })
@@ -86,6 +87,7 @@ fn plain_draft(text: &str, score: i32) -> Draft {
         syllables: 2,
         score,
         corrected: false,
+        whole_sentence: false,
         readings: String::new(),
         words: WordSpans::EMPTY,
     }

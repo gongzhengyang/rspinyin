@@ -175,10 +175,11 @@ fn test_tail_percentiles_of_an_empty_tail_is_empty() {
 }
 
 /// Writes a three-word container the audit can read: one character-band word
-/// (`中`, true frequency), one core-band word (`中国`, heavy two-character) and
-/// one tail-band word (`不像话`, three characters), each under its own
-/// single-candidate key. The sections are hand-assembled because the fixture
-/// exercises the audit's reading path, not the compiler's writing path.
+/// (weight 800,000, true frequency), one core-band word (weight 5,000, heavy
+/// two-character) and one tail-band word (weight 30, three characters), each
+/// under its own single-candidate key. The sections are hand-assembled because
+/// the fixture exercises the audit's reading path, not the compiler's writing
+/// path.
 fn write_fixture_container(path: &std::path::Path) {
     use ime_dict::format::writer::DictWriter;
     use ime_dict::format::{DictEntry, SectionKind, hash_word, pack_fst_value};

@@ -472,6 +472,7 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
         draft.source = CandidateSource::Dict;
         draft.syllables = 0;
         draft.corrected = false;
+        draft.whole_sentence = true;
         draft.readings.clear();
         draft.words = WordSpans::EMPTY;
         // No `reserve` here, deliberately. The slot's text is the same text it held on the
@@ -572,6 +573,7 @@ impl<'a, 'dict, 'store> Sweep<'a, 'dict, 'store> {
         draft.syllables = u16::from(edge.syllables);
         draft.score = score;
         draft.corrected = edge.penalty_q8 == crate::segment::correct::CORRECTION_PENALTY_Q8;
+        draft.whole_sentence = false;
         draft.readings.clear();
         // A single-word path covers one span that starts at the root; the pair reader
         // refuses lists this short, so the entry is bookkeeping rather than a coining

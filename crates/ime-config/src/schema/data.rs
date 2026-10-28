@@ -7,7 +7,10 @@
 //! holds. They are re-exported from [`crate::schema`], so the public path of every
 //! type is the one it has always had.
 
-use super::{DEFAULT_BACKUP_KEEP, DEFAULT_DECAY_HALF_LIFE_TICKS, Durability, LogLevel};
+use super::{
+    DEFAULT_BACKUP_KEEP, DEFAULT_CONTEXT_TIE_BAND_Q16, DEFAULT_DECAY_HALF_LIFE_TICKS, Durability,
+    LogLevel,
+};
 
 /// The `[data]` section.
 ///
@@ -35,6 +38,12 @@ pub struct DataConfig {
     pub decay_half_life_ticks: u32,
     /// `decay_floor`: the user accumulator floor in Q16.16.
     pub decay_floor: i64,
+    /// `context_tie_band_q16`: the context re-rank near-tie width in Q16.16.
+    ///
+    /// Only a positive width is usable; zero would make contextual ties impossible and
+    /// a negative width has no score-window meaning. Such a value is repaired by
+    /// [`crate::schema::Config::repaired`].
+    pub context_tie_band_q16: i64,
     /// `dict_staged_path`: the dictionary file a reload should swap in, or empty when
     /// there is none.
     ///
@@ -62,6 +71,7 @@ impl Default for DataConfig {
             backup_keep: DEFAULT_BACKUP_KEEP,
             decay_half_life_ticks: DEFAULT_DECAY_HALF_LIFE_TICKS,
             decay_floor: 1 << 16,
+            context_tie_band_q16: DEFAULT_CONTEXT_TIE_BAND_Q16,
             dict_staged_path: String::new(),
         }
     }

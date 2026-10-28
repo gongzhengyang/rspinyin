@@ -28,7 +28,8 @@
 use ime_config::PunctMode;
 use ime_config::keymap::{KeyBindings, project_keys};
 use ime_config::{Config, SchemeChoice, ShareState};
-use ime_core::state::{ImSwitchPolicy, SessionConfig};
+use ime_core::state::{AssocSessionConfig, ImSwitchPolicy, SessionConfig};
+use ime_core::viterbi::context::ContextBand;
 use ime_types::ImeError;
 
 use super::modes::OutputProjection;
@@ -150,6 +151,13 @@ impl RoutingConfig {
         session.on_im_switch = match config.engine.on_im_switch {
             ime_config::schema::ImSwitch::Clear => ImSwitchPolicy::Clear,
             ime_config::schema::ImSwitch::CommitRaw => ImSwitchPolicy::CommitRaw,
+        };
+        session.context_band =
+            ContextBand::new(config.data.context_tie_band_q16).unwrap_or_default();
+        session.assoc = AssocSessionConfig {
+            enabled: config.assoc.enabled,
+            max_candidates: config.assoc.max_candidates,
+            history_depth: config.assoc.history_depth,
         };
         let routing = Self {
             keys,

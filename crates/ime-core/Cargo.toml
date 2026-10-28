@@ -11,6 +11,7 @@ description = "rspinyin core decoding engine: syllable segmentation, word lattic
 [dependencies]
 ime-types.workspace = true
 smallvec.workspace = true
+tracing.workspace = true # count-only engine diagnostics
 
 [dev-dependencies]
 criterion.workspace = true

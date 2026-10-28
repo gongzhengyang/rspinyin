@@ -35,8 +35,8 @@ mod data;
 mod repair;
 
 pub use self::config::{
-    AnimationConfig, Config, EngineConfig, FuzzyConfig, KeysConfig, PhraseConfig, ThemeConfig,
-    UiConfig,
+    AnimationConfig, AssocConfig, Config, EngineConfig, FuzzyConfig, KeysConfig, PhraseConfig,
+    ThemeConfig, UiConfig,
 };
 pub use self::data::{DataConfig, DiagnosticsConfig};
 
@@ -102,6 +102,9 @@ pub const DEFAULT_DECAY_HALF_LIFE_TICKS: u32 = 139;
 /// silently disabling decay forever when a magnitude was meant to be a smaller count.
 pub const MAX_DECAY_HALF_LIFE_TICKS: u32 = 1_000_000_000;
 
+/// The `data.context_tie_band_q16` the shipped configuration declares.
+pub const DEFAULT_CONTEXT_TIE_BAND_Q16: i64 = 1 << 8;
+
 /// The largest `data.decay_floor` accepts, in Q16.16.
 ///
 /// One integer word of accumulator is far above the useful stop-acting threshold and
@@ -112,6 +115,12 @@ pub const MAX_DECAY_FLOOR_Q16: i64 = 1 << 31;
 pub(crate) const KEY_FLIP_KEYS: &str = "keys.flip_keys";
 /// The `keys.highlight_keys` key.
 pub(crate) const KEY_HIGHLIGHT_KEYS: &str = "keys.highlight_keys";
+/// The smallest `assoc.max_candidates` accepts; zero would silently disable an enabled feature.
+pub const MIN_ASSOC_CANDIDATES: u8 = 1;
+/// The largest `assoc.max_candidates` accepts, matching the digit/page limit.
+pub const MAX_ASSOC_CANDIDATES: u8 = 9;
+/// The largest `assoc.history_depth` accepts, bounding session-only memory.
+pub const MAX_ASSOC_HISTORY_DEPTH: u8 = 64;
 
 /// The `config/invalid` diagnostic for one key.
 fn invalid(key: &str, reason: String) -> ConfigError {
@@ -550,6 +559,19 @@ impl Config {
             defaults.ui.animation.disappear_ms,
             "ui.animation.disappear_ms",
         );
+        let assoc = &mut self.assoc;
+        assoc.max_candidates = warnings.in_range(
+            assoc.max_candidates,
+            MIN_ASSOC_CANDIDATES..=MAX_ASSOC_CANDIDATES,
+            defaults.assoc.max_candidates,
+            "assoc.max_candidates",
+        );
+        assoc.history_depth = warnings.in_range(
+            assoc.history_depth,
+            0..=MAX_ASSOC_HISTORY_DEPTH,
+            defaults.assoc.history_depth,
+            "assoc.history_depth",
+        );
         let phrases = &mut self.phrases;
         phrases.max_entries = warnings.in_range(
             phrases.max_entries,
@@ -576,6 +598,13 @@ impl Config {
             defaults.data.decay_floor,
             "data.decay_floor",
         );
+        if data.context_tie_band_q16 <= 0 {
+            warnings.report(
+                "data.context_tie_band_q16",
+                format!("{} is not a positive score width", data.context_tie_band_q16),
+            );
+            data.context_tie_band_q16 = defaults.data.context_tie_band_q16;
+        }
         repair_bindings(&mut self.keys.flip_keys, KEY_FLIP_KEYS, &mut warnings);
         repair_bindings(
             &mut self.keys.highlight_keys,

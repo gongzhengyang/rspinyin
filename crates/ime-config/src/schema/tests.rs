@@ -98,6 +98,9 @@ fn scalar_breakers() -> Vec<ScalarBreaker> {
             c.data.decay_half_life_ticks = 0
         }),
         ("data.decay_floor", |c: &mut Config| c.data.decay_floor = -1),
+        ("data.context_tie_band_q16", |c: &mut Config| {
+            c.data.context_tie_band_q16 = 0
+        }),
     ]
 }
 
@@ -461,6 +464,8 @@ fn test_data_section_defaults() {
         "the user's words are copied by default"
     );
     assert_eq!(data.backup_keep, DEFAULT_BACKUP_KEEP);
+    assert_eq!(data.context_tie_band_q16, DEFAULT_CONTEXT_TIE_BAND_Q16);
+    assert_eq!(DEFAULT_CONTEXT_TIE_BAND_Q16, 1 << 8);
     assert_eq!(DEFAULT_BACKUP_KEEP, 3);
     // Both values are constants, so the relation between them is checked at compile time
     // rather than by a runtime assertion that could only ever restate the numbers above.
@@ -576,6 +581,36 @@ fn test_data_section_reads_the_decay_keys_from_a_document() {
         parsed_document("[data]\ndecay_half_life_ticks = 139\ndecay_floor = 65536\n").0,
         Config::default(),
     );
+}
+
+#[test]
+fn test_data_section_reads_context_tie_band_from_a_document() {
+    let (config, warnings) = parsed_document("[data]\ncontext_tie_band_q16 = 4096\n");
+    assert!(warnings.is_empty(), "a positive width is usable: {warnings:?}");
+    assert_eq!(config.data.context_tie_band_q16, 4096);
+}
+
+#[test]
+fn test_data_section_repairs_a_non_positive_context_tie_band() {
+    let key = [String::from("data.context_tie_band_q16")];
+    for written in ["0", "-1"] {
+        let document = format!("[data]\ncontext_tie_band_q16 = {written}\n");
+        let (config, warnings) = parsed_document(&document);
+        assert_eq!(config.data.context_tie_band_q16, DEFAULT_CONTEXT_TIE_BAND_Q16);
+        assert_eq!(rejected(&warnings), key);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.to_string().contains("not a positive score width")),
+            "the repair names the rule: {warnings:?}"
+        );
+    }
+
+    // The smallest positive width is valid as written; there is no upper scale ceiling
+    // because the schema's contract is positivity, not a tuning recommendation.
+    let (config, warnings) = parsed_document("[data]\ncontext_tie_band_q16 = 1\n");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(config.data.context_tie_band_q16, 1);
 }
 
 #[test]

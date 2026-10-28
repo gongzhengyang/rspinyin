@@ -32,7 +32,7 @@ use ime_types::{
 
 use crate::confusable::ConfusableTable;
 use crate::segment::{Readings, SyllableDag, abbrev::is_enabled};
-use crate::viterbi::decoder::{Decoder, Silent};
+use crate::viterbi::decoder::{DecodeConfig, Decoder, Silent};
 use crate::viterbi::lattice::{Lattice, LatticeOptions, build_lattice_into};
 use crate::viterbi::sweep::{
     Draft, Sources, Sweep, SweepStorage, WordSpan, finish, result_of_into,
@@ -169,11 +169,27 @@ impl DecodeScratch {
     ///
     /// Never.
     pub fn rerank_with_context(&mut self, context: Option<&str>, lm: &dyn LanguageModel) {
+        self.rerank_with_context_band(context, lm, crate::viterbi::context::ContextBand::default());
+    }
+
+    /// Re-ranks the answer by `context` through the configured context band, keeping
+    /// the drafts aligned with the same permutation.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn rerank_with_context_band(
+        &mut self,
+        context: Option<&str>,
+        lm: &dyn LanguageModel,
+        band: crate::viterbi::context::ContextBand,
+    ) {
         crate::viterbi::context::rerank_aligned(
             &mut self.out.candidates,
             &mut self.drafts,
             context,
             lm,
+            band,
         );
     }
 
@@ -368,6 +384,30 @@ impl Decoder {
     ///
     /// Never panics: every index is taken with a checked lookup and every arithmetic step
     /// saturates.
+    pub fn decode_into_with_candidate_quota<'a, 'lx>(
+        &self,
+        scratch: &mut DecodeScratch,
+        req: &DecodeRequest,
+        sources: DecodeSources<'a, 'lx>,
+        quota: u16,
+    ) {
+        let current = self.config().max_candidates;
+        if quota == current {
+            self.decode_into(scratch, req, sources);
+            return;
+        }
+        let cfg = DecodeConfig {
+            max_candidates: quota,
+            ..*self.config()
+        };
+        // The ladder supplies only validated constants, but a caller with a private field
+        // could send another value; retaining the base answer is safer than inventing one.
+        match Decoder::new(cfg) {
+            Ok(decoder) => decoder.decode_into(scratch, req, sources),
+            Err(_) => self.decode_into(scratch, req, sources),
+        }
+    }
+
     pub fn decode_into<'a, 'lx>(
         &self,
         scratch: &mut DecodeScratch,

@@ -31,7 +31,9 @@
 //! mapped through the same Q12-to-Q8.8 table as a unigram so both channels rank on one
 //! scale. Every miss -- a missing section or an unknown pair -- answers what the in-memory
 //! model answers: the word's unigram plus [`BIGRAM_MISS_PENALTY`]. That identical fallback
-//! is why the two models can be swapped without changing candidate order.
+//! is why the two models can be swapped without changing candidate order. Successor
+//! queries use the same fixed-width rows: binary search locates one predecessor's
+//! interval and reads only that interval before ranking it by score.
 //!
 //! # Hash collisions
 //!
@@ -47,8 +49,11 @@
 //! lexicon keeps alive, the score table is immutable, and both methods are pure reads of
 //! that memory. No method blocks, allocates or takes a lock.
 
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
 use ime_core::lm::{BIGRAM_MISS_PENALTY, UNIGRAM_MISS, log2_q8};
-use ime_types::LanguageModel;
+use ime_types::{LanguageModel, WordId};
 
 use crate::format::{
     BIGRAM_ENTRY_SIZE, PROB_Q12_MAX, UNIGRAM_ENTRY_SIZE, hash_word, read_u16, read_u32,
@@ -110,6 +115,65 @@ impl BigramTable {
             }
         }
         None
+    }
+
+    /// Returns the scored successors whose high pair-key half equals `prev`.
+    ///
+    /// The pair key stores the predecessor in its upper half and the successor in its
+    /// lower half, so one predecessor's rows are contiguous. The lower-bound search finds
+    /// that segment and the scan stops at its end rather than visiting later
+    /// predecessors. A bounded heap retains only the best `limit` rows, ranked first by
+    /// descending score and then by ascending successor id. A damaged row safely
+    /// truncates the segment instead of reading outside the section.
+    fn successors(&self, prev: WordId, limit: usize, scale: &[i32]) -> Vec<(WordId, i32)> {
+        let mut best = BinaryHeap::with_capacity(limit);
+        if limit == 0 {
+            return Vec::new();
+        }
+        let prefix = u64::from(prev.value()) << 32;
+        let mut index = self.lower_bound(prefix);
+        while let Some((pair_key, prob_q12)) = self.record(index) {
+            if pair_key >> 32 != u64::from(prev.value()) {
+                break;
+            }
+            let score = scale
+                .get(usize::from(prob_q12))
+                .copied()
+                .unwrap_or(UNIGRAM_MISS);
+            let next = WordId::new((pair_key & u64::from(u32::MAX)) as u32);
+            let candidate = Reverse((score, next.value()));
+            if best.len() < limit {
+                best.push(candidate);
+            } else if best.peek().is_some_and(|worst| candidate > *worst) {
+                best.pop();
+                best.push(candidate);
+            }
+            index = index.saturating_add(1);
+        }
+
+        let mut successors = Vec::with_capacity(best.len());
+        while let Some(Reverse((score, next))) = best.pop() {
+            successors.push((WordId::new(next), score));
+        }
+        successors.reverse();
+        successors
+    }
+
+    /// Returns the first row whose pair key is at least `target`.
+    fn lower_bound(&self, target: u64) -> u32 {
+        let (mut low, mut high) = (0u32, self.count());
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let Some((pair_key, _)) = self.record(middle) else {
+                return low;
+            };
+            if pair_key < target {
+                low = middle.saturating_add(1);
+            } else {
+                high = middle;
+            }
+        }
+        low
     }
 
     /// Returns the record at `index`, or `None` when the row is unavailable.
@@ -231,6 +295,24 @@ impl DictLm {
         }
     }
 
+    /// Returns up to `limit` Bigram successors of `prev` with their Q8.8 scores.
+    ///
+    /// The result is empty for a limit of zero, an absent `BIGRAM` section, an absent
+    /// predecessor segment or a predecessor whose segment ends. Scores are deterministic
+    /// and descending; equal scores are ordered by ascending successor id. The method
+    /// reads only the predecessor's interval after one lower-bound search, never the
+    /// whole table.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn successors(&self, prev: WordId, limit: u8) -> Vec<(WordId, i32)> {
+        match self.bigram.as_ref() {
+            Some(table) => table.successors(prev, usize::from(limit), &self.scale),
+            None => Vec::new(),
+        }
+    }
+
     /// Returns the record at `index`, or `None` when the index leaves the section.
     ///
     /// The section is untrusted input, so every read is bounds-checked and the offset is
@@ -305,3 +387,6 @@ impl core::fmt::Debug for DictLm {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -8,6 +8,7 @@
 //! it to be tested deterministically against in-memory mocks with no filesystem,
 //! clock, or display server involved.
 
+pub mod assoc;
 pub mod confusable;
 pub mod fuzzy;
 pub mod input;

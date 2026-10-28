@@ -45,8 +45,8 @@ mod merge;
 mod store;
 
 use self::merge::{
-    merge_data, merge_diagnostics, merge_engine, merge_fuzzy, merge_keys, merge_phrases,
-    merge_scheme, merge_theme, merge_ui,
+    merge_assoc, merge_data, merge_diagnostics, merge_engine, merge_fuzzy, merge_keys,
+    merge_phrases, merge_scheme, merge_theme, merge_ui,
 };
 pub use load::default_path;
 pub use store::{ConfigStore, ReloadOutcome};
@@ -239,6 +239,18 @@ an_ang = false
 en_eng = false
 in_ing = false
 
+[assoc]
+# Offer next-word association candidates after a successful commit. Off by default:
+# a new candidate window after every commit is an explicit opt-in. Takes effect on
+# reload.
+enabled = false
+# How many association candidates one commit may offer, 1..=9. Takes effect on
+# reload.
+max_candidates = 5
+# How many recent commits the in-session history source may retain, 0..=64. This
+# memory dies with the session and is never written to disk. Takes effect on reload.
+history_depth = 8
+
 [phrases]
 # Let the phrase table take part in a decode. With it off the dictionary answers alone.
 # The table is read once, at start-up. Takes effect at the next fcitx5 restart.
@@ -301,6 +313,7 @@ probes = true
 struct PartialConfig {
     schema_version: Option<i64>,
     engine: Option<PartialEngine>,
+    assoc: Option<PartialAssoc>,
     ui: Option<PartialUi>,
     theme: Option<PartialTheme>,
     keys: Option<PartialKeys>,
@@ -309,6 +322,14 @@ struct PartialConfig {
     data: Option<PartialData>,
     diagnostics: Option<PartialDiagnostics>,
     phrases: Option<PartialPhrases>,
+}
+
+/// The `[assoc]` table of a document.
+#[derive(Deserialize)]
+struct PartialAssoc {
+    enabled: Option<bool>,
+    max_candidates: Option<u8>,
+    history_depth: Option<u8>,
 }
 
 /// The `[fuzzy]` table of a document.
@@ -412,6 +433,7 @@ struct PartialData {
     backup_keep: Option<u8>,
     decay_half_life_ticks: Option<i64>,
     decay_floor: Option<i64>,
+    context_tie_band_q16: Option<i64>,
     dict_staged_path: Option<String>,
 }
 
@@ -602,6 +624,7 @@ impl Config {
 
         let mut config = Self::default();
         merge_engine(partial.engine, &mut config, &mut warnings);
+        merge_assoc(partial.assoc, &mut config);
         merge_ui(partial.ui, &mut config);
         merge_theme(partial.theme, &mut config, &mut warnings);
         merge_keys(partial.keys, &mut config, &mut warnings);

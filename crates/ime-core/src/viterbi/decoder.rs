@@ -42,6 +42,48 @@ pub const DEFAULT_BEAM_K: u16 = 16;
 /// Candidate limit the shipped configuration uses: five pages of nine.
 pub const DEFAULT_MAX_CANDIDATES: u16 = 45;
 
+/// First candidate-materialization quota: enough for the usual first screens.
+pub const INITIAL_CANDIDATE_QUOTA: u16 = 24;
+
+/// Second candidate-materialization quota, used when paging asks past the first.
+pub const EXPANDED_CANDIDATE_QUOTA: u16 = INITIAL_CANDIDATE_QUOTA * 2;
+
+/// Highest candidate-materialization quota.
+pub const SUPPLY_CANDIDATE_CAP: u16 = MAX_CANDIDATES;
+
+/// Returns the quota that can satisfy a paging request past `materialized`.
+///
+/// The ladder is deliberately not configurable: `24 -> 48 -> 64` keeps the common
+/// keystroke cheap, doubles only when the user actually pages, and makes the last step
+/// at the hard decoder cap. A list already shorter than the first quota still asks for
+/// that quota again rather than inventing a fourth rung.
+///
+/// # Panics
+///
+/// Never panics.
+pub const fn candidate_supply_quota(materialized: u16) -> u16 {
+    if materialized < INITIAL_CANDIDATE_QUOTA {
+        INITIAL_CANDIDATE_QUOTA
+    } else if materialized < EXPANDED_CANDIDATE_QUOTA {
+        EXPANDED_CANDIDATE_QUOTA
+    } else {
+        SUPPLY_CANDIDATE_CAP
+    }
+}
+
+/// Reports whether a page request beyond `materialized` may expand the decode.
+///
+/// A request already covered by the materialized prefix needs no re-decode. The cap
+/// always answers `false`: it is a supply ceiling, not a claim that exactly
+/// [`SUPPLY_CANDIDATE_CAP`] candidates exist.
+///
+/// # Panics
+///
+/// Never panics.
+pub const fn has_more_candidate_supply(materialized: u16, requested: u16) -> bool {
+    requested > materialized && materialized < SUPPLY_CANDIDATE_CAP
+}
+
 /// The decoder's tunable knobs.
 ///
 /// The five scoring weights are the [`ScoreWeights`] tuple rather than five fields of
@@ -224,6 +266,34 @@ impl Decoder {
         );
         scratch.into_result()
     }
+
+    /// Decodes with one explicit candidate-materialization quota.
+    ///
+    /// This is the expansion hook for the supply ladder. It runs the same deterministic
+    /// decode as [`Decoder::decode`] with only `max_candidates` replaced, so each wider
+    /// quota contains the narrower result as a bit-identical prefix and introduces no
+    /// duplicates. It is intended for the page-request path, not for every keystroke.
+    ///
+    /// # Errors
+    ///
+    /// [`ImeError::ConfigInvalid`] when the base configuration or the requested quota is
+    /// invalid, using the same rules as [`DecodeConfig::validate`].
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn decode_with_candidate_quota(
+        &self,
+        req: &DecodeRequest,
+        lx: &dyn Lexicon,
+        uf: &dyn UserFreqSource,
+        lm: &dyn LanguageModel,
+        quota: u16,
+    ) -> Result<DecodeResult, ImeError> {
+        let mut cfg = self.cfg;
+        cfg.max_candidates = quota;
+        Ok(Decoder::new(cfg)?.decode(req, lx, uf, lm))
+    }
 }
 
 /// A user-frequency source that has recorded nothing.
@@ -242,5 +312,68 @@ impl UserFreqSource for Silent {
 
     fn is_user_word(&self, _key: &str) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        EXPANDED_CANDIDATE_QUOTA, INITIAL_CANDIDATE_QUOTA, MAX_CANDIDATES, DecodeRequest, Decoder,
+        candidate_supply_quota, has_more_candidate_supply,
+    };
+    use crate::lm::InMemoryLm;
+    use crate::viterbi::lattice::testing::{MockLexicon, NoUser};
+    use crate::state::SessionConfig;
+
+    #[test]
+    fn test_candidate_supply_quota_has_the_documented_ladder() {
+        assert_eq!(INITIAL_CANDIDATE_QUOTA, 24);
+        assert_eq!(EXPANDED_CANDIDATE_QUOTA, 48);
+        assert_eq!(MAX_CANDIDATES, 64);
+        assert_eq!(candidate_supply_quota(0), 24);
+        assert_eq!(candidate_supply_quota(24), 48);
+        assert_eq!(candidate_supply_quota(48), 64);
+        assert_eq!(candidate_supply_quota(64), 64);
+    }
+
+    #[test]
+    fn test_candidate_supply_projection_matches_the_engine_ladder() {
+        assert_eq!(
+            SessionConfig::candidate_supply_quota(24),
+            candidate_supply_quota(24)
+        );
+        assert_eq!(
+            SessionConfig::has_more_candidate_supply(48, 49),
+            has_more_candidate_supply(48, 49)
+        );
+    }
+
+    #[test]
+    fn test_candidate_quota_expansion_preserves_the_narrow_prefix_bit_for_bit() {
+        let decoder = Decoder::default();
+        let lexicon = MockLexicon::phrase();
+        let lm = InMemoryLm::new();
+        let request = DecodeRequest::new("wo'ai'ni");
+        let decode = |quota| {
+            decoder
+                .decode_with_candidate_quota(&request, &lexicon, &NoUser, &lm, quota)
+                .unwrap_or_else(|error| panic!("quota {quota} is valid: {error}"))
+        };
+        let initial = decode(24);
+        let expanded = decode(48);
+        assert!(!initial.candidates.is_empty());
+        assert!(initial.candidates.len() <= expanded.candidates.len());
+        assert_eq!(
+            initial.candidates,
+            expanded.candidates[..initial.candidates.len()],
+            "the wider quota must retain the narrower list bit-for-bit"
+        );
+        assert_eq!(
+            initial.candidates.first().map(|candidate| candidate.text.as_str()),
+            expanded
+                .candidates
+                .first()
+                .map(|candidate| candidate.text.as_str())
+        );
     }
 }

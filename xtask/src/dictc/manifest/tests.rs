@@ -58,6 +58,7 @@ fn manifest_with(entries: u64) -> Manifest {
             manual: 0,
             total: 0,
         },
+        trim: None,
         sections: Vec::new(),
         dictionary: DictionaryRecord {
             path: "data/compiled/base.dict".to_owned(),
@@ -99,6 +100,7 @@ fn facts(sources: Vec<SourceIdentity>) -> BuildFacts {
             manual: 5,
             total: 20,
         },
+        trim: None,
         keys: 6_000,
     }
 }

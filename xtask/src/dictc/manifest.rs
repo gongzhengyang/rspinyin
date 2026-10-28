@@ -171,6 +171,38 @@ pub struct PolyphoneAutoRecord {
     pub total: u64,
 }
 
+/// What the optional value-trim pass did, recorded when a build actually dropped
+/// entries.
+///
+/// The record exists so a compiled container traces back to the trim decision that
+/// shaped it: which target was requested, what the deterministic drop set removed
+/// per band, and how much container the build shed. `bytes_before` is the first
+/// build's exact projection -- the number the pass planned against -- because that
+/// is the "before" the before/after pair has to name; the recompiled build's own
+/// stats cannot describe a size it never had. Builds that ran no trim leave the
+/// field out of the document entirely, so manifests of untrimmed builds stay
+/// byte-identical with their history.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TrimRecord {
+    /// The `--trim-target-mib` value that triggered the pass, in mebibytes.
+    pub requested_target_mib: f64,
+    /// First build's exact container projection the pass planned against.
+    pub bytes_before: u64,
+    /// Bytes of the container actually written after the recompile.
+    pub bytes_after: u64,
+    /// Entries the pass dropped in total; the three band counts partition it.
+    pub dropped: u64,
+    /// Tail-band entries dropped; the only band the pass may touch.
+    pub dropped_tail_flat: u64,
+    /// Core-band entries dropped; a witness field, always zero.
+    pub dropped_core_true_freq: u64,
+    /// Character-band entries dropped; a witness field, always zero.
+    pub dropped_char_freq: u64,
+    /// Floor-model bytes the drops provably free; the unprovable `FST` and
+    /// `WORDLIST` savings are the margin, not the record.
+    pub freed_floor_bytes: u64,
+}
+
 /// The container the build wrote.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DictionaryRecord {
@@ -205,7 +237,7 @@ pub enum Scale {
 
 /// What only the compiler knows: the sources it read, the band it used, and the key
 /// count it produced.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BuildFacts {
     /// Raw sources the build consumed.
     pub sources: Vec<SourceIdentity>,
@@ -213,6 +245,8 @@ pub struct BuildFacts {
     pub expansion: ExpansionRecord,
     /// What the automatic polyphone check decided.
     pub polyphone_auto: PolyphoneAutoRecord,
+    /// What the optional value-trim pass did, absent when the build ran none.
+    pub trim: Option<TrimRecord>,
     /// Distinct FST keys in the container.
     pub keys: u64,
 }
@@ -221,7 +255,7 @@ pub struct BuildFacts {
 ///
 /// Every field is public because the document *is* its fields; there is no behaviour
 /// behind them, and a reader of the JSON needs the same view the writer had.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Manifest {
     /// Schema version of this document.
     pub schema: u32,
@@ -233,6 +267,9 @@ pub struct Manifest {
     pub expansion: ExpansionRecord,
     /// What the automatic polyphone check decided.
     pub polyphone_auto: PolyphoneAutoRecord,
+    /// What the optional value-trim pass did, absent when the build ran none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trim: Option<TrimRecord>,
     /// Per-section sizes, ordered as the container lays them out.
     pub sections: Vec<SectionUsage>,
     /// The container the build wrote.
@@ -332,6 +369,7 @@ pub fn record_build(
         sources,
         expansion: facts.expansion,
         polyphone_auto: facts.polyphone_auto,
+        trim: facts.trim,
         sections: ordered_sections(ledger),
         dictionary: describe_container(root, container, entries, facts.keys)?,
     };

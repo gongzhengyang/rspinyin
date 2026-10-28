@@ -369,3 +369,42 @@ fn test_durability_spelling_round_trips_through_the_closed_set() {
         assert_eq!(Durability::try_from(spelling).expect("in the set"), value);
     }
 }
+
+#[test]
+fn test_write_assoc_replaces_only_its_table() {
+    let path = scratch("assoc-replace").join(FILE_NAME);
+    let original = "# settings\n\n[engine]\nmax_raw_len = 32\n\n[assoc]\nenabled = false\nmax_candidates = 5\nhistory_depth = 8\n";
+    write_text(&path, original);
+    let previous = parsed(original).assoc;
+    let new = AssocConfig {
+        enabled: true,
+        max_candidates: 7,
+        history_depth: 12,
+    };
+
+    write_assoc(&path, &previous, &new).expect("the write succeeds");
+
+    let written = read_text(&path);
+    assert!(written.starts_with("# settings\n\n[engine]\nmax_raw_len = 32\n"));
+    assert_eq!(parsed(&written).assoc, new);
+}
+
+#[test]
+fn test_write_assoc_region_changed_after_the_load_reports_a_race() {
+    let path = scratch("assoc-race").join(FILE_NAME);
+    let loaded = "[assoc]\nenabled = false\n";
+    write_text(&path, loaded);
+    let previous = parsed(loaded).assoc;
+    let new = AssocConfig {
+        enabled: true,
+        max_candidates: 3,
+        history_depth: 2,
+    };
+    let edited = "[assoc]\nenabled = true\n";
+    write_text(&path, edited);
+
+    let result = write_assoc(&path, &previous, &new);
+
+    assert!(matches!(result, Err(WritebackError::Race { .. })));
+    assert_eq!(read_text(&path), edited);
+}

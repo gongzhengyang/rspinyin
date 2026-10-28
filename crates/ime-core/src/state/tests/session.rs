@@ -7,7 +7,11 @@
 use ime_types::{CandidateSource, KeyAction};
 
 use crate::segment::{SYLLABLES, SyllableDag, normalize};
-use crate::state::{Paging, Session, SessionConfig, SessionState, paging::DEFAULT_PAGE_SIZE};
+use crate::state::{
+    Paging, Session, SessionConfig, SessionState, paging::DEFAULT_PAGE_SIZE, step,
+};
+use crate::viterbi::context::ContextBand;
+
 
 use super::{Fixture, composing, index_of};
 
@@ -49,6 +53,41 @@ fn test_session_config_clamps_a_length_limit_the_schema_forbids() {
 }
 
 #[test]
+fn test_session_config_projects_the_default_context_band() {
+    // The projection pins the shipped Q16.16 width explicitly, so a change to the
+    // default is a conscious compatibility decision rather than a type default that
+    // drifted silently.
+    assert_eq!(SessionConfig::default().context_band, ContextBand::default());
+    assert_eq!(SessionConfig::default().context_band.q16, 1 << 8);
+}
+
+#[test]
+fn test_config_reload_projects_the_band_without_resetting_composition() {
+    let cfg = SessionConfig::default();
+    let fixture = Fixture::new();
+    let env = fixture.env();
+    let mut session = composing(&cfg, &env, "ni");
+    let candidates = session.decoded().candidates.clone();
+
+    let next = SessionConfig {
+        context_band: ContextBand::new(1 << 12).expect("a positive width builds"),
+        ..cfg
+    };
+    let effects = step(
+        &mut session,
+        crate::state::SessionEvent::ConfigReloaded(next),
+        &cfg,
+        &env,
+    );
+
+    assert_eq!(session.context_band, next.context_band);
+    assert_eq!(session.buf.raw(), "ni");
+    assert_eq!(session.decoded().candidates, candidates);
+    assert_eq!(session.state, SessionState::Composing);
+    assert!(effects.is_empty(), "only the next decode reads the band");
+}
+
+#[test]
 fn test_candidate_index_helper_finds_a_word() {
     // The helper the assertions above rely on, checked on its own so that a silent
     // change in the candidate list cannot make them vacuous.
@@ -70,6 +109,26 @@ fn test_candidate_index_helper_finds_a_word() {
         session.decoded().candidates[0].source,
         CandidateSource::Dict,
         "the readings come from the dictionary"
+    );
+}
+
+#[test]
+fn test_page_next_advances_the_candidate_supply_ladder() {
+    // The supply field normally starts at the first engine rung. Pretend an earlier rung
+    // materialized four candidates so this small in-memory dictionary can pin the paging
+    // hook without depending on hundreds of dictionary rows.
+    let cfg = SessionConfig::default();
+    let fixture = Fixture::new();
+    let env = fixture.env();
+    let mut session = composing(&cfg, &env, "ni");
+    session.candidate_supply = 4;
+
+    let _ = session.handle_key(KeyAction::PageNext, &cfg, &env);
+
+    assert_eq!(
+        session.candidate_supply,
+        SessionConfig::INITIAL_CANDIDATE_QUOTA,
+        "the next page materialized the first ladder rung"
     );
 }
 

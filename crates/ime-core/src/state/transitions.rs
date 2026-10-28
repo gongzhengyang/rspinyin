@@ -258,6 +258,9 @@ impl Session {
 
     /// Turns to another page, if there is one.
     fn flip_page(&mut self, dir: PageDir, ctx: &mut Ctx<'_>) {
+        if dir == PageDir::Next && self.can_expand_next_page() {
+            self.expand_candidate_supply(ctx.env);
+        }
         let total = self.candidate_count();
         if self.paging.flip(dir, total) {
             self.emit_frame(ctx.cfg, ctx);
@@ -271,6 +274,13 @@ impl Session {
     /// the router hand the key back instead of swallowing it for an answer the window
     /// cannot see.
     fn flip_page_edge(&mut self, to_last: bool, ctx: &mut Ctx<'_>) {
+        if to_last {
+            while self.can_expand_next_page() {
+                if !self.expand_candidate_supply(ctx.env) {
+                    break;
+                }
+            }
+        }
         let total = self.candidate_count();
         let moved = if to_last {
             self.paging.flip_to_last(total)
@@ -636,12 +646,16 @@ impl Session {
 
     /// Adopts a reloaded configuration without disturbing the composition.
     ///
-    /// Only the page size can change what the session shows, and even that leaves the
-    /// input and the candidate list alone: the highlight is moved onto the same word
-    /// on the new page grid, which is what keeps it visible. A reload that changes
-    /// nothing the session reads produces no effect at all, so reloading an unchanged
-    /// file is idempotent.
+    /// The context band is latched for the next decode, and only the page size can
+    /// change what the session shows immediately. Either way the input and the candidate
+    /// list are left alone; a page-size change moves the highlight onto the same word on
+    /// the new page grid. A reload that changes nothing else the session reads produces
+    /// no effect at all, so reloading an unchanged file is idempotent.
     fn on_config_reloaded(&mut self, next: &SessionConfig, ctx: &mut Ctx<'_>) {
+        // The band changes what the next decode re-ranks with, but not the list already
+        // on the screen; adopting it here avoids resetting an active composition while
+        // still making the reload effective without waiting for an idle latch.
+        self.context_band = next.context_band;
         if next.max_per_row == self.paging.page_size {
             return;
         }

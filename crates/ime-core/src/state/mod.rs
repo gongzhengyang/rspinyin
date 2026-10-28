@@ -70,6 +70,8 @@ pub use crate::state::paging::{
 
 use ime_types::SchemeId;
 
+use crate::viterbi::context::ContextBand;
+
 /// The configuration values the session state machine acts on.
 ///
 /// A view rather than the whole configuration: the engine owns the user's document
@@ -142,6 +144,12 @@ pub struct SessionConfig {
     /// `engine.on_im_switch`: what a live composition does when the input method
     /// is switched away from or reset.
     pub on_im_switch: ImSwitchPolicy,
+    /// `data.context_tie_band_q16`: the positive context re-rank band, projected
+    /// into its engine-side Q16.16 value.
+    pub context_band: ContextBand,
+    /// `[assoc]`: the next-word association projection. Disabled by default, so a
+    /// commit followed by association candidates is strictly opt-in.
+    pub assoc: AssocSessionConfig,
 }
 
 /// What a live composition does when the input method is switched away from.
@@ -160,6 +168,42 @@ pub enum ImSwitchPolicy {
     CommitRaw,
 }
 
+/// The association values a session acts on.
+///
+/// `ime-core` cannot name `ime-config`'s section type, so the engine projects the
+/// three keys into this internal view at load time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AssocSessionConfig {
+    /// Whether a successful commit may open an association view.
+    pub enabled: bool,
+    /// The greatest number of association candidates one view may hold, `1..=9`.
+    pub max_candidates: u8,
+    /// How many recent commits the session history may retain, `0..=64`.
+    pub history_depth: u8,
+}
+
+impl Default for AssocSessionConfig {
+    /// The shipped projection: association is off and the memory is empty.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_candidates: 5,
+            history_depth: 8,
+        }
+    }
+}
+
+impl From<crate::assoc::AssocLimits> for AssocSessionConfig {
+    /// Adopts already-bounded engine limits without re-deciding their policy.
+    fn from(limits: crate::assoc::AssocLimits) -> Self {
+        Self {
+            enabled: limits.enabled,
+            max_candidates: limits.max_candidates,
+            history_depth: limits.history_depth,
+        }
+    }
+}
+
 impl Default for SessionConfig {
     /// The configuration a user who has no document gets, which is also what
     /// `ime-config` writes into the sample document it hands them.
@@ -176,6 +220,8 @@ impl Default for SessionConfig {
             correction: false,
             english: false,
             on_im_switch: ImSwitchPolicy::Clear,
+            context_band: ContextBand::default(),
+            assoc: AssocSessionConfig::default(),
         }
     }
 }
@@ -204,4 +250,75 @@ impl SessionConfig {
             ..Self::default()
         }
     }
+
+    /// The first candidate-materialization quota the engine uses.
+    ///
+    /// The session projects the engine's fixed ladder rather than turning it into a
+    /// configuration key: paging depth is a performance boundary, not a surface a user
+    /// document should be able to tune silently past the window's own limits.
+    pub const INITIAL_CANDIDATE_QUOTA: u16 = 24;
+
+    /// The doubled quota used when paging asks beyond the first materialization.
+    pub const EXPANDED_CANDIDATE_QUOTA: u16 = Self::INITIAL_CANDIDATE_QUOTA * 2;
+
+    /// The hard cap of the candidate-materialization ladder.
+    pub const SUPPLY_CANDIDATE_CAP: u16 = crate::viterbi::decoder::SUPPLY_CANDIDATE_CAP;
+
+    /// Returns the next candidate-materialization quota for a paging request.
+    ///
+    /// This is the session-facing read-only projection of the engine ladder. The values
+    /// are identical to [`crate::viterbi::decoder::candidate_supply_quota`]; the second
+    /// name keeps session code from constructing decoder configuration details directly.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub const fn candidate_supply_quota(materialized: u16) -> u16 {
+        crate::viterbi::decoder::candidate_supply_quota(materialized)
+    }
+
+    /// Reports whether paging past the materialized prefix may expand the decode.
+    ///
+    /// The cap reports `false`, so a caller cannot keep growing a list after the final
+    /// ladder rung. The caller supplies the requested count (one past the highest global
+    /// index it needs), and the engine re-decodes from scratch on expansion; therefore a
+    /// wider list contains the narrower one as a duplicate-free prefix.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub const fn has_more_candidate_supply(materialized: u16, requested: u16) -> bool {
+        crate::viterbi::decoder::has_more_candidate_supply(materialized, requested)
+    }
+}
+
+#[cfg(test)]
+mod supply_tests {
+    use super::*;
+
+    #[test]
+    fn test_candidate_supply_ladder_has_the_three_documented_boundaries() {
+        assert_eq!(SessionConfig::INITIAL_CANDIDATE_QUOTA, 24);
+        assert_eq!(SessionConfig::EXPANDED_CANDIDATE_QUOTA, 48);
+        assert_eq!(SessionConfig::SUPPLY_CANDIDATE_CAP, 64);
+        assert_eq!(SessionConfig::candidate_supply_quota(0), 24);
+        assert_eq!(SessionConfig::candidate_supply_quota(23), 24);
+        assert_eq!(SessionConfig::candidate_supply_quota(24), 48);
+        assert_eq!(SessionConfig::candidate_supply_quota(47), 48);
+        assert_eq!(SessionConfig::candidate_supply_quota(48), 64);
+        assert_eq!(SessionConfig::candidate_supply_quota(63), 64);
+        assert_eq!(SessionConfig::candidate_supply_quota(64), 64);
+        assert_eq!(SessionConfig::candidate_supply_quota(u16::MAX), 64);
+    }
+
+    #[test]
+    fn test_candidate_supply_has_more_stops_at_the_cap() {
+        assert!(SessionConfig::has_more_candidate_supply(24, 25));
+        assert!(SessionConfig::has_more_candidate_supply(48, 49));
+        assert!(!SessionConfig::has_more_candidate_supply(24, 24));
+        assert!(!SessionConfig::has_more_candidate_supply(64, 65));
+        assert!(!SessionConfig::has_more_candidate_supply(u16::MAX, u16::MAX));
+    }
+
+
 }

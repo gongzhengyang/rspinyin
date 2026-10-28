@@ -113,11 +113,39 @@ fn scratch_args(root: &Path) -> DictcArgs {
         max_key_growth: 500.0,
         max_bigram_pairs: 200_000,
         min_bigram_score: 1.0,
+        bigram_scan: None,
         tail_flat_weight: 100,
         core_min_freq: 20,
         trim_target_mib: None,
         synth: None,
     }
+}
+
+#[test]
+fn test_bigram_scan_specifications_parse_deterministically() {
+    let specs = vec![
+        String::from("0:1000"),
+        String::from("1.5:2000"),
+    ];
+    let parsed = bigram::parse_working_points(&specs).expect("both cuts parse");
+    assert_eq!(
+        parsed,
+        vec![
+            bigram::BigramConfig {
+                max_pairs: 1000,
+                min_score: 0.0,
+            },
+            bigram::BigramConfig {
+                max_pairs: 2000,
+                min_score: 1.5,
+            },
+        ]
+    );
+    assert_eq!(
+        bigram::parse_working_points(&specs).expect("a repeat parse"),
+        parsed,
+        "specification parsing is deterministic"
+    );
 }
 
 #[test]
@@ -385,6 +413,7 @@ fn trim_args(root: &Path) -> DictcArgs {
         max_key_growth: 500.0,
         max_bigram_pairs: 200_000,
         min_bigram_score: 1.0,
+        bigram_scan: None,
         tail_flat_weight: 100,
         core_min_freq: 20,
         trim_target_mib: None,

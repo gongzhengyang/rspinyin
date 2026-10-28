@@ -242,15 +242,21 @@ fn test_scenario_03_highlight_move_commits_the_same_candidate_as_the_digit() {
     );
 }
 
-/// `SC-KEY-04`: the paging path. `=` turns to the second page and `1` commits that
-/// page's first candidate.
+/// `SC-KEY-04`: the paging path. The single-syllable `ni` has enough surviving readings
+/// to span two pages; `=` turns to the second page and `1` commits that page's first
+/// candidate.
 #[test]
 fn test_scenario_04_page_flip_selects_the_first_candidate_of_page_two() {
     let fixture = Fixture::default();
     let mut host = RecordingHost::default();
     let mut router = fixture.router(KeyBindings::default());
 
-    type_nihao(&mut router, &mut host);
+    for &(sym, state) in &[(KEY_N, 0), (KEY_I, 0)] {
+        assert!(
+            router.key_event(IC, &press(sym, state), &mut host),
+            "the letter {sym:#06x} is kept while `ni` is being typed"
+        );
+    }
     assert!(
         host.newest_page.map_or(0, |page| page.total) >= 2,
         "the fixture offers a second page to turn to"

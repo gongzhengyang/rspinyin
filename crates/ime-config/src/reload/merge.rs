@@ -36,6 +36,18 @@ pub(super) fn merge_engine(
     take_enum(partial.share_state, &mut engine.share_state, warnings);
 }
 
+/// Copies the `[assoc]` keys the document sets over the defaults.
+///
+/// The two numeric limits are repaired by the schema after the merge, so this
+/// function only has to distinguish "the key was absent" from "the key was set".
+pub(super) fn merge_assoc(partial: Option<PartialAssoc>, config: &mut Config) {
+    let Some(partial) = partial else { return };
+    let assoc = &mut config.assoc;
+    assoc.enabled = partial.enabled.unwrap_or(assoc.enabled);
+    assoc.max_candidates = partial.max_candidates.unwrap_or(assoc.max_candidates);
+    assoc.history_depth = partial.history_depth.unwrap_or(assoc.history_depth);
+}
+
 /// Copies the `[fuzzy]` keys the document sets over the defaults.
 ///
 /// The section is nine bools and nothing else, so there is no value to repair: a key
@@ -195,6 +207,11 @@ pub(super) fn merge_data(
     }
     if let Some(floor) = partial.decay_floor {
         config.data.decay_floor = floor;
+    }
+    // Copied as written for the scalar repair to judge: the positive-value rule and its
+    // one diagnostic belong beside every other `[data]` range rule.
+    if let Some(band) = partial.context_tie_band_q16 {
+        config.data.context_tie_band_q16 = band;
     }
     // The staged path is copied as written: it names a file, and judging the file is
     // the swap's business, not the reader's. An empty value is the shipped state, not

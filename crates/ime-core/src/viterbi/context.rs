@@ -40,20 +40,63 @@ use ime_types::{Candidate, LanguageModel};
 use super::sweep::Draft;
 use crate::lm::Q;
 
-/// The near-tie band a contextual swap is allowed inside, in Q16.16 path-score
-/// units: one unit of the Q8.8 grid the ranking itself is scored on.
+/// The shipped near-tie band, in Q16.16 path-score units: one unit of the Q8.8
+/// grid the ranking itself is scored on.
 ///
-/// Two candidates within this band differ by less than the smallest step the
-/// scoring grid resolves -- less than one rank doubling of the model's own falloff
-/// -- which is the operational meaning of "the ranking could not tell them apart".
 /// The value rides on the frozen candidate's display score, which is the integer
 /// path score divided by the Q16.16 one, so the band reaches the comparison as
-/// `CONTEXT_TIE_BAND_Q16` divided by `Q * Q`. The task card's sketch of this
-/// constant wrote a value (`1 << 12`) that its own comment contradicts; the
-/// comment, one Q8.8 unit, is the intent, and one unit is the reading of it that
-/// keeps real score gaps out of the band -- the wider sketch would have let
-/// context override almost any pair on a page.
+/// this constant divided by `Q * Q`.
 pub const CONTEXT_TIE_BAND_Q16: i64 = 1 << 8;
+
+/// The width of the score window a contextual swap is allowed inside.
+///
+/// A band is deliberately a positive-value newtype rather than a bare integer:
+/// zero or a negative width cannot describe a score window, and construction is
+/// therefore the one place invalid configuration is turned into the safe default.
+/// Construction and conversion are constant-time and allocate nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContextBand {
+    /// Width in Q16.16 path-score units.
+    pub q16: i64,
+}
+
+impl Default for ContextBand {
+    /// Returns the shipped band, identical to the fixed constant this configuration
+    /// replaces.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    fn default() -> Self {
+        Self { q16: CONTEXT_TIE_BAND_Q16 }
+    }
+}
+
+impl ContextBand {
+    /// Builds the positive band, or returns `None` for zero or a negative width.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    #[must_use]
+    pub const fn new(q16: i64) -> Option<Self> {
+        if q16 > 0 {
+            Some(Self { q16 })
+        } else {
+            None
+        }
+    }
+
+    /// Converts the Q16.16 width to the floating-point display-score scale.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    #[must_use]
+    pub const fn display_width(self) -> f32 {
+        self.q16 as f32 / ((Q * Q) as f32)
+    }
+}
 
 /// How many candidates the re-rank reads.
 ///
@@ -66,7 +109,7 @@ pub const CONTEXT_RERANK_CANDIDATES: usize = 32;
 /// Reorders the head of `candidates` by how well the model continues from `context`.
 ///
 /// The list must be ordered best first, as every decode leaves it. The re-rank finds
-/// the run at the top whose scores sit within [`CONTEXT_TIE_BAND_Q16`] of the best
+/// the run at the top whose scores sit within [`ContextBand::default`] of the best
 /// score, reads at most the first [`CONTEXT_RERANK_CANDIDATES`] candidates, and
 /// stable-sorts that run by the bigram bonus the model answers for `context` and the
 /// candidate's own text, best continuation first. A candidate the model says nothing
@@ -85,7 +128,26 @@ pub fn rerank_with_context(
     context: Option<&str>,
     lm: &dyn LanguageModel,
 ) {
-    rerank_aligned(candidates, &mut [], context, lm);
+    rerank_with_context_band(candidates, context, lm, ContextBand::default());
+}
+
+/// Reorders `candidates` with the caller's configured [`ContextBand`].
+///
+/// This is the same stable re-rank as [`rerank_with_context`]; the only difference is
+/// that the session supplies the projected configuration instead of relying on the
+/// shipped default. No context still returns before the band is consulted, so a
+/// contextless decode is byte-identical for every band.
+///
+/// # Panics
+///
+/// Never.
+pub fn rerank_with_context_band(
+    candidates: &mut [Candidate],
+    context: Option<&str>,
+    lm: &dyn LanguageModel,
+    band: ContextBand,
+) {
+    rerank_aligned(candidates, &mut [], context, lm, band);
 }
 
 /// The re-rank of [`rerank_with_context`], over the drafts the candidates came from.
@@ -105,7 +167,11 @@ pub(crate) fn rerank_aligned(
     drafts: &mut [Draft],
     context: Option<&str>,
     lm: &dyn LanguageModel,
+    band: ContextBand,
 ) {
+    if band.q16 <= 0 {
+        return;
+    }
     let Some(context) = context else {
         return;
     };
@@ -122,8 +188,7 @@ pub(crate) fn rerank_aligned(
     let Some(best) = candidates.first().map(|candidate| candidate.score) else {
         return;
     };
-    let band = CONTEXT_TIE_BAND_Q16 as f32 / ((Q * Q) as f32);
-    let floor = best - band;
+    let floor = best - band.display_width();
     // The list is ordered best first, so the band is a prefix: the candidates while
     // their score has not dropped below the floor.
     let band_end = candidates[..end].partition_point(|candidate| candidate.score >= floor);

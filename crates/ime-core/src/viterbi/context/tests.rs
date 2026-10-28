@@ -188,6 +188,95 @@ fn test_rerank_with_context_is_identical_across_one_hundred_runs() {
 }
 
 #[test]
+fn test_rerank_with_context_band_default_preserves_the_shipped_cutoff() {
+    // One Q8.8 unit is the shipped width. The candidate below it is outside the
+    // default band, while equality with the floor is deliberately inside it.
+    let lm = TableLm::one("银行", "银行", -64);
+    let mut candidates = vec![
+        candidate("预算", 10.0),
+        candidate("银行", 9.99),
+        candidate("医院", 9.98),
+    ];
+    rerank_with_context_band(&mut candidates, Some("银行"), &lm, ContextBand::default());
+    assert_eq!(texts(&candidates), ["预算", "银行", "医院"]);
+}
+
+#[test]
+fn test_rerank_with_context_band_moves_a_wider_out_of_band_continuation() {
+    let lm = TableLm::one("银行", "银行", -64);
+    let mut candidates = vec![candidate("预算", 10.0), candidate("银行", 9.99)];
+    let band = ContextBand::new(1 << 12).expect("a positive width builds");
+    rerank_with_context_band(&mut candidates, Some("银行"), &lm, band);
+    assert_eq!(texts(&candidates), ["银行", "预算"]);
+}
+
+#[test]
+fn test_rerank_with_context_narrow_band_rejects_the_same_continuation() {
+    let lm = TableLm::one("银行", "银行", -64);
+    let mut candidates = vec![candidate("预算", 10.0), candidate("银行", 9.99)];
+    let band = ContextBand::new(1 << 6).expect("a positive width builds");
+    rerank_with_context_band(&mut candidates, Some("银行"), &lm, band);
+    assert_eq!(texts(&candidates), ["预算", "银行"]);
+}
+
+#[test]
+fn test_context_band_rejects_zero_and_non_positive_widths() {
+    assert_eq!(ContextBand::new(0), None);
+    assert_eq!(ContextBand::new(-1), None);
+    assert_eq!(ContextBand::new(i64::MIN), None);
+    assert_eq!(ContextBand::new(1), Some(ContextBand { q16: 1 }));
+}
+
+#[test]
+fn test_rerank_with_context_rejects_a_non_positive_band() {
+    // `new` is the configuration's constructor, but the field is part of the public
+    // value shape; the transform itself therefore refuses an impossible width instead
+    // of turning it into a zero-width floor with platform-dependent float behaviour.
+    let lm = TableLm::one("银行", "银行", -64);
+    for q16 in [0, -1] {
+        let mut candidates = vec![candidate("预算", 10.0), candidate("银行", 9.99)];
+        rerank_with_context_band(
+            &mut candidates,
+            Some("银行"),
+            &lm,
+            ContextBand { q16 },
+        );
+        assert_eq!(texts(&candidates), ["预算", "银行"]);
+    }
+}
+
+#[test]
+fn test_rerank_with_context_band_keeps_the_floor_boundary_inclusive() {
+    let lm = TableLm::one("银行", "银行", -64);
+    // 256 Q16.16 units are exactly 1/256 of a display-score unit, so the middle
+    // candidate sits exactly on the floor and is part of the near-tie run.
+    let mut candidates = vec![
+        candidate("预算", 10.0),
+        candidate("银行", 9.996_093_75),
+        candidate("医院", 9.937),
+    ];
+    let band = ContextBand::new(1 << 8).expect("a positive width builds");
+    rerank_with_context_band(&mut candidates, Some("银行"), &lm, band);
+    assert_eq!(texts(&candidates), ["银行", "预算", "医院"]);
+}
+
+#[test]
+fn test_rerank_with_context_band_is_deterministic_across_repeated_runs() {
+    let lm = TableLm::one("银行", "银行", -64);
+    let band = ContextBand::new(1 << 12).expect("a positive width builds");
+    let reference = {
+        let mut candidates = vec![candidate("预算", 10.0), candidate("银行", 9.99)];
+        rerank_with_context_band(&mut candidates, Some("银行"), &lm, band);
+        texts(&candidates)
+    };
+    for _ in 0..25 {
+        let mut candidates = vec![candidate("预算", 10.0), candidate("银行", 9.99)];
+        rerank_with_context_band(&mut candidates, Some("银行"), &lm, band);
+        assert_eq!(texts(&candidates), reference);
+    }
+}
+
+#[test]
 fn test_rerank_aligned_carries_the_drafts_through_the_same_moves() {
     // The drafts are the pair source the commit reads at the highlight's position, so a
     // candidate the re-rank moves must take its own draft with it. The band here holds
@@ -201,7 +290,13 @@ fn test_rerank_aligned_carries_the_drafts_through_the_same_moves() {
         draft_of("the third stays"),
     ];
 
-    crate::viterbi::context::rerank_aligned(&mut candidates, &mut drafts, Some("银行"), &model);
+    crate::viterbi::context::rerank_aligned(
+        &mut candidates,
+        &mut drafts,
+        Some("银行"),
+        &model,
+        ContextBand::default(),
+    );
 
     assert_eq!(
         texts(&candidates),
@@ -230,6 +325,7 @@ fn draft_of(text: &str) -> crate::viterbi::sweep::Draft {
         syllables: 2,
         score: 0,
         corrected: false,
+        whole_sentence: false,
         readings: String::new(),
         words: crate::viterbi::sweep::WordSpans::EMPTY,
     }

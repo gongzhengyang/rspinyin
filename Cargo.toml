@@ -66,6 +66,7 @@ signal-hook = "0.3"                                                    # ime-dia
 # ── 工程工具 ───────────────────────────────────────────────────────────
 anyhow = "1"                                                           # xtask / 脚本宿主
 clap = { version = "4", features = ["derive"] }                        # xtask 子命令
+meval = "0.2"                                                          # 快捷输入表达式解析（无 IO / 无 exec）
 criterion = "0.8"                                                      # 解码/词库热路径基准与预算断言
 proptest = "1"                                                         # 输入缓冲与切分的不变量属性测试
 serde_json = "1"                                                       # budgets.json 读写

@@ -12,7 +12,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ime_dict::format::{BigramRecord, PROB_Q12_MAX, hash_word};
+use anyhow::{Context, anyhow, ensure};
+use ime_dict::format::{BIGRAM_ENTRY_SIZE, BigramRecord, PROB_Q12_MAX, hash_word};
+
+use crate::dictc::build::Compiled;
 
 /// The knobs that bound and score the generated section.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -157,6 +160,93 @@ pub(crate) fn build_records(counts: BTreeMap<u64, u32>, config: BigramConfig) ->
         .collect()
 }
 
+/// One candidate bigram cut and the build facts a budget decision needs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BigramWorkingPoint {
+    /// Minimum raw `count * PMI` the cut admits.
+    pub min_score: f32,
+    /// Highest number of pairs the cut may keep.
+    pub max_pairs: u32,
+    /// Pairs that survived both cutoffs.
+    pub selected_pairs: usize,
+    /// Encoded BIGRAM payload bytes for the surviving pairs.
+    pub section_bytes: u64,
+}
+
+/// Parses one `min_score:max_pairs` cut requested by the scan channel.
+pub(crate) fn parse_working_points(specs: &[String]) -> anyhow::Result<Vec<BigramConfig>> {
+    specs
+        .iter()
+        .map(|spec| {
+            let (score, pairs) = spec
+                .split_once(':')
+                .context("dictc: --bigram-scan expects MIN_SCORE:MAX_PAIRS")?;
+            let min_score = score.parse::<f32>().map_err(|_| {
+                anyhow!("dictc: --bigram-scan minimum score is not f32: {score}")
+            })?;
+            let max_pairs = pairs.parse::<u32>().map_err(|_| {
+                anyhow!("dictc: --bigram-scan pair limit is not u32: {pairs}")
+            })?;
+            ensure!(
+                min_score.is_finite() && min_score >= 0.0,
+                "dictc: --bigram-scan minimum score must be finite and non-negative"
+            );
+            Ok(BigramConfig {
+                max_pairs,
+                min_score,
+            })
+        })
+        .collect()
+}
+
+/// Encodes the selected records and installs them in the compiler's section slot.
+pub(crate) fn fill_section(
+    compiled: &mut Compiled,
+    counts: BTreeMap<u64, u32>,
+    config: BigramConfig,
+) {
+    compiled.bigram = build_records(counts, config)
+        .into_iter()
+        .flat_map(BigramRecord::encode)
+        .collect();
+}
+
+/// Prints one scan row in stable column order.
+pub(crate) fn report_working_point(point: &BigramWorkingPoint) {
+    println!(
+        "dictc bigram scan: min_score={} max_pairs={} selected_pairs={} section_bytes={}",
+        point.min_score, point.max_pairs, point.selected_pairs, point.section_bytes
+    );
+}
+
+/// Measures candidate cuts without building a container payload.
+///
+/// The scan reuses the same scoring and cut code as a real build, so its selected count
+/// and byte projection cannot drift from what `dictc` would write for the same working
+/// point. Input maps and output rows are immutable from the caller's perspective, and
+/// equal inputs always answer equal rows.
+pub(crate) fn scan_records(
+    counts: &BTreeMap<u64, u32>,
+    working_points: &[BigramConfig],
+) -> Vec<BigramWorkingPoint> {
+    working_points
+        .iter()
+        .map(|config| {
+            let records = build_records(counts.clone(), *config);
+            let section_bytes = u64::try_from(records.len())
+                .ok()
+                .and_then(|count| count.checked_mul(BIGRAM_ENTRY_SIZE as u64))
+                .unwrap_or(u64::MAX);
+            BigramWorkingPoint {
+                min_score: config.min_score,
+                max_pairs: config.max_pairs,
+                selected_pairs: records.len(),
+                section_bytes,
+            }
+        })
+        .collect()
+}
+
 /// The left and right marginal counts implied by the pair table.
 #[derive(Debug)]
 struct Marginals {
@@ -221,6 +311,90 @@ mod tests {
             },
         );
         assert_eq!(limited.len(), 1);
+    }
+
+    #[test]
+    fn test_build_records_twice_is_byte_identical() {
+        let index = WordIndex::new(["中国", "人民"]);
+        let counts = count_cooccurrence("中国人民中国", &index);
+        let first = build_records(counts.clone(), BigramConfig::default());
+        let second = build_records(counts, BigramConfig::default());
+        assert_eq!(
+            first
+                .iter()
+                .copied()
+                .flat_map(BigramRecord::encode)
+                .collect::<Vec<u8>>(),
+            second
+                .iter()
+                .copied()
+                .flat_map(BigramRecord::encode)
+                .collect::<Vec<u8>>()
+        );
+    }
+
+    #[test]
+    fn test_scan_records_reports_cutoffs_and_projection() {
+        // Two independent marginals make the raw scores 2 and 3, so this pins the
+        // inclusive score floor and the next representable boundary above it.
+        let counts = BTreeMap::from([(1_u64 << 32 | 2, 1), (3_u64 << 32 | 4, 3)]);
+        let points = scan_records(
+            &counts,
+            &[
+                BigramConfig {
+                    max_pairs: 8,
+                    min_score: 1.5,
+                },
+                BigramConfig {
+                    max_pairs: 1,
+                    min_score: 1.5,
+                },
+                BigramConfig {
+                    max_pairs: 8,
+                    min_score: f32::INFINITY,
+                },
+            ],
+        );
+        assert_eq!(
+            points,
+            vec![
+                BigramWorkingPoint {
+                    min_score: 1.5,
+                    max_pairs: 8,
+                    selected_pairs: 2,
+                    section_bytes: 24,
+                },
+                BigramWorkingPoint {
+                    min_score: 1.5,
+                    max_pairs: 1,
+                    selected_pairs: 1,
+                    section_bytes: 12,
+                },
+                BigramWorkingPoint {
+                    min_score: f32::INFINITY,
+                    max_pairs: 8,
+                    selected_pairs: 0,
+                    section_bytes: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_scan_records_is_deterministic_and_empty_for_empty_input() {
+        let index = WordIndex::new(["中国", "人民"]);
+        let counts = count_cooccurrence("中国人民中国", &index);
+        let config = BigramConfig::default();
+        let first = scan_records(&counts, &[config]);
+        let second = scan_records(&counts, &[config]);
+        assert_eq!(first, second);
+        assert_eq!(first[0].selected_pairs, 2);
+        assert_eq!(first[0].section_bytes, 24);
+
+        assert!(scan_records(&BTreeMap::new(), &[config]).iter().all(|point| {
+            point.selected_pairs == 0 && point.section_bytes == 0
+        }));
+        assert!(scan_records(&counts, &[]).is_empty());
     }
 
     #[test]

@@ -238,12 +238,10 @@ pub struct Entry {
 /// `9` names none. A dictionary with fewer readings than a page holds would make every
 /// page key inert and the matrix would be asserting nothing about them.
 ///
-/// `hao` carries two readings so that the typed-out phrase `nihao` decodes to more
-/// candidates than the two-syllable entry alone: with only `ni'hao` in the dictionary a
-/// full path covers the input exactly once, and the digit, highlight and page rows of
-/// the scenario walks would have nothing to name. The two texts pair with the `ni`
-/// readings into combinations no entry spells, which keeps the phrase itself the one
-/// candidate that reads 你好 and the top of the list unambiguous.
+/// `hao` carries two readings and `ni'hao` carries near-tie alternatives so the typed-out
+/// phrase `nihao` keeps enough visible candidates for the digit and highlight walks after
+/// rank decay. The phrase remains the strongest row, so the top of the list stays
+/// unambiguous.
 pub const DICTIONARY: &[(&str, &str, u32, u8)] = &[
     ("ni", "你", 900_000, 1),
     ("ni", "尼", 800_000, 1),
@@ -256,6 +254,10 @@ pub const DICTIONARY: &[(&str, &str, u32, u8)] = &[
     ("hao", "毫", 900_000, 1),
     ("hao", "豪", 800_000, 1),
     ("ni'hao", "你好", 900_000, 2),
+    // Rank decay drops materially weaker whole-sentence paths. These near-tie rows keep
+    // the digit/highlight scenario's second and third visible slots meaningful.
+    ("ni'hao", "你号", 890_000, 2),
+    ("ni'hao", "尼好", 880_000, 2),
 ];
 
 /// The dictionary the cases decode against, in the shape [`Lexicon`] wants.

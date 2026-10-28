@@ -52,6 +52,35 @@ pub(super) fn bench_lattice(criterion: &mut Criterion, dictionary: &SyntheticDic
     group.finish();
 }
 
+/// Times rank-decay truncation of a full whole-sentence candidate window.
+///
+/// The list is synthetic and carries Q8.8 scores directly, so the case isolates the
+/// decay walk from lattice construction and text materialization. A monotone list that
+/// truncates partway exercises the expensive outcome: it walks every sentence and moves
+/// the word-level tail into the freed slots.
+pub(super) fn bench_rank_decay(criterion: &mut Criterion) {
+    let candidates: Vec<(i32, bool)> = (0..64)
+        .map(|rank| (10_000 - i32::try_from(rank).unwrap_or(i32::MAX) * 200, rank < 48))
+        .collect();
+    let mut group = criterion.benchmark_group("kbest");
+    group.throughput(Throughput::Elements(candidates.len() as u64));
+    group.bench_function("rank_decay", |bencher| {
+        bencher.iter_batched(
+            || candidates.clone(),
+            |mut candidates| {
+                let dropped = ime_core::viterbi::kbest::retain_rank_decayed_sentences(
+                    &mut candidates,
+                    |candidate| candidate.1,
+                    |candidate| candidate.0,
+                );
+                black_box(dropped)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.finish();
+}
+
 /// Times one unigram lookup of the in-memory model.
 ///
 /// The reference half of the language-model comparison: the dictionary-backed model answers
