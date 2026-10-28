@@ -252,6 +252,7 @@ pub(super) fn session_env(sources: &'static SessionSources) -> SessionEnv<'stati
         english: english_lexicon().map(|lexicon| lexicon as &dyn Lexicon),
         confusables: confusables(),
         symbols: symbols(),
+        assoc: None,
     }
 }
 

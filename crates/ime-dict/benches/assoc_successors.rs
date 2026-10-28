@@ -70,9 +70,7 @@ fn assoc_successors(criterion: &mut Criterion) {
         return;
     };
     criterion.bench_function("assoc_successors_limit_8", |bencher| {
-        bencher.iter(|| {
-            black_box(&model).successors(black_box(WordId::new(7)), black_box(8))
-        });
+        bencher.iter(|| black_box(&model).successors(black_box(WordId::new(7)), black_box(8)));
     });
 }
 

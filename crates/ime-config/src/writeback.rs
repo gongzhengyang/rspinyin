@@ -48,9 +48,7 @@ use std::path::{Path, PathBuf};
 
 use ime_types::ImeError;
 
-use crate::schema::{
-    AssocConfig, Config, DataConfig, DigitZero, Durability, KeyName, KeysConfig,
-};
+use crate::schema::{AssocConfig, Config, DataConfig, DigitZero, Durability, KeyName, KeysConfig};
 
 /// The stable code a refused write carries when the file no longer holds the values the
 /// caller loaded.

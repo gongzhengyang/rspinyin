@@ -747,6 +747,7 @@ fn bench_session(criterion: &mut Criterion, dictionary: &SyntheticDict, model: &
         english: None,
         confusables: None,
         symbols: None,
+        assoc: None,
     };
     let mut group = criterion.benchmark_group("session");
     group.bench_function("keystroke", |bencher| {

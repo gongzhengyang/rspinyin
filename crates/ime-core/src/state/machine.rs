@@ -31,8 +31,9 @@
 //!   it twice on an ordered, non-droppable queue.
 //!
 //! At most [`MAX_EFFECTS`] effects leave one step, which is what the inline capacity
-//! of the returned `SmallVec` covers: a step that changes what the window shows emits
-//! three, and no path emits more.
+//! of the returned `SmallVec` covers: ordinary confirmation and learning emit at most
+//! three effects, and a landed commit that opens association adds the two window
+//! effects, so six covers the widest path without an arbitrary middle tier.
 //!
 //! # Indexing
 //!
@@ -56,16 +57,18 @@ use ime_types::{
     StatusStrip, UiEvent, UiFrame, UserFreqSource,
 };
 
+use crate::assoc::AssocRuntime;
 use crate::confusable::ConfusableTable;
 use crate::input::InputBuffer;
 use crate::preedit::build_preedit_into;
 use crate::segment::SyllableDag;
 use crate::state::SessionConfig;
-use crate::viterbi::context::ContextBand;
+use crate::state::assoc_view::AssocView;
 use crate::state::outcome::{clear_result, empty_preedit, renumber, write_boundaries};
 use crate::state::paging::Paging;
 use crate::state::scheme::SchemeSession;
 use crate::symbols::SymbolTable;
+use crate::viterbi::context::ContextBand;
 use crate::viterbi::{DecodeScratch, DecodeSources, Decoder};
 
 pub use crate::state::effects::{AnchorHint, Effect, Effects, MAX_EFFECTS};
@@ -211,6 +214,14 @@ pub struct Session {
     /// re-rank it would drive is a guess. The count is what retires it, in the one
     /// currency a pure session is paid in -- keystrokes, not seconds.
     context_keys: u8,
+    /// The association candidate view left open after the last landed commit.
+    ///
+    /// The hits are owned so the ordinary decoded result can carry renderable
+    /// candidates without a second source of truth. The view dies on any boundary,
+    /// never crosses a focus change and is not persisted or logged.
+    pub(super) assoc_view: Option<AssocView>,
+    /// The session-only ring of recently committed association words.
+    pub(super) assoc_history: crate::assoc::HistorySource,
     /// Id the next composition will take.
     next_session_id: u64,
 }
@@ -218,8 +229,19 @@ pub struct Session {
 /// A commit that has been handed to the host but has not landed yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PendingCommit {
-    /// The word the user chose, which is what the frequency is recorded against.
+    /// The word or association commit text the user chose.
+    ///
+    /// For an association selection this is the hit's insert text; for an ordinary
+    /// candidate it is the selected word. The same value seeds the association
+    /// provider query only when the host confirms that the commit landed.
     pub(super) key: String,
+    /// Whether learning is semantically permitted for this commit.
+    ///
+    /// Association selections are continuation text rather than evidence about a
+    /// spelling, so they set this flag off. The host privacy gate remains the
+    /// final suppression boundary; this flag only avoids asking for a record that
+    /// association semantics do not want.
+    pub(super) is_learning_commit: bool,
     /// How strongly to weigh the record; see `Session::weight_hint`.
     pub(super) weight_hint: u16,
     /// The word pairs of the committed reading that the commit can coin, in `(key, text)`
@@ -263,6 +285,10 @@ pub struct SessionEnv<'a> {
     /// process loaded one. `None` — no data file — leaves an input that starts
     /// with `v` decoding exactly as a build before the panel existed.
     pub symbols: Option<&'a SymbolTable>,
+    /// The per-context association runtime: injected providers and sensitivity.
+    /// `None` keeps association provider dependencies entirely out of the session,
+    /// which is also the shape used by every host that has not enabled the feature.
+    pub assoc: Option<AssocRuntime<'a>>,
 }
 
 /// What the session is reacting to.
@@ -349,6 +375,8 @@ impl Session {
             candidate_supply: SessionConfig::INITIAL_CANDIDATE_QUOTA,
             context_word: None,
             context_keys: 0,
+            assoc_view: None,
+            assoc_history: crate::assoc::HistorySource::new(),
             next_session_id: next,
         }
     }
@@ -597,6 +625,7 @@ impl Session {
         self.candidate_supply = SessionConfig::INITIAL_CANDIDATE_QUOTA;
         self.preedit = empty_preedit();
         self.pending = None;
+        self.assoc_view = None;
         // An empty input has no graph, which is exactly what the session should hold
         // between compositions; the buffers keep their capacity, so the next build
         // does not reallocate.
@@ -698,6 +727,7 @@ pub fn step(
         sess.english = cfg.english;
         sess.hints = cfg.show_annotation;
         sess.context_band = cfg.context_band;
+        sess.set_assoc_history_depth(cfg.assoc.history_depth);
     }
     let mut ctx = Ctx::new(cfg, env);
     sess.on_event(ev, &mut ctx);

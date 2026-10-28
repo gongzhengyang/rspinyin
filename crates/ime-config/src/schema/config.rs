@@ -270,6 +270,27 @@ pub struct AssocConfig {
     pub history_depth: u8,
 }
 
+/// The `[quick_input]` section: prefix-triggered quick-input domains.
+///
+/// The typed section is internal configuration. It describes only the trigger table;
+/// translators and route integration belong to later increments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuickInputConfig {
+    /// `enabled`: whether quick-input domains can trigger at all.
+    ///
+    /// Off by default: a prefix that suddenly turns ordinary spelling into a domain
+    /// must be an explicit opt-in.
+    pub enabled: bool,
+    /// `date_prefixes`: the spellings that open the date/time/weekday/ISO domain.
+    ///
+    /// Each spelling is a whole trigger, not a longest-match table; every entry is
+    /// compared byte for byte against the whole input buffer.
+    pub date_prefixes: Vec<String>,
+    /// `calc_enabled`: whether the calculator trigger is admitted by the trigger
+    /// table.
+    pub calc_enabled: bool,
+}
+
 /// The whole configuration, after the defaults, the user's document and validation
 /// have been applied.
 ///
@@ -301,6 +322,8 @@ pub struct Config {
     pub diagnostics: DiagnosticsConfig,
     /// The `[assoc]` section.
     pub assoc: AssocConfig,
+    /// The `[quick_input]` section.
+    pub quick_input: QuickInputConfig,
 }
 
 impl Default for Config {
@@ -392,6 +415,11 @@ impl Default for Config {
                 max_candidates: 5,
                 history_depth: 8,
             },
+            quick_input: QuickInputConfig {
+                enabled: false,
+                date_prefixes: vec![String::from("rq"), String::from("dt")],
+                calc_enabled: false,
+            },
         }
     }
 }
@@ -399,6 +427,14 @@ impl Default for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_config_default_quick_input_section_is_disabled_with_bounded_prefixes() {
+        let quick = Config::default().quick_input;
+        assert!(!quick.enabled);
+        assert_eq!(quick.date_prefixes, ["rq", "dt"]);
+        assert!(!quick.calc_enabled);
+    }
 
     #[test]
     fn test_config_default_assoc_section_is_disabled_with_shipped_bounds() {
@@ -436,7 +472,10 @@ mod tests {
         assert_eq!(config.assoc.max_candidates, 5);
         assert_eq!(config.assoc.history_depth, 8);
         assert_eq!(warnings.len(), 2, "{warnings:?}");
-        for (warning, key) in warnings.iter().zip(["assoc.max_candidates", "assoc.history_depth"]) {
+        for (warning, key) in warnings
+            .iter()
+            .zip(["assoc.max_candidates", "assoc.history_depth"])
+        {
             assert!(warning.to_string().contains(key), "{warning}");
         }
     }

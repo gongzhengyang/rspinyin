@@ -115,6 +115,7 @@ pub(super) fn bench_alloc_keystroke(
         english: None,
         confusables: None,
         symbols: None,
+        assoc: None,
     };
     let mut group = criterion.benchmark_group("alloc");
     group.bench_function("keystroke", |bencher| {

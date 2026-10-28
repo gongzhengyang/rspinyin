@@ -153,3 +153,209 @@ pub trait Host {
     ///   `domain/action/reason` code. It never carries the characters the user typed.
     fn diagnose(&mut self, ic: u64, err: &ImeError);
 }
+
+/// A civil-time value handed to a quick-input translator.
+///
+/// The engine never reads the clock itself: a host supplies one of these snapshots,
+/// which makes date and time rendering deterministic under test and keeps the hot
+/// path free of hidden system calls.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClockSnapshot {
+    /// The Gregorian year.
+    pub year: i32,
+    /// The month, `1..=12`.
+    pub month: u8,
+    /// The day of month, `1..=31` as valid for the month and year.
+    pub day: u8,
+    /// The hour, `0..=23`.
+    pub hour: u8,
+    /// The minute, `0..=59`.
+    pub minute: u8,
+    /// The second, `0..=59`.
+    pub second: u8,
+    /// The weekday, with Monday represented by zero.
+    pub weekday: u8,
+}
+
+/// Wall-clock access for quick-input domains.
+///
+/// An implementation must be non-blocking enough for the Fcitx5 callback that asks
+/// for a snapshot. A host that cannot supply time should simply not install a
+/// quick-input route, rather than report an error on every key.
+pub trait ClockSource {
+    /// Returns the current civil time.
+    ///
+    /// # Panics
+    ///
+    /// Implementations must never panic.
+    fn now(&self) -> ClockSnapshot;
+}
+
+/// Injected randomness for quick-input domains that need it.
+///
+/// The indirection keeps a translator pure with respect to its inputs and lets a test
+/// pin an entire byte sequence.
+pub trait RngSource {
+    /// Fills `dest` with random bytes.
+    ///
+    /// # Panics
+    ///
+    /// Implementations must never panic.
+    fn fill_bytes(&self, dest: &mut [u8]);
+}
+
+/// The production clock.
+///
+/// It performs one UTC snapshot per call. Quick-input output is therefore UTC at this
+/// scaffold stage; localization and timezone policy belong with the translator work,
+/// which will consume this same injected boundary.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemClock;
+
+impl ClockSource for SystemClock {
+    fn now(&self) -> ClockSnapshot {
+        let elapsed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let seconds = u64::try_from(elapsed.as_secs()).unwrap_or(0);
+        let days = seconds / SECONDS_PER_DAY;
+        let seconds_of_day = seconds % SECONDS_PER_DAY;
+        let (year, month, day) = civil_from_days(days);
+        let weekday = ((days % DAYS_PER_WEEK) + (SEVEN - EPOCH_MONDAY_INDEX)) % DAYS_PER_WEEK;
+        ClockSnapshot {
+            year,
+            month,
+            day,
+            hour: u8::try_from(seconds_of_day / SECONDS_PER_HOUR).unwrap_or(0),
+            minute: u8::try_from((seconds_of_day / SECONDS_PER_MINUTE) % SECONDS_PER_MINUTE)
+                .unwrap_or(0),
+            second: u8::try_from(seconds_of_day % SECONDS_PER_MINUTE).unwrap_or(0),
+            weekday: u8::try_from(weekday).unwrap_or(0),
+        }
+    }
+}
+
+/// The production random source.
+///
+/// A small OS-time-seeded generator is enough for this boundary's scaffold: no quick
+/// input route consumes it yet, and introducing a random-number dependency is part of
+/// the increment that actually needs generated values.
+#[derive(Debug)]
+pub struct PrngSource {
+    state: std::sync::atomic::AtomicU64,
+}
+
+impl PrngSource {
+    /// Creates a source seeded from the system clock's sub-second nanoseconds.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn from_system() -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.subsec_nanos())
+            .unwrap_or_default();
+        let seed = u64::from(nanos) | 1;
+        Self {
+            state: std::sync::atomic::AtomicU64::new(seed),
+        }
+    }
+}
+
+impl Default for PrngSource {
+    /// A non-zero seed, so the generator's all-zero fixed point is unreachable.
+    fn default() -> Self {
+        Self {
+            state: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+}
+
+impl RngSource for PrngSource {
+    fn fill_bytes(&self, dest: &mut [u8]) {
+        use std::sync::atomic::Ordering;
+        let mut block = 0_u64;
+        for (index, byte) in dest.iter_mut().enumerate() {
+            if index % u64::BITS as usize == 0 {
+                let previous = self.state.load(Ordering::Relaxed);
+                let next = previous ^ (previous << 13);
+                let next = next ^ (next >> 7);
+                let next = next ^ (next << 17);
+                self.state.store(next.max(1), Ordering::Relaxed);
+                block = next;
+            }
+            *byte = (block >> ((index % u64::BITS as usize) * 8)) as u8;
+        }
+    }
+}
+
+const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
+const SECONDS_PER_HOUR: u64 = 60 * 60;
+const SECONDS_PER_MINUTE: u64 = 60;
+const DAYS_PER_WEEK: u64 = 7;
+const SEVEN: u64 = 7;
+// Unix day 0 is a Thursday; Monday has index zero in `ClockSnapshot::weekday`.
+const EPOCH_MONDAY_INDEX: u64 = 3;
+
+/// Converts days since the Unix epoch to a civil Gregorian date.
+///
+/// Howard Hinnant's `civil_from_days` algorithm: the leap-year rule is expressed in
+/// whole-day arithmetic, so there is no month table to get wrong and no failure path.
+fn civil_from_days(days_since_epoch: u64) -> (i32, u8, u8) {
+    let shifted = days_since_epoch + 719_468;
+    let era = shifted / 146_097;
+    let day_of_era = shifted % 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era as i64 + era as i64 * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let mp = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+    (
+        i32::try_from(year).unwrap_or(i32::MAX),
+        u8::try_from(month).unwrap_or(12),
+        u8::try_from(day).unwrap_or(1),
+    )
+}
+
+#[cfg(test)]
+mod host_boundary_tests {
+    use super::{ClockSnapshot, ClockSource, PrngSource, RngSource};
+
+    #[test]
+    fn test_system_clock_known_epoch_snapshot() {
+        let clock = FixedClock(ClockSnapshot {
+            year: 2026,
+            month: 10,
+            day: 28,
+            hour: 12,
+            minute: 34,
+            second: 56,
+            weekday: 2,
+        });
+        assert_eq!(clock.now(), clock.0);
+    }
+
+    #[test]
+    fn test_prng_fill_is_nonzero_and_repeats_for_same_seed() {
+        let first = PrngSource::default();
+        let second = PrngSource::default();
+        let mut left = [0_u8; 16];
+        let mut right = [0_u8; 16];
+        first.fill_bytes(&mut left);
+        second.fill_bytes(&mut right);
+        assert_eq!(left, right);
+        assert!(left.iter().any(|byte| *byte != 0));
+    }
+
+    struct FixedClock(ClockSnapshot);
+
+    impl ClockSource for FixedClock {
+        fn now(&self) -> ClockSnapshot {
+            self.0
+        }
+    }
+}

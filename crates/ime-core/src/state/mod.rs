@@ -44,9 +44,12 @@
 //! would move the candidate list under the caret. The new layout answers the next
 //! composition instead.
 
+mod assoc;
+mod assoc_view;
 mod boundaries;
 pub mod effects;
 pub mod frame;
+mod lifecycle;
 pub mod machine;
 pub mod outcome;
 pub mod paging;
@@ -317,8 +320,9 @@ mod supply_tests {
         assert!(SessionConfig::has_more_candidate_supply(48, 49));
         assert!(!SessionConfig::has_more_candidate_supply(24, 24));
         assert!(!SessionConfig::has_more_candidate_supply(64, 65));
-        assert!(!SessionConfig::has_more_candidate_supply(u16::MAX, u16::MAX));
+        assert!(!SessionConfig::has_more_candidate_supply(
+            u16::MAX,
+            u16::MAX
+        ));
     }
-
-
 }

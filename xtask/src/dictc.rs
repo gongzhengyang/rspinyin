@@ -336,7 +336,8 @@ pub fn run(args: DictcArgs) -> Result<()> {
                 target,
                 projected,
             )?;
-            let mut rebuilt = compile(&words, band, args.expand_cap, &corrections, normalize_rules)?;
+            let mut rebuilt =
+                compile(&words, band, args.expand_cap, &corrections, normalize_rules)?;
             rebuilt.stats.polyphone_unmatched = unmatched;
             fill_bigram(
                 &mut rebuilt,
@@ -391,7 +392,10 @@ pub fn run(args: DictcArgs) -> Result<()> {
         Some((target, bytes_before)) => {
             let bytes_after = std::fs::metadata(&output_path)
                 .with_context(|| {
-                    format!("dictc: cannot size the written container {}", output_path.display())
+                    format!(
+                        "dictc: cannot size the written container {}",
+                        output_path.display()
+                    )
                 })?
                 .len();
             let trim = &compiled.stats.weight_bands.trim;

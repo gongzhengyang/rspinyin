@@ -318,12 +318,12 @@ impl UserFreqSource for Silent {
 #[cfg(test)]
 mod tests {
     use super::{
-        EXPANDED_CANDIDATE_QUOTA, INITIAL_CANDIDATE_QUOTA, MAX_CANDIDATES, DecodeRequest, Decoder,
+        DecodeRequest, Decoder, EXPANDED_CANDIDATE_QUOTA, INITIAL_CANDIDATE_QUOTA, MAX_CANDIDATES,
         candidate_supply_quota, has_more_candidate_supply,
     };
     use crate::lm::InMemoryLm;
-    use crate::viterbi::lattice::testing::{MockLexicon, NoUser};
     use crate::state::SessionConfig;
+    use crate::viterbi::lattice::testing::{MockLexicon, NoUser};
 
     #[test]
     fn test_candidate_supply_quota_has_the_documented_ladder() {
@@ -369,7 +369,10 @@ mod tests {
             "the wider quota must retain the narrower list bit-for-bit"
         );
         assert_eq!(
-            initial.candidates.first().map(|candidate| candidate.text.as_str()),
+            initial
+                .candidates
+                .first()
+                .map(|candidate| candidate.text.as_str()),
             expanded
                 .candidates
                 .first()

@@ -123,10 +123,7 @@ fn scratch_args(root: &Path) -> DictcArgs {
 
 #[test]
 fn test_bigram_scan_specifications_parse_deterministically() {
-    let specs = vec![
-        String::from("0:1000"),
-        String::from("1.5:2000"),
-    ];
+    let specs = vec![String::from("0:1000"), String::from("1.5:2000")];
     let parsed = bigram::parse_working_points(&specs).expect("both cuts parse");
     assert_eq!(
         parsed,
@@ -438,7 +435,10 @@ fn test_run_trim_is_deterministic_and_reaches_its_target() {
     run(args).expect("the trimmed build");
     let trimmed = fs::read(&output).expect("reading the trimmed container");
 
-    assert!(trimmed.len() < untrimmed.len(), "the trim must shrink the container");
+    assert!(
+        trimmed.len() < untrimmed.len(),
+        "the trim must shrink the container"
+    );
     assert!(
         (trimmed.len() as f64 / (1024.0 * 1024.0)) <= target_bytes,
         "the trimmed container fits its target"
@@ -475,13 +475,15 @@ fn test_run_refuses_a_trim_target_below_the_protected_floor() {
     // The whole tail frees 93 floor bytes; a target at half the container
     // asks for more than that plus the slack, so the build refuses rather
     // than cut into the protected bands.
-    let unreachable = (fs::metadata(&output).expect("measuring").len() / 2) as f64
-        / (1024.0 * 1024.0);
+    let unreachable =
+        (fs::metadata(&output).expect("measuring").len() / 2) as f64 / (1024.0 * 1024.0);
     let mut args = trim_args(&root);
     args.trim_target_mib = Some(unreachable);
     let refusal = run(args).expect_err("a target below the protected floor must be refused");
     assert!(
-        refusal.to_string().contains("below the floor the protected bands set"),
+        refusal
+            .to_string()
+            .contains("below the floor the protected bands set"),
         "the refusal names the floor: {refusal}"
     );
 

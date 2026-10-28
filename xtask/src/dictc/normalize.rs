@@ -236,16 +236,22 @@ pub(crate) fn trim_words(
             rules.band(word.text.chars().count(), word.weight) == WeightBand::TailFlat
         })
         .map(|(index, word)| {
-            let neighbors =
-                key_counts.get(word.key.as_str()).copied().unwrap_or(1).saturating_sub(1);
-            (index, super::audit::TrimValue {
-                text: word.text.clone(),
-                key: word.key.clone(),
-                weight: word.weight,
-                characters: word.text.chars().count(),
-                in_expansion_band: word.weight >= band_threshold,
-                neighbors,
-            })
+            let neighbors = key_counts
+                .get(word.key.as_str())
+                .copied()
+                .unwrap_or(1)
+                .saturating_sub(1);
+            (
+                index,
+                super::audit::TrimValue {
+                    text: word.text.clone(),
+                    key: word.key.clone(),
+                    weight: word.weight,
+                    characters: word.text.chars().count(),
+                    in_expansion_band: word.weight >= band_threshold,
+                    neighbors,
+                },
+            )
         })
         .collect();
     let plan = super::audit::plan_trim_drops(candidates, savings_needed);
@@ -447,8 +453,14 @@ mod tests {
             .expect("the tail covers the requested savings");
         assert_eq!(report.dropped, 3);
         assert_eq!(report.dropped_tail_flat, 3);
-        assert_eq!(report.dropped_char_freq, 0, "the character band is protected");
-        assert_eq!(report.dropped_core_true_freq, 0, "the core band is protected");
+        assert_eq!(
+            report.dropped_char_freq, 0,
+            "the character band is protected"
+        );
+        assert_eq!(
+            report.dropped_core_true_freq, 0,
+            "the core band is protected"
+        );
         assert_eq!(
             report.freed_floor_bytes, 96,
             "the floor record is the linear rows of the dropped words"
@@ -499,14 +511,8 @@ mod tests {
         let target = (1_000_000 - 1) as f64 / (1024.0 * 1024.0);
         trim_words(&mut forward, rules, 0, target, 1_000_000).expect("forward trims");
         trim_words(&mut backward, rules, 0, target, 1_000_000).expect("backward trims");
-        let kept: Vec<String> = forward
-            .iter()
-            .map(|word| word.text.clone())
-            .collect();
-        let kept_back: Vec<String> = backward
-            .iter()
-            .map(|word| word.text.clone())
-            .collect();
+        let kept: Vec<String> = forward.iter().map(|word| word.text.clone()).collect();
+        let kept_back: Vec<String> = backward.iter().map(|word| word.text.clone()).collect();
         assert_eq!(
             kept, kept_back,
             "the same words survive whatever order the rows arrived in"
@@ -525,8 +531,8 @@ mod tests {
         // One tail candidate frees 30 bytes; an ask of 4 KiB past the
         // projection cannot be met even by dropping it.
         let target = (1_000_000.0 - 4_100.0) / (1024.0 * 1024.0);
-        let failure =
-            trim_words(&mut words, rules, 0, target, 1_000_000).expect_err("the target is unreachable");
+        let failure = trim_words(&mut words, rules, 0, target, 1_000_000)
+            .expect_err("the target is unreachable");
         let message = failure.to_string();
         assert!(
             message.contains("below the floor the protected bands set"),

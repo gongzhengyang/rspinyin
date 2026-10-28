@@ -167,7 +167,10 @@ pub(crate) fn finish(drafts: &mut Vec<Draft>, max_candidates: u16) {
         |draft| draft.score >> 8,
     );
     if dropped > 0 {
-        tracing::trace!(dropped_sentences = dropped, "rank decay truncated candidates");
+        tracing::trace!(
+            dropped_sentences = dropped,
+            "rank decay truncated candidates"
+        );
     }
 }
 

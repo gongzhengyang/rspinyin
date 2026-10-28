@@ -46,7 +46,7 @@ mod store;
 
 use self::merge::{
     merge_assoc, merge_data, merge_diagnostics, merge_engine, merge_fuzzy, merge_keys,
-    merge_phrases, merge_scheme, merge_theme, merge_ui,
+    merge_phrases, merge_quick_input, merge_scheme, merge_theme, merge_ui,
 };
 pub use load::default_path;
 pub use store::{ConfigStore, ReloadOutcome};
@@ -251,6 +251,16 @@ max_candidates = 5
 # memory dies with the session and is never written to disk. Takes effect on reload.
 history_depth = 8
 
+[quick_input]
+# Recognise whole-buffer quick-input triggers such as the date family and the
+# calculator. Off by default: a trigger that turns ordinary spelling into a domain is
+# an explicit opt-in. Trigger recognition only; translators are not wired yet.
+enabled = false
+# Whole-buffer spellings that open the date family. Takes effect on reload.
+date_prefixes = ["rq", "dt"]
+# Recognise the calculator trigger. Off by default. Takes effect on reload.
+calc_enabled = false
+
 [phrases]
 # Let the phrase table take part in a decode. With it off the dictionary answers alone.
 # The table is read once, at start-up. Takes effect at the next fcitx5 restart.
@@ -314,6 +324,7 @@ struct PartialConfig {
     schema_version: Option<i64>,
     engine: Option<PartialEngine>,
     assoc: Option<PartialAssoc>,
+    quick_input: Option<PartialQuickInput>,
     ui: Option<PartialUi>,
     theme: Option<PartialTheme>,
     keys: Option<PartialKeys>,
@@ -330,6 +341,14 @@ struct PartialAssoc {
     enabled: Option<bool>,
     max_candidates: Option<u8>,
     history_depth: Option<u8>,
+}
+
+/// The `[quick_input]` table of a document.
+#[derive(Deserialize)]
+struct PartialQuickInput {
+    enabled: Option<bool>,
+    date_prefixes: Option<Vec<String>>,
+    calc_enabled: Option<bool>,
 }
 
 /// The `[fuzzy]` table of a document.
@@ -625,6 +644,8 @@ impl Config {
         let mut config = Self::default();
         merge_engine(partial.engine, &mut config, &mut warnings);
         merge_assoc(partial.assoc, &mut config);
+
+        merge_quick_input(partial.quick_input, &mut config);
         merge_ui(partial.ui, &mut config);
         merge_theme(partial.theme, &mut config, &mut warnings);
         merge_keys(partial.keys, &mut config, &mut warnings);

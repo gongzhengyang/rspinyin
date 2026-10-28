@@ -181,12 +181,12 @@ pub(crate) fn parse_working_points(specs: &[String]) -> anyhow::Result<Vec<Bigra
             let (score, pairs) = spec
                 .split_once(':')
                 .context("dictc: --bigram-scan expects MIN_SCORE:MAX_PAIRS")?;
-            let min_score = score.parse::<f32>().map_err(|_| {
-                anyhow!("dictc: --bigram-scan minimum score is not f32: {score}")
-            })?;
-            let max_pairs = pairs.parse::<u32>().map_err(|_| {
-                anyhow!("dictc: --bigram-scan pair limit is not u32: {pairs}")
-            })?;
+            let min_score = score
+                .parse::<f32>()
+                .map_err(|_| anyhow!("dictc: --bigram-scan minimum score is not f32: {score}"))?;
+            let max_pairs = pairs
+                .parse::<u32>()
+                .map_err(|_| anyhow!("dictc: --bigram-scan pair limit is not u32: {pairs}"))?;
             ensure!(
                 min_score.is_finite() && min_score >= 0.0,
                 "dictc: --bigram-scan minimum score must be finite and non-negative"
@@ -391,9 +391,11 @@ mod tests {
         assert_eq!(first[0].selected_pairs, 2);
         assert_eq!(first[0].section_bytes, 24);
 
-        assert!(scan_records(&BTreeMap::new(), &[config]).iter().all(|point| {
-            point.selected_pairs == 0 && point.section_bytes == 0
-        }));
+        assert!(
+            scan_records(&BTreeMap::new(), &[config])
+                .iter()
+                .all(|point| { point.selected_pairs == 0 && point.section_bytes == 0 })
+        );
         assert!(scan_records(&counts, &[]).is_empty());
     }
 

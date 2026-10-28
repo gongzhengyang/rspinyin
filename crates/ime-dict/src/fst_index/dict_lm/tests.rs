@@ -16,7 +16,9 @@ use crate::fst_index::FstLexicon;
 fn model_with_bigrams(bigrams: &[(u64, u16)]) -> DictLm {
     let mut index = fst::MapBuilder::memory();
     let packed = pack_fst_value(0, 1).expect("packing the word-list range");
-    index.insert("ni".as_bytes(), packed).expect("inserting the key");
+    index
+        .insert("ni".as_bytes(), packed)
+        .expect("inserting the key");
 
     let mut unigram = hash_word("你").to_le_bytes().to_vec();
     unigram.extend_from_slice(&PROB_Q12_MAX.to_le_bytes());
@@ -27,11 +29,17 @@ fn model_with_bigrams(bigrams: &[(u64, u16)]) -> DictLm {
         .map(|(key, score)| BigramRecord::new(*key, *score))
         .collect::<Vec<_>>();
     rows.sort_by_key(|record| record.pair_key);
-    let bigram = rows.iter().flat_map(|record| record.encode()).collect::<Vec<_>>();
+    let bigram = rows
+        .iter()
+        .flat_map(|record| record.encode())
+        .collect::<Vec<_>>();
 
     let mut container = writer::DictWriter::new();
     for (kind, payload) in [
-        (SectionKind::Fst, index.into_inner().expect("finishing the FST")),
+        (
+            SectionKind::Fst,
+            index.into_inner().expect("finishing the FST"),
+        ),
         (
             SectionKind::Entries,
             DictEntry::new(0, 3, 1, 0, 900)
@@ -44,7 +52,9 @@ fn model_with_bigrams(bigrams: &[(u64, u16)]) -> DictLm {
         (SectionKind::WordList, 0u32.to_le_bytes().to_vec()),
         (SectionKind::Bigram, bigram),
     ] {
-        container.add_section(kind, payload).expect("adding a section");
+        container
+            .add_section(kind, payload)
+            .expect("adding a section");
     }
 
     let image = container.encode().expect("encoding the container");
@@ -65,7 +75,10 @@ fn test_successors_orders_one_segment_by_score_and_provider_id() {
     let successors = model.successors(WordId::new(7), u8::MAX);
     let ids: Vec<_> = successors.iter().map(|(id, _)| id.value()).collect();
     assert_eq!(ids, [2, 1, 3]);
-    assert_eq!(successors[0].1, 0, "the highest Q12 probability maps to score zero");
+    assert_eq!(
+        successors[0].1, 0,
+        "the highest Q12 probability maps to score zero"
+    );
     assert!(successors[1].1 < successors[0].1);
     assert!(successors[2].1 < successors[1].1);
 }
@@ -80,7 +93,11 @@ fn test_successors_truncates_at_the_predecessor_segment_end() {
 
     let successors = model.successors(WordId::new(7), u8::MAX);
     let ids: Vec<_> = successors.iter().map(|(id, _)| id.value()).collect();
-    assert_eq!(ids, [0, 1], "the later predecessor must not enter the interval");
+    assert_eq!(
+        ids,
+        [0, 1],
+        "the later predecessor must not enter the interval"
+    );
 }
 
 #[test]

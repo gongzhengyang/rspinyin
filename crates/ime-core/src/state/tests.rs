@@ -6,6 +6,7 @@
 //! Everything is driven from in-memory doubles: no dictionary file, no clock, no
 //! environment, no display server.
 
+mod assoc;
 mod commit;
 mod composing;
 mod frame;
@@ -21,6 +22,7 @@ use ime_types::{HideReason, KeyAction, Placement, SelectTrigger, UiEvent, UserFr
 
 use super::machine::{Session, SessionEnv, SessionState};
 use super::{Effect, SessionConfig};
+use crate::assoc::{AssocProviders, AssocRuntime, AssocSourceKind};
 use crate::confusable::ConfusableTable;
 use crate::lm::InMemoryLm;
 use crate::symbols::SymbolTable;
@@ -154,6 +156,7 @@ impl Fixture {
             english: None,
             confusables: None,
             symbols: None,
+            assoc: None,
         }
     }
 
@@ -171,6 +174,36 @@ impl Fixture {
             english: None,
             confusables: None,
             symbols: Some(symbols),
+            assoc: None,
+        }
+    }
+
+    /// Borrows the sources with one association provider and an explicit policy.
+    ///
+    /// The provider is test-owned, so every call is observable without a dictionary
+    /// file. History remains session memory and is never placed in the provider pair.
+    pub(super) fn env_assoc<'env>(
+        &'env self,
+        provider: &'env crate::state::tests::assoc::AssocProviderStub,
+        sensitive: bool,
+    ) -> SessionEnv<'env> {
+        let (bigram, prefix) = if provider.kind == AssocSourceKind::Bigram {
+            (Some(provider as &dyn crate::assoc::AssocProvider), None)
+        } else {
+            (None, Some(provider as &dyn crate::assoc::AssocProvider))
+        };
+        SessionEnv {
+            decoder: &self.decoder,
+            lexicon: &self.lexicon,
+            user_freq: &self.user,
+            lm: &self.lm,
+            english: None,
+            confusables: None,
+            symbols: None,
+            assoc: Some(AssocRuntime {
+                providers: AssocProviders { bigram, prefix },
+                sensitive,
+            }),
         }
     }
 
@@ -188,6 +221,7 @@ impl Fixture {
             english: None,
             confusables: Some(confusables),
             symbols: None,
+            assoc: None,
         }
     }
 }

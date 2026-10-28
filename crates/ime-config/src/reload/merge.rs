@@ -48,6 +48,21 @@ pub(super) fn merge_assoc(partial: Option<PartialAssoc>, config: &mut Config) {
     assoc.history_depth = partial.history_depth.unwrap_or(assoc.history_depth);
 }
 
+/// Copies the `[quick_input]` keys the document sets over the defaults.
+///
+/// Prefix spellings are accepted as ordinary text; the trigger function treats each
+/// one as a whole-buffer literal and an empty entry therefore can never match a real
+/// quick-input buffer.
+pub(super) fn merge_quick_input(partial: Option<PartialQuickInput>, config: &mut Config) {
+    let Some(partial) = partial else { return };
+    let quick = &mut config.quick_input;
+    quick.enabled = partial.enabled.unwrap_or(quick.enabled);
+    if let Some(date_prefixes) = partial.date_prefixes {
+        quick.date_prefixes = date_prefixes;
+    }
+    quick.calc_enabled = partial.calc_enabled.unwrap_or(quick.calc_enabled);
+}
+
 /// Copies the `[fuzzy]` keys the document sets over the defaults.
 ///
 /// The section is nine bools and nothing else, so there is no value to repair: a key

@@ -45,6 +45,72 @@ impl Default for AssocLimits {
 ///
 /// Implementations must be `Send + Sync`; the method is a bounded, reentrant read
 /// and never blocks the host thread or mutates provider state.
+/// The explicitly injected Bigram and Prefix providers one session may read.
+///
+/// A missing reference means that source family is absent, not that its hits are merely
+/// empty: the host cannot synthesize a provider and the session cannot discover one.
+/// History is deliberately not here because it is session-owned memory.
+#[derive(Clone, Copy)]
+pub struct AssocProviders<'a> {
+    /// The compiled Bigram provider, when the dictionary supplies one.
+    pub bigram: Option<&'a dyn AssocProvider>,
+    /// The prefix-completion provider, when the engine supplies one.
+    pub prefix: Option<&'a dyn AssocProvider>,
+}
+
+impl<'a> AssocProviders<'a> {
+    /// Builds a provider pair with both source families absent.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub const fn none() -> Self {
+        Self {
+            bigram: None,
+            prefix: None,
+        }
+    }
+}
+
+impl Default for AssocProviders<'_> {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+/// The per-context association policy and read dependencies handed to one step.
+///
+/// The sensitivity bit is projected by the host from the same privacy decision that
+/// gates learning, so an unreported, password, sensitive or blacklisted context never
+/// opens or extends an association view. The providers are read-only and bounded.
+#[derive(Clone, Copy)]
+pub struct AssocRuntime<'a> {
+    /// The Bigram and Prefix providers available to this session.
+    pub providers: AssocProviders<'a>,
+    /// Whether the active input context suppresses association output and history.
+    pub sensitive: bool,
+}
+
+impl<'a> AssocRuntime<'a> {
+    /// Builds an ordinary runtime whose source families are all absent.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub const fn absent() -> Self {
+        Self {
+            providers: AssocProviders::none(),
+            sensitive: false,
+        }
+    }
+}
+
+impl Default for AssocRuntime<'_> {
+    fn default() -> Self {
+        Self::absent()
+    }
+}
+
 pub trait AssocProvider: Send + Sync {
     /// Names the source family this provider serves.
     fn kind(&self) -> AssocSourceKind;
@@ -191,6 +257,14 @@ impl HistorySource {
         }
     }
 
+    /// Removes every retained hit, leaving the configured depth unchanged.
+    ///
+    /// A focus or reset boundary must not leave recent input available to a later
+    /// association view, so the caller drops the ring with the ephemeral view.
+    pub fn clear(&mut self) {
+        self.hits.clear();
+    }
+
     /// Records one committed hit as the newest history entry.
     ///
     /// The source family is assigned here, preventing a caller from accidentally
@@ -203,11 +277,8 @@ impl HistorySource {
         if self.hits.len() >= self.depth {
             self.hits.remove(0);
         }
-        self.hits.push(AssocHit::new(
-            text,
-            commit,
-            AssocSourceKind::History,
-        ));
+        self.hits
+            .push(AssocHit::new(text, commit, AssocSourceKind::History));
     }
 }
 
@@ -296,13 +367,25 @@ mod tests {
 
     #[test]
     fn test_merge_assoc_quota_preserves_source_round_robin() {
-        let bigram = [hit("b1", AssocSourceKind::Bigram), hit("b2", AssocSourceKind::Bigram)];
-        let history = [hit("h1", AssocSourceKind::History), hit("h2", AssocSourceKind::History)];
-        let prefix = [hit("p1", AssocSourceKind::Prefix), hit("p2", AssocSourceKind::Prefix)];
+        let bigram = [
+            hit("b1", AssocSourceKind::Bigram),
+            hit("b2", AssocSourceKind::Bigram),
+        ];
+        let history = [
+            hit("h1", AssocSourceKind::History),
+            hit("h2", AssocSourceKind::History),
+        ];
+        let prefix = [
+            hit("p1", AssocSourceKind::Prefix),
+            hit("p2", AssocSourceKind::Prefix),
+        ];
 
         let merged = merge_assoc(4, &bigram, &history, &prefix);
 
-        let texts: Vec<_> = merged.iter().map(|candidate| candidate.text.as_str()).collect();
+        let texts: Vec<_> = merged
+            .iter()
+            .map(|candidate| candidate.text.as_str())
+            .collect();
         assert_eq!(texts, ["b1", "h1", "p1", "b2"]);
         assert_eq!(merged[0].source, AssocSourceKind::Bigram);
         assert_eq!(merged[1].source, AssocSourceKind::History);
@@ -311,13 +394,19 @@ mod tests {
 
     #[test]
     fn test_merge_assoc_repeats_sequence_when_quota_exceeds_first_turn() {
-        let bigram = [hit("b1", AssocSourceKind::Bigram), hit("b2", AssocSourceKind::Bigram)];
+        let bigram = [
+            hit("b1", AssocSourceKind::Bigram),
+            hit("b2", AssocSourceKind::Bigram),
+        ];
         let history = [hit("h1", AssocSourceKind::History)];
         let prefix = [hit("p1", AssocSourceKind::Prefix)];
 
         let merged = merge_assoc(5, &bigram, &history, &prefix);
 
-        let texts: Vec<_> = merged.iter().map(|candidate| candidate.text.as_str()).collect();
+        let texts: Vec<_> = merged
+            .iter()
+            .map(|candidate| candidate.text.as_str())
+            .collect();
         assert_eq!(texts, ["b1", "h1", "p1", "b2"]);
     }
 
@@ -356,12 +445,18 @@ mod tests {
 
     #[test]
     fn test_merge_assoc_deduplicates_within_one_provider() {
-        let bigram = [hit("same", AssocSourceKind::Bigram), hit("same", AssocSourceKind::Bigram)];
+        let bigram = [
+            hit("same", AssocSourceKind::Bigram),
+            hit("same", AssocSourceKind::Bigram),
+        ];
         let prefix = [hit("other", AssocSourceKind::Prefix)];
 
         let merged = merge_assoc(3, &bigram, &[], &prefix);
 
-        let texts: Vec<_> = merged.iter().map(|candidate| candidate.text.as_str()).collect();
+        let texts: Vec<_> = merged
+            .iter()
+            .map(|candidate| candidate.text.as_str())
+            .collect();
         assert_eq!(texts, ["same", "other"]);
     }
 
@@ -392,9 +487,16 @@ mod tests {
             .collect();
         assert_eq!(
             texts,
-            ["word-2", "word-3", "word-4", "word-5", "word-6", "word-7", "word-8", "word-9"]
+            [
+                "word-2", "word-3", "word-4", "word-5", "word-6", "word-7", "word-8", "word-9"
+            ]
         );
-        assert!(history.hits().iter().all(|hit| hit.source == AssocSourceKind::History));
+        assert!(
+            history
+                .hits()
+                .iter()
+                .all(|hit| hit.source == AssocSourceKind::History)
+        );
     }
 
     #[test]
@@ -415,6 +517,9 @@ mod tests {
         assert_eq!(slice.kind(), AssocSourceKind::Prefix);
         assert_eq!(slice.hits(), hits);
         assert_eq!(history.kind(), AssocSourceKind::History);
-        assert_eq!(history.hits().first().map(|hit| hit.text.as_str()), Some("recent"));
+        assert_eq!(
+            history.hits().first().map(|hit| hit.text.as_str()),
+            Some("recent")
+        );
     }
 }

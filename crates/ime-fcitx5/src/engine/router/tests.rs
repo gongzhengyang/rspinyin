@@ -39,7 +39,7 @@ use ime_types::{
     WordIter, WordRef,
 };
 
-use crate::engine::host::Host;
+use crate::engine::host::{ComposeOutcome, Host};
 use crate::engine::router::phrases::{PhraseHandle, PhraseStore};
 use crate::engine::router::{KeyRouter, RoutingConfig};
 use crate::engine::{CTRL, KEY_SPACE, KEY_T, SHIFT};
@@ -210,6 +210,8 @@ impl UserFreqSource for SilentUser {
 struct RecordingHost {
     /// The rendered code of every diagnostic, in order.
     diagnostics: Vec<String>,
+    /// The compose answers queued for the host boundary, empty by default.
+    compose: std::collections::VecDeque<ComposeOutcome>,
     /// The text of the first candidate of the newest frame.
     highlighted: Option<String>,
     /// The status strip of the newest frame.
@@ -236,6 +238,7 @@ impl Default for RecordingHost {
     fn default() -> Self {
         Self {
             diagnostics: Vec::new(),
+            compose: std::collections::VecDeque::new(),
             highlighted: None,
             status: None,
             is_enabled: true,
@@ -250,6 +253,12 @@ impl Default for RecordingHost {
 }
 
 impl Host for RecordingHost {
+    fn process_compose(&mut self, _ic: u64, _key: &FcitxKeyEvent) -> ComposeOutcome {
+        self.compose
+            .pop_front()
+            .unwrap_or(ComposeOutcome::Unsupported)
+    }
+
     fn commit(&mut self, _ic: u64, text: &str) {
         self.commits.push(String::from(text));
     }
@@ -340,6 +349,7 @@ impl Fixture {
             english: None,
             confusables: None,
             symbols: None,
+            assoc: None,
         }
     }
 
@@ -568,6 +578,85 @@ fn test_pin_at_a_source_without_pin_storage_reports_and_releases_the_key() {
     assert_eq!(host.diagnostics.len(), before + 1, "{:?}", host.diagnostics);
     let reported = host.diagnostics.last().cloned().unwrap_or_default();
     assert_eq!(reported, "dict/unsupported", "{reported}");
+}
+
+#[test]
+fn test_compose_host_supported_takes_priority_without_fallback_state() {
+    let fixture = Fixture::new("compose-host-priority");
+    let mut config = RoutingConfig::default();
+    config.compose = true;
+    let mut router = fixture.router_with(
+        PhraseHandle::new(PhraseStore::load(None, 100, true)),
+        config,
+    );
+    router.activate_reported(IC, ordinary_report());
+    let mut host = RecordingHost::default();
+    host.compose.push_back(ComposeOutcome::Committed('é'));
+
+    assert!(router.key_event(IC, &press(0xb4, 0), &mut host));
+    assert!(router.key_event(IC, &press(b'e' as u32, 0), &mut host));
+    assert_eq!(host.commits, ["é"]);
+    // The fallback never sees either key: a function key is left for the application
+    // and adds no compose commit.
+    assert!(!router.key_event(IC, &press(0xffbe, 0), &mut host));
+    assert_eq!(host.commits, ["é"]);
+}
+
+#[test]
+fn test_compose_host_missing_hit_commits_and_swallows_the_letter() {
+    let fixture = Fixture::new("compose-fallback-hit");
+    let mut config = RoutingConfig::default();
+    config.compose = true;
+    let mut router = fixture.router_with(
+        PhraseHandle::new(PhraseStore::load(None, 100, true)),
+        config,
+    );
+    router.activate_reported(IC, ordinary_report());
+    let mut host = RecordingHost::default();
+
+    assert!(router.key_event(IC, &press(0xb4, 0), &mut host));
+    assert!(router.key_event(IC, &press(b'e' as u32, 0), &mut host));
+    assert_eq!(host.commits, ["´", "é"]);
+    assert!(!router.key_event(IC, &press(0xffbe, 0), &mut host));
+    assert_eq!(host.commits, ["´", "é"]);
+}
+
+#[test]
+fn test_compose_host_missing_miss_commits_mark_and_routes_letter_normally() {
+    let fixture = Fixture::new("compose-fallback-miss");
+    let mut config = RoutingConfig::default();
+    config.compose = true;
+    let mut router = fixture.router_with(
+        PhraseHandle::new(PhraseStore::load(None, 100, true)),
+        config,
+    );
+    router.activate_reported(IC, ordinary_report());
+    let mut host = RecordingHost::default();
+
+    assert!(router.key_event(IC, &press(0xa8, 0), &mut host));
+    assert!(router.key_event(IC, &press(b'x' as u32, 0), &mut host));
+    assert_eq!(host.commits, ["¨", "¨"]);
+    // A function key is left for the application and proves the pending state ended.
+    assert!(!router.key_event(IC, &press(0xffbe, 0), &mut host));
+    assert_eq!(host.commits, ["¨", "¨"]);
+}
+
+#[test]
+fn test_compose_fallback_reset_on_context_reset() {
+    let fixture = Fixture::new("compose-fallback-reset");
+    let mut config = RoutingConfig::default();
+    config.compose = true;
+    let mut router = fixture.router_with(
+        PhraseHandle::new(PhraseStore::load(None, 100, true)),
+        config,
+    );
+    router.activate_reported(IC, ordinary_report());
+    let mut host = RecordingHost::default();
+
+    assert!(router.key_event(IC, &press(0xb8, 0), &mut host));
+    router.reset(IC, &mut host);
+    assert!(router.key_event(IC, &press(b'c' as u32, 0), &mut host));
+    assert_eq!(host.commits, ["¸"]);
 }
 
 #[test]
@@ -813,6 +902,7 @@ fn test_multi_page_frame_carries_the_page_indicator() {
         english: None,
         confusables: None,
         symbols: None,
+        assoc: None,
     };
     let mut router = KeyRouter::new(env, shipped_privacy(), RoutingConfig::default());
     router.activate_reported(IC, ordinary_report());

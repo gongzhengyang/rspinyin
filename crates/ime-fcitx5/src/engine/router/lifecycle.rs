@@ -38,6 +38,7 @@ where
             english: env.english,
             confusables: env.confusables,
             symbols: env.symbols,
+            assoc: env.assoc,
         },
         None => env,
     }
@@ -163,6 +164,7 @@ impl<'a> KeyRouter<'a> {
             ctx.run(SessionEvent::Reset, &mut step, host);
             self.park(ctx);
         }
+        self.compose_fallback.reset();
         self.privacy.forget(ic);
     }
 
@@ -229,6 +231,7 @@ impl<'a> KeyRouter<'a> {
         if let Some(ctx) = self.contexts.get_mut(&ic) {
             ctx.run(SessionEvent::Reset, &mut step, host);
         }
+        self.compose_fallback.reset();
     }
 
     /// Ensures the session of an input context that gained focus.

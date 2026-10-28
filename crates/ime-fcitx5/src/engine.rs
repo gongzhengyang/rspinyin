@@ -65,6 +65,7 @@ use ime_types::KeyAction;
 use crate::ffi::FcitxKeyEvent;
 
 pub mod arbiter;
+pub mod compose;
 pub mod context;
 pub mod host;
 pub mod modifier;

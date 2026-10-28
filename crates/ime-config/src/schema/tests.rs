@@ -586,7 +586,10 @@ fn test_data_section_reads_the_decay_keys_from_a_document() {
 #[test]
 fn test_data_section_reads_context_tie_band_from_a_document() {
     let (config, warnings) = parsed_document("[data]\ncontext_tie_band_q16 = 4096\n");
-    assert!(warnings.is_empty(), "a positive width is usable: {warnings:?}");
+    assert!(
+        warnings.is_empty(),
+        "a positive width is usable: {warnings:?}"
+    );
     assert_eq!(config.data.context_tie_band_q16, 4096);
 }
 
@@ -596,7 +599,10 @@ fn test_data_section_repairs_a_non_positive_context_tie_band() {
     for written in ["0", "-1"] {
         let document = format!("[data]\ncontext_tie_band_q16 = {written}\n");
         let (config, warnings) = parsed_document(&document);
-        assert_eq!(config.data.context_tie_band_q16, DEFAULT_CONTEXT_TIE_BAND_Q16);
+        assert_eq!(
+            config.data.context_tie_band_q16,
+            DEFAULT_CONTEXT_TIE_BAND_Q16
+        );
         assert_eq!(rejected(&warnings), key);
         assert!(
             warnings

@@ -208,13 +208,19 @@ fn write_fixture_container(path: &std::path::Path) {
         unigram.extend_from_slice(&0u16.to_le_bytes());
     }
     for (key, slot) in key_rows {
-        fst.insert(key.as_bytes(), pack_fst_value(slot as u64, 1).expect("packing the value"))
-            .expect("inserting the key");
+        fst.insert(
+            key.as_bytes(),
+            pack_fst_value(slot as u64, 1).expect("packing the value"),
+        )
+        .expect("inserting the key");
     }
     let wordlist: Vec<u8> = (0u32..3).flat_map(|id| id.to_le_bytes()).collect();
     let mut writer = DictWriter::new();
     writer
-        .add_section(SectionKind::Fst, fst.into_inner().expect("building the fst"))
+        .add_section(
+            SectionKind::Fst,
+            fst.into_inner().expect("building the fst"),
+        )
         .expect("adding the fst section");
     writer
         .add_section(SectionKind::Entries, entries)
@@ -287,7 +293,10 @@ fn test_audit_channel_partitions_the_container_into_three_bands() {
     assert_eq!(char_freq.top1_share_pp, 0.0);
     assert_eq!(core.top1_share_pp, 50.0);
     assert_eq!(tail.top1_share_pp, 50.0);
-    assert_eq!(char_freq.trim_candidates, 0, "the protected bands never trim");
+    assert_eq!(
+        char_freq.trim_candidates, 0,
+        "the protected bands never trim"
+    );
     assert_eq!(core.trim_candidates, 0, "the protected bands never trim");
     assert_eq!(tail.trim_candidates, 0, "no target was simulated");
 }
@@ -300,7 +309,10 @@ fn test_audit_channel_simulates_the_trim_per_band() {
     let trim = report.trim.expect("the target was requested");
     assert_eq!(trim.candidates, 1);
     assert_eq!(trim.would_drop, 1);
-    assert!(!trim.reaches_target, "one 33-byte word cannot reach any target");
+    assert!(
+        !trim.reaches_target,
+        "one 33-byte word cannot reach any target"
+    );
     assert_eq!(report.bands[2].trim_candidates, 1);
     assert_eq!(report.bands[0].trim_candidates, 0);
     assert_eq!(report.bands[1].trim_candidates, 0);

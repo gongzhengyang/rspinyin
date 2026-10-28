@@ -347,8 +347,12 @@ pub fn run(args: AuditArgs) -> Result<AuditReport> {
     };
     rules.validate()?;
     let dict = root.join(&args.dict);
-    let reader = Reader::open(&dict)
-        .with_context(|| format!("audit: cannot open the compiled dictionary {}", dict.display()))?;
+    let reader = Reader::open(&dict).with_context(|| {
+        format!(
+            "audit: cannot open the compiled dictionary {}",
+            dict.display()
+        )
+    })?;
     let container_bytes = fs::metadata(&dict)
         .with_context(|| format!("audit: cannot measure {}", dict.display()))?
         .len();
@@ -367,11 +371,7 @@ pub fn run(args: AuditArgs) -> Result<AuditReport> {
     // byte lands in exactly one band, so the shares read as a partition of the
     // container rather than of an abstraction.
     let (neighbors, pair_counts, fst_shares, first_keys) = key_statistics(&reader, &texts)?;
-    let section_total: u64 = reader
-        .sections()
-        .iter()
-        .map(|row| row.len)
-        .sum();
+    let section_total: u64 = reader.sections().iter().map(|row| row.len).sum();
     let bigram_bytes = section_len(&reader, SectionKind::Bigram)?;
     let overhead = container_bytes.saturating_sub(section_total);
     let spread = (overhead + bigram_bytes) as f64 / u64::from(entries).max(1) as f64;
@@ -519,8 +519,9 @@ fn key_statistics<'text>(
     let per_key_share = fst_bytes as f64 / total_keys as f64;
     let mut stream = fst_map.range().into_stream();
     while let Some((key_bytes, packed)) = stream.next() {
-        let key = std::str::from_utf8(key_bytes)
-            .map_err(|error| anyhow::anyhow!("audit: the container holds a non-UTF-8 key: {error}"))?;
+        let key = std::str::from_utf8(key_bytes).map_err(|error| {
+            anyhow::anyhow!("audit: the container holds a non-UTF-8 key: {error}")
+        })?;
         let (start, count) = unpack_fst_value(packed);
         let count = count as usize;
         let per_member_share = per_key_share / count.max(1) as f64;
@@ -575,7 +576,10 @@ fn simulate_trim(facts: &ContainerFacts, target_mib: f64) -> Result<TrimSummary>
         .iter()
         .enumerate()
         .filter(|(index, text)| {
-            facts.rules.band(text.chars().count(), facts.weights[*index]) == WeightBand::TailFlat
+            facts
+                .rules
+                .band(text.chars().count(), facts.weights[*index])
+                == WeightBand::TailFlat
         })
         .map(|(index, text)| {
             (
@@ -730,7 +734,10 @@ fn print_report(report: &AuditReport) {
         for row in &report.tail_percentiles {
             println!(
                 "audit:   p{:02} weight<={:<9} entries {:>9} floor {:.3}MiB",
-                row.percentile, row.weight_ceiling, row.cumulative_entries, row.cumulative_floor_mib
+                row.percentile,
+                row.weight_ceiling,
+                row.cumulative_entries,
+                row.cumulative_floor_mib
             );
         }
     }

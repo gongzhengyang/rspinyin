@@ -434,9 +434,7 @@ fn add_phrase(session: &Session) -> Executability {
 /// the session is left exactly as it was.
 fn flip(session: &Session, dir: PageDir) -> Executability {
     let mut probe = session.paging;
-    if probe.flip(dir, total(session))
-        || (dir == PageDir::Next && session.has_page_supply())
-    {
+    if probe.flip(dir, total(session)) || (dir == PageDir::Next && session.has_page_supply()) {
         return Executability::Executable;
     }
     Executability::Inert

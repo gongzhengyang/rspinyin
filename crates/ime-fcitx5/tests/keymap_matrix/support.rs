@@ -521,6 +521,7 @@ impl Fixture {
             english: None,
             confusables: None,
             symbols: None,
+            assoc: None,
         }
     }
 

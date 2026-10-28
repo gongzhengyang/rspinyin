@@ -23,15 +23,25 @@ use ime_types::{Candidate, CandidateSource, HideReason, ImeError, KeyAction, Pag
 
 use crate::input::BackspaceOutcome;
 use crate::preedit::build_preedit_into;
+use crate::state::ImSwitchPolicy;
 use crate::state::effects::ModeBit;
 use crate::state::machine::{Ctx, Effect, PendingCommit, Session, SessionEvent, SessionState};
 use crate::state::outcome::write_boundaries;
-use crate::state::{ImSwitchPolicy, SessionConfig};
 use crate::symbols::SymbolTable;
 
 impl Session {
     /// Routes one event to the handler for the state the session is in.
     pub(super) fn on_event(&mut self, ev: SessionEvent, ctx: &mut Ctx<'_>) {
+        if self.is_assoc_active() && self.assoc_breaks_on_event(&ev) {
+            self.end_assoc(
+                match ev {
+                    SessionEvent::FocusLost => HideReason::FocusLost,
+                    _ => HideReason::Cancelled,
+                },
+                ctx,
+            );
+            return;
+        }
         match ev {
             SessionEvent::Key(action) => self.on_key(action, ctx),
             SessionEvent::Ui(event) => self.on_ui(event, ctx),
@@ -57,6 +67,10 @@ impl Session {
         self.age_context();
         if self.temp_english {
             self.on_key_temp_english(action);
+            return;
+        }
+        if self.is_assoc_active() {
+            self.on_key_assoc(action, ctx);
             return;
         }
         match self.state {
@@ -349,6 +363,7 @@ impl Session {
             self.set_pending(None);
         } else {
             self.set_pending(Some(PendingCommit {
+                is_learning_commit: true,
                 key: text.clone(),
                 weight_hint,
                 coins,
@@ -555,7 +570,7 @@ impl Session {
     }
 
     /// Takes the composition back without committing anything.
-    fn cancel(&mut self, ctx: &mut Ctx<'_>) {
+    pub(super) fn cancel(&mut self, ctx: &mut Ctx<'_>) {
         self.state = SessionState::Cancelling;
         self.clear_input();
         // A composition the user took back says nothing about what they mean next,
@@ -566,12 +581,13 @@ impl Session {
     }
 
     /// Ends the composition and hides the window, committing nothing.
-    fn end_session(&mut self, reason: HideReason, ctx: &mut Ctx<'_>) {
+    pub(super) fn end_session(&mut self, reason: HideReason, ctx: &mut Ctx<'_>) {
         self.clear_session();
         // The context dies with the composition that could have used it: whatever
         // ended this session -- focus above all -- broke the thread the next input
         // would continue.
         self.clear_context();
+        self.clear_assoc_memory();
         ctx.push(Effect::SetClientPreedit(None));
         ctx.push(Effect::Hide(reason));
     }
@@ -644,93 +660,8 @@ impl Session {
         self.emit_frame(ctx.cfg, ctx);
     }
 
-    /// Adopts a reloaded configuration without disturbing the composition.
-    ///
-    /// The context band is latched for the next decode, and only the page size can
-    /// change what the session shows immediately. Either way the input and the candidate
-    /// list are left alone; a page-size change moves the highlight onto the same word on
-    /// the new page grid. A reload that changes nothing else the session reads produces
-    /// no effect at all, so reloading an unchanged file is idempotent.
-    fn on_config_reloaded(&mut self, next: &SessionConfig, ctx: &mut Ctx<'_>) {
-        // The band changes what the next decode re-ranks with, but not the list already
-        // on the screen; adopting it here avoids resetting an active composition while
-        // still making the reload effective without waiting for an idle latch.
-        self.context_band = next.context_band;
-        if next.max_per_row == self.paging.page_size {
-            return;
-        }
-        self.adopt_page_size(next.max_per_row);
-        if self.state == SessionState::Composing {
-            self.emit_frame(next, ctx);
-        }
-    }
-
-    /// Takes the composition back when the focus goes away, committing nothing.
-    fn on_focus_lost(&mut self, ctx: &mut Ctx<'_>) {
-        match self.state {
-            SessionState::Composing => self.end_session(HideReason::FocusLost, ctx),
-            SessionState::Committing => {
-                // The commit has already been handed to the host and is not rolled
-                // back; only the composing text goes away with the session. The engine
-                // records the `session/commit-on-focus-out` line for this, which is a
-                // host-side concern and not something a pure step can emit.
-                self.clear_session();
-                // The commit landed into a window that is going away, so the context
-                // it would have given the next composition goes with it: focus loss
-                // is the one event that ends a thread of input without the user
-                // finishing it.
-                self.clear_context();
-                ctx.push(Effect::SetClientPreedit(None));
-            }
-            // A cancellation has already hidden the window and cleared the preedit,
-            // and an idle session holds nothing to clear.
-            SessionState::Idle | SessionState::Cancelling => self.clear_session(),
-        }
-    }
-
-    /// Ends a cancellation once the host confirms the preedit is gone.
-    fn on_preedit_cleared(&mut self) {
-        if self.state == SessionState::Cancelling {
-            self.clear_session();
-        }
-    }
-
-    /// Finishes a commit: the input goes away and the word is recorded.
-    ///
-    /// The record is written here rather than when the commit was asked for, so that a
-    /// commit the host refused -- an invalid one, which the FFI layer reports as
-    /// `ffi/invalid-commit` -- never teaches the dictionary a word that was not
-    /// committed.
-    fn on_commit_done(&mut self, ctx: &mut Ctx<'_>) {
-        let pending = self.take_pending();
-        let landed = self.state == SessionState::Committing;
-        self.clear_session();
-        if let Some(pending) = pending.filter(|_| landed) {
-            // The context the next compositions decode with is born here, at the
-            // commit the host confirmed landed: the word the commit put on the
-            // screen. A single-word candidate is exactly the key the model's bigram
-            // table continues from; a whole-sentence commit stores its whole text,
-            // which no bigram entry is keyed by, so its context is inert rather
-            // than wrong. The word is session memory alone -- it reaches no effect
-            // and no log line, and it dies with the session.
-            self.set_context(pending.key.clone());
-            ctx.push(Effect::RecordUserFreq {
-                key: pending.key,
-                weight_hint: pending.weight_hint,
-            });
-            // The pairs the reading confirmed follow the same landed-only rule as the
-            // frequency record: a commit the host refused teaches nothing.
-            if !pending.coins.is_empty() {
-                ctx.push(Effect::CoinUserWords {
-                    pairs: pending.coins,
-                });
-            }
-        }
-        ctx.push(Effect::SetClientPreedit(None));
-    }
-
     /// Starts a composition from the first typed character.
-    fn start_composing(&mut self, ch: char, ctx: &mut Ctx<'_>) {
+    pub(super) fn start_composing(&mut self, ch: char, ctx: &mut Ctx<'_>) {
         if !is_input_char(ch) {
             // The key translator only produces input characters, so this is a defect
             // rather than a user-visible failure; the character is not echoed
@@ -784,7 +715,7 @@ impl Session {
     }
 
     /// Returns the number of candidates the session is holding.
-    fn candidate_count(&self) -> u16 {
+    pub(super) fn candidate_count(&self) -> u16 {
         u16::try_from(self.decoded().candidates.len()).unwrap_or(u16::MAX)
     }
 }
@@ -793,6 +724,6 @@ impl Session {
 ///
 /// The alphabet is the one `InputBuffer::push_char` accepts: ASCII letters, plus the
 /// apostrophe that pins a syllable boundary.
-fn is_input_char(ch: char) -> bool {
+pub(super) fn is_input_char(ch: char) -> bool {
     ch.is_ascii_alphabetic() || ch == '\''
 }

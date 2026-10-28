@@ -7,11 +7,8 @@
 use ime_types::{CandidateSource, KeyAction};
 
 use crate::segment::{SYLLABLES, SyllableDag, normalize};
-use crate::state::{
-    Paging, Session, SessionConfig, SessionState, paging::DEFAULT_PAGE_SIZE, step,
-};
+use crate::state::{Paging, Session, SessionConfig, SessionState, paging::DEFAULT_PAGE_SIZE, step};
 use crate::viterbi::context::ContextBand;
-
 
 use super::{Fixture, composing, index_of};
 
@@ -57,7 +54,10 @@ fn test_session_config_projects_the_default_context_band() {
     // The projection pins the shipped Q16.16 width explicitly, so a change to the
     // default is a conscious compatibility decision rather than a type default that
     // drifted silently.
-    assert_eq!(SessionConfig::default().context_band, ContextBand::default());
+    assert_eq!(
+        SessionConfig::default().context_band,
+        ContextBand::default()
+    );
     assert_eq!(SessionConfig::default().context_band.q16, 1 << 8);
 }
 

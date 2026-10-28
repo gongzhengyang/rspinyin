@@ -69,6 +69,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ime_config::ShareState;
+use ime_core::assoc::AssocRuntime;
 use ime_core::passthrough::{PassthroughDecision, classify};
 use ime_core::privacy::InputContextKind;
 use ime_core::state::{SessionEnv, SessionEvent, SessionState};
@@ -78,6 +79,7 @@ use ime_dict::user_lexicon::{ChainedLexicon, UserLexiconHandle};
 use ime_types::{Anchor, KeyAction, UiEvent};
 
 use crate::engine::badge::BadgeState;
+use crate::engine::compose::ComposeFallback;
 use crate::engine::host::ComposeOutcome;
 use crate::engine::host::Host;
 use crate::engine::{
@@ -209,6 +211,12 @@ pub struct KeyRouter<'a> {
     pool: HashMap<PoolKey, PoolSlot>,
     /// The base of the next session id range; see [`SESSION_ID_STRIDE`].
     next_session_base: u64,
+    /// The built-in compose state used only when the host answers unsupported.
+    ///
+    /// It is router-level because the unsupported-host condition is router-level; a
+    /// context reset clears the pending dead key, while a host that can compose never
+    /// touches this state at all.
+    compose_fallback: ComposeFallback,
     /// Whether the header's first-run key hint is still owed: the one badge bit that
     /// outlives every context, which is why it lives on the router rather than on a
     /// session. The `engine::badge` module owns the resolution it feeds.
@@ -251,6 +259,7 @@ impl<'a> KeyRouter<'a> {
             pool: HashMap::new(),
             next_session_base: 1,
             badge: BadgeState::new(),
+            compose_fallback: ComposeFallback::new(),
         }
     }
 
@@ -363,9 +372,21 @@ impl<'a> KeyRouter<'a> {
             && self.compose_may_ask(ic)
         {
             match host.process_compose(ic, key) {
-                ComposeOutcome::Unsupported => {}
-                ComposeOutcome::Swallowed => return true,
+                ComposeOutcome::Unsupported => {
+                    if let Some((character, stop)) = self.compose_fallback.process(key) {
+                        let mut text = [0u8; 4];
+                        host.commit(ic, character.encode_utf8(&mut text));
+                        if stop {
+                            return true;
+                        }
+                    }
+                }
+                ComposeOutcome::Swallowed => {
+                    self.compose_fallback.reset();
+                    return true;
+                }
                 ComposeOutcome::Committed(character) => {
+                    self.compose_fallback.reset();
                     let mut text = [0u8; 4];
                     host.commit(ic, character.encode_utf8(&mut text));
                     return true;
@@ -382,6 +403,7 @@ impl<'a> KeyRouter<'a> {
         // decode may not wait behind a writer, and the words a lookup hands back point
         // into both -- which is what makes the writes the step collects wait for the
         // drain at the end instead of running inside it.
+        let assoc_sensitive = !self.privacy.should_learn(ic);
         let bundle = self.lexicon_slot.map(LexiconSlot::load);
         let user = self.user_lexicon.map(UserLexiconHandle::lock);
         let chain = match (&user, &bundle) {
@@ -404,6 +426,10 @@ impl<'a> KeyRouter<'a> {
             english: self.env.english,
             confusables: self.env.confusables,
             symbols: self.env.symbols,
+            assoc: self.env.assoc.map(|runtime| AssocRuntime {
+                sensitive: assoc_sensitive,
+                ..runtime
+            }),
         };
         let Self {
             contexts,
@@ -571,6 +597,7 @@ impl<'a> KeyRouter<'a> {
     pub fn ui_event(&mut self, ic: u64, event: UiEvent, host: &mut dyn Host) -> bool {
         // The same assembly a key event runs: the slot's container and the user's words,
         // locked and chained for the step's whole run, the writes drained after it.
+        let assoc_sensitive = !self.privacy.should_learn(ic);
         let bundle = self.lexicon_slot.map(LexiconSlot::load);
         let user = self.user_lexicon.map(UserLexiconHandle::lock);
         let chain = match (&user, &bundle) {
@@ -593,6 +620,10 @@ impl<'a> KeyRouter<'a> {
             english: self.env.english,
             confusables: self.env.confusables,
             symbols: self.env.symbols,
+            assoc: self.env.assoc.map(|runtime| AssocRuntime {
+                sensitive: assoc_sensitive,
+                ..runtime
+            }),
         };
         let mut step = StepCtx {
             env: &live_env,

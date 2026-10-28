@@ -16,7 +16,7 @@ use ime_types::{ImeError, Placement, Preedit, Revision, UiFrame};
 /// effects. A step that puts a session on screen emits three -- the preedit, the
 /// show and the frame -- and a step that also reports what a scheme rewrite refused
 /// emits the fourth; no path in this module emits more.
-pub const MAX_EFFECTS: usize = 4;
+pub const MAX_EFFECTS: usize = 6;
 
 /// The set of effects one step produces.
 pub type Effects = SmallVec<[Effect; MAX_EFFECTS]>;

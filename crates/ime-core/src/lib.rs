@@ -17,6 +17,7 @@ pub mod passthrough;
 pub mod phrase;
 pub mod preedit;
 pub mod privacy;
+pub mod quick;
 pub mod script;
 pub mod segment;
 pub mod shuangpin;

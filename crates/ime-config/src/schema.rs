@@ -36,7 +36,7 @@ mod repair;
 
 pub use self::config::{
     AnimationConfig, AssocConfig, Config, EngineConfig, FuzzyConfig, KeysConfig, PhraseConfig,
-    ThemeConfig, UiConfig,
+    QuickInputConfig, ThemeConfig, UiConfig,
 };
 pub use self::data::{DataConfig, DiagnosticsConfig};
 
@@ -115,6 +115,11 @@ pub const MAX_DECAY_FLOOR_Q16: i64 = 1 << 31;
 pub(crate) const KEY_FLIP_KEYS: &str = "keys.flip_keys";
 /// The `keys.highlight_keys` key.
 pub(crate) const KEY_HIGHLIGHT_KEYS: &str = "keys.highlight_keys";
+/// The largest number of `quick_input.date_prefixes` accepts.
+///
+/// The trigger path compares the buffer against entries, so the bound keeps the
+/// miss path bounded while leaving room for a personal shorthand set.
+pub const MAX_QUICK_DATE_PREFIXES: usize = 16;
 /// The smallest `assoc.max_candidates` accepts; zero would silently disable an enabled feature.
 pub const MIN_ASSOC_CANDIDATES: u8 = 1;
 /// The largest `assoc.max_candidates` accepts, matching the digit/page limit.
@@ -601,7 +606,10 @@ impl Config {
         if data.context_tie_band_q16 <= 0 {
             warnings.report(
                 "data.context_tie_band_q16",
-                format!("{} is not a positive score width", data.context_tie_band_q16),
+                format!(
+                    "{} is not a positive score width",
+                    data.context_tie_band_q16
+                ),
             );
             data.context_tie_band_q16 = defaults.data.context_tie_band_q16;
         }

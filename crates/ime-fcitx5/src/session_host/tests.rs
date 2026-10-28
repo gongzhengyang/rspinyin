@@ -152,6 +152,7 @@ fn sources() -> SessionEnv<'static> {
         english: None,
         confusables: None,
         symbols: None,
+        assoc: None,
     }
 }
 

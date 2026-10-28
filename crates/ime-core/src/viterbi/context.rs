@@ -68,7 +68,9 @@ impl Default for ContextBand {
     ///
     /// Never.
     fn default() -> Self {
-        Self { q16: CONTEXT_TIE_BAND_Q16 }
+        Self {
+            q16: CONTEXT_TIE_BAND_Q16,
+        }
     }
 }
 
@@ -80,11 +82,7 @@ impl ContextBand {
     /// Never.
     #[must_use]
     pub const fn new(q16: i64) -> Option<Self> {
-        if q16 > 0 {
-            Some(Self { q16 })
-        } else {
-            None
-        }
+        if q16 > 0 { Some(Self { q16 }) } else { None }
     }
 
     /// Converts the Q16.16 width to the floating-point display-score scale.

@@ -235,12 +235,7 @@ fn test_rerank_with_context_rejects_a_non_positive_band() {
     let lm = TableLm::one("银行", "银行", -64);
     for q16 in [0, -1] {
         let mut candidates = vec![candidate("预算", 10.0), candidate("银行", 9.99)];
-        rerank_with_context_band(
-            &mut candidates,
-            Some("银行"),
-            &lm,
-            ContextBand { q16 },
-        );
+        rerank_with_context_band(&mut candidates, Some("银行"), &lm, ContextBand { q16 });
         assert_eq!(texts(&candidates), ["预算", "银行"]);
     }
 }

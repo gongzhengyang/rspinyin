@@ -288,11 +288,7 @@ mod tests {
     }
 
     fn decay(items: &mut Vec<Item>) -> usize {
-        retain_rank_decayed_sentences(
-            items,
-            |item| item.is_sentence,
-            |item| item.score_q88,
-        )
+        retain_rank_decayed_sentences(items, |item| item.is_sentence, |item| item.score_q88)
     }
 
     /// Offers `values` to a heap of `cap` slots and returns the survivors, best
@@ -449,9 +445,7 @@ mod tests {
             Item::word("w0", 470),
             Item::word("w1", 460),
         ];
-        let expected = vec![
-            original[0], original[1], original[4], original[5],
-        ];
+        let expected = vec![original[0], original[1], original[4], original[5]];
         let mut actual = original;
         assert_eq!(decay(&mut actual), 2);
         assert_eq!(actual, expected);
