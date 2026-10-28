@@ -247,7 +247,7 @@ fn test_rerank_with_context_band_keeps_the_floor_boundary_inclusive() {
     // candidate sits exactly on the floor and is part of the near-tie run.
     let mut candidates = vec![
         candidate("预算", 10.0),
-        candidate("银行", 9.996_093_75),
+        candidate("银行", 9.996_094),
         candidate("医院", 9.937),
     ];
     let band = ContextBand::new(1 << 8).expect("a positive width builds");

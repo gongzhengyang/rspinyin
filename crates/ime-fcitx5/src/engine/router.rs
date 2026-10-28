@@ -114,6 +114,11 @@ mod modes;
 
 pub use self::config::RoutingConfig;
 
+/// Re-exported for the startup sequence: the session host installs the production
+/// clock once, at assembly time, so the quick panel's time domains never read the
+/// process environment on their own.
+pub(crate) use self::effects::quick::install_clock;
+
 use self::context::{Context, PoolKey, PoolSlot, ScriptState, pool_key};
 use self::lifecycle::step_env;
 use self::phrases::PhraseHandle;

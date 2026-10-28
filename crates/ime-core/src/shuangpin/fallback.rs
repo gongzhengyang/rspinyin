@@ -213,17 +213,17 @@ impl ResolvedSyllable {
 /// let policy = FallbackPolicy::KEEP_FULL_PINYIN;
 /// let mut scratch = String::new();
 ///
-/// // `vs` is the scheme's own reading of zhong.
-/// let scheme = resolve(&xiaohe::XIAOHE, b"vs", policy, &mut scratch);
+/// // `vs` is the layout's own reading of zhong.
+/// let scheme = resolve(xiaohe::table(), b"vs", policy, &mut scratch);
 /// assert_eq!(scheme.ok().flatten().map(|it| it.origin()), Some(SyllableOrigin::Scheme));
 ///
 /// // `m` is not a Xiaohe syllable, but it is a full-pinyin one.
-/// let fallback = resolve(&xiaohe::XIAOHE, b"m", policy, &mut scratch);
+/// let fallback = resolve(xiaohe::table(), b"m", policy, &mut scratch);
 /// let fallback = fallback.ok().flatten().map(|it| it.origin());
 /// assert_eq!(fallback, Some(SyllableOrigin::FullPinyinFallback));
 ///
 /// // `b` is neither, and comes back as the keystroke the user typed.
-/// let literal = resolve(&xiaohe::XIAOHE, b"b", policy, &mut scratch);
+/// let literal = resolve(xiaohe::table(), b"b", policy, &mut scratch);
 /// assert_eq!(literal.ok().flatten().map(|it| it.origin()), Some(SyllableOrigin::Literal));
 /// ```
 pub fn resolve(

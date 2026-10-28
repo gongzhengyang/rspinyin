@@ -18,7 +18,9 @@
 //! - `scheme.keep_full_pinyin`: whether a keystroke the layout cannot read is read as
 //!   full pinyin instead.
 //! - `scheme.custom.initials` and `scheme.custom.finals`: the two lists of a layout
-//!   the user writes out themselves.
+//!   the user writes out themselves. Retired: custom layouts are defined under
+//!   `[shuangpin.custom]`, and this key degrades to full pinyin with a diagnostic
+//!   that says so.
 //!
 //! # Why `keep_full_pinyin` exists
 //!
@@ -30,13 +32,13 @@
 //!
 //! # Why a custom table is validated and then set aside
 //!
-//! `[scheme.custom]` is read and checked so that a user who writes one out is told
-//! what is wrong with it, but the choice is repaired to full pinyin either way: the
-//! frozen [`SchemeId`] numbering names the five published layouts and has no slot a
-//! user's own table could travel in, so no build -- this one or a later one -- could
-//! read that table back. Reporting the repair is the honest answer; decoding full
-//! pinyin while the document still says `custom` would leave the user looking for a
-//! layout that is not running.
+//! `[scheme.custom]` is a retired key: the `[shuangpin.custom]` section owns custom
+//! layouts now, and the loader there compiles a user's table the same way the
+//! published layouts are compiled. The old key is still read and checked, so a
+//! document that carries one is told what is wrong with it, but the choice is repaired
+//! to full pinyin and the diagnostic names the section that replaced it: an old
+//! document keeps working, and the user is pointed at where a layout actually loads
+//! rather than left decoding full pinyin while the file still says `custom`.
 //!
 //! # What the layers below take from here
 //!
@@ -49,7 +51,7 @@
 //! - [`SchemeConfig::header_hint`] is what the candidate window's header shows, or
 //!   nothing when the user turned the hint off.
 //!
-//! Neither call touches the custom table: a table this build cannot compile is repaired
+//! Neither call touches the custom table: the retired `[scheme.custom]` key is repaired
 //! away by [`SchemeConfig::repaired`] before either of them is reached.
 
 use ime_types::{ConfigError, ImeError, SchemeId};
@@ -215,11 +217,12 @@ impl From<SchemeChoice> for SchemeId {
     /// The contract's number for the layout.
     ///
     /// [`SchemeChoice::Custom`] maps to [`SchemeId::FULL`] because the frozen
-    /// numbering has no slot for a layout this build cannot compile: the five numbers
-    /// past `FULL` are the five published layouts, and a table no other build can
-    /// interpret must not borrow one of their numbers. A repaired configuration has
-    /// already replaced `Custom` with `Full` (see [`SchemeConfig::repaired`]), so this
-    /// arm answers only for a value that has not been through the repair rules.
+    /// numbering has no slot a user's own table could travel in: the five numbers
+    /// past `FULL` are the five published layouts, and a custom layout rides the
+    /// compiled table the `[shuangpin.custom]` loader hands the session, not a scheme
+    /// number. A repaired configuration has already replaced `Custom` with `Full`
+    /// (see [`SchemeConfig::repaired`]), so this arm answers only for a value that
+    /// has not been through the repair rules.
     fn from(choice: SchemeChoice) -> Self {
         match choice {
             SchemeChoice::Full | SchemeChoice::Custom => Self::FULL,
@@ -464,12 +467,17 @@ impl SchemeConfig {
     /// Never.
     pub(crate) fn repair(mut self, warnings: &mut Warnings) -> Self {
         if self.scheme == SchemeChoice::Custom {
-            // The table is checked below, but the choice is set aside either way: the
-            // frozen `SchemeId` numbering has no slot a custom layout could travel in,
-            // so no build could read the table back even when it is perfect.
+            // The key is retired rather than removed: custom layouts are defined under
+            // `[shuangpin.custom]`, whose loader compiles a user's table the same way
+            // the published ones are. The choice still degrades to full pinyin, so an
+            // old document keeps working, and the diagnostic names the section that
+            // replaced it instead of claiming custom layouts do not exist.
             warnings.report(
                 KEY_SCHEME,
-                String::from("custom layouts are not implemented in this build"),
+                String::from(
+                    "scheme.custom is superseded: define the layout under [shuangpin.custom] \
+                     and remove this key",
+                ),
             );
             self.scheme = SchemeChoice::Full;
         }

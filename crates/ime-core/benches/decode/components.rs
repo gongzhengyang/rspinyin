@@ -60,12 +60,7 @@ pub(super) fn bench_lattice(criterion: &mut Criterion, dictionary: &SyntheticDic
 /// the word-level tail into the freed slots.
 pub(super) fn bench_rank_decay(criterion: &mut Criterion) {
     let candidates: Vec<(i32, bool)> = (0..64)
-        .map(|rank| {
-            (
-                10_000 - i32::try_from(rank).unwrap_or(i32::MAX) * 200,
-                rank < 48,
-            )
-        })
+        .map(|rank| (10_000 - rank * 200, rank < 48))
         .collect();
     let mut group = criterion.benchmark_group("kbest");
     group.throughput(Throughput::Elements(candidates.len() as u64));

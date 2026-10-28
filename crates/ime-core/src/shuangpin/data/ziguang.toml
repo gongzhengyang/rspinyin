@@ -1,0 +1,85 @@
+# The Ziguang double-pinyin layout, as data.
+#
+# Source: the `double_pinyin_zgpy_sheng` / `double_pinyin_zgpy_yun` arrays of
+# libpinyin's `src/storage/double_pinyin_table.h`
+# (github.com/libpinyin/libpinyin), cross-checked against
+# `double_pinyin_ziguang.schema.yaml` in the rime-ice schema collection
+# (github.com/iDvel/rime-ice). The two independent sources agree on every key.
+#
+# This layout moves all three retroflex initials off the `v`, `i`, `u` positions
+# every other layout this build ships uses: `zh` is on `u`, `ch` on `a` and `sh`
+# on `i`. The `e` and `v` keys open no syllable at all, so they carry no entry
+# in [initials]. The `c` key carries no final, so it opens a syllable but cannot
+# close one.
+#
+# The `;` column: `ing` sits on `;`, which this project's input buffer cannot
+# produce yet. The key is kept rather than folded onto another letter.
+
+[layout]
+name = "紫光双拼"
+zero_initial_style = "o-led"
+
+# Key -> the syllable initial the key opens a syllable with. The zero initial is
+# the empty string, spelled on `o`. `e` and `v` open no syllable and are absent.
+[initials]
+a = "ch"
+b = "b"
+c = "c"
+d = "d"
+f = "f"
+g = "g"
+h = "h"
+i = "sh"
+j = "j"
+k = "k"
+l = "l"
+m = "m"
+n = "n"
+o = ""
+p = "p"
+q = "q"
+r = "r"
+s = "s"
+t = "t"
+u = "zh"
+w = "w"
+x = "x"
+y = "y"
+z = "z"
+
+# Key -> the syllable finals the key closes a syllable with, in trial order,
+# space-separated. The `c` key carries no final at all, so it has no entry here.
+[finals]
+a = "a"
+b = "iao"
+d = "ie"
+e = "e"
+f = "ian"
+g = "iang uang"
+h = "ong iong"
+i = "i"
+j = "er iu"
+k = "ei"
+l = "uan"
+m = "un"
+n = "üe ue ui"
+o = "uo o"
+p = "ai"
+q = "ao"
+r = "an"
+s = "ang"
+t = "eng ng"
+u = "u"
+v = "ü"
+w = "en"
+x = "ia ua"
+y = "in uai"
+z = "ou"
+";" = "ing"
+
+# Key -> the syllable the key spells on its own. `a` keeps its own syllable even
+# though it opens syllables with `ch`: bare `a` is `a`, and `aa` is `cha`.
+[standalone]
+a = "a"
+e = "e"
+o = "o"

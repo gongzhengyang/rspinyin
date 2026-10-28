@@ -5,6 +5,8 @@
 //! shipped `config/default.toml` is checked against, and nothing here reads a file --
 //! parsing, repair and checking live in the parent module and its own submodules.
 
+use std::collections::BTreeMap;
+
 use super::*;
 
 /// The `[engine]` section.
@@ -291,6 +293,76 @@ pub struct QuickInputConfig {
     pub calc_enabled: bool,
 }
 
+/// The `[shuangpin]` section: the data-defined double-pinyin layouts.
+///
+/// The section carries what the user wrote; the layout loader in
+/// `ime-core::shuangpin::layout` validates it and compiles the table. This layer
+/// holds no layout types of its own -- the tables travel as plain key/value maps,
+/// which is all a document section is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ShuangpinConfig {
+    /// The `[shuangpin.custom]` table: the layout the user defined.
+    pub custom: ShuangpinCustomConfig,
+}
+
+/// The `[shuangpin.custom]` table: a layout of the user's own, given either as a
+/// path to a layout document or written out inline beside the key.
+///
+/// The section is an explicit opt-in: with every field at its default -- no file,
+/// no inline tables -- no custom layout exists and the double-pinyin layouts are
+/// exactly the built-in ones.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ShuangpinCustomConfig {
+    /// `shuangpin.custom.file`: the layout document to read, as the user spells
+    /// the path. Empty means no file was named.
+    ///
+    /// The value is kept exactly as the document spells it rather than resolved
+    /// into a path: this layer is pure, and which directory a relative value
+    /// resolves against is the host layer's business. Reading the file happens in
+    /// the configuration-reload context, never on the decode path.
+    pub file: String,
+    /// `shuangpin.custom.name`: the display name of the inline layout. Part of the
+    /// inline form; a layout read from a file names itself in its own document.
+    pub name: String,
+    /// `shuangpin.custom.zero_initial_style`: which of the two zero-initial schools
+    /// the inline layout belongs to, `"o-led"` or `"first-letter"`. Empty means
+    /// undeclared, which the layout loader refuses -- the two schools are mutually
+    /// exclusive, and a layout that does not declare one cannot be checked for
+    /// mixing them.
+    pub zero_initial_style: String,
+    /// `[shuangpin.custom.initials]`: key -> the initial the key opens a syllable
+    /// with. The zero initial is the empty string, and it belongs on `o` alone in
+    /// the `o-led` school.
+    pub initials: BTreeMap<String, String>,
+    /// `[shuangpin.custom.finals]`: key -> the finals the key closes a syllable
+    /// with, space-separated, in trial order.
+    pub finals: BTreeMap<String, String>,
+    /// `[shuangpin.custom.standalone]`: key -> the syllable the key spells on its
+    /// own. Absent entries keep the loader's default of `a`, `e` and `o` carrying
+    /// themselves.
+    pub standalone: BTreeMap<String, String>,
+}
+
+impl ShuangpinCustomConfig {
+    /// Whether the section names a layout at all.
+    ///
+    /// The shipped state: no file, no inline tables. A section in this state is
+    /// not an empty layout waiting to fail its validation -- it is no layout, and
+    /// the loader is never consulted about it.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn is_unset(&self) -> bool {
+        self.file.is_empty()
+            && self.name.is_empty()
+            && self.zero_initial_style.is_empty()
+            && self.initials.is_empty()
+            && self.finals.is_empty()
+            && self.standalone.is_empty()
+    }
+}
+
 /// The whole configuration, after the defaults, the user's document and validation
 /// have been applied.
 ///
@@ -324,6 +396,8 @@ pub struct Config {
     pub assoc: AssocConfig,
     /// The `[quick_input]` section.
     pub quick_input: QuickInputConfig,
+    /// The `[shuangpin]` section.
+    pub shuangpin: ShuangpinConfig,
 }
 
 impl Default for Config {
@@ -420,6 +494,10 @@ impl Default for Config {
                 date_prefixes: vec![String::from("rq"), String::from("dt")],
                 calc_enabled: false,
             },
+            // Unset: no custom layout exists until the user writes one, and the
+            // built-in layouts are exactly the double-pinyin layouts a fresh
+            // installation ships.
+            shuangpin: ShuangpinConfig::default(),
         }
     }
 }
@@ -456,6 +534,19 @@ mod tests {
         // validating the defaults reports nothing: a fresh install never opens
         // with a repaired-value notice it did nothing to earn.
         assert!(Config::default().validate().is_empty());
+    }
+
+    #[test]
+    fn test_config_default_shuangpin_section_names_no_layout() {
+        // The section is an explicit opt-in: a fresh installation names no file
+        // and writes no inline tables, so no custom layout exists to load and the
+        // double-pinyin layouts are exactly the built-in ones.
+        let shuangpin = Config::default().shuangpin;
+        assert!(shuangpin.custom.is_unset());
+        assert_eq!(shuangpin.custom.file, "");
+        assert!(shuangpin.custom.initials.is_empty());
+        assert!(shuangpin.custom.finals.is_empty());
+        assert!(shuangpin.custom.standalone.is_empty());
     }
 
     #[test]

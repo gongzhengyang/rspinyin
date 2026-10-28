@@ -1,0 +1,93 @@
+# The Xiaohe double-pinyin layout, as data.
+#
+# Source: `double_pinyin_flypy.schema.yaml` in the Rime double-pinyin schema package
+# (github.com/rime/rime-double-pinyin), cross-checked against the
+# `double_pinyin_xhe_sheng` / `double_pinyin_xhe_yun` arrays of libpinyin's
+# `src/storage/double_pinyin_table.h` (github.com/libpinyin/libpinyin). The two
+# agree on every key, and both agree with the layout the scheme's own publisher
+# distributes.
+#
+# Known limitation: `uo` and `o` share the `o` key, and the syllable table holds
+# both `luo` and `lo`. The finals below list `uo` before `o`, so the mapping
+# resolves the pair to `luo`, the far more common reading; `lo` is not reachable
+# through this layout.
+
+[layout]
+name = "小鹤双拼"
+# The first-letter school: a vowel-initial syllable is opened with its own first
+# letter, so `an` is the `a` key followed by the `an` key. `a`, `e` and `o`
+# therefore carry themselves in [initials].
+zero_initial_style = "first-letter"
+
+# Key -> the syllable initial the key opens a syllable with. The zero initial
+# (which contributes nothing to the spelling) would be the empty string; this
+# school does not use one.
+[initials]
+a = "a"
+b = "b"
+c = "c"
+d = "d"
+e = "e"
+f = "f"
+g = "g"
+h = "h"
+i = "ch"
+j = "j"
+k = "k"
+l = "l"
+m = "m"
+n = "n"
+o = "o"
+p = "p"
+q = "q"
+r = "r"
+s = "s"
+t = "t"
+u = "sh"
+v = "zh"
+w = "w"
+x = "x"
+y = "y"
+z = "z"
+
+# Key -> the syllable finals the key closes a syllable with, in trial order,
+# space-separated. Where a key carries two finals the syllable table tells them
+# apart: `k` is `uai` before `g` and `ing` before `t`, and only one of the two
+# joins into a syllable either way. `üe` is listed before `ue` so that `lüe` and
+# `nüe` keep their umlaut while `jue`, `que`, `xue` and `yue` take the plain
+# spelling.
+[finals]
+a = "a"
+b = "in"
+c = "ao"
+d = "ai"
+e = "e"
+f = "en"
+g = "eng ng"
+h = "ang"
+i = "i"
+j = "an"
+k = "uai ing"
+l = "iang uang"
+m = "ian"
+n = "iao"
+o = "uo o"
+p = "ie"
+q = "iu"
+r = "uan er"
+s = "ong iong"
+t = "üe ue"
+u = "u"
+v = "ü ui"
+w = "ei"
+x = "ia ua"
+y = "un"
+z = "ou"
+
+# Key -> the syllable the key spells on its own. `a`, `e` and `o` are syllables
+# in their own right; the other vowel-initial syllables are pairs, so they carry
+# no standalone entry.
+[standalone]
+a = "a"
+e = "e"
+o = "o"

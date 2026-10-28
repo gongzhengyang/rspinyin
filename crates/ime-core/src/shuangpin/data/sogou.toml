@@ -1,0 +1,88 @@
+# The Sogou double-pinyin layout, as data.
+#
+# Source: `double_pinyin_sogou.schema.yaml` in the rime-ice schema collection
+# (github.com/iDvel/rime-ice), which is the maintained Rime schema for this
+# layout. Sogou's own description of the scheme family states the two rules the
+# data encodes: the retroflex initials are on `v`, `i` and `u`, and a
+# vowel-initial syllable is written either with a leading `o` or by repeating
+# its first letter.
+#
+# The layout is the same as Microsoft's on every key except one: `üe` here is
+# reached through `t` only, where Microsoft also accepts it on `v`. That is
+# exactly the difference between the two Rime schemas.
+#
+# The `;` column: `ing` sits on `;`, which this project's input buffer cannot
+# produce yet. As with Microsoft's layout, the key is kept rather than folded
+# onto another letter.
+
+[layout]
+name = "搜狗双拼"
+zero_initial_style = "o-led"
+
+# Key -> the syllable initial the key opens a syllable with. The zero initial is
+# the empty string, spelled on `o`; the `a` and `e` self-initials are the
+# repeated-first-letter spelling Sogou's documentation also gives.
+[initials]
+a = "a"
+b = "b"
+c = "c"
+d = "d"
+e = "e"
+f = "f"
+g = "g"
+h = "h"
+i = "ch"
+j = "j"
+k = "k"
+l = "l"
+m = "m"
+n = "n"
+o = ""
+p = "p"
+q = "q"
+r = "r"
+s = "s"
+t = "t"
+u = "sh"
+v = "zh"
+w = "w"
+x = "x"
+y = "y"
+z = "z"
+
+# Key -> the syllable finals the key closes a syllable with, in trial order,
+# space-separated. `v` carries `ui` alone in this layout.
+[finals]
+a = "a"
+b = "ou"
+c = "iao"
+d = "uang iang"
+e = "e"
+f = "en"
+g = "eng ng"
+h = "ang"
+i = "i"
+j = "an"
+k = "ao"
+l = "ai"
+m = "ian"
+n = "in"
+o = "uo o"
+p = "un"
+q = "iu"
+r = "uan er"
+s = "ong iong"
+t = "üe ue"
+u = "u"
+v = "ui"
+w = "ia ua"
+x = "ie"
+y = "uai ü"
+z = "ei"
+";" = "ing"
+
+# Key -> the syllable the key spells on its own.
+[standalone]
+a = "a"
+e = "e"
+o = "o"

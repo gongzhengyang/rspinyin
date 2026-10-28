@@ -132,6 +132,37 @@ pub(super) fn merge_scheme(
     }
 }
 
+/// Copies the `[shuangpin]` keys the document sets over the defaults.
+///
+/// The custom layout's three tables are replaced whole rather than merged key by key,
+/// for the same reason `[scheme] custom` is: the tables are one layout, and taking the
+/// initials from the document and the finals from the default would build a layout
+/// neither side wrote. The file path is kept exactly as the document spells it, because
+/// resolving it against a directory is the host layer's business.
+pub(super) fn merge_shuangpin(partial: Option<PartialShuangpin>, config: &mut Config) {
+    let Some(partial) = partial else { return };
+    let Some(custom) = partial.custom else { return };
+    let section = &mut config.shuangpin.custom;
+    if let Some(file) = custom.file {
+        section.file = file;
+    }
+    if let Some(name) = custom.name {
+        section.name = name;
+    }
+    if let Some(style) = custom.zero_initial_style {
+        section.zero_initial_style = style;
+    }
+    if let Some(initials) = custom.initials {
+        section.initials = initials;
+    }
+    if let Some(finals) = custom.finals {
+        section.finals = finals;
+    }
+    if let Some(standalone) = custom.standalone {
+        section.standalone = standalone;
+    }
+}
+
 /// Copies the `[ui]` keys the document sets over the defaults.
 ///
 /// No key of this section can be rejected: every one of them is a number or a flag, and

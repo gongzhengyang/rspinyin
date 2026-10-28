@@ -65,6 +65,14 @@ use super::manifest::manifest_path;
 use super::normalize::{NormalizeRules, WeightBand};
 use crate::tune::DEFAULT_HOLDOUT;
 
+/// Four related per-word statistic maps returned by [`key_statistics`].
+type WordStatistics<'text> = (
+    BTreeMap<&'text str, u32>,
+    BTreeMap<&'text str, u32>,
+    BTreeMap<&'text str, f64>,
+    BTreeMap<&'text str, String>,
+);
+
 /// Bytes in one mebibyte: the unit of every `*_mib` figure and flag here.
 const BYTES_PER_MIB: f64 = 1024.0 * 1024.0;
 
@@ -488,12 +496,7 @@ pub fn run(args: AuditArgs) -> Result<AuditReport> {
 fn key_statistics<'text>(
     reader: &Reader<Vec<u8>>,
     texts: &'text [&'text str],
-) -> Result<(
-    BTreeMap<&'text str, u32>,
-    BTreeMap<&'text str, u32>,
-    BTreeMap<&'text str, f64>,
-    BTreeMap<&'text str, String>,
-)> {
+) -> Result<WordStatistics<'text>> {
     let mut neighbors: BTreeMap<&str, u32> = BTreeMap::new();
     let mut pair_counts: BTreeMap<&str, u32> = BTreeMap::new();
     let mut fst_shares: BTreeMap<&str, f64> = BTreeMap::new();
@@ -673,7 +676,7 @@ fn tail_percentiles(mut tail: Vec<(u32, usize)>) -> Vec<TailPercentile> {
             let percentile = step * 10;
             // The rank is the ceil of the percentile's share of the tail, so a
             // ten-entry tail cuts its first decile at the first entry.
-            let rank = ((percentile as usize * total + 99) / 100).clamp(1, total) - 1;
+            let rank = (percentile as usize * total).div_ceil(100).clamp(1, total) - 1;
             TailPercentile {
                 percentile,
                 weight_ceiling: tail[rank].0,

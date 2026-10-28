@@ -7,21 +7,21 @@ use ime_types::{DecodeFlags, DecodeRequest, ImeError, SchemeId};
 use crate::lm::InMemoryLm;
 use crate::segment::syllable::{MAX_RAW_LEN, MAX_SYLLABLE_LEN, normalize, syllable_at};
 use crate::shuangpin::{
-    SCHEME_KEYS, SEMICOLON_INDEX, SchemeMap, SchemeTable, TABLES, is_rewrite_requested, key_index,
-    map_syllable, microsoft, rewrite_for_scheme, rewrite_request, sogou, table_for, xiaohe,
+    SCHEME_KEYS, SEMICOLON_INDEX, SchemeMap, SchemeTable, is_rewrite_requested, key_index,
+    map_syllable, microsoft, rewrite_for_scheme, rewrite_request, sogou, table_for, tables, xiaohe,
     ziguang, ziranma,
 };
 use crate::viterbi::Decoder;
 use crate::viterbi::lattice::testing::{MockLexicon, NoUser};
 
-/// Every scheme table this build ships, with the name a failure message uses.
-fn tables() -> [(&'static str, SchemeId, &'static SchemeTable); 5] {
+/// Every layout table this build ships, with the name a failure message uses.
+fn compiled_tables() -> [(&'static str, SchemeId, &'static SchemeTable); 5] {
     [
-        ("xiaohe", SchemeId::XIAOHE, &xiaohe::XIAOHE),
-        ("ziranma", SchemeId::ZIRANMA, &ziranma::ZIRANMA),
-        ("microsoft", SchemeId::MICROSOFT, &microsoft::MICROSOFT),
-        ("sogou", SchemeId::SOGOU, &sogou::SOGOU),
-        ("ziguang", SchemeId::ZIGUANG, &ziguang::ZIGUANG),
+        ("xiaohe", SchemeId::XIAOHE, xiaohe::table()),
+        ("ziranma", SchemeId::ZIRANMA, ziranma::table()),
+        ("microsoft", SchemeId::MICROSOFT, microsoft::table()),
+        ("sogou", SchemeId::SOGOU, sogou::table()),
+        ("ziguang", SchemeId::ZIGUANG, ziguang::table()),
     ]
 }
 
@@ -73,7 +73,7 @@ fn test_key_index_covers_the_twenty_seven_key_alphabet() {
 
 #[test]
 fn test_map_syllable_empty_input_returns_none() {
-    for (name, _, table) in tables() {
+    for (name, _, table) in compiled_tables() {
         assert_eq!(
             map_syllable(table, b"").expect("an empty key list is legal input"),
             None,
@@ -84,12 +84,12 @@ fn test_map_syllable_empty_input_returns_none() {
 
 #[test]
 fn test_map_syllable_rejects_a_character_outside_the_key_alphabet() {
-    let first = map_syllable(&xiaohe::XIAOHE, b"3a");
+    let first = map_syllable(xiaohe::table(), b"3a");
     assert!(matches!(
         first,
         Err(ImeError::DecodeInvalidChar { ch: '3', at: 0 })
     ));
-    let second = map_syllable(&xiaohe::XIAOHE, b"a3");
+    let second = map_syllable(xiaohe::table(), b"a3");
     assert!(matches!(
         second,
         Err(ImeError::DecodeInvalidChar { ch: '3', at: 1 })
@@ -100,7 +100,7 @@ fn test_map_syllable_rejects_a_character_outside_the_key_alphabet() {
 fn test_map_syllable_reports_a_scheme_this_build_does_not_implement() {
     // A table naming a scheme a newer build wrote is malformed input to this one, and
     // the contract's `decode/scheme-unsupported` is what it has to raise.
-    let mut table = xiaohe::XIAOHE;
+    let mut table = xiaohe::table().clone();
     table.id = SchemeId::from_u8(SchemeId::COUNT);
     let mapped = map_syllable(&table, b"vs");
     match mapped {
@@ -115,7 +115,7 @@ fn test_map_syllable_reports_a_scheme_this_build_does_not_implement() {
 fn test_map_syllable_consumes_two_keys_for_a_five_letter_final() {
     // `iong` is five letters and still two keys: the final's key carries the whole
     // spelling, so nothing about the pair is three keys long.
-    let mapped = map_syllable(&xiaohe::XIAOHE, b"js")
+    let mapped = map_syllable(xiaohe::table(), b"js")
         .expect("keys inside the alphabet")
         .expect("jiong must map");
     assert_eq!(mapped.consumed, 2);
@@ -124,8 +124,8 @@ fn test_map_syllable_consumes_two_keys_for_a_five_letter_final() {
 
 #[test]
 fn test_map_syllable_reads_only_the_first_two_keys() {
-    let pair = map_syllable(&xiaohe::XIAOHE, b"vs").expect("keys inside the alphabet");
-    let longer = map_syllable(&xiaohe::XIAOHE, b"vsgo").expect("keys inside the alphabet");
+    let pair = map_syllable(xiaohe::table(), b"vs").expect("keys inside the alphabet");
+    let longer = map_syllable(xiaohe::table(), b"vsgo").expect("keys inside the alphabet");
     assert_eq!(pair, longer);
 }
 
@@ -134,20 +134,20 @@ fn test_map_syllable_returns_none_for_a_pair_the_scheme_cannot_spell() {
     // `b` opens a syllable and `z` stands for `ou`, but `bou` is not a syllable, and
     // neither is any other final `z` carries. The answer is a report, not a guess.
     assert_eq!(
-        map_syllable(&xiaohe::XIAOHE, b"bz").expect("keys inside the alphabet"),
+        map_syllable(xiaohe::table(), b"bz").expect("keys inside the alphabet"),
         None
     );
 }
 
 #[test]
 fn test_map_syllable_falls_back_to_a_standalone_letter() {
-    let mapped = map_syllable(&xiaohe::XIAOHE, b"a")
+    let mapped = map_syllable(xiaohe::table(), b"a")
         .expect("keys inside the alphabet")
         .expect("a is a syllable on its own");
     assert_eq!(mapped.consumed, 1);
     assert_eq!(syllable_at(mapped.full), Some("a"));
     assert_eq!(
-        map_syllable(&xiaohe::XIAOHE, b"b").expect("keys inside the alphabet"),
+        map_syllable(xiaohe::table(), b"b").expect("keys inside the alphabet"),
         None
     );
 }
@@ -157,7 +157,7 @@ fn test_every_pair_in_the_key_matrix_lands_on_a_syllable_of_the_table() {
     // The 27x27 matrix every scheme is defined by. No pair may raise an error, and
     // every syllable one does produce has to be an entry of the syllable table, no
     // longer than the table's longest.
-    for (name, _, table) in tables() {
+    for (name, _, table) in compiled_tables() {
         for &first in &alphabet() {
             for &second in &alphabet() {
                 let pair = [first, second];
@@ -192,7 +192,7 @@ fn test_every_scheme_can_spell_the_common_syllables() {
         "ni", "hao", "zhong", "guo", "ren", "min", "shi", "jie", "xue", "xi", "huan", "ying", "an",
         "ai", "en", "wo", "de", "le", "zai", "you", "jia", "qing", "hua", "er",
     ];
-    for (name, _, table) in tables() {
+    for (name, _, table) in compiled_tables() {
         let spellings = reachable(table);
         for syllable in required {
             assert!(
@@ -206,7 +206,7 @@ fn test_every_scheme_can_spell_the_common_syllables() {
 #[test]
 fn test_every_table_names_a_distinct_scheme() {
     let mut seen: Vec<u8> = Vec::new();
-    for (name, scheme, table) in tables() {
+    for (name, scheme, table) in compiled_tables() {
         assert!(
             scheme.is_known(),
             "{name} must be a scheme this build knows"
@@ -224,11 +224,11 @@ fn test_every_table_names_a_distinct_scheme() {
 
 #[test]
 fn test_the_registered_table_list_matches_the_schemes_it_names() {
-    // `TABLES` is the one place a scheme is registered, so it has to agree with the
+    // `tables()` is the one place a layout is registered, so it has to agree with the
     // tables themselves: same count, and each table identifying itself by the number it
     // is filed under.
-    assert_eq!(TABLES.len(), tables().len());
-    for (name, scheme, table) in tables() {
+    assert_eq!(tables().len(), compiled_tables().len());
+    for (name, scheme, table) in compiled_tables() {
         let registered = table_for(scheme)
             .expect("a registered scheme is implemented")
             .expect("a registered scheme has a table");
@@ -242,7 +242,7 @@ fn test_the_registered_table_list_matches_the_schemes_it_names() {
         );
     }
     assert!(
-        !TABLES.iter().any(|(id, _)| *id == SchemeId::FULL),
+        !tables().iter().any(|(id, _)| *id == SchemeId::FULL),
         "full pinyin is the identity and must not be registered with a table"
     );
 }
@@ -362,7 +362,7 @@ fn test_rewrite_is_a_fixed_point_of_the_normalizer() {
     let cases = [
         "nihc", "vsgo", "a", "bz", "''nihc", "nihc'", "ni'hc", "o;", "vx", "qqqq", ";", "VSHC",
     ];
-    for (name, scheme, _) in tables() {
+    for (name, scheme, _) in compiled_tables() {
         for raw in cases {
             let map = SchemeMap::build(raw, scheme)
                 .expect("the schemes are implemented")
@@ -469,7 +469,7 @@ fn test_syllable_spans_tile_the_rewritten_text() {
     // The alignment the engine reads back has to be complete: every scheme syllable
     // owns a non-empty byte range, the ranges follow one another without a gap, and
     // together they cover the text exactly.
-    for (name, scheme, _) in tables() {
+    for (name, scheme, _) in compiled_tables() {
         for raw in ["nihc", "vsgo", "bz", "ni'hc"] {
             let map = SchemeMap::build(raw, scheme)
                 .expect("the schemes are implemented")

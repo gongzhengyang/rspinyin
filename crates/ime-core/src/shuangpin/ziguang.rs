@@ -1,26 +1,19 @@
-//! The Ziguang scheme table.
+//! The Ziguang layout.
 //!
 //! # Source
 //!
-//! The `double_pinyin_zgpy_sheng` / `double_pinyin_zgpy_yun` arrays of libpinyin's
-//! `src/storage/double_pinyin_table.h` (`github.com/libpinyin/libpinyin`), cross-checked
-//! against `double_pinyin_ziguang.schema.yaml` in the rime-ice schema collection
-//! (`github.com/iDvel/rime-ice`). The two independent sources agree on every key:
+//! `data/ziguang.toml` beside this file, whose source citations give the libpinyin
+//! table and the rime-ice schema the data was transcribed from. The two independent
+//! sources agree on every key.
 //!
-//! - `zh` `u`, `ch` `a`, `sh` `i` -- this layout moves all three retroflex initials
-//!   off the `v`, `i`, `u` positions every other scheme this build ships uses
-//! - `iu`/`er` `j`, `ei` `k`, `uan` `l`, `un` `m`, `üe`/`ui` `n`, `ou` `z`
-//! - `ai` `p`, `ao` `q`, `an` `r`, `ang` `s`, `eng` `t`, `en` `w`
-//! - `iao` `b`, `ie` `d`, `ian` `f`, `iang`/`uang` `g`, `ong`/`iong` `h`
-//! - `ia`/`ua` `x`, `in`/`uai` `y`, `ü` `v`, `uo`/`o` `o`, `u` `u`, `i` `i`, `a` `a`,
-//!   `e` `e`
-//! - `ing` `;`
+//! This layout moves all three retroflex initials off the `v`, `i`, `u` positions
+//! every other layout this build ships uses: `zh` is on `u`, `ch` on `a` and `sh` on
+//! `i`. The `e` and `v` keys open no syllable, and the `c` key carries no final, so
+//! `c` opens a syllable but cannot close one.
 //!
 //! A vowel-initial syllable takes the `o` key as its zero initial: `a` is `oa`, `ai`
 //! is `op`, `an` is `or`, `ang` is `os`, `ao` is `oq`, `e` is `oe`, `en` is `ow`,
 //! `eng` is `ot`, `er` is `oj`, `o` is `oo`, `ou` is `oz`.
-//!
-//! The `c` key carries no final at all, so `c` opens a syllable but cannot close one.
 //!
 //! # The `;` column
 //!
@@ -32,44 +25,14 @@ use ime_types::SchemeId;
 
 use crate::shuangpin::SchemeTable;
 
-/// The Ziguang scheme, the layout the Ziguang pinyin input method ships.
-#[rustfmt::skip]
-pub const ZIGUANG: SchemeTable = SchemeTable {
-    id: SchemeId::ZIGUANG,
-    name: "紫光双拼",
-    initials: [
-        // a          b          c          d          e          f          g
-        Some("ch"),  Some("b"), Some("c"), Some("d"), None,      Some("f"), Some("g"),
-        // h          i          j          k          l          m          n
-        Some("h"),   Some("sh"), Some("j"), Some("k"), Some("l"), Some("m"), Some("n"),
-        // o          p          q          r          s          t          u
-        Some(""),    Some("p"), Some("q"), Some("r"), Some("s"), Some("t"), Some("zh"),
-        // v          w          x          y          z          ;
-        None,        Some("w"), Some("x"), Some("y"), Some("z"), None,
-    ],
-    finals: [
-        // a         b          c      d          e         f          g
-        &["a"],     &["iao"],   &[],   &["ie"],   &["e"],   &["ian"],  &["iang", "uang"],
-        // h                   i          j                  k          l          m
-        &["ong", "iong"],    &["i"],    &["er", "iu"],     &["ei"],   &["uan"],  &["un"],
-        // n                            o                    p          q          r
-        &["üe", "ue", "ui"],          &["uo", "o"],        &["ai"],   &["ao"],   &["an"],
-        // s         t                    u         v         w          x                  y
-        &["ang"],   &["eng", "ng"],     &["u"],    &["ü"],    &["en"],   &["ia", "ua"],     &["in", "uai"],
-        // z         ;
-        &["ou"],    &["ing"],
-    ],
-    standalone: [
-        // a     b     c     d     e     f     g
-        "a",    "",   "",   "",   "e",  "",   "",
-        // h     i     j     k     l     m     n
-        "",     "",   "",   "",   "",   "",   "",
-        // o     p     q     r     s     t     u
-        "o",    "",   "",   "",   "",   "",   "",
-        // v     w     x     y     z     ;
-        "",     "",   "",   "",   "",   "",
-    ],
-};
+/// The Ziguang layout, as compiled from its embedded document.
+///
+/// # Panics
+///
+/// Never.
+pub fn table() -> &'static SchemeTable {
+    crate::shuangpin::builtin::table(SchemeId::ZIGUANG)
+}
 
 #[cfg(test)]
 mod tests {
@@ -78,11 +41,11 @@ mod tests {
     use crate::segment::syllable_at;
     use crate::shuangpin::{map_syllable, rewrite_for_scheme};
 
-    use super::ZIGUANG;
+    use super::table;
 
     /// Maps `keys` and returns the spelling, failing the test when the keys do not map.
     fn spelled(keys: &[u8]) -> &'static str {
-        let mapped = map_syllable(&ZIGUANG, keys)
+        let mapped = map_syllable(table(), keys)
             .expect("keys inside the alphabet")
             .expect("keys must map");
         assert_eq!(
@@ -150,15 +113,18 @@ mod tests {
         // The property that tells this layout apart from every other scheme this build
         // ships: `ch` is on `a`, `sh` on `i` and `zh` on `u`, so `a` repeated is `cha`
         // and not the vowel-initial `a` the other schemes spell that way.
-        assert_eq!(ZIGUANG.initials[0], Some("ch"));
-        assert_eq!(ZIGUANG.initials[8], Some("sh"));
-        assert_eq!(ZIGUANG.initials[20], Some("zh"));
+        let compiled = table();
+        assert_eq!(compiled.initials[0].as_deref(), Some("ch"));
+        assert_eq!(compiled.initials[8].as_deref(), Some("sh"));
+        assert_eq!(compiled.initials[20].as_deref(), Some("zh"));
         assert_eq!(
-            ZIGUANG.initials[4], None,
+            compiled.initials[4].as_deref(),
+            None,
             "e is not an initial in this layout"
         );
         assert_eq!(
-            ZIGUANG.initials[21], None,
+            compiled.initials[21].as_deref(),
+            None,
             "v is not an initial in this layout"
         );
         assert_eq!(spelled(b"aa"), "cha");
@@ -166,8 +132,8 @@ mod tests {
 
     #[test]
     fn test_ziguang_table_identifies_itself() {
-        assert_eq!(ZIGUANG.id, SchemeId::ZIGUANG);
-        assert_eq!(ZIGUANG.name, "紫光双拼");
+        assert_eq!(table().id, SchemeId::ZIGUANG);
+        assert_eq!(table().name, "紫光双拼");
     }
 
     #[test]

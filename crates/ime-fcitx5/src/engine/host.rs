@@ -217,7 +217,7 @@ impl ClockSource for SystemClock {
         let elapsed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
-        let seconds = u64::try_from(elapsed.as_secs()).unwrap_or(0);
+        let seconds = elapsed.as_secs();
         let days = seconds / SECONDS_PER_DAY;
         let seconds_of_day = seconds % SECONDS_PER_DAY;
         let (year, month, day) = civil_from_days(days);

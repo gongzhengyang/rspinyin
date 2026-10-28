@@ -651,6 +651,58 @@ fn test_reload_keeps_the_decode_settings_when_the_file_cannot_be_read() {
 }
 
 #[test]
+fn test_shuangpin_custom_section_merges_into_the_document_model() {
+    // The section is data, not key-value settings: the loader keeps what the document
+    // wrote and the layout loader in `ime-core` judges it at adoption time, so the
+    // merge has only to carry the values through whole. The file path in particular
+    // travels verbatim -- which directory a relative value sits in is the host
+    // layer's business, and a merge that resolved it would put a machine-specific
+    // path where the document wrote a portable one.
+    let path = scratch("shuangpin-section").join(FILE_NAME);
+    write(
+        &path,
+        concat!(
+            "[shuangpin.custom]\n",
+            "file = \"layouts/my.toml\"\n",
+            "name = \"自打\"\n",
+            "zero_initial_style = \"first-letter\"\n",
+            "[shuangpin.custom.initials]\n",
+            "v = \"zh\"\n",
+            "u = \"sh\"\n",
+            "[shuangpin.custom.finals]\n",
+            "b = \"in\"\n",
+        ),
+    );
+
+    let (store, warnings) = ConfigStore::load_at(&path, 7);
+
+    assert!(warnings.is_empty(), "every value is usable: {warnings:?}");
+    let custom = &store.current().shuangpin.custom;
+    assert!(!custom.is_unset(), "the section names a layout");
+    assert_eq!(custom.file, "layouts/my.toml");
+    assert_eq!(custom.name, "自打");
+    assert_eq!(custom.zero_initial_style, "first-letter");
+    assert_eq!(custom.initials.get("v").map(String::as_str), Some("zh"));
+    assert_eq!(custom.initials.get("u").map(String::as_str), Some("sh"));
+    assert_eq!(custom.finals.get("b").map(String::as_str), Some("in"));
+}
+
+#[test]
+fn test_shuangpin_custom_section_absent_keeps_the_shipped_unset_state() {
+    // A document that says nothing about layouts leaves the section unset, which is
+    // the state a fresh installation ships in: no custom layout exists to load, and
+    // the loader is never consulted about one.
+    let document = "schema_version = 2\n";
+    let (config, warnings) = Config::from_document(document).expect("a legal document");
+
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(
+        config.shuangpin.custom.is_unset(),
+        "no section means no layout"
+    );
+}
+
+#[test]
 fn test_fuzzy_section_merges_key_by_key_over_the_defaults() {
     let document = "schema_version = 2\n[fuzzy]\nzh_z = true\nn_l = true\n";
     let (config, warnings) = Config::from_document(document).expect("a legal document");

@@ -1,25 +1,17 @@
-//! The Sogou scheme table.
+//! The Sogou layout.
 //!
 //! # Source
 //!
-//! `double_pinyin_sogou.schema.yaml` in the rime-ice schema collection
-//! (`github.com/iDvel/rime-ice`), which is the maintained Rime schema for this layout.
-//! Sogou's own description of the scheme family (`pinyin.sogou.com/help.php`) states
-//! the two rules the table encodes: the retroflex initials are on `v`, `i` and `u`,
-//! and a vowel-initial syllable is written either with a leading `o` or by repeating
-//! its first letter.
+//! `data/sogou.toml` beside this file, whose source citations give the rime-ice
+//! schema and the publisher's own rules the data was transcribed from.
+//!
+//! Sogou's own description of the layout states the two rules the data encodes: the
+//! retroflex initials are on `v`, `i` and `u`, and a vowel-initial syllable is written
+//! either with a leading `o` or by repeating its first letter.
 //!
 //! The layout is the same as Microsoft's on every key except one: `üe` here is reached
 //! through `t` only, where Microsoft also accepts it on `v`. That is exactly the
 //! difference between the two Rime schemas, and it is asserted by a test below.
-//!
-//! - `iu` `q`, `ia`/`ua` `w`, `uan`/`üan` `r`, `üe` `t`, `uai`/`ü` `y`, `uo` `o`,
-//!   `un`/`ün` `p`
-//! - `ai` `l`, `en` `f`, `eng` `g`, `ang` `h`, `an` `j`, `ao` `k`, `iang`/`uang` `d`,
-//!   `ian` `m`, `in` `n`, `ou` `b`
-//! - `iao` `c`, `ui` `v`, `ie` `x`, `ong`/`iong` `s`, `ei` `z`
-//! - `zh` `v`, `ch` `i`, `sh` `u`
-//! - `ing` `;`
 //!
 //! # The `;` column
 //!
@@ -31,44 +23,14 @@ use ime_types::SchemeId;
 
 use crate::shuangpin::SchemeTable;
 
-/// Sogou's scheme, the layout its input method ships as the default.
-#[rustfmt::skip]
-pub const SOGOU: SchemeTable = SchemeTable {
-    id: SchemeId::SOGOU,
-    name: "搜狗双拼",
-    initials: [
-        // a          b          c          d          e          f          g
-        Some("a"),   Some("b"), Some("c"), Some("d"), Some("e"), Some("f"), Some("g"),
-        // h          i          j          k          l          m          n
-        Some("h"),   Some("ch"), Some("j"), Some("k"), Some("l"), Some("m"), Some("n"),
-        // o          p          q          r          s          t          u
-        Some(""),    Some("p"), Some("q"), Some("r"), Some("s"), Some("t"), Some("sh"),
-        // v          w          x          y          z          ;
-        Some("zh"),  Some("w"), Some("x"), Some("y"), Some("z"), None,
-    ],
-    finals: [
-        // a         b          c          d                    e         f          g
-        &["a"],     &["ou"],   &["iao"],  &["uang", "iang"],   &["e"],   &["en"],   &["eng", "ng"],
-        // h         i          j          k          l          m          n
-        &["ang"],   &["i"],    &["an"],   &["ao"],   &["ai"],   &["ian"],  &["in"],
-        // o                    p          q         r                  s
-        &["uo", "o"],        &["un"],   &["iu"],  &["uan", "er"],    &["ong", "iong"],
-        // t                  u         v          w                  x
-        &["üe", "ue"],      &["u"],    &["ui"],   &["ia", "ua"],     &["ie"],
-        // y                  z          ;
-        &["uai", "ü"],      &["ei"],   &["ing"],
-    ],
-    standalone: [
-        // a     b     c     d     e     f     g
-        "a",    "",   "",   "",   "e",  "",   "",
-        // h     i     j     k     l     m     n
-        "",     "",   "",   "",   "",   "",   "",
-        // o     p     q     r     s     t     u
-        "o",    "",   "",   "",   "",   "",   "",
-        // v     w     x     y     z     ;
-        "",     "",   "",   "",   "",   "",
-    ],
-};
+/// The Sogou layout, as compiled from its embedded document.
+///
+/// # Panics
+///
+/// Never.
+pub fn table() -> &'static SchemeTable {
+    crate::shuangpin::builtin::table(SchemeId::SOGOU)
+}
 
 #[cfg(test)]
 mod tests {
@@ -77,11 +39,11 @@ mod tests {
     use crate::segment::syllable_at;
     use crate::shuangpin::{map_syllable, rewrite_for_scheme};
 
-    use super::SOGOU;
+    use super::table;
 
     /// Maps `keys` and returns the spelling, failing the test when the keys do not map.
     fn spelled(keys: &[u8]) -> &'static str {
-        let mapped = map_syllable(&SOGOU, keys)
+        let mapped = map_syllable(table(), keys)
             .expect("keys inside the alphabet")
             .expect("keys must map");
         assert_eq!(
@@ -121,7 +83,7 @@ mod tests {
 
     #[test]
     fn test_sogou_accepts_both_spellings_of_a_vowel_initial_syllable() {
-        // The `o` prefix is the scheme's own rule; the repeated first letter is the
+        // The `o` prefix is the layout's own rule; the repeated first letter is the
         // other spelling Sogou's own documentation gives.
         let cases: [(&[u8], &str); 8] = [
             (b"oj", "an"),
@@ -148,20 +110,20 @@ mod tests {
         // The single key on which this layout differs from Microsoft's: `v` carries
         // `ui` here and nothing else, so `jv` is not `jue`.
         assert_eq!(
-            map_syllable(&SOGOU, b"jv").expect("keys inside the alphabet"),
+            map_syllable(table(), b"jv").expect("keys inside the alphabet"),
             None
         );
-        assert_eq!(
-            SOGOU.finals[21],
-            &["ui"][..],
-            "v carries ui alone in this layout"
-        );
+        let finals: Vec<&str> = table().finals[21]
+            .iter()
+            .map(|final_text| final_text.as_ref())
+            .collect();
+        assert_eq!(finals, ["ui"], "v carries ui alone in this layout");
     }
 
     #[test]
     fn test_sogou_table_identifies_itself() {
-        assert_eq!(SOGOU.id, SchemeId::SOGOU);
-        assert_eq!(SOGOU.name, "搜狗双拼");
+        assert_eq!(table().id, SchemeId::SOGOU);
+        assert_eq!(table().name, "搜狗双拼");
     }
 
     #[test]

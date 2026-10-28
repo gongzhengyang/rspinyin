@@ -21,6 +21,7 @@ use ime_dict::script::ScriptIndex;
 use ime_types::Anchor;
 
 use super::RoutingConfig;
+use super::effects::quick::QuickPanel;
 use super::modes::{Modes, OutputProjection};
 use super::phrases::PhraseHandle;
 
@@ -156,6 +157,11 @@ pub(super) struct Context {
     /// nothing about holds `true`, which is the behaviour every build before the
     /// negotiation had: the negotiation only ever narrows, never widens.
     pub(super) preedit_supported: bool,
+    /// The quick-input panel this context has open, when one is. The panel is a
+    /// routing-layer composition of its own — the candidates it shows are rendered,
+    /// not decoded — so it lives beside the session rather than inside it, and dies
+    /// with the context: nothing parked in a pool slot survives a release.
+    pub(super) quick: Option<QuickPanel>,
 }
 
 impl Context {
@@ -186,6 +192,7 @@ impl Context {
             // through `KeyRouter::set_anchor`.
             anchor: FrameContext::default().anchor,
             preedit_supported,
+            quick: None,
         }
     }
 
@@ -214,6 +221,7 @@ impl Context {
             // its predecessor shared.
             preedit_supported,
             anchor: FrameContext::default().anchor,
+            quick: None,
         }
     }
 

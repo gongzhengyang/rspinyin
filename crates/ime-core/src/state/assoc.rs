@@ -237,9 +237,7 @@ impl Session {
     ///
     /// Never panics.
     fn commit_assoc(&mut self, ctx: &mut Ctx<'_>) {
-        let Some(index) = usize::try_from(self.paging.highlight).ok() else {
-            return;
-        };
+        let index = usize::from(self.paging.highlight);
         let Some(hit) = self
             .assoc_view
             .as_ref()

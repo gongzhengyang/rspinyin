@@ -198,6 +198,32 @@ fn test_scheme_config_repaired_degrades_a_usable_custom_table() {
 }
 
 #[test]
+fn test_scheme_config_repaired_reports_the_superseded_custom_key() {
+    // The retired key degrades to full pinyin, and the diagnostic points at the
+    // section that replaced it instead of claiming custom layouts do not exist: a
+    // user reading the message must land on the place a layout actually loads.
+    let config = SchemeConfig {
+        scheme: SchemeChoice::Custom,
+        ..SchemeConfig::default()
+    };
+    let (repaired, warnings) = config.repaired();
+
+    assert_eq!(repaired.scheme, SchemeChoice::Full);
+    let reported = warnings
+        .first()
+        .map(|warning| warning.to_string())
+        .unwrap_or_default();
+    assert!(
+        reported.contains("superseded") && reported.contains("[shuangpin.custom]"),
+        "the diagnostic names the replacing section: {reported}"
+    );
+    assert!(
+        !reported.contains("not implemented"),
+        "the old message is false now that [shuangpin.custom] loads layouts: {reported}"
+    );
+}
+
+#[test]
 fn test_scheme_config_repaired_reports_a_custom_table_that_is_unused() {
     // The lists are checked whether or not the custom layout is the active one, the
     // way every other key of the configuration is: a mistake in the document is worth

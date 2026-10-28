@@ -11,12 +11,9 @@
 use ime_types::{ImeError, SchemeId};
 
 use crate::segment::syllable::{MAX_SYLLABLE_LEN, syllable_at};
-use crate::shuangpin::{SCHEME_KEYS, SchemeTable, TABLES, xiaohe, ziguang};
+use crate::shuangpin::{SchemeTable, tables, xiaohe, ziguang};
 
 use super::{FallbackPolicy, ResolvedSyllable, SyllableOrigin, is_carriable, resolve};
-
-/// No finals at all: the entry every key of a table that maps nothing carries.
-const NO_FINALS: &[&str] = &[];
 
 /// A table that maps nothing.
 ///
@@ -24,13 +21,7 @@ const NO_FINALS: &[&str] = &[];
 /// reading is the only one it leaves -- which is what makes it a clean fixture for the
 /// fallback ladder on its own.
 fn unmapped_table() -> SchemeTable {
-    SchemeTable {
-        id: SchemeId::XIAOHE,
-        name: "unmapped",
-        initials: [None; SCHEME_KEYS],
-        finals: [NO_FINALS; SCHEME_KEYS],
-        standalone: [""; SCHEME_KEYS],
-    }
+    SchemeTable::empty(SchemeId::XIAOHE)
 }
 
 /// A table whose `a` key opens a syllable on its own and pairs with nothing.
@@ -38,15 +29,9 @@ fn unmapped_table() -> SchemeTable {
 /// The pair is tried before the key on its own, so a table whose initials are all empty
 /// is what reaches that second reading while a second key is still in the stream.
 fn standalone_only_table() -> SchemeTable {
-    let mut standalone = [""; SCHEME_KEYS];
-    standalone[0] = "a";
-    SchemeTable {
-        id: SchemeId::XIAOHE,
-        name: "standalone-only",
-        initials: [None; SCHEME_KEYS],
-        finals: [NO_FINALS; SCHEME_KEYS],
-        standalone,
-    }
+    let mut table = SchemeTable::empty(SchemeId::XIAOHE);
+    table.standalone[0] = Box::from("a");
+    table
 }
 
 /// Resolves one position, failing the test when the resolution itself fails.
@@ -89,7 +74,7 @@ fn walk(table: &SchemeTable, keys: &[u8], policy: FallbackPolicy) -> (String, Ve
 #[test]
 fn test_resolve_empty_keys_returns_none() {
     let mut scratch = String::new();
-    for &(_, table) in TABLES.iter() {
+    for (_, table) in tables() {
         let resolution = resolve(table, b"", FallbackPolicy::KEEP_FULL_PINYIN, &mut scratch);
         assert!(matches!(resolution, Ok(None)), "nothing to resolve");
     }
@@ -100,7 +85,7 @@ fn test_resolve_scheme_reading_wins_over_full_pinyin() {
     // `ai` is chi in Ziguang and a legal full-pinyin syllable on its own: the layout
     // the user chose is the layout they expect, so the scheme's reading is taken and
     // the fallback is never consulted.
-    let resolution = resolved(&ziguang::ZIGUANG, b"ai", FallbackPolicy::KEEP_FULL_PINYIN);
+    let resolution = resolved(ziguang::table(), b"ai", FallbackPolicy::KEEP_FULL_PINYIN);
     assert_eq!(resolution.origin(), SyllableOrigin::Scheme);
     assert_eq!(spelled(resolution), Some("chi"));
     assert_eq!(resolution.consumed(), 2);
@@ -108,7 +93,7 @@ fn test_resolve_scheme_reading_wins_over_full_pinyin() {
 
 #[test]
 fn test_resolve_scheme_standalone_consumes_one_key() {
-    let resolution = resolved(&xiaohe::XIAOHE, b"a", FallbackPolicy::KEEP_FULL_PINYIN);
+    let resolution = resolved(xiaohe::table(), b"a", FallbackPolicy::KEEP_FULL_PINYIN);
     assert_eq!(resolution.origin(), SyllableOrigin::Scheme);
     assert_eq!(spelled(resolution), Some("a"));
     assert_eq!(resolution.consumed(), 1);
@@ -137,7 +122,7 @@ fn test_resolve_pair_that_cannot_compose_falls_back_to_the_key_on_its_own() {
 #[test]
 fn test_full_pinyin_fallback_inside_scheme_session() {
     // Xiaohe gives `m` no standalone syllable, but `m` is a full-pinyin one.
-    let resolution = resolved(&xiaohe::XIAOHE, b"m", FallbackPolicy::KEEP_FULL_PINYIN);
+    let resolution = resolved(xiaohe::table(), b"m", FallbackPolicy::KEEP_FULL_PINYIN);
     assert_eq!(resolution.origin(), SyllableOrigin::FullPinyinFallback);
     assert_eq!(spelled(resolution), Some("m"));
     assert_eq!(resolution.consumed(), 1);
@@ -146,7 +131,7 @@ fn test_full_pinyin_fallback_inside_scheme_session() {
 #[test]
 fn test_resolve_full_pinyin_fallback_spans_a_longer_syllable() {
     // Three keys the scheme cannot pair into anything, and a three-letter syllable.
-    let resolution = resolved(&xiaohe::XIAOHE, b"hng", FallbackPolicy::KEEP_FULL_PINYIN);
+    let resolution = resolved(xiaohe::table(), b"hng", FallbackPolicy::KEEP_FULL_PINYIN);
     assert_eq!(resolution.origin(), SyllableOrigin::FullPinyinFallback);
     assert_eq!(spelled(resolution), Some("hng"));
     assert_eq!(resolution.consumed(), 3);
@@ -156,7 +141,7 @@ fn test_resolve_full_pinyin_fallback_spans_a_longer_syllable() {
 fn test_literal_fallback_keeps_input_typeable() {
     // `b` is neither a Xiaohe syllable nor a full-pinyin one, so the keystroke itself
     // is the resolution -- and it can be typed, because the normalizer keeps it.
-    let resolution = resolved(&xiaohe::XIAOHE, b"b", FallbackPolicy::KEEP_FULL_PINYIN);
+    let resolution = resolved(xiaohe::table(), b"b", FallbackPolicy::KEEP_FULL_PINYIN);
     assert_eq!(resolution.origin(), SyllableOrigin::Literal);
     assert_eq!(resolution.full(), None);
     assert_eq!(resolution.consumed(), 1);
@@ -165,10 +150,10 @@ fn test_literal_fallback_keeps_input_typeable() {
 
 #[test]
 fn test_resolve_scheme_only_policy_turns_the_fallback_off() {
-    let fallback = resolved(&xiaohe::XIAOHE, b"m", FallbackPolicy::KEEP_FULL_PINYIN);
+    let fallback = resolved(xiaohe::table(), b"m", FallbackPolicy::KEEP_FULL_PINYIN);
     assert_eq!(fallback.origin(), SyllableOrigin::FullPinyinFallback);
 
-    let literal = resolved(&xiaohe::XIAOHE, b"m", FallbackPolicy::SCHEME_ONLY);
+    let literal = resolved(xiaohe::table(), b"m", FallbackPolicy::SCHEME_ONLY);
     assert_eq!(literal.origin(), SyllableOrigin::Literal);
     assert_eq!(literal.full(), None);
 }
@@ -186,7 +171,7 @@ fn test_resolve_reports_a_keystroke_the_scheme_does_not_define() {
     // The semicolon is part of the scheme key alphabet but not a key of Xiaohe's
     // table. It must not vanish: it comes back as a literal, and the caller is told
     // that it cannot be carried into the text.
-    let resolution = resolved(&xiaohe::XIAOHE, b";", FallbackPolicy::KEEP_FULL_PINYIN);
+    let resolution = resolved(xiaohe::table(), b";", FallbackPolicy::KEEP_FULL_PINYIN);
     assert_eq!(resolution.origin(), SyllableOrigin::Literal);
     assert_eq!(resolution.consumed(), 1);
     assert!(!is_carriable(';'), "the normalizer discards it");
@@ -194,7 +179,7 @@ fn test_resolve_reports_a_keystroke_the_scheme_does_not_define() {
 
 #[test]
 fn test_resolve_reports_a_byte_outside_the_key_alphabet() {
-    let resolution = resolved(&xiaohe::XIAOHE, b"3", FallbackPolicy::KEEP_FULL_PINYIN);
+    let resolution = resolved(xiaohe::table(), b"3", FallbackPolicy::KEEP_FULL_PINYIN);
     assert_eq!(resolution.origin(), SyllableOrigin::Literal);
     assert_eq!(resolution.full(), None);
     assert!(!is_carriable('3'), "the normalizer discards it");
@@ -202,7 +187,7 @@ fn test_resolve_reports_a_byte_outside_the_key_alphabet() {
 
 #[test]
 fn test_resolve_reports_a_scheme_this_build_does_not_implement() {
-    let mut table = xiaohe::XIAOHE;
+    let mut table = xiaohe::table().clone();
     table.id = SchemeId::from_u8(SchemeId::COUNT);
     let mut scratch = String::new();
     let resolution = resolve(
@@ -237,7 +222,7 @@ fn test_resolve_never_consumes_more_keys_than_the_stream_holds() {
     // six keys, and a stream shorter than that must not be read past its end.
     for len in 1..=MAX_SYLLABLE_LEN {
         let keys = vec![b'a'; len];
-        let resolution = resolved(&xiaohe::XIAOHE, &keys, FallbackPolicy::KEEP_FULL_PINYIN);
+        let resolution = resolved(xiaohe::table(), &keys, FallbackPolicy::KEEP_FULL_PINYIN);
         assert!(usize::from(resolution.consumed()) <= len);
     }
 }
@@ -256,7 +241,7 @@ fn test_is_carriable_accepts_letters_and_refuses_what_the_normalizer_changes() {
 #[test]
 fn test_resolve_walks_a_full_pinyin_word_typed_in_a_scheme_session() {
     // The acceptance case: with Xiaohe active, `nihao` still spells ni'hao.
-    let (text, origins) = walk(&xiaohe::XIAOHE, b"nihao", FallbackPolicy::KEEP_FULL_PINYIN);
+    let (text, origins) = walk(xiaohe::table(), b"nihao", FallbackPolicy::KEEP_FULL_PINYIN);
     assert_eq!(text, "nihao");
     assert_eq!(origins, [SyllableOrigin::Scheme; 3]);
 }
@@ -265,7 +250,7 @@ fn test_resolve_walks_a_full_pinyin_word_typed_in_a_scheme_session() {
 fn test_resolve_walks_a_stream_that_needs_the_fallback() {
     // `hng` is three keys the scheme cannot map and `m` is a fourth; the walk steps
     // over all of them and produces the full-pinyin reading of each.
-    let (text, origins) = walk(&xiaohe::XIAOHE, b"hngm", FallbackPolicy::KEEP_FULL_PINYIN);
+    let (text, origins) = walk(xiaohe::table(), b"hngm", FallbackPolicy::KEEP_FULL_PINYIN);
     assert_eq!(text, "hngm");
     assert_eq!(origins, [SyllableOrigin::FullPinyinFallback; 2]);
 }

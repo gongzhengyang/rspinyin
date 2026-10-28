@@ -1,0 +1,90 @@
+# The Microsoft double-pinyin layout, as data.
+#
+# Source: `double_pinyin_mspy.schema.yaml` in the Rime double-pinyin schema
+# package (github.com/rime/rime-double-pinyin) and the copy of it that ships with
+# rime-ice (github.com/iDvel/rime-ice), cross-checked against the
+# `double_pinyin_mspy_sheng` / `double_pinyin_mspy_yun` arrays of libpinyin's
+# `src/storage/double_pinyin_table.h` (github.com/libpinyin/libpinyin). All three
+# agree on every key.
+#
+# A vowel-initial syllable takes the `o` key as its zero initial: `a` is `oa`,
+# `ai` is `ol`, `an` is `oj`. The `a` and `e` keys are kept as initials as well,
+# which is the un-prefixed spelling Rime's `derive` rule also accepts.
+#
+# `üe` is reachable both on `t` and on `v`, which is the only key on which this
+# layout differs from Sogou's.
+#
+# The `;` column: `ing` sits on `;`, which this project's input buffer cannot
+# produce yet. The key is kept rather than relocated onto `y`: `y` already
+# carries `ü` here, and folding the two together would cost `lü` and `nü`.
+
+[layout]
+name = "微软双拼"
+zero_initial_style = "o-led"
+
+# Key -> the syllable initial the key opens a syllable with. The zero initial is
+# the empty string, and it is spelled on `o` and nowhere else.
+[initials]
+a = "a"
+b = "b"
+c = "c"
+d = "d"
+e = "e"
+f = "f"
+g = "g"
+h = "h"
+i = "ch"
+j = "j"
+k = "k"
+l = "l"
+m = "m"
+n = "n"
+o = ""
+p = "p"
+q = "q"
+r = "r"
+s = "s"
+t = "t"
+u = "sh"
+v = "zh"
+w = "w"
+x = "x"
+y = "y"
+z = "z"
+
+# Key -> the syllable finals the key closes a syllable with, in trial order,
+# space-separated.
+[finals]
+a = "a"
+b = "ou"
+c = "iao"
+d = "uang iang"
+e = "e"
+f = "en"
+g = "eng ng"
+h = "ang"
+i = "i"
+j = "an"
+k = "ao"
+l = "ai"
+m = "ian"
+n = "in"
+o = "uo o"
+p = "un"
+q = "iu"
+r = "uan er"
+s = "ong iong"
+t = "üe ue"
+u = "u"
+v = "ui üe ue"
+w = "ia ua"
+x = "ie"
+y = "uai ü"
+z = "ei"
+";" = "ing"
+
+# Key -> the syllable the key spells on its own.
+[standalone]
+a = "a"
+e = "e"
+o = "o"

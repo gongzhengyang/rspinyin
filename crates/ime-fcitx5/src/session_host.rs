@@ -51,7 +51,7 @@
 //! (`ASM-11`) and the UI thread never touches one: it reads the frames the router posts.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use ime_core::privacy::InputContextKind;
 use ime_core::state::SessionEnv;
@@ -60,8 +60,8 @@ use ime_dict::script::ScriptIndex;
 use ime_dict::user_lexicon::UserLexiconHandle;
 use ime_types::{Anchor, UiEvent};
 
-use crate::engine::host::Host;
-use crate::engine::router::{KeyRouter, RoutingConfig};
+use crate::engine::host::{Host, SystemClock};
+use crate::engine::router::{KeyRouter, RoutingConfig, install_clock};
 use crate::ffi::{FcitxKeyEvent, emit_diagnostic};
 use crate::privacy_impl::{ContextPrivacy, ContextReport};
 
@@ -524,6 +524,11 @@ pub fn install(
     if let Some(user) = lexicons.user {
         router = router.with_user_lexicon(user);
     }
+    // The quick panel's time domains render from an injected clock; the startup
+    // sequence installs the production clock here so a panel never reads the
+    // process environment on its own. The slot guard above makes this run once
+    // per process, so a false return (clock already installed) is unreachable.
+    let _ = install_clock(Arc::new(SystemClock));
     *slot = Some(SessionHost::new(router));
     true
 }

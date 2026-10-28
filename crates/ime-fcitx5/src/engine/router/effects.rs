@@ -36,7 +36,7 @@
 
 use ime_core::state::paging::MAX_REACHABLE_CANDIDATES;
 use ime_core::state::{AnchorHint, Effect, Effects, SessionEvent, step};
-use ime_types::{HideReason, ImeError, UiCommand, UiFrame};
+use ime_types::{HideReason, ImeError, KeyAction, UiCommand, UiFrame};
 
 use crate::engine::badge;
 use crate::engine::host::Host;
@@ -47,6 +47,10 @@ use super::StepCtx;
 use super::context;
 use super::context::Context;
 use super::phrases::PHRASE_ADDED_CODE;
+
+// The quick-input panel is a sibling of the executor so the context can hold its
+// state; the visibility stops at the router's own module tree.
+pub(super) mod quick;
 
 /// What one round of effect execution did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -95,9 +99,40 @@ impl Context {
         let mut acted = false;
         let mut pending = Some(event);
         while let Some(event) = pending.take() {
+            // The quick-input panel answers before the session does: a key it claims
+            // never reaches the machine, and a trigger it names opens its own
+            // composition. The two conditions cover the whole cost when the feature
+            // is off and no panel is open — the shipped default — which is one bool
+            // read per step.
+            let composes = matches!(&event, SessionEvent::Key(KeyAction::InputChar(_)));
+            if ctx.config.quick.enabled || self.quick.is_some() {
+                match quick::step(self, &event, ctx, host) {
+                    quick::Verdict::Claimed(key_acted) => {
+                        acted |= key_acted;
+                        continue;
+                    }
+                    quick::Verdict::Committed => {
+                        acted = true;
+                        // The panel's candidate left through the commit door; the
+                        // letters the session still composes are taken back the
+                        // ordinary way, which hides the window and empties the
+                        // preedit area as the same step.
+                        pending = Some(SessionEvent::Key(KeyAction::Escape));
+                        continue;
+                    }
+                    quick::Verdict::Pass => {}
+                }
+            }
             let effects = step(&mut self.session, event, &ctx.config.session, ctx.env);
             let applied = self.apply_effects(ctx, effects, host);
             acted |= applied.acted;
+            // A composing key may have completed a letter trigger in the session
+            // buffer; the panel checks once, after the step, and opens only when the
+            // trigger renders candidates. A commit emptied the buffer, so there is
+            // nothing to match and the check costs nothing.
+            if ctx.config.quick.enabled && composes && !applied.committed {
+                quick::open_from_buffer(self, ctx, host);
+            }
             if applied.committed {
                 pending = Some(SessionEvent::CommitDone);
             } else if applied.preedit_cleared {

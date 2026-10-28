@@ -46,11 +46,12 @@ mod store;
 
 use self::merge::{
     merge_assoc, merge_data, merge_diagnostics, merge_engine, merge_fuzzy, merge_keys,
-    merge_phrases, merge_quick_input, merge_scheme, merge_theme, merge_ui,
+    merge_phrases, merge_quick_input, merge_scheme, merge_shuangpin, merge_theme, merge_ui,
 };
 pub use load::default_path;
 pub use store::{ConfigStore, ReloadOutcome};
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use ime_types::{CONFIG_SCHEMA_VERSION, ConfigError, ImeError};
@@ -222,6 +223,30 @@ show_hint = true
 # Takes effect on reload.
 keep_full_pinyin = true
 
+[shuangpin.custom]
+# A double-pinyin layout of your own, in one of two forms: a layout document named
+# by `file`, or the three tables written out inline beside the other keys. With
+# every key left at its default no custom layout exists, and the double-pinyin
+# layouts are exactly the built-in ones. A layout that fails its own validation is
+# refused whole -- one config/invalid diagnostic per error -- and the built-in
+# layout named by `[scheme] scheme` answers instead. Takes effect on reload: the
+# next composition reads the new layout.
+file = ""
+# The inline form: the layout's display name, and which of the two zero-initial
+# schools it belongs to, "o-led" or "first-letter". Both must be written when the
+# tables are inline; a layout read from a file names itself in its own document.
+# Not read when `file` names a document.
+name = ""
+zero_initial_style = ""
+# The inline tables: `[shuangpin.custom.initials]` maps a key to the syllable
+# initial it opens a syllable with, `[shuangpin.custom.finals]` maps a key to the
+# finals it closes one with, space-separated, most common first, and
+# `[shuangpin.custom.standalone]` maps a key to the syllable it spells on its own.
+# A key is one of a-z or `;`.
+[shuangpin.custom.initials]
+[shuangpin.custom.finals]
+[shuangpin.custom.standalone]
+
 [fuzzy]
 # Each key selects one fuzzy-equivalence class the decoder widens with: `zh_z` makes
 # `zh` and `z` read as each other, `n_l` makes `n` and `l` do the same, and so on for
@@ -333,6 +358,28 @@ struct PartialConfig {
     data: Option<PartialData>,
     diagnostics: Option<PartialDiagnostics>,
     phrases: Option<PartialPhrases>,
+    shuangpin: Option<PartialShuangpin>,
+}
+
+/// The `[shuangpin]` table of a document.
+#[derive(Deserialize)]
+struct PartialShuangpin {
+    custom: Option<PartialShuangpinCustom>,
+}
+
+/// The `[shuangpin.custom]` table of a document: the user's own double-pinyin layout,
+/// either as a path to a layout document or written out inline.
+///
+/// The three tables travel as plain key/value maps, which is all a document section
+/// is; parsing them into a layout is the loader in `ime-core`, at adoption time.
+#[derive(Deserialize)]
+struct PartialShuangpinCustom {
+    file: Option<String>,
+    name: Option<String>,
+    zero_initial_style: Option<String>,
+    initials: Option<BTreeMap<String, String>>,
+    finals: Option<BTreeMap<String, String>>,
+    standalone: Option<BTreeMap<String, String>>,
 }
 
 /// The `[assoc]` table of a document.
@@ -650,6 +697,7 @@ impl Config {
         merge_theme(partial.theme, &mut config, &mut warnings);
         merge_keys(partial.keys, &mut config, &mut warnings);
         merge_scheme(partial.scheme, &mut config, &mut warnings);
+        merge_shuangpin(partial.shuangpin, &mut config);
         merge_fuzzy(partial.fuzzy, &mut config);
         merge_data(partial.data, &mut config, &mut warnings);
         merge_diagnostics(partial.diagnostics, &mut config, &mut warnings);

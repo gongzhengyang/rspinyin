@@ -73,6 +73,7 @@ pub use crate::state::paging::{
 
 use ime_types::SchemeId;
 
+use crate::shuangpin::SchemeTable;
 use crate::viterbi::context::ContextBand;
 
 /// The configuration values the session state machine acts on.
@@ -112,6 +113,23 @@ pub struct SessionConfig {
     /// full-pinyin syllable gets nothing at all, which reads as "the input method
     /// broke" rather than as "you are in the wrong mode".
     pub keep_full_pinyin: bool,
+    /// The compiled `[shuangpin.custom]` layout, when the user defined one and it
+    /// loaded.
+    ///
+    /// The engine parses and validates the section once per configuration adoption and
+    /// hands the session the compiled table, which the rewrite reads instead of
+    /// [`crate::shuangpin::table_for`]. A user's layout has no number of the frozen
+    /// [`SchemeId`] set to travel under -- its table identifies itself as
+    /// [`SchemeId::FULL`] -- so this slot is how a custom layout reaches the decode
+    /// without touching the contract's numbering.
+    ///
+    /// The reference is `&'static` because a [`SessionConfig`] is a `Copy` value a
+    /// session may hold for however long a composition runs: the engine compiles the
+    /// layout into process-lifetime memory (one table per adoption that activates a
+    /// custom layout, and reloads are rare, user-driven events), and a table in force
+    /// is replaced whole at a reload, never mutated or freed -- which is also what
+    /// makes a reload that swaps the table safe for a composition in progress.
+    pub custom_layout: Option<&'static SchemeTable>,
     /// The fuzzy-equivalence classes the `[fuzzy]` section selects, as the decode
     /// flag mask the projection computed: the master [`ime_types::DecodeFlags::FUZZY`]
     /// bit exactly when at least one class bit is set.
@@ -218,6 +236,7 @@ impl Default for SessionConfig {
             max_width_dp: 720,
             scheme: SchemeId::FULL,
             keep_full_pinyin: true,
+            custom_layout: None,
             fuzzy: ime_types::DecodeFlags::empty(),
             abbrev: false,
             correction: false,
@@ -237,9 +256,10 @@ impl SessionConfig {
     /// a length limit at all. `max_per_row` is clamped when the paging state adopts
     /// it, against the range the schema enforces for that key.
     ///
-    /// The two scheme keys take their defaults -- full pinyin, and the mixed-input
-    /// reading on -- so a host that has a layout sets [`SessionConfig::scheme`] and
-    /// [`SessionConfig::keep_full_pinyin`] on the value this returns.
+    /// The scheme keys take their defaults -- full pinyin, the mixed-input reading
+    /// on, and no custom layout -- so a host that has a layout sets
+    /// [`SessionConfig::scheme`], [`SessionConfig::keep_full_pinyin`] and
+    /// [`SessionConfig::custom_layout`] on the value this returns.
     ///
     /// # Panics
     ///

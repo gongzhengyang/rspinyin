@@ -5,6 +5,15 @@
 //! two properties worth pinning are the ones the routing layer depends on — that the
 //! projection carries every setting the router acts on, and that a default view is exactly
 //! what the shipped document projects to, so the two cannot drift apart.
+//!
+//! The custom-layout tests are the one exception to the no-file rule, and they say so:
+//! `[shuangpin.custom] file` names a document, so one test writes a layout document into
+//! a scratch directory of its own under the system's temporary directory and empties it
+//! first, the way the phrase-table tests do. The path travels as an absolute one, so no
+//! test reads the environment to resolve it.
+
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use ime_config::KeyName;
 use ime_config::keymap::{FlipSet, HighlightSet};
@@ -335,4 +344,192 @@ fn test_from_config_projects_the_output_bits_a_context_starts_from() {
     assert!(warnings.is_empty(), "{warnings:?}");
     assert!(projected.output.full_width);
     assert!(!projected.output.punct_full);
+}
+
+/// A configuration document whose `[shuangpin.custom]` section writes the Xiaohe
+/// layout out inline, under its own name.
+///
+/// The tables are the published layout's, so the document passes the validator a
+/// user's layout goes through; the name is the test's own, which is what lets the
+/// assertions tell the compiled custom table from a built-in one.
+const INLINE_CUSTOM_LAYOUT: &str = concat!(
+    "schema_version = 2\n",
+    "[shuangpin.custom]\n",
+    "name = \"自打小鹤\"\n",
+    "zero_initial_style = \"first-letter\"\n",
+    "[shuangpin.custom.initials]\n",
+    "a = \"a\"\nb = \"b\"\nc = \"c\"\nd = \"d\"\ne = \"e\"\nf = \"f\"\n",
+    "g = \"g\"\nh = \"h\"\ni = \"ch\"\nj = \"j\"\nk = \"k\"\nl = \"l\"\n",
+    "m = \"m\"\nn = \"n\"\no = \"o\"\np = \"p\"\nq = \"q\"\nr = \"r\"\n",
+    "s = \"s\"\nt = \"t\"\nu = \"sh\"\nv = \"zh\"\nw = \"w\"\nx = \"x\"\n",
+    "y = \"y\"\nz = \"z\"\n",
+    "[shuangpin.custom.finals]\n",
+    "a = \"a\"\nb = \"in\"\nc = \"ao\"\nd = \"ai\"\ne = \"e\"\nf = \"en\"\n",
+    "g = \"eng ng\"\nh = \"ang\"\ni = \"i\"\nj = \"an\"\nk = \"uai ing\"\n",
+    "l = \"iang uang\"\nm = \"ian\"\nn = \"iao\"\no = \"uo o\"\np = \"ie\"\n",
+    "q = \"iu\"\nr = \"uan er\"\ns = \"ong iong\"\nt = \"üe ue\"\nu = \"u\"\n",
+    "v = \"ü ui\"\nw = \"ei\"\nx = \"ia ua\"\ny = \"un\"\nz = \"ou\"\n",
+    "[shuangpin.custom.standalone]\n",
+    "a = \"a\"\ne = \"e\"\no = \"o\"\n",
+);
+
+/// A user's layout document, in the shape `[shuangpin.custom] file` points at.
+const CUSTOM_LAYOUT_FILE: &str = concat!(
+    "[layout]\n",
+    "name = \"自打文件\"\n",
+    "zero_initial_style = \"first-letter\"\n",
+    "[initials]\n",
+    "a = \"a\"\nb = \"b\"\nc = \"c\"\nd = \"d\"\ne = \"e\"\nf = \"f\"\n",
+    "g = \"g\"\nh = \"h\"\ni = \"ch\"\nj = \"j\"\nk = \"k\"\nl = \"l\"\n",
+    "m = \"m\"\nn = \"n\"\no = \"o\"\np = \"p\"\nq = \"q\"\nr = \"r\"\n",
+    "s = \"s\"\nt = \"t\"\nu = \"sh\"\nv = \"zh\"\nw = \"w\"\nx = \"x\"\n",
+    "y = \"y\"\nz = \"z\"\n",
+    "[finals]\n",
+    "a = \"a\"\nb = \"in\"\nc = \"ao\"\nd = \"ai\"\ne = \"e\"\nf = \"en\"\n",
+    "g = \"eng ng\"\nh = \"ang\"\ni = \"i\"\nj = \"an\"\nk = \"uai ing\"\n",
+    "l = \"iang uang\"\nm = \"ian\"\nn = \"iao\"\no = \"uo o\"\np = \"ie\"\n",
+    "q = \"iu\"\nr = \"uan er\"\ns = \"ong iong\"\nt = \"üe ue\"\nu = \"u\"\n",
+    "v = \"ü ui\"\nw = \"ei\"\nx = \"ia ua\"\ny = \"un\"\nz = \"ou\"\n",
+    "[standalone]\n",
+    "a = \"a\"\ne = \"e\"\no = \"o\"\n",
+);
+
+/// The rendered text of one diagnostic.
+fn rendered(warnings: &[ime_types::ImeError]) -> Vec<String> {
+    warnings
+        .iter()
+        .map(|warning| warning.to_string())
+        .collect()
+}
+
+#[test]
+fn test_from_config_compiles_the_inline_custom_layout_into_the_session() {
+    // The whole chain for the inline form: the document section is merged over the
+    // defaults, the projection compiles it once, and the session carries the compiled
+    // table the decode path reads. The header names the custom choice, because that is
+    // the layout actually answering.
+    let (config, parsed) = Config::from_document(INLINE_CUSTOM_LAYOUT).expect("a legal document");
+    assert!(parsed.is_empty(), "the section is usable: {parsed:?}");
+
+    let (projected, warnings) = RoutingConfig::from_config(&config);
+
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let table = projected.session.custom_layout;
+    assert!(table.is_some(), "the user's own layout is the one in force");
+    assert_eq!(
+        table.map(|table| table.name.as_str()),
+        Some("自打小鹤"),
+        "the compiled table is the layout the section named"
+    );
+    assert_eq!(
+        projected.scheme_hint,
+        Some("自定义"),
+        "the header names the layout that is actually running"
+    );
+    assert_eq!(projected.session.scheme, SchemeId::FULL);
+}
+
+#[test]
+fn test_from_config_falls_back_to_the_selected_scheme_when_the_custom_layout_is_invalid() {
+    // A layout that fails its validation loads nothing: the built-in scheme the
+    // document selected keeps answering, and every error the validator found is one
+    // diagnostic under the layout's own key. A layout that would map some keys
+    // wrongly must never half-load.
+    let document = concat!(
+        "schema_version = 2\n",
+        "[scheme]\nscheme = \"xiaohe\"\n",
+        "[shuangpin.custom]\n",
+        "name = \"自打\"\n",
+        "zero_initial_style = \"first-letter\"\n",
+        "[shuangpin.custom.initials]\nv = \"zh\"\n",
+        "[shuangpin.custom.finals]\nb = \"not-a-final\"\n",
+    );
+    let (config, _) = Config::from_document(document).expect("a legal document");
+
+    let (projected, warnings) = RoutingConfig::from_config(&config);
+
+    assert!(
+        projected.session.custom_layout.is_none(),
+        "a refused layout leaves no table in force"
+    );
+    assert_eq!(
+        projected.session.scheme, SchemeId::XIAOHE,
+        "the selected built-in scheme answers instead"
+    );
+    assert_eq!(
+        projected.scheme_hint,
+        Some("小鹤"),
+        "the header names the layout that is actually running"
+    );
+    assert!(
+        warnings.len() >= 2,
+        "one diagnostic per error, not one for the whole document: {:?}",
+        rendered(&warnings)
+    );
+    for line in rendered(&warnings) {
+        assert!(
+            line.contains("shuangpin.custom.layout"),
+            "every error travels under the layout's key: {line}"
+        );
+    }
+}
+
+#[test]
+fn test_from_config_reads_the_custom_layout_document_the_file_names() {
+    // The file form: the document is read here, in the adoption context, compiled the
+    // same way the inline form is, and the section's inline tables would have been
+    // spare copy. The path is absolute, so the test resolves nothing and reads no
+    // environment.
+    let directory = std::env::temp_dir().join("rspinyin-router-custom-layout");
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir_all(&directory).expect("a scratch directory");
+    let path = directory.join("my-layout.toml");
+    fs::write(&path, CUSTOM_LAYOUT_FILE).expect("a layout document");
+
+    let mut config = Config::default();
+    config.shuangpin.custom.file = path.display().to_string();
+    let (projected, warnings) = RoutingConfig::from_config(&config);
+
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(
+        projected.session.custom_layout.map(|table| table.name.as_str()),
+        Some("自打文件"),
+        "the document the file named is the layout in force"
+    );
+}
+
+#[test]
+fn test_from_config_reports_a_layout_document_it_cannot_read() {
+    // A named document that is not there is one diagnostic and no layout. The
+    // message names the failure and never the path, because a diagnostic reaches the
+    // user and a configuration path is nobody's business but the document's own.
+    let mut config = Config::default();
+    config.shuangpin.custom.file = String::from("/rspinyin-tests/no-such-layout.toml");
+
+    let (projected, warnings) = RoutingConfig::from_config(&config);
+
+    assert!(projected.session.custom_layout.is_none());
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    let line = rendered(&warnings).pop().unwrap_or_default();
+    assert!(line.contains("does not exist"), "{line}");
+    assert!(
+        !line.contains("no-such-layout.toml"),
+        "a diagnostic never carries the path: {line}"
+    );
+}
+
+#[test]
+fn test_resolve_layout_file_joins_a_relative_name_onto_the_configuration_directory() {
+    // The resolution rule: absolute as it stands, relative against the configuration
+    // directory, and nothing at all when either side of the relative join is empty.
+    assert_eq!(resolve_layout_file("", None), None);
+    assert_eq!(resolve_layout_file("my.toml", None), None);
+    assert_eq!(
+        resolve_layout_file("my.toml", Some(Path::new("/cfg"))),
+        Some(PathBuf::from("/cfg/my.toml"))
+    );
+    assert_eq!(
+        resolve_layout_file("/abs/my.toml", None),
+        Some(PathBuf::from("/abs/my.toml"))
+    );
 }

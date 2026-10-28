@@ -24,6 +24,7 @@
 //! server.
 
 mod pool;
+mod quick;
 
 use std::fs;
 use std::path::PathBuf;
@@ -35,8 +36,8 @@ use ime_core::privacy::DefaultPolicy;
 use ime_core::state::{SessionEnv, SessionEvent, SessionState};
 use ime_core::viterbi::Decoder;
 use ime_types::{
-    ImeError, KeyAction, Lexicon, StatusStrip, SyllableId, UiCommand, UserFreqSource, WordFlags,
-    WordIter, WordRef,
+    ImeError, KeyAction, Lexicon, StatusStrip, SyllableId, UiCommand, UiFrame, UserFreqSource,
+    WordFlags, WordIter, WordRef,
 };
 
 use crate::engine::host::{ComposeOutcome, Host};
@@ -214,6 +215,9 @@ struct RecordingHost {
     compose: std::collections::VecDeque<ComposeOutcome>,
     /// The text of the first candidate of the newest frame.
     highlighted: Option<String>,
+    /// The newest frame, whole. The quick-input tests read the candidates and the
+    /// revision off it; everything older is the frame slot's to have coalesced.
+    last_frame: Option<UiFrame>,
     /// The status strip of the newest frame.
     status: Option<StatusStrip>,
     /// Whether the input context is enabled. A context is activated enabled, so the first
@@ -240,6 +244,7 @@ impl Default for RecordingHost {
             diagnostics: Vec::new(),
             compose: std::collections::VecDeque::new(),
             highlighted: None,
+            last_frame: None,
             status: None,
             is_enabled: true,
             hides: 0,
@@ -278,6 +283,7 @@ impl Host for RecordingHost {
                 self.frames += 1;
                 self.highlighted = frame.candidates.first().map(|held| held.text.clone());
                 self.status = Some(frame.status.clone());
+                self.last_frame = Some(*frame);
             }
             UiCommand::Hide { .. } => self.hides += 1,
             _ => {}
@@ -583,8 +589,10 @@ fn test_pin_at_a_source_without_pin_storage_reports_and_releases_the_key() {
 #[test]
 fn test_compose_host_supported_takes_priority_without_fallback_state() {
     let fixture = Fixture::new("compose-host-priority");
-    let mut config = RoutingConfig::default();
-    config.compose = true;
+    let config = RoutingConfig {
+        compose: true,
+        ..RoutingConfig::default()
+    };
     let mut router = fixture.router_with(
         PhraseHandle::new(PhraseStore::load(None, 100, true)),
         config,
@@ -605,8 +613,10 @@ fn test_compose_host_supported_takes_priority_without_fallback_state() {
 #[test]
 fn test_compose_host_missing_hit_commits_and_swallows_the_letter() {
     let fixture = Fixture::new("compose-fallback-hit");
-    let mut config = RoutingConfig::default();
-    config.compose = true;
+    let config = RoutingConfig {
+        compose: true,
+        ..RoutingConfig::default()
+    };
     let mut router = fixture.router_with(
         PhraseHandle::new(PhraseStore::load(None, 100, true)),
         config,
@@ -624,8 +634,10 @@ fn test_compose_host_missing_hit_commits_and_swallows_the_letter() {
 #[test]
 fn test_compose_host_missing_miss_commits_mark_and_routes_letter_normally() {
     let fixture = Fixture::new("compose-fallback-miss");
-    let mut config = RoutingConfig::default();
-    config.compose = true;
+    let config = RoutingConfig {
+        compose: true,
+        ..RoutingConfig::default()
+    };
     let mut router = fixture.router_with(
         PhraseHandle::new(PhraseStore::load(None, 100, true)),
         config,
@@ -644,8 +656,10 @@ fn test_compose_host_missing_miss_commits_mark_and_routes_letter_normally() {
 #[test]
 fn test_compose_fallback_reset_on_context_reset() {
     let fixture = Fixture::new("compose-fallback-reset");
-    let mut config = RoutingConfig::default();
-    config.compose = true;
+    let config = RoutingConfig {
+        compose: true,
+        ..RoutingConfig::default()
+    };
     let mut router = fixture.router_with(
         PhraseHandle::new(PhraseStore::load(None, 100, true)),
         config,

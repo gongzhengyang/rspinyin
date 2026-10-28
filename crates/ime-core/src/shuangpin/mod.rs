@@ -1,19 +1,24 @@
-//! Double-pinyin schemes: the key tables, the syllable mapping, and the rewrite that
-//! turns a scheme's keystrokes into full pinyin.
+//! Double-pinyin layouts: the key tables, the syllable mapping, and the rewrite that
+//! turns a layout's keystrokes into full pinyin.
 //!
-//! Responsibility: own the five scheme tables this build ships, map a scheme's one-
-//! or two-key syllable onto an entry of the segmentation layer's syllable table, and
-//! rewrite a whole keystroke stream into the full-pinyin spelling the segmentation
-//! layer reads.
+//! Responsibility: own the five published layouts this build ships as *data*
+//! (`data/*.toml`, compiled once by [`builtin`]), map a layout's one- or two-key
+//! syllable onto an entry of the segmentation layer's syllable table, and rewrite a
+//! whole keystroke stream into the full-pinyin spelling the segmentation layer
+//! reads. The document format, the validator and the compile step live in
+//! [`layout`]; a user-defined layout goes through the same loader and the same
+//! validator the built-in ones do.
 //!
 //! Boundaries: a rewrite is a pure function of its arguments -- no file, no clock, no
 //! environment, no global state -- which is what keeps the decoder's determinism
-//! guarantee intact (0.4 rule 4). The segmentation layer never learns that schemes
-//! exist: it is defined over the 411-syllable table, and a scheme is a different
-//! encoding of the same syllables, so rewriting *before* segmentation leaves the DAG,
-//! the lattice, the Viterbi pass and the preedit builder untouched.
+//! guarantee intact (0.4 rule 4). The one-time compile of the built-in documents
+//! happens outside the decode path; after it, every mapping is a table lookup. The
+//! segmentation layer never learns that layouts exist: it is defined over the
+//! 411-syllable table, and a layout is a different encoding of the same syllables,
+//! so rewriting *before* segmentation leaves the DAG, the lattice, the Viterbi pass
+//! and the preedit builder untouched.
 //!
-//! # Where a scheme sits in the pipeline
+//! # Where a layout sits in the pipeline
 //!
 //! ```text
 //! raw keystrokes -> rewrite_for_scheme -> SyllableDag::build -> lattice -> candidates
@@ -21,29 +26,32 @@
 //!
 //! # Index semantics
 //!
-//! One scheme syllable produces exactly one full-pinyin syllable, so the syllable
+//! One layout syllable produces exactly one full-pinyin syllable, so the syllable
 //! *index* is the same on both sides of the rewrite; only the *byte offsets* differ,
 //! because two keys expand into up to six letters. [`SchemeMap`] carries the
 //! alignment, so the engine can report a [`Segment`](ime_types::Segment) span in
-//! scheme syllables -- what the user actually typed, and what the window's preedit
+//! layout syllables -- what the user actually typed, and what the window's preedit
 //! highlights -- instead of in full pinyin the user never sees.
 //!
 //! # The key alphabet
 //!
-//! A scheme is indexed by `a`-`z` plus `;`. The semicolon is a key in its own right:
-//! the published Microsoft, Sogou and Ziguang layouts all carry `ing` on it, and a
-//! 26-letter table could not express those three schemes without either losing every
+//! A layout is indexed by `a`-`z` plus `;`. The semicolon is a key in its own right:
+//! the published Microsoft, Sogou and Ziguang tables all carry `ing` on it, and a
+//! 26-letter table could not express those three layouts without either losing every
 //! `-ing` syllable or losing `lü` and `nü`, which the same key would then have to
 //! hold. This project's input buffer does not accept `;` today, so that column is
 //! currently unreachable from the keyboard; the tables stay faithful to the published
 //! layouts rather than dropping a key the schemes define.
 
 pub mod fallback;
+pub mod layout;
 pub mod microsoft;
 pub mod sogou;
 pub mod xiaohe;
 pub mod ziguang;
 pub mod ziranma;
+
+pub(crate) mod builtin;
 
 #[cfg(test)]
 mod tests;
@@ -82,60 +90,85 @@ pub const fn key_index(key: u8) -> Option<usize> {
     }
 }
 
-/// One double-pinyin scheme: the letter that stands for each syllable initial and
+/// One double-pinyin layout: the letter that stands for each syllable initial and
 /// each syllable final.
 ///
-/// The tables are `const` because a scheme is a published standard, not a user
-/// preference. The one scheme that *is* a user preference -- a custom table -- is
-/// built at runtime from the configuration and has the same shape.
+/// A layout is data, not a preference baked into the type: the five published
+/// tables are compiled from the embedded documents in
+/// [`builtin`](self::builtin), and a user-defined layout is compiled from the
+/// configuration by [`layout::compile_layout`](layout::compile_layout). Both
+/// arrive in this one shape, which is what lets the rewrite treat them alike.
 ///
 /// A syllable is one or two keys: either a key that stands alone
 /// ([`standalone`](SchemeTable::standalone)), or an initial key followed by a final
 /// key. The full-pinyin spelling is the initial joined to the final, except that a
 /// final which already begins with its initial is used as it stands -- which is how
-/// the vowel-initial schemes write `an` as the `a` key followed by the `an` key
+/// the vowel-initial layouts write `an` as the `a` key followed by the `an` key
 /// without producing `aan`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemeTable {
-    /// Identifies the scheme in diagnostics and configuration.
+    /// Identifies the layout in diagnostics and configuration.
     pub id: SchemeId,
-    /// Human-readable name, as the scheme's publisher writes it. This is user-facing
-    /// copy, so it is Chinese like the rest of the window's text.
-    pub name: &'static str,
+    /// Human-readable name, as the layout's publisher writes it. This is
+    /// user-facing copy, so it is Chinese like the rest of the window's text.
+    pub name: String,
     /// `initials[slot]` is the syllable initial the key stands for.
     ///
-    /// `None` means the key cannot open a syllable. `Some("")` is the *zero initial*:
-    /// the key opens a vowel-initial syllable and contributes nothing to its
-    /// spelling, which is how the Microsoft, Sogou and Ziguang layouts write `an` as
-    /// `o` + the `an` key rather than `a` + the `an` key.
-    pub initials: [Option<&'static str>; SCHEME_KEYS],
+    /// `None` means the key cannot open a syllable. An initial that holds the
+    /// empty string is the *zero initial*: the key opens a vowel-initial syllable
+    /// and contributes nothing to its spelling, which is how the Microsoft, Sogou
+    /// and Ziguang layouts write `an` as `o` + the `an` key rather than `a` + the
+    /// `an` key.
+    pub initials: [Option<Box<str>>; SCHEME_KEYS],
     /// `finals[slot]` lists the finals the key stands for, most common first.
     ///
     /// A key carries more than one final because the syllable table is sparse enough
     /// to tell them apart: Xiaohe's `k` is `uai` before `g` and `ing` before `t`, and
     /// only one of the two joins into a syllable either way. The list is empty for a
     /// key that carries no final at all.
-    pub finals: [&'static [&'static str]; SCHEME_KEYS],
+    pub finals: [Vec<Box<str>>; SCHEME_KEYS],
     /// `standalone[slot]` is the syllable the key is on its own.
     ///
     /// Empty means the key alone is not a syllable. `a`, `e` and `o` carry one in
-    /// every scheme this build ships; the vowel-initial syllables reach their spelling
+    /// every published layout; the vowel-initial syllables reach their spelling
     /// through the initial-and-final path instead.
-    pub standalone: [&'static str; SCHEME_KEYS],
+    pub standalone: [Box<str>; SCHEME_KEYS],
 }
 
 impl SchemeTable {
-    /// Whether the scheme defines `slot` as a key at all.
+    /// The table a load degrades to: every key undefined, every lookup empty.
     ///
-    /// A key the scheme does not define is not part of its alphabet: a `;` typed into
-    /// a scheme that has no use for it is discarded rather than mapped to an empty
+    /// A layout whose document its validator refused never half-loads; this is
+    /// what a built-in document that failed its own compile (a shipping defect)
+    /// answers with, and what a custom table that never got any entries has the
+    /// shape of.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn empty(id: SchemeId) -> Self {
+        Self {
+            id,
+            name: String::new(),
+            initials: std::array::from_fn(|_| None),
+            finals: std::array::from_fn(|_| Vec::new()),
+            standalone: std::array::from_fn(|_| Box::from("")),
+        }
+    }
+
+    /// Whether the layout defines `slot` as a key at all.
+    ///
+    /// A key the layout does not define is not part of its alphabet: a `;` typed into
+    /// a layout that has no use for it is discarded rather than mapped to an empty
     /// syllable.
     ///
     /// # Panics
     ///
     /// Never.
     fn defines(&self, slot: usize) -> bool {
-        self.initials.get(slot).copied().flatten().is_some()
+        self.initials
+            .get(slot)
+            .is_some_and(|initial| initial.is_some())
             || self.finals.get(slot).is_some_and(|list| !list.is_empty())
             || self
                 .standalone
@@ -191,12 +224,12 @@ pub struct MappedSyllable {
 /// use ime_core::shuangpin::{map_syllable, xiaohe};
 ///
 /// // Xiaohe spells `zhong` as `v` (zh) followed by `s` (ong).
-/// let mapped = map_syllable(&xiaohe::XIAOHE, b"vs").ok().flatten();
+/// let mapped = map_syllable(xiaohe::table(), b"vs").ok().flatten();
 /// assert_eq!(mapped.map(|mapped| mapped.consumed), Some(2));
 /// assert_eq!(mapped.and_then(|mapped| syllable_at(mapped.full)), Some("zhong"));
 ///
-/// // A pair the scheme cannot spell is reported, not guessed at.
-/// assert_eq!(map_syllable(&xiaohe::XIAOHE, b"bz").ok().flatten(), None);
+/// // A pair the layout cannot spell is reported, not guessed at.
+/// assert_eq!(map_syllable(xiaohe::table(), b"bz").ok().flatten(), None);
 /// ```
 pub fn map_syllable(table: &SchemeTable, keys: &[u8]) -> Result<Option<MappedSyllable>, ImeError> {
     if !table.id.is_known() {
@@ -218,19 +251,21 @@ pub fn map_syllable(table: &SchemeTable, keys: &[u8]) -> Result<Option<MappedSyl
     Ok(standalone_syllable(table, first_slot))
 }
 
-/// The scheme tables this build ships, in scheme-number order.
+/// Returns the tables the built-in layouts are published with, in scheme-number
+/// order.
 ///
-/// This list is the one place a scheme is registered: [`table_for`] searches it, and a
-/// test walks it to check that every table identifies itself by the number it is
+/// This list is the one place a layout is registered: [`table_for`] searches it,
+/// and a test walks it to check that every table identifies itself by the number it is
 /// registered under. [`SchemeId::FULL`] is deliberately absent -- full pinyin is the
-/// identity and needs no table.
-pub static TABLES: [(SchemeId, &SchemeTable); 5] = [
-    (SchemeId::XIAOHE, &xiaohe::XIAOHE),
-    (SchemeId::ZIRANMA, &ziranma::ZIRANMA),
-    (SchemeId::MICROSOFT, &microsoft::MICROSOFT),
-    (SchemeId::SOGOU, &sogou::SOGOU),
-    (SchemeId::ZIGUANG, &ziguang::ZIGUANG),
-];
+/// identity and needs no table. The first call compiles the embedded documents;
+/// afterwards the list is a slice read.
+///
+/// # Panics
+///
+/// Never.
+pub fn tables() -> &'static [(SchemeId, SchemeTable)] {
+    builtin::tables()
+}
 
 /// Returns the table a scheme is implemented by.
 ///
@@ -253,8 +288,8 @@ pub fn table_for(scheme: SchemeId) -> Result<Option<&'static SchemeTable>, ImeEr
     if scheme == SchemeId::FULL {
         return Ok(None);
     }
-    match TABLES.iter().find(|(id, _)| *id == scheme) {
-        Some((_, table)) => Ok(Some(*table)),
+    match tables().iter().find(|(id, _)| *id == scheme) {
+        Some((_, table)) => Ok(Some(table)),
         None => Err(ImeError::SchemeUnsupported {
             scheme: scheme.value(),
         }),
@@ -615,9 +650,12 @@ fn pair_syllable(
     final_slot: usize,
     scratch: &mut String,
 ) -> Option<MappedSyllable> {
-    let initial = table.initials.get(initial_slot).copied().flatten()?;
+    let initial = table
+        .initials
+        .get(initial_slot)
+        .and_then(|slot| slot.as_deref())?;
     let finals = table.finals.get(final_slot)?;
-    for final_text in *finals {
+    for final_text in finals {
         if let Some(full) = compose_into(initial, final_text, scratch) {
             return Some(MappedSyllable { full, consumed: 2 });
         }
@@ -625,9 +663,9 @@ fn pair_syllable(
     None
 }
 
-/// Returns the syllable a key stands for on its own, if the scheme gives it one.
+/// Returns the syllable a key stands for on its own, if the layout gives it one.
 fn standalone_syllable(table: &SchemeTable, slot: usize) -> Option<MappedSyllable> {
-    let text = table.standalone.get(slot).copied().unwrap_or("");
+    let text: &str = table.standalone.get(slot).map(|text| &**text).unwrap_or("");
     if text.is_empty() {
         return None;
     }

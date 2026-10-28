@@ -12,6 +12,9 @@ description = "rspinyin core decoding engine: syllable segmentation, word lattic
 ime-types.workspace = true
 smallvec.workspace = true
 tracing.workspace = true # count-only engine diagnostics
+meval.workspace = true # pure math-expression evaluation for the quick-input calculator
+serde.workspace = true # shuangpin layout document deserialization
+toml.workspace = true # built-in shuangpin layout documents, parsed once at load
 
 [dev-dependencies]
 criterion.workspace = true
