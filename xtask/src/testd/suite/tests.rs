@@ -108,6 +108,7 @@ fn report() -> EnvCapabilities {
     EnvCapabilities {
         fcitx5_version: Some(String::from("5.1.7")),
         dev_packages: true,
+        xvfb: true,
         addons_loaded: Vec::new(),
         display_server: DisplayServer::X11,
         compositor: Some(String::from("weston")),
@@ -362,25 +363,51 @@ fn test_tail_keeps_the_last_lines_and_drops_the_rest() {
 #[test]
 fn test_execute_reports_the_exit_status_of_a_real_command() {
     let cwd = std::env::temp_dir();
-    let success = command::execute("true", &cwd);
+    let success = command::execute_with("true", &cwd, &[]);
     assert_eq!(success.outcome, CommandOutcome::Exited { code: Some(0) });
     assert!(success.outcome.is_success());
     assert_eq!(success.executed, "true");
 
-    let failure = command::execute("false", &cwd);
+    let failure = command::execute_with("false", &cwd, &[]);
     assert_eq!(failure.outcome, CommandOutcome::Exited { code: Some(1) });
     assert!(failure.outcome.is_failure());
 }
 
 #[test]
 fn test_execute_reports_a_program_that_is_not_there() {
-    let run = command::execute("rspinyin-suite-no-such-program", &std::env::temp_dir());
+    let run = command::execute_with("rspinyin-suite-no-such-program", &std::env::temp_dir(), &[]);
     assert!(run.outcome.is_not_started(), "{:?}", run.outcome);
     assert!(!run.outcome.is_success());
     assert!(run.outcome.describe().contains("could not be started"));
 
-    let empty = command::execute("", &std::env::temp_dir());
+    let empty = command::execute_with("", &std::env::temp_dir(), &[]);
     assert!(empty.outcome.is_not_started(), "{:?}", empty.outcome);
+}
+
+#[test]
+fn test_execute_with_injects_the_display_a_case_command_must_inherit() {
+    // The injected name is one no desktop session takes, so the assertions hold on a machine
+    // whose own `$DISPLAY` is set as well as on one that has none.
+    let injected = ":9091";
+    let run = command::execute_with(
+        "printenv DISPLAY",
+        &std::env::temp_dir(),
+        &[("DISPLAY".to_owned(), String::from(injected))],
+    );
+    assert!(run.outcome.is_success(), "{:?}", run.outcome);
+    assert_eq!(
+        run.stdout_tail.trim_end(),
+        injected,
+        "the injected display overrides whatever the session had"
+    );
+
+    let inert = command::execute_with("printenv DISPLAY", &std::env::temp_dir(), &[]);
+    assert!(
+        inert.outcome.is_success() && inert.stdout_tail.trim_end() != injected,
+        "an empty injection leaves the inherited environment alone: {:?} {:?}",
+        inert.outcome,
+        inert.stdout_tail
+    );
 }
 
 #[test]
@@ -644,6 +671,16 @@ fn test_suite_args_default_to_the_results_tree_and_the_core_module() {
         matches.get_many::<String>("only").is_none(),
         "without --only, the whole module runs"
     );
+    assert!(
+        !matches.get_flag("xvfb"),
+        "the default channel is the machine's own display, not a virtual one"
+    );
+    let virtual_display = SuiteArgs::augment_args(Command::new("suite"))
+        .get_matches_from(["suite", "--xvfb"]);
+    assert!(
+        virtual_display.get_flag("xvfb"),
+        "the flag names the xvfb channel"
+    );
 
     let named = SuiteArgs::augment_args(Command::new("suite")).get_matches_from([
         "suite",
@@ -678,6 +715,39 @@ fn test_results_root_resolves_a_relative_path_against_the_repository() {
     assert_eq!(
         results_root(Path::new("/elsewhere/results"), root),
         PathBuf::from("/elsewhere/results")
+    );
+}
+
+/// A `SuiteArgs` with the xvfb flag set as named.
+fn args_with_xvfb(xvfb: bool) -> SuiteArgs {
+    SuiteArgs {
+        results_root: PathBuf::from("results"),
+        only: Vec::new(),
+        module: String::from(CORE_MODULE),
+        tier: TierFilter::Smoke,
+        xvfb,
+    }
+}
+
+#[test]
+fn test_arrange_channel_runs_without_a_channel_when_the_flag_is_off() {
+    let channel = arrange_channel(&args_with_xvfb(false), &report())
+        .expect("the flag off is not a refusal");
+    assert!(
+        channel.is_none(),
+        "the default channel is the machine's own display"
+    );
+}
+
+#[test]
+fn test_arrange_channel_without_the_tool_is_a_skip_and_not_a_failure() {
+    let mut missing = report();
+    missing.xvfb = false;
+    let channel = arrange_channel(&args_with_xvfb(true), &missing)
+        .expect("a missing tool is a skip, not a refusal");
+    assert!(
+        channel.is_none(),
+        "the run continues without the channel, and the gate withholds the display cases"
     );
 }
 

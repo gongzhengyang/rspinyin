@@ -221,6 +221,9 @@ pub struct EnvCapabilities {
     pub fcitx5_version: Option<String>,
     /// Whether `pkg-config` finds the Fcitx5 development package.
     pub dev_packages: bool,
+    /// Whether the Xvfb virtual display server is on `$PATH`, which the rendering
+    /// regression tier's private display needs.
+    pub xvfb: bool,
     /// The addons this product ships, each with the category its descriptor declares and
     /// whether a session reported it loaded.
     pub addons_loaded: Vec<AddonState>,
@@ -299,6 +302,7 @@ impl EnvCapabilities {
         Self {
             fcitx5_version: observation.fcitx5_version.clone(),
             dev_packages: observation.fcitx5_version.is_some(),
+            xvfb: observation.xvfb,
             addons_loaded: addons::states(
                 &observation.addon_descriptors,
                 observation.session_log.as_deref(),
@@ -388,6 +392,7 @@ impl EnvCapabilities {
             self.fcitx5_version.as_deref().unwrap_or("unknown")
         ));
         lines.push(format!("dev_packages: {}", self.dev_packages));
+        lines.push(format!("xvfb: {}", self.xvfb));
         lines.push(format!("cjk_font_count: {}", self.cjk_font_count));
         lines.push(format!("writable_data_dir: {}", self.writable_data_dir));
         lines.push(format!("concurrent_agents: {}", self.concurrent_agents));

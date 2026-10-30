@@ -51,6 +51,29 @@ fn test_eligibility_reads_a_pending_annotation_over_the_table() {
 }
 
 #[test]
+fn test_eligibility_records_needs_environment_with_the_install_remedy_for_an_xvfb_case() {
+    // A machine without the Xvfb binary does not fail an Xvfb case: the three-state ledger
+    // records needs-environment with the channel's own install remedy, so a headless CI run
+    // stays green while saying exactly what it could not exercise.
+    let meta = case("TC-UI-02", "ui", EnvRequirement::XvfbSession);
+    let env = EnvCapabilities::from_observation(&nothing());
+    let eligibility = eligibility_of(&meta, &env);
+    match &eligibility {
+        super::CaseEligibility::NeedsEnvironment { remedy } => {
+            assert!(remedy.contains("install xvfb"), "{remedy}");
+        }
+        other => panic!("an Xvfb case without the tool is needs-environment, got {other:?}"),
+    }
+    let claim = eligibility.claim().expect("a withheld case owes a claim");
+    assert!(
+        claim.actual.starts_with("needs-environment: "),
+        "the claim names its state: {}",
+        claim.actual
+    );
+    assert!(!claim.pass, "nothing was judged, so nothing passed");
+}
+
+#[test]
 fn test_eligibility_maps_the_table_verdicts_to_the_three_states() {
     // A runnable case on a machine that serves it: no claim, the case's own assertions are
     // its record.

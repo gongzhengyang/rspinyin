@@ -51,6 +51,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, ensure};
 
 use self::SpecCell::{MetricAfter, ThresholdAfter, ThresholdFirst, ThresholdZero};
+use crate::tune::purity::PurityCheck;
 pub(crate) use self::bench::{SIGMAS, owner};
 pub(crate) use self::memory::run as run_memory;
 pub(crate) use self::spec::{Spec, compare};
@@ -464,15 +465,24 @@ pub fn run(actions: Actions<'_>) -> Result<()> {
 ///
 /// `group` narrows the assertion to one criterion group (`decode`, `input`,
 /// `passthrough`, ...); `None` asserts every case that has a binding. The command
-/// fails when a bound case has no criterion output at all, when a measured case is past
-/// its threshold, and when `group` names a group no case is bound to -- a gate that
+/// fails when the machine fails the collection-purity gate (which is what makes
+/// `just bench` refuse a loaded machine instead of blessing its numbers), when a
+/// bound case has no criterion output at all, when a measured case is past its
+/// threshold, and when `group` names a group no case is bound to -- a gate that
 /// asserted nothing because nothing matched must not pass.
 ///
 /// # Errors
-/// Returns an error when the budget document is invalid, when the criterion output
-/// cannot be read, when `group` names a group no case is bound to, when a bound case is
-/// missing from the output, or when any measured case is past its threshold.
+/// Returns an error when the machine is too busy to have benchmarked on, when the
+/// budget document is invalid, when the criterion output cannot be read, when
+/// `group` names a group no case is bound to, when a bound case is missing from the
+/// output, or when any measured case is past its threshold.
 pub fn run_check(group: Option<&str>) -> Result<()> {
+    // The numbers on disk were taken minutes ago, on the same machine this
+    // process runs on: a load that has not settled since the run is evidence
+    // about the run itself, so the gate refuses to bless it. A refusal right
+    // after a heavy build can be that build's one-minute tail -- the gate's
+    // refusal text says so, and a re-run a minute later is the remedy.
+    PurityCheck::read().and_then(|check| check.verify())?;
     let root = repo_root()?;
     let dir = bench::criterion_dir(&root);
     let recorded = meta::write(&dir)?;

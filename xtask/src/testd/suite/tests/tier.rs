@@ -35,6 +35,8 @@ fn args_of(tier: TierFilter) -> SuiteArgs {
         only: Vec::new(),
         module: String::from(CORE_MODULE),
         tier,
+        // The tier tests plan and judge, and none of them arranges a display.
+        xvfb: false,
     }
 }
 

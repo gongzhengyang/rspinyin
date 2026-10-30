@@ -717,9 +717,6 @@ pub fn step(
     env: &SessionEnv<'_>,
 ) -> Effects {
     if sess.state == SessionState::Idle {
-        // The custom layout rides the same idle latch as the scheme keys: a table the
-        // configuration carries is a `&'static` reference, so the latch copies a
-        // pointer and the table a composition still holds outlives any reload.
         sess.scheme
             .latch(cfg.scheme, cfg.keep_full_pinyin, cfg.custom_layout);
         // The fuzzy classes latch beside the scheme, and are clamped to the mask the

@@ -15,10 +15,17 @@ use ime_types::{DecodeFlags, KeyAction, SchemeId};
 use super::{
     Fixture, Session, SessionConfig, composing, diagnosed, frame_of, index_of, kinds, preedit_text,
 };
-use crate::shuangpin::{SchemeMap, SchemeTable};
+use crate::shuangpin::SchemeMap;
+use crate::shuangpin::SchemeTable;
+use crate::shuangpin::key_index;
 use crate::shuangpin::layout::{compile_layout, parse_layout};
 use crate::state::scheme::SchemeSession;
 use crate::state::{SessionEvent, step};
+
+/// The Xiaohe layout document, the fixture a user layout is modelled on: the card
+/// asks for the chain a user TOML takes to be proven against a real layout, and this
+/// document is a real one.
+const USER_DOCUMENT: &str = include_str!("../../shuangpin/data/xiaohe.toml");
 
 /// A configuration with the Xiaohe layout active and the mixed-input reading on.
 fn xiaohe_config() -> SessionConfig {
@@ -28,35 +35,22 @@ fn xiaohe_config() -> SessionConfig {
     }
 }
 
-/// The compiled user-defined layout the custom-layout tests run under.
-///
-/// The fixture is the shipped Xiaohe document with two finals swapped between their
-/// keys: `b` carries `ao` where the published layout carries `in`, and `c` carries
-/// `in` where it carries `ao`. A permutation of finals across keys keeps every
-/// syllable reachable, so the document still passes the validator a user's layout goes
-/// through, while `vb` spells `zh` + `ao` here where the published table reads
-/// `zh` + `in` -- which is what lets the tests below tell the custom table from the
-/// built-in one.
+/// Compiles the fixture document the way the configuration layer compiles a user's
+/// own layout: through the shared loader and validator, under the number-less id, and
+/// parked for `'static` so it can ride the session's `Copy` slot.
 fn custom_layout() -> &'static SchemeTable {
-    let document = include_str!("../../shuangpin/data/xiaohe.toml")
-        .replace("b = \"in\"", "b = \"ao\"")
-        .replace("c = \"ao\"", "c = \"in\"");
-    let document = parse_layout(&document).expect("the fixture is a layout document");
-    Box::leak(Box::new(
-        compile_layout(&document, SchemeId::FULL).expect("the fixture layout is valid"),
-    ))
+    let document = parse_layout(USER_DOCUMENT).expect("the fixture document parses");
+    let table = compile_layout(&document, SchemeId::FULL).expect("the fixture layout compiles");
+    Box::leak(Box::new(table))
 }
 
-/// A configuration with the user-defined layout active, through the custom slot.
-///
-/// The scheme stays full pinyin, which is the number a compiled custom table
-/// identifies itself by: the slot, not the number, is what makes the session a
-/// double-pinyin one.
-fn custom_config() -> SessionConfig {
-    SessionConfig {
-        custom_layout: Some(custom_layout()),
-        ..SessionConfig::default()
-    }
+/// The fixture layout with the key that closes `hao` carrying nothing, so the tables
+/// a test swaps between read the same keystrokes differently.
+fn custom_layout_without_c_finals() -> &'static SchemeTable {
+    let mut table = custom_layout().clone();
+    let slot = key_index(b'c').expect("`c` is a scheme key");
+    table.finals[slot].clear();
+    Box::leak(Box::new(table))
 }
 
 /// The texts of a session's candidates, in order.
@@ -390,93 +384,126 @@ fn test_scheme_walk_counts_the_syllables_the_rewrite_counts() {
 }
 
 #[test]
-fn test_custom_layout_session_decodes_the_rewritten_input() {
-    // The user's own layout answers the keystrokes: under the fixture's permutation
-    // `vbcb` is `zh` + `ao` then `c` + `ao` -- `zhaocao` -- where the published Xiaohe
-    // table would have read the same keys starting `zh` + `in`. The buffer keeps what
-    // was pressed and the decode reads the spelling the custom table stands for.
-    let cfg = custom_config();
+fn test_custom_layout_session_decodes_the_compiled_table() {
+    // The whole chain in miniature: a layout compiled the way the configuration
+    // compiles the user's own -- same loader, same validator, no scheme number --
+    // riding the slot a reload fills. The selection beside it stays full pinyin,
+    // because a custom layout travels in its own slot and not in the numbering.
+    let cfg = SessionConfig {
+        custom_layout: Some(custom_layout()),
+        ..SessionConfig::default()
+    };
+    assert_eq!(cfg.scheme, SchemeId::FULL);
     let fixture = Fixture::new();
     let env = fixture.env();
-    let session = composing(&cfg, &env, "vbcb");
+    let session = composing(&cfg, &env, "nihc");
 
-    assert_eq!(session.buf.raw(), "vbcb", "the keys are kept as typed");
+    assert_eq!(session.buf.raw(), "nihc", "the keys are kept as typed");
     assert_eq!(
         session.dag().normalized(),
-        "zhaocao",
-        "the graph describes the spelling the custom layout stands for"
-    );
-    let request = session.request();
-    assert_eq!(
-        request.scheme, SchemeId::FULL,
-        "a custom layout has no number of its own to travel under"
+        "nihao",
+        "the user's layout answers the keys"
     );
     assert!(
-        request.flags.contains(DecodeFlags::SHUANGPIN),
-        "the custom slot turns the double-pinyin switch on"
+        index_of(&session, "你好").is_some(),
+        "the candidates are the ones the layout's reading spells"
     );
-    assert_eq!(request.raw, "zhaocao");
+    let request = session.request();
+    assert!(request.flags.contains(DecodeFlags::SHUANGPIN));
+    // A custom layout has no number in the frozen numbering, so the request travels
+    // under the selection it rode beside -- here the identity scheme.
+    assert_eq!(request.scheme, SchemeId::FULL);
 }
 
 #[test]
-fn test_custom_layout_backspace_removes_a_whole_custom_syllable() {
-    // The grid a custom session reports is the one Backspace deletes by, and it is
-    // the custom reading's: one keystroke removes the two keys the layout joined into
-    // one syllable.
-    let cfg = custom_config();
+fn test_custom_layout_replaces_the_table_the_selection_names() {
+    // The user's own layout is the layout that answers the keys, whatever the
+    // selection beside it names: the selected scheme is what a refused layout falls
+    // back to, never an override of one that loaded.
+    let cfg = SessionConfig {
+        scheme: SchemeId::XIAOHE,
+        custom_layout: Some(custom_layout_without_c_finals()),
+        ..SessionConfig::default()
+    };
     let fixture = Fixture::new();
     let env = fixture.env();
-    let mut session = composing(&cfg, &env, "vbcb");
+    let session = composing(&cfg, &env, "nihc");
+
+    // Under the built-in Xiaohe table these keys read ni'hao; under the user's
+    // layout the key that closed `hao` carries nothing, so the keys are read as
+    // typed and the decode degrades -- which is what makes the two tables
+    // distinguishable here.
+    assert_eq!(session.dag().normalized(), "nihc");
+    assert!(
+        index_of(&session, "你好").is_none(),
+        "the built-in reading did not leak through the custom slot"
+    );
+}
+
+#[test]
+fn test_composition_survives_a_reload_that_swaps_the_layout_table() {
+    // A reload that swaps the custom table mid-composition (prohibition 23) changes
+    // nothing about the input in progress: the composition keeps the table it
+    // started under -- re-reading the input would move the candidate list under the
+    // caret -- and the swapped table answers the next composition. The park is what
+    // makes this safe: the old table outlives the composition that latched it, so
+    // the session never holds a dangling reference.
+    let cfg = SessionConfig {
+        custom_layout: Some(custom_layout()),
+        ..SessionConfig::default()
+    };
+    let reloaded = SessionConfig {
+        custom_layout: Some(custom_layout_without_c_finals()),
+        ..SessionConfig::default()
+    };
+    let fixture = Fixture::new();
+    let env = fixture.env();
+    let mut session = composing(&cfg, &env, "nihc");
+
+    let _ = step(
+        &mut session,
+        SessionEvent::ConfigReloaded(reloaded),
+        &cfg,
+        &env,
+    );
+
+    assert_eq!(session.buf.raw(), "nihc", "the input is untouched");
+    assert_eq!(
+        session.dag().normalized(),
+        "nihao",
+        "the reading did not change under the caret"
+    );
+
+    // Finish the composition; the swapped table answers the next one. `hc` is the
+    // pair the two tables read differently: `hao` under the one that loaded, the
+    // carried keystrokes under the one the reload brought.
+    let _ = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
+    let _ = step(&mut session, SessionEvent::CommitDone, &cfg, &env);
+    let _ = session.handle_key(KeyAction::InputChar('h'), &reloaded, &env);
+    let _ = session.handle_key(KeyAction::InputChar('c'), &reloaded, &env);
+
+    assert_eq!(
+        session.dag().normalized(),
+        "hc",
+        "the swapped table answers the composition that follows"
+    );
+}
+
+#[test]
+fn test_custom_layout_walk_counts_the_grid_by_scheme_syllable() {
+    // The grid is what Backspace deletes by, so it has to be the walk's own units for
+    // a custom table too: two keystroke pairs are two units, whatever table answered.
+    let cfg = SessionConfig {
+        custom_layout: Some(custom_layout()),
+        ..SessionConfig::default()
+    };
+    let fixture = Fixture::new();
+    let env = fixture.env();
+    let mut session = composing(&cfg, &env, "nihc");
 
     let effects = session.handle_key(KeyAction::Backspace, &cfg, &env);
 
     assert_eq!(kinds(&effects), ["update-preedit", "send-frame"]);
-    assert_eq!(session.buf.raw(), "vb", "both keys of `cao` went together");
-    assert_eq!(session.dag().normalized(), "zhao");
-}
-
-#[test]
-fn test_custom_layout_reload_mid_composition_keeps_the_session_alive() {
-    // The swap a reload brings must be safe for the composition in progress: the
-    // input, the reading and the session state survive it, the running composition
-    // finishes under the table it started with, and the table the reload carried
-    // answers the next composition.
-    let custom = custom_config();
-    let replaced = xiaohe_config();
-    let fixture = Fixture::new();
-    let env = fixture.env();
-    let mut session = composing(&custom, &env, "vb");
-
-    let _ = step(
-        &mut session,
-        SessionEvent::ConfigReloaded(replaced),
-        &custom,
-        &env,
-    );
-
-    assert_eq!(session.buf.raw(), "vb", "the reload touched no session state");
-    let _ = session.handle_key(KeyAction::InputChar('c'), &replaced, &env);
-    // Under the custom table the new key starts a syllable of its own and is carried
-    // as the literal it spells alone; the published table the reload brought would
-    // have read `b` as `in`, so `zhao` here is the old reading still standing.
-    assert_eq!(
-        session.dag().normalized(),
-        "zhaoc",
-        "the composition keeps the reading it started under"
-    );
-    assert_eq!(session.request().raw, "zhaoc");
-
-    // Finish the composition and start the next one, which the reload's own table
-    // answers: `xb` is `x` + `in` there -- the published `b` final -- where the custom
-    // table, whose `b` now carries `ao`, would have carried both keys as typed.
-    let _ = session.handle_key(KeyAction::Escape, &replaced, &env);
-    let _ = step(&mut session, SessionEvent::PreeditCleared, &replaced, &env);
-    let _ = session.handle_key(KeyAction::InputChar('x'), &replaced, &env);
-    let _ = session.handle_key(KeyAction::InputChar('b'), &replaced, &env);
-
-    assert_eq!(session.request().scheme, SchemeId::XIAOHE);
-    assert_eq!(
-        session.request().raw, "xin",
-        "the next composition reads the layout the reload brought"
-    );
+    assert_eq!(session.buf.raw(), "ni", "both keys of `hao` went together");
+    assert_eq!(session.dag().normalized(), "ni");
 }

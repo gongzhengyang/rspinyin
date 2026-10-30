@@ -84,6 +84,7 @@ fn holdout_args(holdout: PathBuf, corpus: PathBuf) -> TuneArgs {
         gen_holdout: true,
         holdout_rows: 8_000,
         grid: false,
+        sweep: None,
     }
 }
 
@@ -100,6 +101,7 @@ fn scratch_args(dir: &Path, corpus: &str) -> TuneArgs {
         gen_holdout: true,
         holdout_rows: 6_000,
         grid: false,
+        sweep: None,
     }
 }
 

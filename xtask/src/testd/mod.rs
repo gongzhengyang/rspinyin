@@ -29,7 +29,8 @@
 //! conversion, [`x11`] the connection and the protocol, and [`input`] the injection policy.
 //! [`mirror_cli`] and [`capture_cli`] are the command-line surfaces of the frame snapshot
 //! and the screenshot channels: `xtask test-mirror` reads what an armed session published,
-//! `xtask capture` reads a window's pixels back from the server.
+//! `xtask capture` reads a window's pixels back from the server. [`xvfb`] manages the
+//! private virtual display the rendering regression tier runs its cases on.
 
 pub mod attribution;
 pub mod budget_gate;
@@ -60,6 +61,7 @@ pub mod suite;
 pub mod ui_metrics;
 pub mod uiframe;
 pub mod x11;
+pub mod xvfb;
 
 use std::time::Duration;
 

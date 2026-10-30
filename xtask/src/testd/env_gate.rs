@@ -201,6 +201,8 @@ impl Executability {
 pub enum EnvRequirement {
     /// A live X11 session, at whatever display the session names.
     X11Session,
+    /// A private Xvfb virtual display the rendering regression tier runs its cases on.
+    XvfbSession,
     /// A live Fcitx5 session that loads both addons.
     Fcitx5Session,
     /// One of the real Wayland compositor tiers of `features.md` 0.5.2.
@@ -230,6 +232,7 @@ impl EnvRequirement {
     pub fn label(&self) -> &str {
         match self {
             Self::X11Session => "X11 会话",
+            Self::XvfbSession => "Xvfb 会话",
             Self::Fcitx5Session => "fcitx5 会话",
             Self::WaylandTier => "Wayland wlroots/KWin/Mutter",
             Self::CompositorBlur => "合成器模糊",
@@ -254,6 +257,7 @@ impl EnvRequirement {
     pub fn parse(text: &str) -> Self {
         match text.trim().trim_matches('`').trim() {
             "X11 会话" => Self::X11Session,
+            "Xvfb 会话" => Self::XvfbSession,
             "fcitx5 会话" => Self::Fcitx5Session,
             "Wayland wlroots/KWin/Mutter" => Self::WaylandTier,
             "合成器模糊" => Self::CompositorBlur,

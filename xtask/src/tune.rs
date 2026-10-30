@@ -19,13 +19,17 @@
 //! The module is split by responsibility: this root holds the command line and the
 //! repository root, [`io`] reads the table formats, [`lexicon`] serves the word list and
 //! the model built from it, [`eval`] ranks the candidates and measures them, [`grid`]
-//! searches the weights, and [`holdout`] derives the held-out set.
+//! searches the weights, [`holdout`] derives the held-out set, [`sweep`] grid-searches
+//! the dictionary-build knobs against the held-out ranking, and [`purity`] gates every
+//! latency-sensitive collection this module drives.
 
 mod eval;
 mod grid;
 mod holdout;
 mod io;
 mod lexicon;
+pub(crate) mod purity;
+mod sweep;
 
 #[cfg(test)]
 mod tests;
@@ -86,7 +90,8 @@ pub struct TuneArgs {
     /// runs on this set. The weight column is optional and defaults to one.
     #[arg(long, default_value = DEFAULT_EVAL)]
     eval: PathBuf,
-    /// Holdout set; written by `--gen-holdout` and read by nothing else here.
+    /// Holdout set; written by `--gen-holdout`, measured by `--sweep`, and read
+    /// by nothing else here.
     #[arg(long, default_value = DEFAULT_HOLDOUT)]
     holdout: PathBuf,
     /// L3c correction table, read by `--gen-holdout` to attribute a row to the layer
@@ -106,6 +111,13 @@ pub struct TuneArgs {
     /// Grid-search the weights on the evaluation set instead of scoring them.
     #[arg(long)]
     grid: bool,
+    /// Run the parameter-grid sweep the TOML file at this path describes,
+    /// instead of scoring weights: every grid point compiles the dictionary
+    /// through `dictc` with the point's values and measures the compiled
+    /// ranking against the holdout set. The tool recommends; writing a default
+    /// back is a human adjudication recorded under `docs/dev/research/`.
+    #[arg(long, value_name = "SPEC", conflicts_with_all = ["gen_holdout", "grid"])]
+    sweep: Option<PathBuf>,
 }
 
 /// Entry point for `xtask tune`.
@@ -114,8 +126,9 @@ pub struct TuneArgs {
 ///
 /// Returns an error when an input file cannot be read, when a row does not carry the
 /// columns its format promises, when the tuning set and the holdout set are the same file,
-/// or when the corpus cannot contribute to every band of the holdout set or reach its
-/// floor.
+/// when the corpus cannot contribute to every band of the holdout set or reach its
+/// floor, when the machine fails the sweep's purity gate, or when the sweep spec is
+/// unusable or a sweep grid point fails to compile.
 pub fn run(args: TuneArgs) -> Result<()> {
     ensure!(
         args.eval != args.holdout,
@@ -126,6 +139,9 @@ pub fn run(args: TuneArgs) -> Result<()> {
     let root = resolve_root(args.root.as_deref())?;
     if args.gen_holdout {
         return generate_holdout(&root, &args);
+    }
+    if let Some(spec) = args.sweep.as_deref() {
+        return sweep::run(&root, spec, &args.holdout);
     }
     let l1 = load_l1(&root.join(&args.l1))?;
     let lexicon = build_lexicon(&root.join(DEFAULT_WORDS), &l1)?;

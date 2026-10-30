@@ -26,7 +26,10 @@
 //! ABI boundary and written to a record rather than killing the daemon -- so a crashing
 //! plugin is one that stays alive with a flat resident set. And the load average is recorded
 //! so that a run taken on a busy machine is visibly not comparable with one taken on an idle
-//! one, which is the only condition under which the drift it measures means anything.
+//! one, which is the only condition under which the drift it measures means anything. That
+//! condition is now also enforced before the run starts: [`crate::tune::purity`] refuses a
+//! busy machine outright, so the annotation below is a second line of defence rather than
+//! the only one.
 //!
 //! # Why the report is a file rather than an exit code
 //!
@@ -87,6 +90,7 @@ use anyhow::{Result, ensure};
 use clap::Args;
 
 use crate::budget;
+use crate::tune::purity::PurityCheck;
 use crate::testd::x11::Window;
 
 /// Everything the soak tool can refuse to do before a run exists.
@@ -200,15 +204,20 @@ pub struct SoakArgs {
 ///
 /// # Errors
 ///
-/// Returns an error when the schedule the arguments describe is not one a run can follow,
-/// when no process can be resolved to sample, when the display cannot be opened or has no
-/// XTEST extension, when the window to type into cannot be resolved or focused, and when
-/// the report cannot be written. A run that started and then went badly is not an error:
-/// see the module documentation.
+/// Returns an error when the machine fails the collection-purity gate, when the schedule
+/// the arguments describe is not one a run can follow, when no process can be resolved to
+/// sample, when the display cannot be opened or has no XTEST extension, when the window to
+/// type into cannot be resolved or focused, and when the report cannot be written. A run
+/// that started and then went badly is not an error: see the module documentation.
 pub fn run(args: SoakArgs) -> Result<()> {
     if let Some(path) = &args.assert {
         return assert_report(path);
     }
+    // Judging an old report reads a number that already exists; taking a new
+    // one claims the machine it runs on. The gate refuses a busy machine before
+    // any session is started or any sample is taken, because a drift measured
+    // under load measures the load.
+    PurityCheck::read().and_then(|check| check.verify())?;
     let plan = Plan::new(args.hours, args.rate_hz, args.interval_s, args.warmup_s)?;
     driver::run(driver::DriverArgs {
         plan,

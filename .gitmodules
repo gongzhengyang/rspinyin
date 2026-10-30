@@ -1,12 +1,12 @@
-[submodule "remarks/fcitx5-rime"]
-	path = remarks/fcitx5-rime
+[submodule "references/fcitx5-rime"]
+	path = references/fcitx5-rime
 	url = https://github.com/fcitx/fcitx5-rime
-[submodule "remarks/rime-ice"]
-	path = remarks/rime-ice
+[submodule "references/rime-ice"]
+	path = references/rime-ice
 	url = https://github.com/iDvel/rime-ice
-[submodule "remarks/librime"]
-	path = remarks/librime
+[submodule "references/librime"]
+	path = references/librime
 	url = https://github.com/rime/librime.git
-[submodule "remarks/WindInput"]
-	path = remarks/WindInput
+[submodule "references/WindInput"]
+	path = references/WindInput
 	url = https://github.com/huanfeng/WindInput.git

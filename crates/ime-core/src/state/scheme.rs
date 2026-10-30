@@ -56,11 +56,10 @@
 //! The layout is adopted while the session is idle and is not re-read once a
 //! composition is live. A reload therefore cannot change the reading of the input the
 //! user has already typed -- which would make the candidate list jump under the caret
-//! -- and the new layout answers from the next composition on (0.4 rule 10). The
-//! user-defined layout a reload carries latches through the same idle adoption: the
-//! table a composition holds is a `&'static` reference that no reload frees or
-//! mutates, so the swap in force changes underneath it without ever touching the
-//! running session's state.
+//! -- and the new layout answers from the next composition on (0.4 rule 10). The same
+//! deferral covers a user-defined layout: the slot it rides in is latched beside the
+//! scheme, so a reload that swaps the table leaves the composition in progress under
+//! the table it started with and swaps only for the composition that follows.
 
 use ime_types::{ImeError, SchemeId};
 use smallvec::SmallVec;
@@ -78,14 +77,15 @@ use crate::shuangpin::{SchemeMap, SchemeTable, table_for};
 pub(crate) struct SchemeSession {
     /// The layout the current composition's keystrokes follow.
     scheme: SchemeId,
+    /// The user-defined layout the configuration compiled, when one is latched.
+    ///
+    /// `Some` replaces the table [`SchemeId`] selects: the user's layout is the one
+    /// that answers the keys. The table behind the reference is owned by the layer
+    /// that compiled it and outlives every session, so the slot is a plain copy and
+    /// the walk borrows it.
+    custom: Option<&'static SchemeTable>,
     /// Whether a keystroke the layout cannot read is read as full pinyin.
     keep_full_pinyin: bool,
-    /// The user-defined layout, compiled once per configuration adoption and latched
-    /// beside the scheme. `Some` while a custom layout is active, in which case
-    /// `scheme` carries [`SchemeId::FULL`] -- the number the compiled table identifies
-    /// itself by -- and this table, not [`table_for`]'s built-in list, is what the
-    /// rewrite reads.
-    custom: Option<&'static SchemeTable>,
     /// The layout's own reading of the keystrokes, and the syllable alignment it
     /// carries. Empty while full pinyin is active.
     map: SchemeMap,
@@ -103,7 +103,7 @@ pub(crate) struct SchemeSession {
 
 impl Default for SchemeSession {
     /// The state of a session that has not been configured yet: full pinyin, the
-    /// mixed-input reading on, no custom layout, and empty buffers.
+    /// mixed-input reading on, and empty buffers.
     ///
     /// The session latches the configuration while it is idle, before the first
     /// composition starts, so these values are what a session that has never been
@@ -111,8 +111,8 @@ impl Default for SchemeSession {
     fn default() -> Self {
         Self {
             scheme: SchemeId::FULL,
-            keep_full_pinyin: true,
             custom: None,
+            keep_full_pinyin: true,
             map: SchemeMap::default(),
             ladder: String::new(),
             used_ladder: false,
@@ -123,14 +123,13 @@ impl Default for SchemeSession {
 }
 
 impl SchemeSession {
-    /// Adopts the layout, the mixed-input switch and the custom layout a composition
-    /// runs under.
+    /// Adopts the layout and the mixed-input switch a composition runs under.
     ///
     /// The caller latches while the session is idle, so a reload that changes any of
-    /// the three takes effect on the next composition rather than under the caret of
-    /// the one in progress. The custom table is a `&'static` reference, so the latch
-    /// copies a pointer: a table a running composition still holds stays alive and
-    /// unchanged however many reloads replace the one in force.
+    /// the three values takes effect on the next composition rather than under the
+    /// caret of the one in progress. `custom` is the configuration's own layout when
+    /// one compiled, and replaces the table `scheme` selects for as long as it stays
+    /// latched; `None` decodes through the built-in table of `scheme`.
     ///
     /// # Panics
     ///
@@ -158,9 +157,9 @@ impl SchemeSession {
     /// Returns whether a double-pinyin layout is answering the keystrokes.
     ///
     /// Full pinyin is the identity and needs no rewrite: the input is already the
-    /// spelling the segmentation layer reads. A user-defined layout counts as active
-    /// even though its table identifies itself as [`SchemeId::FULL`] -- the custom
-    /// slot, not the number, is what says a layout is running.
+    /// spelling the segmentation layer reads. A user-defined layout is a rewrite even
+    /// when the selection beside it is full pinyin, so a latched one counts as active
+    /// on its own.
     ///
     /// # Panics
     ///
@@ -197,32 +196,35 @@ impl SchemeSession {
     /// Never: every offset is the walk's own cursor, which advances by at least one
     /// byte per position and never past the end of the input.
     pub(crate) fn rewrite(&mut self, raw: &str) -> Result<(), ImeError> {
-        // A user-defined layout rides beside the built-in numbering: its table was
-        // compiled at configuration adoption and latched above, and because it
-        // identifies itself as [`SchemeId::FULL`], `table_for` alone would answer
-        // "no layout" for the session it is active in.
-        let table = match self.custom {
-            Some(custom) => custom,
+        // The user-defined layout rides beside the selection: while one is latched it
+        // is the table that answers the keys, and the built-in lookup is skipped
+        // entirely. The lookup is the only step a layout number can fail, which is why
+        // it keeps the `?`.
+        let (table, custom) = match self.custom {
+            Some(custom) => (custom, true),
             None => match table_for(self.scheme)? {
-                Some(table) => table,
+                Some(table) => (table, false),
                 None => {
                     self.clear();
                     return Ok(());
                 }
             },
         };
-        // The layout's own reading, with the alignment it carries. It is the reading
-        // the shipped tables are validated against, so the text comes from here
-        // wherever the ladder below stays inside it.
-        self.map = SchemeMap::build(raw, self.scheme)?.unwrap_or_default();
+        // `SchemeMap::build` resolves its table from the scheme number, and the
+        // numbering has no entry for a user-defined layout, so a custom session keeps
+        // the map empty and answers from the walk's own reading below: the walk is the
+        // same syllable stream wherever the layout maps, and the ladder's fuller
+        // reading where a key needs the full-pinyin fallback. This switch is what
+        // makes `text` serve that reading.
+        self.map = if custom {
+            SchemeMap::default()
+        } else {
+            SchemeMap::build(raw, self.scheme)?.unwrap_or_default()
+        };
         self.ladder.clear();
         self.grid.clear();
         self.grid.push(0);
-        // A custom layout has no number for `SchemeMap` to look up, so its session
-        // reads the ladder's text: the walk below covers the layout's own reading and
-        // the mixed-input fallbacks alike, which is the whole of what the map holds
-        // for a built-in one.
-        self.used_ladder = self.custom.is_some();
+        self.used_ladder = custom;
         let policy = FallbackPolicy::from_keep_full_pinyin(self.keep_full_pinyin);
         self.walk(raw, table, policy)?;
         self.close_grid(raw.len());

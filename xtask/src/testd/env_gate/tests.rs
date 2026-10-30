@@ -179,8 +179,9 @@ fn real_rows() -> String {
 }
 
 /// Every requirement the decision table declares, in the order it declares them.
-const ALL_REQUIREMENTS: [EnvRequirement; 9] = [
+const ALL_REQUIREMENTS: [EnvRequirement; 10] = [
     EnvRequirement::X11Session,
+    EnvRequirement::XvfbSession,
     EnvRequirement::Fcitx5Session,
     EnvRequirement::WaylandTier,
     EnvRequirement::CompositorBlur,
@@ -234,6 +235,34 @@ fn test_classify_withholds_an_x11_case_on_a_machine_with_no_display() {
     );
     let (_, reason) = withheld_of(&verdict).expect("a machine with no display cannot serve one");
     assert!(reason.contains("DISPLAY"), "{reason}");
+}
+
+#[test]
+fn test_classify_clears_an_xvfb_case_where_the_server_is_installed() {
+    let observation = Observation {
+        xvfb: true,
+        ..Observation::default()
+    };
+    let verdict = classify(
+        &case("TC-UI-01", "ui", EnvRequirement::XvfbSession),
+        &caps(&observation),
+    );
+    assert_eq!(verdict, Executability::Runnable);
+}
+
+#[test]
+fn test_classify_withholds_an_xvfb_case_where_the_server_is_missing() {
+    let verdict = classify(
+        &case("TC-UI-01", "ui", EnvRequirement::XvfbSession),
+        &caps(&nothing()),
+    );
+    let (_, reason) = withheld_of(&verdict).expect("a machine without Xvfb cannot serve one");
+    assert!(reason.contains("Xvfb"), "{reason}");
+    assert_eq!(
+        EnvRequirement::XvfbSession.remedy(),
+        crate::testd::xvfb::MISSING_REMEDY,
+        "the remedy is the channel's own citation, never a paraphrase"
+    );
 }
 
 #[test]
@@ -460,6 +489,8 @@ fn test_requirement_remedy_names_a_way_out_for_every_requirement() {
     }
     let fcitx5 = EnvRequirement::Fcitx5Session.remedy();
     assert!(fcitx5.contains("libfcitx5core-dev"), "{fcitx5}");
+    let xvfb = EnvRequirement::XvfbSession.remedy();
+    assert!(xvfb.contains("install xvfb"), "{xvfb}");
     let tier = EnvRequirement::WaylandTier.remedy();
     assert!(tier.contains("Sway"), "{tier}");
     let undeclared = EnvRequirement::Undeclared(String::new()).remedy();

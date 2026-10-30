@@ -3,7 +3,7 @@
 user.redb*
 *.corrupt.*
 /logs
-
+**/dag_build/
 # The fuzz crate is a separate workspace root with its own build directory; the
 # root-anchored `/target` above does not cover it.
 /fuzz/target

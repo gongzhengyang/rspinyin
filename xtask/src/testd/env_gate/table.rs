@@ -30,9 +30,13 @@
 
 use super::{EnvRequirement, Executability};
 use crate::testd::env::{DisplayServer, EnvCapabilities, ProbeGap, WaylandTier};
+use crate::testd::xvfb::MISSING_REMEDY;
 
 /// What an X11 case needs when no X server answered.
 const X11_NEEDS: &str = "an X server reachable at $DISPLAY";
+
+/// What an Xvfb-session case needs when the tool is not on `$PATH`.
+const XVFB_NEEDS: &str = "the Xvfb virtual display server on $PATH";
 
 /// What a Fcitx5 case needs when the development package is absent.
 const FCITX5_NEEDS: &str = "the Fcitx5 development package and a session that loads both addons";
@@ -231,6 +235,8 @@ pub(super) enum Capability {
     X11,
     /// The Fcitx5 development package, which both addons need to build and load.
     Fcitx5,
+    /// The Xvfb virtual display server, which the rendering regression tier's channel runs.
+    Xvfb,
     /// A Wayland session whose compositor serves one of the four registered tiers.
     WaylandTier,
 }
@@ -245,13 +251,14 @@ impl Capability {
         match self {
             Self::X11 => x11_withholding(env),
             Self::Fcitx5 => fcitx5_withholding(env),
+            Self::Xvfb => xvfb_withholding(env),
             Self::WaylandTier => wayland_withholding(env),
         }
     }
 }
 
 /// The decision table: what this gate answers for every requirement a case may declare.
-pub(super) const DECISION_TABLE: [DecisionRow; 9] = [
+pub(super) const DECISION_TABLE: [DecisionRow; 10] = [
     DecisionRow {
         requirement: EnvRequirement::X11Session,
         verdict: RowVerdict::ByReport {
@@ -260,6 +267,15 @@ pub(super) const DECISION_TABLE: [DecisionRow; 9] = [
         },
         register: UNREGISTERED,
         remedy: X11_REMEDY,
+    },
+    DecisionRow {
+        requirement: EnvRequirement::XvfbSession,
+        verdict: RowVerdict::ByReport {
+            capability: Capability::Xvfb,
+            needs: XVFB_NEEDS,
+        },
+        register: UNREGISTERED,
+        remedy: MISSING_REMEDY,
     },
     DecisionRow {
         requirement: EnvRequirement::Fcitx5Session,
@@ -375,6 +391,18 @@ fn x11_withholding(env: &EnvCapabilities) -> Option<String> {
         }
         Some(_) => None,
     }
+}
+
+/// Why no Xvfb session can be served, or `None` when one can.
+///
+/// The channel runs the server itself, so the binary is the whole capability: a machine
+/// that has it can be given a display, and a machine that does not has nothing to start.
+///
+/// # Panics
+///
+/// Never.
+fn xvfb_withholding(env: &EnvCapabilities) -> Option<String> {
+    (!env.xvfb).then(|| String::from("the Xvfb server is not on $PATH"))
 }
 
 /// Why no Fcitx5 session can be driven, or `None` when one can.

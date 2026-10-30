@@ -117,6 +117,7 @@ use crate::testd::evidence::{
     TraceRecord, Utc,
 };
 use crate::testd::purity::{PurityPolicy, PurityReport};
+use crate::testd::xvfb::{self, VirtualDisplay};
 
 use self::cases::CaseLine;
 use self::command::CommandRun;
@@ -200,6 +201,18 @@ pub struct SuiteArgs {
     /// the machine is idle. Within a tier the cases run serially, in the table's order.
     #[arg(long, value_enum, default_value_t = TierFilter::Smoke)]
     pub tier: TierFilter,
+    /// Run the display-backed cases on a private Xvfb virtual display.
+    ///
+    /// The channel starts `Xvfb` at the fixed geometry, proves it ready by injecting a probe
+    /// key through the same XTEST route the cases inject with, and puts `DISPLAY` on every
+    /// case command's environment, overriding whatever display the session had. The case
+    /// table itself is untouched: the same commands run, on the virtual display.
+    ///
+    /// A machine without the Xvfb binary is not a failed run: the gate records the cases
+    /// that declare an Xvfb session as needs-environment with the install remedy, and the
+    /// rest run as they would without the channel.
+    #[arg(long)]
+    pub xvfb: bool,
 }
 
 /// Entry point for `xtask testd-suite`.
@@ -234,6 +247,13 @@ pub fn run(args: SuiteArgs) -> Result<()> {
     }
     let capabilities = EnvCapabilities::probe();
     let environment = Environment::of(&capabilities, &root);
+    // The xvfb channel has to be up before the first case command that wants the display,
+    // and a channel that cannot come up refuses the run before the run directory exists:
+    // cases judged on a display nobody proved are verdicts about nothing. A machine without
+    // the Xvfb binary is not that refusal -- the run continues without the channel, and the
+    // gate withholds the cases that need it as needs-environment rather than as a red batch.
+    let channel = arrange_channel(&args, &capabilities)?;
+    let injected = xvfb::channel_env(channel.as_ref().map(VirtualDisplay::display));
     let phases = plan_phases(&args)?;
     let started = Utc::now();
     let run_dir = RunDir::create(&results, started)
@@ -261,7 +281,7 @@ pub fn run(args: SuiteArgs) -> Result<()> {
                     continue;
                 }
             }
-            let (runs, duration_ms) = execute_all(case, &root);
+            let (runs, duration_ms) = execute_all(case, &root, &injected);
             let evidence = run_case(case, environment.facts(), &runs, duration_ms);
             let trace = evidence
                 .status
@@ -490,19 +510,69 @@ fn skipped_line(
 /// Runs every command line the case states, in the document's order.
 ///
 /// The duration is measured around the whole case rather than around one command, because the
-/// number a reader wants beside a case is how long the case took.
+/// number a reader wants beside a case is how long the case took. `injected` is the environment
+/// the run adds to every command -- the xvfb channel's `DISPLAY`, or nothing.
 ///
 /// # Panics
 ///
 /// Never.
-fn execute_all(case: &CaseLine, root: &Path) -> (Vec<CommandRun>, u64) {
+fn execute_all(
+    case: &CaseLine,
+    root: &Path,
+    injected: &[(String, String)],
+) -> (Vec<CommandRun>, u64) {
     let began = Instant::now();
     let runs = case
         .commands
         .iter()
-        .map(|declared| command::execute(declared, root))
+        .map(|declared| command::execute_with(declared, root, injected))
         .collect();
     (runs, command::elapsed_ms(began))
+}
+
+/// Brings the xvfb channel up when the run asked for it.
+///
+/// A machine without the Xvfb binary is not a failed run: the gate records the cases that
+/// declare an Xvfb session as needs-environment, and the headless cases run as they would
+/// without the channel. A channel that is installed but will not come up -- no free display
+/// number, a server that dies, an injection probe that never succeeds -- is a refusal: a run
+/// whose cases were promised a display owes them one that was proven.
+///
+/// # Errors
+///
+/// Returns the channel's own errors when the tooling is present but the display cannot be
+/// arranged or proven ready.
+///
+/// # Panics
+///
+/// Never.
+fn arrange_channel(
+    args: &SuiteArgs,
+    capabilities: &EnvCapabilities,
+) -> anyhow::Result<Option<VirtualDisplay>> {
+    if !args.xvfb {
+        return Ok(None);
+    }
+    if !capabilities.xvfb {
+        println!(
+            "suite: the xvfb channel is not available here, cases that need it are recorded needs-environment -- remedy: {}",
+            xvfb::MISSING_REMEDY
+        );
+        return Ok(None);
+    }
+    let mut channel = VirtualDisplay::open().context("arranging the xvfb channel")?;
+    channel
+        .wait_ready()
+        .context("proving the xvfb channel ready")?;
+    println!(
+        "suite: the xvfb channel is ready on {} ({}), readiness proven through the injection path",
+        channel.display(),
+        xvfb::SCREEN_GEOMETRY
+    );
+    if let Some(note) = xvfb::tcp_fallback_note(Path::new(xvfb::SOCKET_DIR)) {
+        println!("suite: xvfb environment note: {note}");
+    }
+    Ok(Some(channel))
 }
 
 /// The verdict record one case's runs produce.

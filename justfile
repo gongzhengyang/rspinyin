@@ -357,6 +357,16 @@ check-e2e-acceptance:
 check-e2e-stress:
     cargo run --quiet -p xtask -- testd-suite --tier stress
 
+# The rendering-regression tier of the E2E case suite, run on a private Xvfb virtual
+# display instead of the machine's own X server. The channel starts `Xvfb` at a fixed
+# 1280x800x24, proves it ready by injecting a probe key through the same XTEST route the
+# cases inject with, and puts DISPLAY on every case command's environment; the suite,
+# screenshot and golden flow itself is unchanged. A machine without the Xvfb binary is
+# not a red gate: the cases that need the display are recorded needs-environment with
+# the install remedy, which is what makes this recipe safe in a headless CI job.
+check-e2e-xvfb:
+    cargo run --quiet -p xtask -- testd-suite --tier acceptance --xvfb
+
 ci: check audits check-host smoke
 
 # `just ci` with the host-ABI half required rather than optional: the same suite, but

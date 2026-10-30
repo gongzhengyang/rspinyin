@@ -10,16 +10,15 @@
 //!
 //! # Boundary
 //!
-//! [`RoutingConfig::from_config`] is a pure function of the [`Config`] it is handed
-//! (0.4 rule 4): it touches no clock, no environment and no global state, and its one
-//! file read -- the layout document a `[shuangpin.custom]` section may name -- happens
-//! here, in the configuration-adoption context, beside the read of `config.toml`
-//! itself and never on the decode path. A reload can therefore re-run it at any moment
+//! [`RoutingConfig::from_config`] reads a [`Config`] that is already in memory and
+//! touches no clock and no global state, so a reload can re-run it at any moment
 //! without reaching anything a composition is using, which is half of what keeps a
 //! reload from disturbing the input in progress (0.4 rule 10); the other half is that
-//! the result replaces the value in force whole rather than field by field, and the
-//! session latches its layout while idle, so the table a running composition holds is
-//! never the one a swap replaces.
+//! the result replaces the value in force whole rather than field by field. The one
+//! exception is the file the `[shuangpin.custom]` section may name: reading the
+//! user's layout document happens here, once per load and per adopting reload, in the
+//! same configuration context that reads the configuration file itself -- never on
+//! the decode path, which sees only the compiled slot.
 //!
 //! # Why a view rather than the document
 //!
@@ -29,15 +28,14 @@
 //! client-preedit policy and the label the window's header shows — so that a caller hands
 //! the routing layer one value and a reload replaces it whole.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use ime_config::PunctMode;
 use ime_config::keymap::{KeyBindings, project_keys};
 use ime_config::{Config, SchemeChoice, ShareState};
 use ime_core::shuangpin::SchemeTable;
-use ime_core::shuangpin::layout::{
-    LAYOUT_DIAGNOSTIC_KEY, LayoutDocument, LayoutTables, compile_layout, parse_layout,
-};
+use ime_core::shuangpin::layout::{LayoutDocument, LayoutTables, compile_layout, parse_layout};
 use ime_core::state::{AssocSessionConfig, ImSwitchPolicy, SessionConfig};
 use ime_core::viterbi::context::ContextBand;
 use ime_types::{ImeError, SchemeId};
@@ -223,11 +221,12 @@ impl RoutingConfig {
     ///
     /// # Returns
     ///
-    /// The view, and one diagnostic per value that could not be used: a `[keys]` entry
-    /// that could not become a binding, and each error of a `[shuangpin.custom]` layout
-    /// that failed its validation. The caller reports them; a projection never refuses,
-    /// because a key binding or a layout must not be able to stop the input method from
-    /// working — a refused layout leaves the selected built-in scheme answering.
+    /// The view, and one diagnostic per `[keys]` entry that could not become a binding: a
+    /// name a list cannot use, a name a list holds twice, and a key both lists bound. A
+    /// `[shuangpin.custom]` section that names a layout adds its loader's diagnostics: one
+    /// per validation error, and one for a file that cannot be read or parsed. The caller
+    /// reports them; a projection never refuses, because a key binding must not be
+    /// able to stop the input method from working.
     ///
     /// # Errors
     ///
@@ -250,10 +249,6 @@ impl RoutingConfig {
         // because they are the section `ime-core` cannot name a type of its own for.
         session.scheme = scheme;
         session.keep_full_pinyin = keep_full_pinyin;
-        // The custom layout is compiled once here, at adoption: what the decode path
-        // reads is the compiled table, never the document.
-        let custom_layout = project_custom_layout(config, &mut warnings);
-        session.custom_layout = custom_layout;
         // The fuzzy classes are projected once, here: the master bit and the class bits
         // have to agree, and one projection per configuration load is where that
         // agreement is kept. The session latches the mask beside the scheme.
@@ -273,17 +268,25 @@ impl RoutingConfig {
             max_candidates: config.assoc.max_candidates,
             history_depth: config.assoc.history_depth,
         };
+        // The configuration's own layout is compiled once, here, where a load and
+        // every adopting reload pass; the decode path reads the compiled slot and
+        // never parses. A layout the loader refused leaves the slot empty, which is
+        // the fallback to the selected scheme, and one diagnostic per error.
+        let (custom_layout, mut layout_warnings) = project_custom_layout(config);
+        warnings.append(&mut layout_warnings);
+        session.custom_layout = custom_layout;
+        // The header names the layout that answers the keys: the user's own layout by
+        // its own name while one is active, and the selection otherwise. The name is
+        // user-facing copy, so it is Chinese like the rest of the window's text.
+        let scheme_hint = match custom_layout {
+            Some(table) if config.scheme.show_hint => Some(table.name.as_str()),
+            _ => config.scheme.header_hint(),
+        };
         let routing = Self {
             keys,
             session,
             client_preedit: config.ui.client_preedit,
-            scheme_hint: match custom_layout {
-                // A custom layout is answering whatever `[scheme] scheme` spells, so
-                // the header names the custom choice rather than a built-in layout
-                // that is not running. A user who turned the hint off keeps it off.
-                Some(_) if config.scheme.show_hint => Some(SchemeChoice::Custom.hint()),
-                _ => config.scheme.header_hint(),
-            },
+            scheme_hint,
             auto_english_on_uppercase: config.engine.auto_english_on_uppercase,
             passthrough_url: config.engine.passthrough_url,
             compose: config.engine.compose,
@@ -295,117 +298,6 @@ impl RoutingConfig {
             quick: project_quick(&config.quick_input, &mut warnings),
         };
         (routing, warnings)
-    }
-}
-
-/// Compiles the `[shuangpin.custom]` section into the session's custom layout.
-///
-/// The section names a layout one of two ways -- a document `shuangpin.custom.file`
-/// points at, or the three tables written inline beside it -- and the layout is parsed
-/// and validated once here, at configuration adoption. A layout that fails any check
-/// loads nothing, and every check that failed is one `config/invalid` diagnostic: a
-/// layout that would map some keys wrongly must never half-load. The fall-back is the
-/// built-in scheme the document selected, which the session configuration still
-/// carries, so a refusal costs the user their custom keys and nothing else.
-///
-/// A layout that loads is compiled into process-lifetime memory, because the session
-/// configuration carries it as a `Copy` reference that may outlive this adoption. One
-/// table per adoption that activates a custom layout; reloads are rare, user-driven
-/// events, and a table in force is replaced whole, never mutated or freed -- which is
-/// what makes a reload that swaps the table safe for a composition in progress.
-///
-/// A relative `file` value resolves against the configuration directory; a named
-/// document is the layout, and the inline tables beside it are then not read.
-fn project_custom_layout(
-    config: &Config,
-    warnings: &mut Vec<ImeError>,
-) -> Option<&'static SchemeTable> {
-    let section = &config.shuangpin.custom;
-    if section.is_unset() {
-        return None;
-    }
-    let document = if section.file.is_empty() {
-        Some(LayoutDocument::from_tables(LayoutTables {
-            name: (!section.name.is_empty()).then(|| section.name.clone()),
-            zero_initial_style: (!section.zero_initial_style.is_empty())
-                .then(|| section.zero_initial_style.clone()),
-            initials: section.initials.clone(),
-            finals: section.finals.clone(),
-            standalone: section.standalone.clone(),
-        }))
-    } else {
-        read_layout_document(
-            resolve_layout_file(&section.file, configuration_directory().as_deref()),
-            warnings,
-        )
-    };
-    let document = document?;
-    match compile_layout(&document, SchemeId::FULL) {
-        Ok(table) => Some(Box::leak(Box::new(table))),
-        Err(errors) => {
-            warnings.extend(errors);
-            None
-        }
-    }
-}
-
-/// The configuration directory a relative layout document resolves against.
-///
-/// The section keeps the path exactly as the user wrote it; which directory a bare
-/// name means is the host's knowledge, and the host's answer is the directory
-/// `config.toml` itself lives in. This is the one environment read of an adoption,
-/// beside the read of the configuration file in the same context.
-fn configuration_directory() -> Option<PathBuf> {
-    let path = ime_config::default_path()?;
-    path.parent().map(Path::to_path_buf)
-}
-
-/// Resolves the layout document `[shuangpin.custom] file` names.
-///
-/// An absolute path is used as it stands; a relative one resolves against the
-/// configuration directory. `None` answers for an empty value, and for a relative
-/// name when there is no configuration directory to sit in.
-fn resolve_layout_file(file: &str, config_dir: Option<&Path>) -> Option<PathBuf> {
-    if file.is_empty() {
-        return None;
-    }
-    let path = Path::new(file);
-    if path.is_absolute() {
-        return Some(path.to_path_buf());
-    }
-    config_dir.map(|directory| directory.join(path))
-}
-
-/// Reads the layout document `path` points at, parsed.
-///
-/// A document that cannot be read is one diagnostic and no layout. The reason names
-/// the failure and never the path: a diagnostic reaches the user, and a configuration
-/// path is nobody's business but the document's own.
-fn read_layout_document(
-    path: Option<PathBuf>,
-    warnings: &mut Vec<ImeError>,
-) -> Option<LayoutDocument> {
-    let path = path?;
-    match std::fs::read_to_string(&path) {
-        Ok(text) => match parse_layout(&text) {
-            Ok(document) => Some(document),
-            Err(errors) => {
-                warnings.extend(errors);
-                None
-            }
-        },
-        Err(error) => {
-            let reason = if error.kind() == std::io::ErrorKind::NotFound {
-                "the layout document shuangpin.custom.file names does not exist"
-            } else {
-                "the layout document shuangpin.custom.file names cannot be read"
-            };
-            warnings.push(ImeError::ConfigInvalid {
-                key: String::from(LAYOUT_DIAGNOSTIC_KEY),
-                reason: String::from(reason),
-            });
-            None
-        }
     }
 }
 
@@ -441,6 +333,155 @@ fn project_quick(
         enabled: section.enabled,
         calc_enabled: section.calc_enabled,
         date_prefixes,
+    }
+}
+
+/// The configuration key the ambiguous custom section is reported under.
+const SHUANGPIN_KEY: &str = "shuangpin.custom";
+/// The configuration key an unreadable layout file is reported under. A layout that
+/// parses but fails its validation carries the loader's own key,
+/// `shuangpin.custom.layout`, one diagnostic per error.
+const SHUANGPIN_FILE_KEY: &str = "shuangpin.custom.file";
+
+/// Compiles the configuration's own double-pinyin layout for the session slot.
+///
+/// The `[shuangpin.custom]` section names a layout either as a document (`file`) or
+/// as inline tables; when both are named the file is the layout and the tables are
+/// ignored, which is reported. A section that names nothing at all is no layout: the
+/// loader is never consulted, and the slot stays empty. Every failure -- an
+/// unreadable file, a document that is not a layout, a layout its validator refuses
+/// -- answers an empty slot with one `config/invalid` diagnostic per error, which is
+/// the fallback to the selected scheme: a layout that would map some keys wrongly
+/// must never load.
+///
+/// # Parameters
+///
+/// - `config`: the configuration in force. The paths travel as the document spelled
+///   them; which directory a relative one resolves against is this function's
+///   business, not the configuration layer's.
+///
+/// # Returns
+///
+/// The compiled table, parked for the rest of the process so the session can hold it
+/// in its `Copy` slot, and the diagnostics raised while producing it. The park is one
+/// layout-sized allocation per adopted configuration, taken here in the reload
+/// context and never on the decode path.
+///
+/// # Panics
+///
+/// Never.
+fn project_custom_layout(config: &Config) -> (Option<&'static SchemeTable>, Vec<ImeError>) {
+    let section = &config.shuangpin.custom;
+    if section.is_unset() {
+        return (None, Vec::new());
+    }
+    if section.file.is_empty() {
+        let document = LayoutDocument::from_tables(LayoutTables {
+            name: optional_text(&section.name),
+            zero_initial_style: optional_text(&section.zero_initial_style),
+            initials: section.initials.clone(),
+            finals: section.finals.clone(),
+            standalone: section.standalone.clone(),
+        });
+        return compile_layout_document(document);
+    }
+    let mut warnings = Vec::new();
+    let inline = !section.name.is_empty()
+        || !section.zero_initial_style.is_empty()
+        || !section.initials.is_empty()
+        || !section.finals.is_empty()
+        || !section.standalone.is_empty();
+    if inline {
+        warnings.push(ImeError::ConfigInvalid {
+            key: String::from(SHUANGPIN_KEY),
+            reason: String::from(
+                "both a layout file and inline layout tables are named: the file is the layout, and the inline tables are ignored",
+            ),
+        });
+    }
+    let text = match layout_document_text(&section.file) {
+        Ok(text) => text,
+        Err(reason) => {
+            warnings.push(ImeError::ConfigInvalid {
+                key: String::from(SHUANGPIN_FILE_KEY),
+                reason,
+            });
+            return (None, warnings);
+        }
+    };
+    match parse_layout(&text) {
+        Ok(document) => {
+            let (table, mut errors) = compile_layout_document(document);
+            warnings.append(&mut errors);
+            (table, warnings)
+        }
+        // One diagnostic, with the line the document failed on and never its text.
+        Err(errors) => {
+            warnings.extend(errors);
+            (None, warnings)
+        }
+    }
+}
+
+/// Validates and compiles one layout document into the parked table.
+///
+/// # Panics
+///
+/// Never.
+fn compile_layout_document(
+    document: LayoutDocument,
+) -> (Option<&'static SchemeTable>, Vec<ImeError>) {
+    match compile_layout(&document, SchemeId::FULL) {
+        Ok(table) => {
+            // `FULL` because the frozen numbering has no slot of the user's own; the
+            // lookup a scheme number drives answers only the built-in set, so a
+            // compiled custom table cannot be mistaken for a published one through it.
+            let table: &'static SchemeTable = Box::leak(Box::new(table));
+            (Some(table), Vec::new())
+        }
+        Err(errors) => (None, errors),
+    }
+}
+
+/// Reads the layout document `file` names.
+///
+/// An absolute path is read as it stands; a relative one resolves against the
+/// configuration directory, which is where a user who wrote a bare file name means
+/// it -- the rule the `[phrases]` file follows. The read happens in this
+/// configuration context, once per load and per adopting reload, never on the decode
+/// path.
+///
+/// # Panics
+///
+/// Never.
+fn layout_document_text(file: &str) -> Result<String, String> {
+    let path = Path::new(file);
+    let resolved = if path.is_absolute() {
+        PathBuf::from(path)
+    } else {
+        match ime_config::default_path().as_deref().map(Path::parent) {
+            Some(Some(directory)) => directory.join(path),
+            _ => {
+                return Err(String::from(
+                    "the layout file is a relative path, and no configuration directory could be resolved to read it against",
+                ));
+            }
+        }
+    };
+    fs::read_to_string(resolved).map_err(|error| format!("cannot read the layout file: {error}"))
+}
+
+/// An empty configuration spelling is "not written", which the loader reports like a
+/// document that left the key out.
+///
+/// # Panics
+///
+/// Never.
+fn optional_text(value: &str) -> Option<String> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(String::from(value))
     }
 }
 

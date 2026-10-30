@@ -223,29 +223,41 @@ show_hint = true
 # Takes effect on reload.
 keep_full_pinyin = true
 
+[shuangpin]
+# A double-pinyin layout of your own, defined under [shuangpin.custom] below. The
+# layout is data, not switches: it is compiled once per load and per reload, and a
+# layout that fails any check is refused whole -- the layout selected under [scheme]
+# keeps answering the keys, and each error is reported as its own config/invalid
+# diagnostic. When the section names a working layout, it is the layout that answers
+# the keys, whatever [scheme] selects. Takes effect on reload.
+
 [shuangpin.custom]
-# A double-pinyin layout of your own, in one of two forms: a layout document named
-# by `file`, or the three tables written out inline beside the other keys. With
-# every key left at its default no custom layout exists, and the double-pinyin
-# layouts are exactly the built-in ones. A layout that fails its own validation is
-# refused whole -- one config/invalid diagnostic per error -- and the built-in
-# layout named by `[scheme] scheme` answers instead. Takes effect on reload: the
-# next composition reads the new layout.
-file = ""
-# The inline form: the layout's display name, and which of the two zero-initial
-# schools it belongs to, "o-led" or "first-letter". Both must be written when the
-# tables are inline; a layout read from a file names itself in its own document.
-# Not read when `file` names a document.
-name = ""
-zero_initial_style = ""
-# The inline tables: `[shuangpin.custom.initials]` maps a key to the syllable
-# initial it opens a syllable with, `[shuangpin.custom.finals]` maps a key to the
-# finals it closes one with, space-separated, most common first, and
-# `[shuangpin.custom.standalone]` maps a key to the syllable it spells on its own.
-# A key is one of a-z or `;`.
-[shuangpin.custom.initials]
-[shuangpin.custom.finals]
-[shuangpin.custom.standalone]
+# The layout, given either as a document named by `file`, or written out inline in
+# the three tables below. An empty section defines no layout, and the double-pinyin
+# layouts are exactly the built-in ones. Naming both makes the file the layout and
+# reports the ambiguity.
+#
+# `file` is the layout document to read, as you spell the path: absolute, or relative
+# to the directory this configuration file lives in.
+#file = "my-layout.toml"
+#
+# The inline form: the display name, which of the two zero-initial schools the layout
+# belongs to -- "first-letter" opens a vowel-initial syllable with its own letter
+# (`an` is the `a` key then the `an` key), "o-led" opens it with a zero initial on
+# `o` that contributes nothing -- and the three tables. A key maps to one initial, a
+# space-separated list of finals tried in order, or a standalone syllable; a key name
+# is one of a-z or `;`.
+#name = "我的双拼"
+#zero_initial_style = "first-letter"
+#[shuangpin.custom.initials]
+#zh = "v"
+#ch = "i"
+#sh = "u"
+#[shuangpin.custom.finals]
+#ang = "h"
+#eng = "g"
+#[shuangpin.custom.standalone]
+#a = "a"
 
 [fuzzy]
 # Each key selects one fuzzy-equivalence class the decoder widens with: `zh_z` makes
@@ -367,11 +379,13 @@ struct PartialShuangpin {
     custom: Option<PartialShuangpinCustom>,
 }
 
-/// The `[shuangpin.custom]` table of a document: the user's own double-pinyin layout,
-/// either as a path to a layout document or written out inline.
+/// The `[shuangpin.custom]` table of a document.
 ///
-/// The three tables travel as plain key/value maps, which is all a document section
-/// is; parsing them into a layout is the loader in `ime-core`, at adoption time.
+/// The whole table is one layout, so a key the document leaves out keeps its default --
+/// which is "not written", the state the layout loader refuses like a document that
+/// left it out. Validation is not this layer's business: the tables travel as plain
+/// key/value maps, and the layout loader in the layer above judges them when the
+/// configuration is adopted.
 #[derive(Deserialize)]
 struct PartialShuangpinCustom {
     file: Option<String>,
@@ -697,11 +711,11 @@ impl Config {
         merge_theme(partial.theme, &mut config, &mut warnings);
         merge_keys(partial.keys, &mut config, &mut warnings);
         merge_scheme(partial.scheme, &mut config, &mut warnings);
-        merge_shuangpin(partial.shuangpin, &mut config);
         merge_fuzzy(partial.fuzzy, &mut config);
         merge_data(partial.data, &mut config, &mut warnings);
         merge_diagnostics(partial.diagnostics, &mut config, &mut warnings);
         merge_phrases(partial.phrases, &mut config, &mut warnings);
+        merge_shuangpin(partial.shuangpin, &mut config);
 
         let (config, mut repaired) = config.repaired();
         warnings.entries.append(&mut repaired);

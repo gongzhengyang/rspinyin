@@ -113,22 +113,21 @@ pub struct SessionConfig {
     /// full-pinyin syllable gets nothing at all, which reads as "the input method
     /// broke" rather than as "you are in the wrong mode".
     pub keep_full_pinyin: bool,
-    /// The compiled `[shuangpin.custom]` layout, when the user defined one and it
-    /// loaded.
+    /// The user-defined layout the configuration compiled, when there is one.
     ///
-    /// The engine parses and validates the section once per configuration adoption and
-    /// hands the session the compiled table, which the rewrite reads instead of
-    /// [`crate::shuangpin::table_for`]. A user's layout has no number of the frozen
-    /// [`SchemeId`] set to travel under -- its table identifies itself as
-    /// [`SchemeId::FULL`] -- so this slot is how a custom layout reaches the decode
-    /// without touching the contract's numbering.
+    /// `Some` replaces the table [`SessionConfig::scheme`] would otherwise select:
+    /// the layout the user defined is the layout that answers the keys, whatever the
+    /// `[scheme]` section names, and `scheme` keeps carrying the selection so a
+    /// decode request always travels under a number the contract knows. `None` --
+    /// the shipped default -- decodes through the built-in table of `scheme` and is
+    /// also what a custom layout the loader refused looks like, so the fallback is
+    /// the selected scheme rather than a special case.
     ///
-    /// The reference is `&'static` because a [`SessionConfig`] is a `Copy` value a
-    /// session may hold for however long a composition runs: the engine compiles the
-    /// layout into process-lifetime memory (one table per adoption that activates a
-    /// custom layout, and reloads are rare, user-driven events), and a table in force
-    /// is replaced whole at a reload, never mutated or freed -- which is also what
-    /// makes a reload that swaps the table safe for a composition in progress.
+    /// The reference is `'static` because this view is `Copy` and a session latches
+    /// it while idle: the table behind it is owned by the configuration layer that
+    /// compiled it, and lives as long as the process. Compiling it happens in the
+    /// configuration-reload context, never on the decode path; the decode reads the
+    /// slot as it reads every other field of this view.
     pub custom_layout: Option<&'static SchemeTable>,
     /// The fuzzy-equivalence classes the `[fuzzy]` section selects, as the decode
     /// flag mask the projection computed: the master [`ime_types::DecodeFlags::FUZZY`]
@@ -256,10 +255,9 @@ impl SessionConfig {
     /// a length limit at all. `max_per_row` is clamped when the paging state adopts
     /// it, against the range the schema enforces for that key.
     ///
-    /// The scheme keys take their defaults -- full pinyin, the mixed-input reading
-    /// on, and no custom layout -- so a host that has a layout sets
-    /// [`SessionConfig::scheme`], [`SessionConfig::keep_full_pinyin`] and
-    /// [`SessionConfig::custom_layout`] on the value this returns.
+    /// The two scheme keys take their defaults -- full pinyin, and the mixed-input
+    /// reading on -- so a host that has a layout sets [`SessionConfig::scheme`] and
+    /// [`SessionConfig::keep_full_pinyin`] on the value this returns.
     ///
     /// # Panics
     ///

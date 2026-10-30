@@ -27,6 +27,7 @@ use x11rb::protocol::xproto::{ConnectionExt as XprotoExt, Screen, VisualClass};
 use super::addons::{self, AddonDescriptor};
 use super::compositor::RegistryFacts;
 use super::process::{self, ProcessEntry};
+use crate::testd::xvfb::Tooling;
 
 /// `$XDG_RUNTIME_DIR`, where a Wayland socket named by a relative `$WAYLAND_DISPLAY` lives.
 const RUNTIME_DIR: &str = "XDG_RUNTIME_DIR";
@@ -80,6 +81,8 @@ pub struct Observation {
     pub own_pid: u32,
     /// The version `pkg-config` reports for the Fcitx5 development package.
     pub fcitx5_version: Option<String>,
+    /// Whether the Xvfb virtual display server is on `$PATH`.
+    pub xvfb: bool,
     /// The output of `fc-list :lang=zh`.
     pub cjk_fonts: Option<String>,
     /// The installed addon descriptors, as their files were read.
@@ -123,6 +126,7 @@ impl Observation {
             processes: process::table(),
             own_pid: std::process::id(),
             fcitx5_version: pkg_config_version(),
+            xvfb: Tooling::probe().is_available(),
             cjk_fonts: fc_list_zh(),
             addon_descriptors: addons::descriptors(bases.as_ref()),
             data_dir_writable: data_dir.as_deref().is_some_and(writable_dir),

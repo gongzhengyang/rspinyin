@@ -204,11 +204,16 @@ pub struct CommandRun {
     pub stderr_tail: String,
 }
 
-/// Runs one declared command line in `cwd`.
+/// Runs one declared command line in `cwd`, with `injected` added to its environment.
 ///
 /// Never fails and never panics: a line that cannot be split and a program that cannot be
 /// started are both outcomes, because the case that declared the line has to record them rather
 /// than have them thrown away.
+///
+/// The pairs override same-named variables the run inherited, which is how the xvfb channel
+/// puts a case command on the virtual display: an injected `DISPLAY` wins over the session's
+/// own, so a developer's real screen never receives a case that asked for the private one. An
+/// empty slice is the inherited environment unchanged.
 ///
 /// The whole of the process's output is collected before the tail is taken, which is what
 /// [`std::process::Command::output`] does. The commands this table states are build tools whose
@@ -218,7 +223,7 @@ pub struct CommandRun {
 /// # Panics
 ///
 /// Never.
-pub fn execute(declared: &str, cwd: &Path) -> CommandRun {
+pub fn execute_with(declared: &str, cwd: &Path, injected: &[(String, String)]) -> CommandRun {
     let began = Instant::now();
     let line = match CommandLine::parse(declared) {
         Ok(line) => line,
@@ -228,6 +233,7 @@ pub fn execute(declared: &str, cwd: &Path) -> CommandRun {
     let output = Command::new(line.program())
         .args(line.args())
         .current_dir(cwd)
+        .envs(injected.iter().map(|(name, value)| (name.as_str(), value.as_str())))
         .output();
     match output {
         Ok(output) => CommandRun {

@@ -54,7 +54,8 @@ enum Command {
     /// under `--trim-target-mib` would drop. The audit channel beside
     /// `quality`; the compile-time trim pass is `dictc --trim-target-mib`.
     Audit(dictc::audit::AuditArgs),
-    /// Tune the language-model weights, or derive the held-out evaluation set.
+    /// Tune the language-model weights, sweep the dictionary-build knobs against
+    /// the held-out ranking, or derive the held-out evaluation set.
     ///
     /// Boxed for the same reason as `Dictc`: the argument struct is much larger than the
     /// other variants and the enum is built once at startup.
