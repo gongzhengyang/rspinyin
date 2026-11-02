@@ -88,7 +88,7 @@ pub fn write(identity: &Identity, set: &Set) -> Result<PathBuf> {
 
 /// Renders the document, without writing it.
 ///
-/// Separate from [`write`] so that the schema can be asserted without a file, and so that
+/// Separate from [`fn@write`] so that the schema can be asserted without a file, and so that
 /// writing is the only part of this module that touches the filesystem.
 ///
 /// # Errors

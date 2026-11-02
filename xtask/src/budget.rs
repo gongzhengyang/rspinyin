@@ -10,7 +10,7 @@
 //! backed by a threshold, and a missing section, missing cell, unknown key, or
 //! unreadable number is an error rather than a silent pass.
 //!
-//! Comparing criterion output against these thresholds is [`bench`]'s job: it
+//! Comparing criterion output against these thresholds is [`mod@bench`]'s job: it
 //! reads the estimates a benchmark run left behind and asserts the cases the design
 //! names, using the same thresholds this module validates.
 //!
@@ -31,7 +31,7 @@
 //!
 //! The module is split by responsibility: this root holds the document types, the
 //! binding table and the entry points, [`schema`] turns the document's text into
-//! those types, [`spec`] reads the spec's cells and compares the two, [`bench`]
+//! those types, [`spec`] reads the spec's cells and compares the two, [`mod@bench`]
 //! turns a criterion run into a verdict, and [`memory`] turns a plugin's readings into
 //! one.
 

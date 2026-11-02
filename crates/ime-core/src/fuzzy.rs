@@ -32,7 +32,7 @@
 //! The widening is applied while the word lattice is built: the lattice spells one
 //! dictionary key per span of the graph, and for every syllable of that span it
 //! asks [`variants`] which other syllables to spell as well -- spelling them from
-//! [`syllable_at`](crate::segment::syllable_at) rather than from the input text --
+//! [`syllable_at`] rather than from the input text --
 //! and scores each extra edge through [`penalize`]. The Viterbi pass is left alone
 //! on purpose: it is defined over a fixed lattice, and handing it a growing one
 //! would make the k-best guarantee depend on the order the extra edges were

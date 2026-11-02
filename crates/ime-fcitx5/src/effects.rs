@@ -7,7 +7,7 @@
 //! session produced it. This module owns the other half of that pair — the calls
 //! themselves. [`HostCtx`] is what one input context can be asked to do, and
 //! [`EffectHost`] is the adapter that lets the routing layer's
-//! [`Host`](crate::engine::host::Host) speak it.
+//! [`Host`] speak it.
 //!
 //! # Why the boundary is a trait
 //!
@@ -185,7 +185,7 @@ impl<'a> EffectHost<'a> {
     /// # Returns
     ///
     /// An adapter that can be handed to the routing layer as a
-    /// [`Host`](crate::engine::host::Host).
+    /// [`Host`].
     ///
     /// # Panics
     ///

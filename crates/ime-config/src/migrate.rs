@@ -107,7 +107,7 @@ pub trait MigrationStep {
     /// # Errors
     ///
     /// [`ConfigError::Invalid`] when the document is not a document of
-    /// [`MigrationStep::from_version`] at all: one that declares another version, or one
+    /// `MigrationStep::from_version` at all: one that declares another version, or one
     /// that declares none and so cannot be shown to be the version this step reads.
     ///
     /// # Panics

@@ -29,10 +29,10 @@
 //!   (`clock_gettime` through the vDSO), write two numbers into a fixed stack buffer,
 //!   `write(2)` that buffer to the descriptor that was already open, and `_exit(70)`.
 //!   No allocation, no lock, no `malloc`, no `printf`, and no Rust formatting
-//!   machinery: [`FixedBuffer`] exists precisely so that the record can be rendered
+//!   machinery: `FixedBuffer` exists precisely so that the record can be rendered
 //!   without `core::fmt`.
 //!
-//! The one thing the handler reads from shared state is [`CHANNEL`], a [`OnceLock`]:
+//! The one thing the handler reads from shared state is `CHANNEL`, a [`OnceLock`]:
 //! reading it is a single acquire load on a value that is written once, before any
 //! signal can be armed.
 //!

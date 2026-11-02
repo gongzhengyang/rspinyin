@@ -2,7 +2,7 @@
 //! turns a layout's keystrokes into full pinyin.
 //!
 //! Responsibility: own the five published layouts this build ships as *data*
-//! (`data/*.toml`, compiled once by [`builtin`]), map a layout's one- or two-key
+//! (`data/*.toml`, compiled once by `builtin`), map a layout's one- or two-key
 //! syllable onto an entry of the segmentation layer's syllable table, and rewrite a
 //! whole keystroke stream into the full-pinyin spelling the segmentation layer
 //! reads. The document format, the validator and the compile step live in
@@ -95,8 +95,8 @@ pub const fn key_index(key: u8) -> Option<usize> {
 ///
 /// A layout is data, not a preference baked into the type: the five published
 /// tables are compiled from the embedded documents in
-/// [`builtin`](self::builtin), and a user-defined layout is compiled from the
-/// configuration by [`layout::compile_layout`](layout::compile_layout). Both
+/// `builtin`, and a user-defined layout is compiled from the
+/// configuration by [`layout::compile_layout`]. Both
 /// arrive in this one shape, which is what lets the rewrite treat them alike.
 ///
 /// A syllable is one or two keys: either a key that stands alone
@@ -181,7 +181,7 @@ impl SchemeTable {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MappedSyllable {
     /// Index into the segmentation layer's 411-entry syllable table; the spelling
-    /// itself is [`syllable_at`](crate::segment::syllable::syllable_at) of this.
+    /// itself is [`syllable_at`] of this.
     pub full: SyllableId,
     /// How many scheme keys this syllable consumed: 1 or 2.
     pub consumed: u8,

@@ -241,7 +241,7 @@ const RELOAD_CONTEXT: u64 = 0;
 /// The production trigger the `config-watch` step records: the glue's `reloadConfig`
 /// override forwards the host's reload request here — the glue links this export by
 /// name, the way it links [`rspinyin_plugin_init`] — and this entry is the caller
-/// [`on_config_reload`] was written for. The sequence is the reload handler's own:
+/// `on_config_reload` was written for. The sequence is the reload handler's own:
 /// re-read the document, report what it found, adopt the routing table it projects;
 /// the broadcast through [`session_host::reload`](crate::session_host::reload) is what
 /// makes the adoption reach the sessions that are already alive. A composition in

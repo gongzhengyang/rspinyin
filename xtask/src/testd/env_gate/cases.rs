@@ -138,7 +138,7 @@ fn field_value(line: &str, name: &str) -> Option<String> {
 
 /// The tasks a case's attribute line anchors, when the line declares it pending.
 ///
-/// A pending case is one whose card says `可执行性：`[待实现]`` and names the tasks it waits on
+/// A pending case is one whose card says `可执行性：[待实现]` and names the tasks it waits on
 /// in `锚定：`. Both live in the case's `基本属性` line as `｜`-separated segments -- the ASCII
 /// pipe accepted beside the full-width one, which the suite has written in both forms -- so the
 /// probe reads segments rather than the whole line: a `锚点：` segment, the source anchor, is a

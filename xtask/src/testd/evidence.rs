@@ -71,7 +71,7 @@
 //!
 //! # Modules
 //!
-//! [`write`] owns the tree -- the run directory, the case bundles and the file modes --
+//! [`mod@write`] owns the tree -- the run directory, the case bundles and the file modes --
 //! [`index`] owns the two indexes and the batch verdict, and [`v3`] owns the tests-v3.0
 //! assertion record and the batch checklist. [`error`] holds the refusals.
 

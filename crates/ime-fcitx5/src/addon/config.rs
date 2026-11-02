@@ -243,7 +243,7 @@ pub(super) fn with_config_store<T>(read: impl FnOnce(&ConfigStore) -> T) -> Opti
 
 /// Re-reads the configuration file and adopts what changed.
 ///
-/// The entry point the host's `reloadConfig()` callback calls; [`start_config_watch`] is
+/// The entry point the host's `reloadConfig()` callback calls; `start_config_watch` is
 /// where the sequence records the slot that reaches it. A reload may improve the
 /// configuration and nothing else: the file is never written, a document that cannot be
 /// parsed never replaces one that can, and a composition in progress is never reset.

@@ -14,7 +14,7 @@
 //! | 3 | the fallback: the screen's horizontal centre, 60% down | always |
 //!
 //! Tier 1 is a **heuristic** -- a rectangle whose centre falls inside an output is taken to be
-//! absolute -- and it lives in one function ([`resolver::looks_absolute`]) so that
+//! absolute -- and it lives in one function (`resolver::looks_absolute`) so that
 //! `docs/dev/spikes/cursor-probe.md`, which records what each frontend really reports, can revise
 //! it in one place. Tiers 1 and 3 cost nothing; tier 2 costs one platform round trip.
 //!

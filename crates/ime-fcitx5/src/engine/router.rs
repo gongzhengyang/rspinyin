@@ -4,7 +4,7 @@
 //! # Responsibility
 //!
 //! [`KeyRouter`] is what turns the routing table into input. A key event becomes a
-//! [`KeyAction`](ime_types::KeyAction), the action is stepped through the session state
+//! [`KeyAction`], the action is stepped through the session state
 //! machine of `ime-core`, and every [`Effect`](ime_core::state::Effect) that comes back is
 //! executed against the [`Host`] boundary: text is committed, the application's preedit
 //! area is filled or emptied, the candidate window is shown, hidden and repainted, a
@@ -36,7 +36,7 @@
 //! keys that leave the mode included, because leaving it changes nothing else and the key
 //! the user pressed to leave is still a key they pressed for the application. Leaving goes
 //! through the session, which is where the mode's flag lives: [`leaves_temp_english`] names
-//! the two keys and [`Session::leave_temp_english`] takes the mode off. Which keys they are
+//! the two keys and `Session::leave_temp_english` takes the mode off. Which keys they are
 //! cannot be read out of the routing table, because the space bar and the `Return` of the
 //! shipped configuration are the same action; see [`leaves_temp_english`] for why that
 //! makes the table the wrong place to ask.
@@ -44,18 +44,18 @@
 //! # Layout
 //!
 //! This file holds [`KeyRouter`] itself and the per-context state it keeps: one
-//! [`Session`] per input context, the mode bits that context carries and the anchor the
+//! `Session` per input context, the mode bits that context carries and the anchor the
 //! host last reported. Under the shipped `[engine] share_state = "context"` tier that
 //! state is private to its context from birth to release; the opt-in `"program"` tier
 //! pools it by application, so the next window of the same program starts where the last
 //! one left off. The three pieces beside it are leaves:
 //!
-//! * [`config`] is the routing layer's view of the configuration document, projected from
+//! * `config` is the routing layer's view of the configuration document, projected from
 //!   the document by [`RoutingConfig::from_config`].
-//! * [`effects`] is the executor: what a step returns becomes a call on [`Host`] there,
+//! * `effects` is the executor: what a step returns becomes a call on [`Host`] there,
 //!   including the commit and preedit confirmations that close the two effects with a
 //!   sequel.
-//! * [`modes`] is the status strip the engine's own mode bits paint, the label included.
+//! * `modes` is the status strip the engine's own mode bits paint, the label included.
 //! * [`phrases`] is the phrase document a saved phrase is appended to.
 //!
 //! # Threading
@@ -174,7 +174,7 @@ struct StepCtx<'a, 'b> {
 /// the data sources the decode reads and the privacy state the commit path asks, and
 /// every input context the host activates gets a session of its own -- or, under the
 /// program tier, adopts the session the last released context of the same application
-/// parked. See [`PoolKey`].
+/// parked. See `PoolKey`.
 pub struct KeyRouter<'a> {
     /// The decoder, the dictionary, the user's frequencies and the language model.
     ///
@@ -329,7 +329,7 @@ impl<'a> KeyRouter<'a> {
     /// Installs `index` as the variant table the script mode converts through.
     ///
     /// The contexts created after this point share the handle; the ones alive before it
-    /// are re-pointed too, for the same reason [`KeyRouter::use_phrases`] re-points
+    /// are re-pointed too, for the same reason `KeyRouter::use_phrases` re-points
     /// theirs -- a table installed between two activations of one context must not
     /// leave that context answering from a state the assembly already replaced.
     ///

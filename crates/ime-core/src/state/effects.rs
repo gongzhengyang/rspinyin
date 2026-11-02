@@ -10,7 +10,7 @@ use smallvec::SmallVec;
 
 use ime_types::{ImeError, Placement, Preedit, Revision, UiFrame};
 
-/// Most effects one [`step`] produces.
+/// Most effects one `step` produces.
 ///
 /// The returned `SmallVec` holds this many inline, so a step never allocates for its
 /// effects. A step that puts a session on screen emits three -- the preedit, the

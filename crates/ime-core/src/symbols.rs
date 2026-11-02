@@ -113,7 +113,7 @@ impl SymbolTable {
     ///
     /// # Errors
     ///
-    /// [`ImeError::ConfigInvalid`] naming [`SYMBOLS_FILE_KEY`] for the first row that
+    /// [`ImeError::ConfigInvalid`] naming `SYMBOLS_FILE_KEY` for the first row that
     /// cannot be used -- a line that is not three tab-separated fields, a code outside
     /// the code alphabet or past [`MAX_SYMBOL_CODE_LEN`], an empty label or one past
     /// [`MAX_SYMBOL_LABEL_LEN`], or an empty symbol list or one past

@@ -42,7 +42,7 @@ const INVALID_CODE: &str = "quick/expr/invalid";
 /// # Returns
 ///
 /// For an admissible payload naming a scalar: the character itself, then up to
-/// [`SUCCESSOR_COUNT`] successors, each annotated with its `U`-prefixed uppercase
+/// `SUCCESSOR_COUNT` successors, each annotated with its `U`-prefixed uppercase
 /// hex. Successors skip the surrogate block and stop at the end of the plane. For a
 /// payload that names no scalar: one candidate echoing the input with the invalid
 /// annotation. For an empty or non-hex payload: an empty list.

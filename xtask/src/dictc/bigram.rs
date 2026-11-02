@@ -8,7 +8,7 @@
 //!
 //! Boundaries: this module is offline build logic. It never opens files and never
 //! influences runtime decoding; `DictLm` is the only consumer of the bytes it
-//! produces, and it consumes them through [`ime_dict::format::Reader`].
+//! produces, and it consumes them through `ime_dict::format::Reader`.
 
 use std::collections::{BTreeMap, BTreeSet};
 

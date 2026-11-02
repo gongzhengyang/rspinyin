@@ -112,7 +112,7 @@ impl ConfusableTable {
     ///
     /// # Errors
     ///
-    /// [`ImeError::ConfigInvalid`] naming [`CONFUSABLE_FILE_KEY`] for the first row
+    /// [`ImeError::ConfigInvalid`] naming `CONFUSABLE_FILE_KEY` for the first row
     /// that cannot be used -- a line that is not two tab-separated fields, or a
     /// column that is empty or past [`MAX_CONFUSABLE_LEN`]. The reason carries the
     /// line number and never the line's text.

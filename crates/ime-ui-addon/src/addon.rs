@@ -26,7 +26,7 @@
 //! `BUDGET-LAT-05` gives the synchronous part of [`on_addon_init`] 120 ms, and Fcitx5
 //! runs it on the main loop, so nothing here may block on work that belongs to another
 //! thread. The UI thread, the pre-created window and the font warm-up are therefore
-//! started in the background — with one bounded exception, [`SURFACE_READY_DEADLINE`],
+//! started in the background — with one bounded exception, `SURFACE_READY_DEADLINE`,
 //! which waits for the window to exist before the sequence ends. That wait is what makes
 //! the takeover reachable: the host reads `UserInterface::available()` after the addon is
 //! constructed, and a window that exists by then is a window the host can choose. A frame
@@ -280,7 +280,7 @@ fn lock_pending_motion() -> MutexGuard<'static, Option<MotionConfig>> {
 /// the step returns success rather than repeating the reason under a second code.
 ///
 /// The thread starts in the background and the step waits for the window for at most
-/// [`SURFACE_READY_DEADLINE`], which is the sequence's one bounded wait on another thread's
+/// `SURFACE_READY_DEADLINE`, which is the sequence's one bounded wait on another thread's
 /// work; that constant records why the wait is what makes the takeover reachable.
 ///
 /// # Errors
@@ -396,7 +396,7 @@ pub fn on_addon_init() -> bool {
 /// Stops the UI thread and releases what the start-up took.
 ///
 /// Runs on the host thread during unload, so the wait is bounded by
-/// [`UI_SHUTDOWN_TIMEOUT`]; a thread that outlives it is detached and recorded rather than
+/// `UI_SHUTDOWN_TIMEOUT`; a thread that outlives it is detached and recorded rather than
 /// blocking the host.
 ///
 /// Both readiness flags are cleared afterwards. The window and the backend go away with the
@@ -473,7 +473,7 @@ pub fn candidate_window_ready() -> bool {
 ///
 /// Answers `false` until the surface exists: a start-up that failed answers `false` for the
 /// rest of the session, and a start-up that is merely slow answers `false` until it
-/// finishes, which is at most [`SURFACE_READY_DEADLINE`] of the load and the whole of a
+/// finishes, which is at most `SURFACE_READY_DEADLINE` of the load and the whole of a
 /// first frame that arrives during it. A caller that receives `false` must still commit the
 /// text it holds: only the window is skipped, never the input. Each declined frame records
 /// `ui/not-ready`, the diagnostic that explains a candidate window which is briefly absent;

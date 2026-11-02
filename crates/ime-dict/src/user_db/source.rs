@@ -14,7 +14,7 @@ impl Drop for UserDb {
     /// The thread holds the store only for the length of one flush, but that is long enough
     /// to keep the `redb` file lock standing after the last clone has dropped -- which is
     /// what an immediate reopen (the recovery pass, a test) would otherwise meet. The wait
-    /// is bounded by [`FLUSH_SETTLE_TIMEOUT_MS`], the same bound an explicit flush waits
+    /// is bounded by `FLUSH_SETTLE_TIMEOUT_MS`, the same bound an explicit flush waits
     /// with; past it the flush is still running, and the lock lifts when it ends rather than
     /// when this drop does.
     fn drop(&mut self) {

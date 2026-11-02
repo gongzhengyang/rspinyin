@@ -8,7 +8,7 @@
 //!
 //! # Three states, machine-readable
 //!
-//! [`Executability`](super::Executability) is what a human reads: it carries a reason in prose
+//! [`Executability`] is what a human reads: it carries a reason in prose
 //! and the environment a withheld case would need. [`CaseEligibility`] is what the ledger
 //! records:
 //!

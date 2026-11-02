@@ -232,7 +232,7 @@ impl<'dict> Lattice<'dict> {
     /// readings the cap left room for, and this is what tells a caller the answer is
     /// built from a subset. It is a fact about the input rather than about the flag set,
     /// so a caller that logs it once has to remember that it already did. Always `false`
-    /// while [`DecodeFlags::ABBREV`] is clear, because the walk is never entered.
+    /// while `DecodeFlags::ABBREV` is clear, because the walk is never entered.
     pub fn abbrev_truncated(&self) -> bool {
         self.abbrev_truncated
     }

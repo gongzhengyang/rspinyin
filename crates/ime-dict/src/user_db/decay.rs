@@ -58,7 +58,7 @@ impl DecayParams {
     /// Folds an accumulator forward from `tick` to `now`.
     ///
     /// The factor is `2^(-elapsed / half_life)`, split into whole halvings and a
-    /// fractional step selected from [`DECAY_TABLE`]. The table covers `2^(-k / 256)`
+    /// fractional step selected from `DECAY_TABLE`. The table covers `2^(-k / 256)`
     /// at 1/65,536 resolution, keeping the factor error below one part in 256 while a
     /// decode costs one table load and shift.
     pub fn fold(&self, dee_q16: i64, tick: u64, now: u64) -> i64 {

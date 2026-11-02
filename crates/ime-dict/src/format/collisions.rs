@@ -47,7 +47,7 @@ const LIMIT_FLOOR: u64 = 4;
 /// Returns the colliding-pair count past which the hash itself must be broken.
 ///
 /// The bound is the birthday expectation `n(n-1) / 2^33` colliding pairs for `n`
-/// words, times [`LIMIT_HEADROOM`], raised to [`LIMIT_FLOOR`] when the expectation
+/// words, times `LIMIT_HEADROOM`, raised to `LIMIT_FLOOR` when the expectation
 /// rounds to zero. The arithmetic is `u128` because `n(n-1)` outgrows `u64` before
 /// any word list this format could hold does.
 ///
@@ -92,7 +92,7 @@ pub fn find_colliding_hashes<'a>(words: &[&'a str]) -> Option<(u32, &'a str, &'a
 ///
 /// The count sums, over every equal-hash run of the `(hash, word)` sort, the pairs of
 /// distinct texts the run holds. A word repeated in the input is one word rather than
-/// a collision, matching [`first_collision`].
+/// a collision, matching `first_collision`.
 ///
 /// # Examples
 ///

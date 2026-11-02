@@ -2,7 +2,7 @@
 //!
 //! # Responsibility
 //!
-//! [`translate_key`](super::translate_key) answers what a key *means*, and it answers from
+//! [`translate_key`] answers what a key *means*, and it answers from
 //! the key alone. The host asks a second question the table cannot see: *may I keep this
 //! key?* The answer depends on what is live. A `Space` with a composition in flight
 //! commits the highlighted candidate and is the plugin's; the same `Space` with nothing
@@ -53,7 +53,7 @@
 //! A key release is not a layer's key: the host delivers both edges of every key, and
 //! taking one would eat the application's key-up. The one release the plugin watches is the
 //! edge that ends a held modifier — it is the other half of the gesture
-//! [`ModifierHold`](super::modifier::ModifierHold) tracks — so it is answered by the hold
+//! [`ModifierHold`] tracks — so it is answered by the hold
 //! rather than by a layer, and every other release travels on. A modifier press is not the
 //! plugin's either, because taking it would take the first half of every capital letter
 //! from the application. The two chords that ask for a panel are the entry to the overlay
@@ -300,7 +300,7 @@ impl<'a> SessionView<'a> {
     /// # Arguments
     ///
     /// * `action` — what the routing table made of the key, from
-    ///   [`translate_key`](super::translate_key).
+    ///   [`translate_key`].
     /// * `cfg` — the configuration in force, which the input length limit a typed character
     ///   is measured against is read from.
     ///

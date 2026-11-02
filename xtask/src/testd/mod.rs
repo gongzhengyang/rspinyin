@@ -15,7 +15,7 @@
 //!
 //! Losing the keyboard focus is the project's highest-severity defect, so injection is
 //! impossible without naming the window that must keep it: every key, click and scroll
-//! takes a [`FocusGuard`](input::FocusGuard), which asks the server for the focus before
+//! takes a [`FocusGuard`], which asks the server for the focus before
 //! and after each event and fails the run the moment it moves.
 //!
 //! # What this channel does not do

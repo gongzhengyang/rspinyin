@@ -12,7 +12,7 @@
 //! # Thread placement
 //!
 //! The engine's session layer runs on Fcitx5's main loop and only there (`ASM-11` /
-//! `ASM-12`), so this thread never calls it. [`run_drain`] hands each event to the
+//! `ASM-12`), so this thread never calls it. `run_drain` hands each event to the
 //! caller-supplied `post`, whose production body marshals the wire into the main
 //! loop through the glue and answers whether the handoff was accepted. A refused
 //! handoff — no outlet, or the outlet's queue full — is dropped and counted under
@@ -21,8 +21,8 @@
 //!
 //! # Lifecycle
 //!
-//! The queue appears with the UI thread, so [`start`] runs at the end of the
-//! `ui-startup` step and [`stop`] from [`crate::addon::on_addon_destroy`], before
+//! The queue appears with the UI thread, so `start` runs at the end of the
+//! `ui-startup` step and `stop` from [`crate::addon::on_addon_destroy`], before
 //! the teardown takes the outlet away. A stop sets the flag and wakes the queue with
 //! a render receipt — the one event that names no engine state, which is what makes
 //! it a safe wake-up letter — so a thread parked in the queue's long wait answers

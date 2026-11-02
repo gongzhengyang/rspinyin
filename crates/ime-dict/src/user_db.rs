@@ -75,7 +75,7 @@
 //!
 //! Threading: `record` runs on the host thread right after a commit and does no IO -- it
 //! takes one short mutex, touches a map and returns. Everything that touches the file runs
-//! elsewhere: the flush on the store's flush thread, and the idle sweep in [`evict`]. Both
+//! elsewhere: the flush on the store's flush thread, and the idle sweep in `evict`. Both
 //! reach the store through a weak handle, so neither can keep it alive, and each is the
 //! single consumer of its own trigger -- which is what preserves the order one session's
 //! records have to reach the store in (`ASM-11`). The two explicit flushes,

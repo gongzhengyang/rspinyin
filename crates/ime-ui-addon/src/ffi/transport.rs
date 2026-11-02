@@ -18,7 +18,7 @@
 //!
 //! * The engine calls the two sink entry points on Fcitx5's main loop thread, one per
 //!   `UiCommand::post`.
-//! * The handshake runs the other way: [`register_transport`] asks the C++ glue to find
+//! * The handshake runs the other way: `register_transport` asks the C++ glue to find
 //!   the engine library and call its `rspinyin_engine_register_ui_sinks` with
 //!   [`rspinyin_ui_frame_sink`]'s pointer. The glue owns the probe order
 //!   (`RTLD_DEFAULT` first, then `RTLD_NOLOAD` under the sibling path and the bare

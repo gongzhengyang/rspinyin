@@ -1,6 +1,6 @@
 //! The cross-addon frame transport: the engine's half of the wire (ADR-0011).
 //!
-//! Responsibility: turn each [`UiCommand`] into the `#[repr(C)]` wire shape the user
+//! Responsibility: turn each `UiCommand` into the `#[repr(C)]` wire shape the user
 //! interface addon reads, and hand it to the sink the UI addon registered during the
 //! handshake. Before a sink arrives — or after it is cleared on addon unload — the
 //! command is dropped with the standing `ui/not-ready` diagnostic, exactly as before
@@ -17,7 +17,7 @@
 //!
 //! # Borrowing rules
 //!
-//! Every pointer in a wire borrows either the [`UiCommand`] being sent or one of this
+//! Every pointer in a wire borrows either the `UiCommand` being sent or one of this
 //! module's thread-local scratch arrays, and is valid for the duration of the single
 //! sink call only. The sink copies what it keeps before returning; nothing here hands
 //! out a pointer that outlives the call. The scratch arrays are rebuilt per post in a

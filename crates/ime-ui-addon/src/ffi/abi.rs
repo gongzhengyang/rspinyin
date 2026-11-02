@@ -226,7 +226,7 @@ static UI_CONTEXT: u8 = 0;
 ///
 /// Called by the glue while it constructs the addon instance, before any callback can
 /// fire. A version mismatch leaves the table unregistered, so the glue's factory never
-/// calls [`on_addon_init`] and the addon stays inert instead of running against a
+/// calls `on_addon_init` and the addon stays inert instead of running against a
 /// layout it does not know.
 ///
 /// Returns null when the handshake fails, which is what the glue checks for.

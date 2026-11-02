@@ -41,7 +41,7 @@
 //! child, and writes only scratch containers under `target/`, deleting each one
 //! after it has been measured. It never touches a configuration file, a default
 //! or the production container. The ranking and the sensitivity arithmetic live
-//! in [`rank`](self::rank), pure over their inputs, so the table order is a
+//! in [`mod@rank`], pure over their inputs, so the table order is a
 //! function of the run rather than of the machine.
 
 mod rank;

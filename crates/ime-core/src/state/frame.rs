@@ -13,7 +13,7 @@ use ime_types::{Anchor, Placement, RectI, ScreenId, StatusStrip};
 ///
 /// The cursor rectangle and the mode bits belong to the host, not to the session, so
 /// the engine copies them here before stepping and the session writes them into
-/// every frame it emits. They are held rather than passed to [`step`] because the
+/// every frame it emits. They are held rather than passed to `step` because the
 /// anchor has to survive between steps: a frame emitted on a keystroke the host did
 /// not tell us about must still place the window where the caret is.
 #[derive(Clone, Debug, PartialEq)]

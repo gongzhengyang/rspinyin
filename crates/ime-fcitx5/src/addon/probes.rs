@@ -18,7 +18,7 @@
 //!
 //! # The two baselines
 //!
-//! [`mark_dictionary_baseline`] is marked once the mapping is in place, which is what
+//! `mark_dictionary_baseline` is marked once the mapping is in place, which is what
 //! `BUDGET-MEM-03` measures the dictionary's private growth from. [`mark_ui_baseline`] is
 //! the user-interface layer's own moment, marked by whatever brings that layer up; a
 //! snapshot taken without it reports the UI budget as unmeasured rather than judging it

@@ -9,7 +9,7 @@
 //! | Space | Origin | Produced by |
 //! |---|---|---|
 //! | screen | the root window's top-left corner | [`container_to_screen`] |
-//! | window | the candidate window's top-left corner, shadow reserve included | [`window_to_screen`] |
+//! | window | the candidate window's top-left corner, shadow reserve included | `window_to_screen` |
 //! | container | the container's top-left corner, shadow reserve excluded | `ime-ui`'s hit map |
 //!
 //! The container is inset from the window by the shadow reserve, which is the transparent

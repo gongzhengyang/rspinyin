@@ -3,7 +3,7 @@
 //!
 //! # Why a run-time check
 //!
-//! The bits in [`MODIFIER_MASK`](super::MODIFIER_MASK) are Fcitx5's, copied from the
+//! The bits in `MODIFIER_MASK` are Fcitx5's, copied from the
 //! installed `fcitx-utils/keysym.h`. The unit test beside that constant pins them against
 //! the header they came from, which is a build-time tripwire: it catches a renumbered host
 //! in CI and says nothing at all when the *running* host differs from the one the build was

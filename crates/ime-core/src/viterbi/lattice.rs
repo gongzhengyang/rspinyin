@@ -84,7 +84,7 @@ const MAX_KEYS_PER_NODE: usize = 24;
 /// beside it fill up to, and they share it in the order the design fixes: the
 /// abbreviation walk takes what it needs first and the fuzzy walk takes what is left,
 /// so turning both on cannot make a lattice grow without bound. The exact walk's own
-/// bound is [`MAX_KEYS_PER_NODE`] keys of [`WORDS_PER_KEY`] words per node, which is
+/// bound is `MAX_KEYS_PER_NODE` keys of [`WORDS_PER_KEY`] words per node, which is
 /// far past what a real dictionary offers; this ceiling is the same "strongest eight"
 /// budget spent once per node of the widest graph a request can produce, and the sweep
 /// scores every one of those edges once per path that reaches its node, so it is a few

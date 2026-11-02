@@ -40,7 +40,7 @@
 //! # Determinism
 //!
 //! The order of the returned set is fixed by the left-to-right walk over the
-//! spelling and by [`NEIGHBORS`]'s row order, never by a hash: a candidate order
+//! spelling and by `NEIGHBORS`'s row order, never by a hash: a candidate order
 //! that depended on a set's iteration order would not be reproducible across
 //! processes. Distinct edits of one spelling always produce distinct results --
 //! a substitution differs from the input at exactly one byte and a transposition
