@@ -85,9 +85,10 @@ fn evaluate(expr: &str) -> Option<f64> {
     if expr.len() > MAX_EXPRESSION_LEN {
         return None;
     }
-    if !expr.chars().all(|ch| {
-        matches!(ch, '0'..='9' | '+' | '-' | '*' | '/' | '(' | ')' | '.')
-    }) {
+    if !expr
+        .chars()
+        .all(|ch| matches!(ch, '0'..='9' | '+' | '-' | '*' | '/' | '(' | ')' | '.'))
+    {
         return None;
     }
     let value = meval::eval_str(expr).ok()?;
@@ -105,10 +106,7 @@ fn evaluate(expr: &str) -> Option<f64> {
 fn format_value(value: f64) -> String {
     // An integral result inside the exact range of `i64` reads as the integer it
     // is; the range check is what keeps the `as` conversion honest.
-    if value.fract() == 0.0
-        && value >= i64::MIN as f64
-        && value <= i64::MAX as f64
-    {
+    if value.fract() == 0.0 && value >= i64::MIN as f64 && value <= i64::MAX as f64 {
         return format!("{}", value as i64);
     }
     let mut rendered = format!("{value:.10}");

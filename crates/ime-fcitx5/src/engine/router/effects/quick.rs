@@ -182,11 +182,7 @@ pub(super) fn step(
 /// # Panics
 ///
 /// Never.
-pub(super) fn open_from_buffer(
-    ctx: &mut Context,
-    step: &mut StepCtx<'_, '_>,
-    host: &mut dyn Host,
-) {
+pub(super) fn open_from_buffer(ctx: &mut Context, step: &mut StepCtx<'_, '_>, host: &mut dyn Host) {
     if ctx.quick.is_some() {
         return;
     }
@@ -507,12 +503,7 @@ fn ui(
 /// switches rewrite it, the host hands it to the application — and learning is
 /// untouched: a rendered date or amount is a choice, not a spelling, and the panel
 /// records nothing.
-fn commit(
-    panel: &QuickPanel,
-    index: usize,
-    ctx: &mut Context,
-    host: &mut dyn Host,
-) -> Verdict {
+fn commit(panel: &QuickPanel, index: usize, ctx: &mut Context, host: &mut dyn Host) -> Verdict {
     let Some(candidate) = panel.candidates.get(index) else {
         return Verdict::Claimed(false);
     };
@@ -757,6 +748,9 @@ mod tests {
         assert!(!panel.accepts_payload('g'));
         assert!(!panel.accepts_payload('+'));
         panel.domain = QuickDomain::Number;
-        assert!(!panel.accepts_payload('a'), "an amount payload takes no letters");
+        assert!(
+            !panel.accepts_payload('a'),
+            "an amount payload takes no letters"
+        );
     }
 }

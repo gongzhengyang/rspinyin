@@ -51,10 +51,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, ensure};
 
 use self::SpecCell::{MetricAfter, ThresholdAfter, ThresholdFirst, ThresholdZero};
-use crate::tune::purity::PurityCheck;
 pub(crate) use self::bench::{SIGMAS, owner};
 pub(crate) use self::memory::run as run_memory;
 pub(crate) use self::spec::{Spec, compare};
+use crate::tune::purity::PurityCheck;
 
 #[cfg(test)]
 mod alloc_tests;

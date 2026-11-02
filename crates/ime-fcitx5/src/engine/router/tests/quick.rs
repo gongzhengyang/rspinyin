@@ -23,14 +23,12 @@ use super::*;
 /// the panel's signature, and this helper the honest answer to "is the panel up"
 /// that does not depend on what the session's own decode offered beside it.
 fn panel_open(host: &RecordingHost) -> bool {
-    host.last_frame
-        .as_ref()
-        .is_some_and(|frame| {
-            frame
-                .candidates
-                .iter()
-                .any(|candidate| candidate.source == CandidateSource::Symbol)
-        })
+    host.last_frame.as_ref().is_some_and(|frame| {
+        frame
+            .candidates
+            .iter()
+            .any(|candidate| candidate.source == CandidateSource::Symbol)
+    })
 }
 
 /// `FcitxKey_r`.
@@ -112,7 +110,10 @@ fn quick_config(calc_enabled: bool) -> RoutingConfig {
 /// A router with quick input on and the pinned clock installed.
 fn quick_router(fixture: &Fixture, calc_enabled: bool) -> KeyRouter<'_> {
     pinned_clock();
-    fixture.router_with(PhraseHandle::new(PhraseStore::load(None, 100, true)), quick_config(calc_enabled))
+    fixture.router_with(
+        PhraseHandle::new(PhraseStore::load(None, 100, true)),
+        quick_config(calc_enabled),
+    )
 }
 
 #[test]
@@ -137,7 +138,10 @@ fn test_quick_date_trigger_opens_panel_and_commits_selected_format() {
     assert_eq!(host.commits, ["2026年10月28日"]);
     // The composition underneath is taken back with the commit; the session is
     // idle and the window hidden.
-    assert_eq!(router.session(IC).map(|session| session.state), Some(SessionState::Idle));
+    assert_eq!(
+        router.session(IC).map(|session| session.state),
+        Some(SessionState::Idle)
+    );
     assert!(host.hides >= 1);
 }
 
@@ -178,8 +182,15 @@ fn test_quick_time_weekday_and_iso_triggers_render_the_injected_clock() {
         router.activate_reported(IC, ordinary_report());
         let mut host = RecordingHost::default();
         assert!(router.key_event(IC, &press(first, 0), &mut host), "{label}");
-        assert!(router.key_event(IC, &press(second, 0), &mut host), "{label}");
-        assert_eq!(host.highlighted.as_deref(), Some(first_candidate), "{label}");
+        assert!(
+            router.key_event(IC, &press(second, 0), &mut host),
+            "{label}"
+        );
+        assert_eq!(
+            host.highlighted.as_deref(),
+            Some(first_candidate),
+            "{label}"
+        );
     }
 }
 
@@ -204,7 +215,10 @@ fn test_quick_calc_trigger_builds_an_expression_from_digit_keys() {
     // Space commits the highlighted candidate, the value.
     assert!(router.key_event(IC, &press(KEY_SPACE, 0), &mut host));
     assert_eq!(host.commits, ["12"]);
-    assert_eq!(router.session(IC).map(|session| session.state), Some(SessionState::Idle));
+    assert_eq!(
+        router.session(IC).map(|session| session.state),
+        Some(SessionState::Idle)
+    );
 }
 
 #[test]
@@ -235,7 +249,11 @@ fn test_quick_amount_trigger_renders_four_styles_and_commits_the_first() {
 
     assert!(router.key_event(IC, &press(KEY_R, 0), &mut host));
     assert!(router.key_event(IC, &press(KEY_1, 0), &mut host));
-    assert_eq!(host.highlighted.as_deref(), Some("一"), "the plain reading leads");
+    assert_eq!(
+        host.highlighted.as_deref(),
+        Some("一"),
+        "the plain reading leads"
+    );
     assert!(router.key_event(IC, &press(KEY_2, 0), &mut host));
     assert_eq!(host.highlighted.as_deref(), Some("十二"));
     // The capitals candidate carries the accounting rule the card pins.
@@ -328,11 +346,16 @@ fn test_quick_backspace_hands_control_back_to_the_session() {
     // The session's own buffer took the same backspace: it holds what is left of
     // the spelling, and a second backspace ends the composition.
     assert_eq!(
-        router.session(IC).map(|session| session.buf.raw().to_owned()),
+        router
+            .session(IC)
+            .map(|session| session.buf.raw().to_owned()),
         Some(String::from("r"))
     );
     router.key_event(IC, &press(KEY_BACKSPACE, 0), &mut host);
-    assert_eq!(router.session(IC).map(|session| session.state), Some(SessionState::Idle));
+    assert_eq!(
+        router.session(IC).map(|session| session.state),
+        Some(SessionState::Idle)
+    );
 }
 
 #[test]
@@ -350,7 +373,10 @@ fn test_quick_escape_cancels_the_panel_and_the_composition() {
     assert!(router.key_event(IC, &press(KEY_ESCAPE, 0), &mut host));
     assert!(host.commits.is_empty(), "{:?}", host.commits);
     assert!(host.hides >= 1);
-    assert_eq!(router.session(IC).map(|session| session.state), Some(SessionState::Idle));
+    assert_eq!(
+        router.session(IC).map(|session| session.state),
+        Some(SessionState::Idle)
+    );
 }
 
 #[test]
@@ -374,7 +400,9 @@ fn test_quick_reload_closes_the_panel_and_disables_the_triggers() {
         host.commits
     );
     assert_eq!(
-        router.session(IC).map(|session| session.buf.raw().to_owned()),
+        router
+            .session(IC)
+            .map(|session| session.buf.raw().to_owned()),
         Some(String::from("rq")),
         "the composition the session holds survives the reload"
     );

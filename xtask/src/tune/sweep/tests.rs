@@ -46,8 +46,8 @@ fn test_parse_grid_empty_section_refuses() {
 
 #[test]
 fn test_parse_grid_not_a_table_refuses() {
-    let error = SweepSpec::parse("core_min_freq = 20\n")
-        .expect_err("a spec without [grid] refuses");
+    let error =
+        SweepSpec::parse("core_min_freq = 20\n").expect_err("a spec without [grid] refuses");
     assert!(
         error.to_string().contains("[grid]"),
         "the refusal names the missing section: {error}"
@@ -56,8 +56,8 @@ fn test_parse_grid_not_a_table_refuses() {
 
 #[test]
 fn test_parse_grid_single_point_refuses() {
-    let error = SweepSpec::parse("[grid]\ncore_min_freq = [20]\n")
-        .expect_err("a one-point grid refuses");
+    let error =
+        SweepSpec::parse("[grid]\ncore_min_freq = [20]\n").expect_err("a one-point grid refuses");
     assert!(
         error.to_string().contains("nothing to compare"),
         "the refusal says why one point is not a sweep: {error}"
@@ -69,7 +69,10 @@ fn test_parse_grid_unknown_parameter_refuses_with_known_names() {
     let error = SweepSpec::parse("[grid]\nuni_weight = [128, 256]\n")
         .expect_err("an unknown parameter refuses");
     let text = error.to_string();
-    assert!(text.contains("uni_weight"), "the refusal names the parameter: {text}");
+    assert!(
+        text.contains("uni_weight"),
+        "the refusal names the parameter: {text}"
+    );
     assert!(
         text.contains("core_min_freq"),
         "the refusal lists the known knobs: {text}"
@@ -119,9 +122,7 @@ fn test_parse_grid_repeated_point_refuses() {
 
 #[test]
 fn test_assignments_enumerate_the_whole_product() {
-    let parsed = spec(
-        "[grid]\ncore_min_freq = [10, 20]\ntail_flat_weight = [100, 200, 300]\n",
-    );
+    let parsed = spec("[grid]\ncore_min_freq = [10, 20]\ntail_flat_weight = [100, 200, 300]\n");
     let assignments = parsed.assignments();
     assert_eq!(assignments.len(), 6, "2 x 3 grid is six points");
     assert!(
@@ -190,7 +191,10 @@ fn test_metrics_of_carries_the_objective_numbers() {
     assert_eq!(metrics.top1_overall, 0.75);
     assert_eq!(metrics.top1_single, Some(0.9));
     assert_eq!(metrics.top1_two, Some(0.88));
-    assert_eq!(metrics.top1_long, None, "an unmeasured band stays unmeasured");
+    assert_eq!(
+        metrics.top1_long, None,
+        "an unmeasured band stays unmeasured"
+    );
     assert_eq!(metrics.top9_overall, 0.96);
     assert_eq!(metrics.unreachable, 3);
 }

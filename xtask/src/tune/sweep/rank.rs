@@ -312,10 +312,7 @@ mod tests {
             .collect();
         assert_eq!(values, vec![1, 2], "values follow the declared order");
         assert_eq!(a_readings.len(), values.len(), "no reading changed kind");
-        let bests: Vec<Option<f64>> = a_readings
-            .iter()
-            .map(|reading| reading.best_top1)
-            .collect();
+        let bests: Vec<Option<f64>> = a_readings.iter().map(|reading| reading.best_top1).collect();
         assert_eq!(bests, vec![Some(0.72), Some(0.74)]);
     }
 

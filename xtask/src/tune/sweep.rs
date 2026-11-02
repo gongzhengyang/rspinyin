@@ -274,10 +274,7 @@ impl SweepSpec {
         let array = raw
             .as_array()
             .with_context(|| format!("sweep: `{name}` must be a list of grid points"))?;
-        ensure!(
-            !array.is_empty(),
-            "sweep: `{name}` declares no grid points"
-        );
+        ensure!(!array.is_empty(), "sweep: `{name}` declares no grid points");
         let mut points = Vec::with_capacity(array.len());
         for element in array {
             let point = match (knob.kind, element.as_integer(), element.as_float()) {
@@ -400,7 +397,10 @@ pub(super) fn run(root: &Path, spec_path: &Path, holdout: &Path) -> Result<()> {
             )
         })?;
         let report = quality::measure(&cases, &lexicon).with_context(|| {
-            format!("sweep: [{}] the holdout measurement failed", assignment.label)
+            format!(
+                "sweep: [{}] the holdout measurement failed",
+                assignment.label
+            )
         })?;
         drop(lexicon);
         results.push(PointResult {
@@ -438,9 +438,12 @@ fn compile_point(exe: &Path, container: &Path, assignment: &Assignment) -> Resul
         command.arg(format!("{}={}", knob.flag, value.as_flag_value()));
     }
     let started = Instant::now();
-    let status = command
-        .status()
-        .with_context(|| format!("sweep: [{}] cannot start the dictc compile", assignment.label))?;
+    let status = command.status().with_context(|| {
+        format!(
+            "sweep: [{}] cannot start the dictc compile",
+            assignment.label
+        )
+    })?;
     let elapsed = started.elapsed();
     ensure!(
         status.success(),
@@ -499,9 +502,18 @@ fn report_table(spec: &SweepSpec, results: Vec<PointResult>) -> Result<()> {
     for (parameter, readings) in sensitivity(&ranked, spec) {
         let lines: Vec<String> = readings.iter().map(ValueReading::line).collect();
         println!("sweep:   {parameter}: {}", lines.join(" | "));
-        let measured: Vec<f64> = readings.iter().filter_map(|reading| reading.best_top1).collect();
-        let lowest = measured.iter().copied().min_by(|left, right| left.total_cmp(right));
-        let highest = measured.iter().copied().max_by(|left, right| left.total_cmp(right));
+        let measured: Vec<f64> = readings
+            .iter()
+            .filter_map(|reading| reading.best_top1)
+            .collect();
+        let lowest = measured
+            .iter()
+            .copied()
+            .min_by(|left, right| left.total_cmp(right));
+        let highest = measured
+            .iter()
+            .copied()
+            .max_by(|left, right| left.total_cmp(right));
         if let (Some(lowest), Some(highest)) = (lowest, highest) {
             println!(
                 "sweep:   {parameter}: spread {:.2}pp across the declared values",

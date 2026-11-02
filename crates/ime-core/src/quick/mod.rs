@@ -225,15 +225,11 @@ pub fn candidates(
             None => Vec::new(),
         },
         QuickDomain::Number => {
-            let payload = buffer
-                .get(matched.trigger_len..)
-                .unwrap_or_default();
+            let payload = buffer.get(matched.trigger_len..).unwrap_or_default();
             number::translate(payload)
         }
         QuickDomain::Codepoint => {
-            let payload = buffer
-                .get(matched.trigger_len..)
-                .unwrap_or_default();
+            let payload = buffer.get(matched.trigger_len..).unwrap_or_default();
             codepoint::translate(payload)
         }
         QuickDomain::Calc => {
@@ -258,9 +254,7 @@ fn calc_expression(buffer: &str) -> Option<&str> {
 
 /// Whether `payload` is `1..=cap` ASCII digits.
 fn is_digit_payload(payload: &str, cap: usize) -> bool {
-    !payload.is_empty()
-        && payload.len() <= cap
-        && payload.bytes().all(|byte| byte.is_ascii_digit())
+    !payload.is_empty() && payload.len() <= cap && payload.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// Whether an expression passes the calculator's admission gate: short enough to
@@ -273,12 +267,8 @@ fn is_admissible_expression(expr: &str) -> bool {
     if expr.is_empty() || expr.len() > calc::MAX_EXPRESSION_LEN {
         return false;
     }
-    expr.chars().all(|ch| {
-        matches!(
-            ch,
-            '0'..='9' | '+' | '-' | '*' | '/' | '(' | ')' | '.'
-        )
-    })
+    expr.chars()
+        .all(|ch| matches!(ch, '0'..='9' | '+' | '-' | '*' | '/' | '(' | ')' | '.'))
 }
 
 pub mod calc;

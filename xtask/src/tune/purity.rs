@@ -289,7 +289,10 @@ mod tests {
             load_1m: f32::NAN,
             cpu_count: 8,
         };
-        assert!(matches!(check.verify(), Err(PurityRefusal::Unmeasurable { .. })));
+        assert!(matches!(
+            check.verify(),
+            Err(PurityRefusal::Unmeasurable { .. })
+        ));
     }
 
     #[test]
@@ -298,7 +301,10 @@ mod tests {
             load_1m: f32::INFINITY,
             cpu_count: 8,
         };
-        assert!(matches!(check.verify(), Err(PurityRefusal::Unmeasurable { .. })));
+        assert!(matches!(
+            check.verify(),
+            Err(PurityRefusal::Unmeasurable { .. })
+        ));
     }
 
     #[test]
@@ -307,7 +313,10 @@ mod tests {
             load_1m: -0.1,
             cpu_count: 8,
         };
-        assert!(matches!(check.verify(), Err(PurityRefusal::Unmeasurable { .. })));
+        assert!(matches!(
+            check.verify(),
+            Err(PurityRefusal::Unmeasurable { .. })
+        ));
     }
 
     #[test]
@@ -316,7 +325,10 @@ mod tests {
             load_1m: 0.0,
             cpu_count: 0,
         };
-        assert!(matches!(check.verify(), Err(PurityRefusal::Unmeasurable { .. })));
+        assert!(matches!(
+            check.verify(),
+            Err(PurityRefusal::Unmeasurable { .. })
+        ));
     }
 
     #[test]
@@ -342,8 +354,14 @@ mod tests {
             ceiling: 2.0,
         };
         let text = refusal.text();
-        assert!(text.contains("3.00"), "the refusal carries the load: {text}");
-        assert!(text.contains("2.00"), "the refusal carries the ceiling: {text}");
+        assert!(
+            text.contains("3.00"),
+            "the refusal carries the load: {text}"
+        );
+        assert!(
+            text.contains("2.00"),
+            "the refusal carries the ceiling: {text}"
+        );
         assert!(
             text.contains("settle") || text.contains("Stop"),
             "the refusal names a remedy: {text}"

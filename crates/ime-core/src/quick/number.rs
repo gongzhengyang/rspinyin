@@ -188,7 +188,11 @@ fn chinese_numeral(value: u64, upper: bool) -> String {
 /// between every gap the digits skip.
 fn render_group(group: u64, upper: bool, bare_ten: bool, out: &mut String) {
     let digits = if upper { &UPPER_DIGITS } else { &PLAIN_DIGITS };
-    let units = if upper { &UPPER_GROUP_UNITS } else { &PLAIN_GROUP_UNITS };
+    let units = if upper {
+        &UPPER_GROUP_UNITS
+    } else {
+        &PLAIN_GROUP_UNITS
+    };
     let mut pending_zero = false;
     // The group's own leading zeros spell nothing: until one digit has rendered,
     // a zero is a position the group does not name, not a gap between two that
@@ -210,13 +214,15 @@ fn render_group(group: u64, upper: bool, bare_ten: bool, out: &mut String) {
         // leads the whole number; every other position and the whole capitals
         // reading keep the glyph. The unit of a position reads from the high end
         // of the table: thousands first.
-        let unit = if position == 0 { "" } else { units[3 - position] };
+        let unit = if position == 0 {
+            ""
+        } else {
+            units[3 - position]
+        };
         if !(bare_ten && position == 1 && digit == 1) {
             // `digit` is 1..=9 here — zero took the early continue — so the index
             // is 0..=8 and the subtraction cannot underflow.
-            let index = usize::try_from(digit)
-                .unwrap_or(1)
-                .saturating_sub(1);
+            let index = usize::try_from(digit).unwrap_or(1).saturating_sub(1);
             if let Some(glyph) = digits.get(index) {
                 out.push_str(glyph);
             }
@@ -301,7 +307,10 @@ mod tests {
 
     #[test]
     fn test_render_amount_zero_renders_ling_in_every_style() {
-        assert_eq!(render_amount("0", AmountStyle::Plain).as_deref(), Some("零"));
+        assert_eq!(
+            render_amount("0", AmountStyle::Plain).as_deref(),
+            Some("零")
+        );
         assert_eq!(
             render_amount("0", AmountStyle::CurrencyUpper).as_deref(),
             Some("人民币零元整")

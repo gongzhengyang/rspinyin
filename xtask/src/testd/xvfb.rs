@@ -197,8 +197,7 @@ fn find_on_path(name: &str, path: Option<&OsStr>) -> bool {
 
 /// Whether `path` is a file any of the execute bits is set on.
 fn is_executable_file(path: &Path) -> bool {
-    fs::metadata(path)
-        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 /// Everything that can go wrong while arranging the channel.
@@ -383,13 +382,7 @@ impl VirtualDisplay {
 
     /// The server's exit status, when it has already exited.
     fn child_status(&mut self) -> Option<String> {
-        let status = self
-            .child
-            .as_mut()?
-            .try_wait()
-            .ok()
-            .flatten()?
-            .to_string();
+        let status = self.child.as_mut()?.try_wait().ok().flatten()?.to_string();
         Some(status)
     }
 
@@ -580,8 +573,9 @@ fn unix_socket_servable(socket_dir: &Path) -> bool {
 ///
 /// Never.
 pub fn tcp_fallback_note(socket_dir: &Path) -> Option<&'static str> {
-    (!unix_socket_servable(socket_dir))
-        .then(|| "the X socket directory cannot serve unix sockets, so the display also listens on TCP")
+    (!unix_socket_servable(socket_dir)).then(
+        || "the X socket directory cannot serve unix sockets, so the display also listens on TCP",
+    )
 }
 
 /// Removes the socket and the lock file of display `number`.

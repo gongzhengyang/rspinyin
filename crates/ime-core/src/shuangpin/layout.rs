@@ -513,9 +513,7 @@ fn validate_typeability(table: &SchemeTable, errors: &mut Vec<ImeError>) {
         }
         reported.push((initial, final_text));
         let reason = if initial.is_empty() {
-            format!(
-                "no keystroke reaches the final `{final_text}`: `{syllable}` cannot be spelled"
-            )
+            format!("no keystroke reaches the final `{final_text}`: `{syllable}` cannot be spelled")
         } else {
             format!(
                 "no keystroke reaches the initial `{initial}` with the final `{final_text}`: `{syllable}` cannot be spelled"
@@ -659,7 +657,10 @@ mod tests {
 
     #[test]
     fn test_zero_initial_style_parse_accepts_both_schools_and_nothing_else() {
-        assert_eq!(ZeroInitialStyle::parse("o-led"), Some(ZeroInitialStyle::OLed));
+        assert_eq!(
+            ZeroInitialStyle::parse("o-led"),
+            Some(ZeroInitialStyle::OLed)
+        );
         assert_eq!(
             ZeroInitialStyle::parse("first-letter"),
             Some(ZeroInitialStyle::FirstLetter)
@@ -670,10 +671,7 @@ mod tests {
 
     #[test]
     fn test_zero_initial_style_as_str_round_trips_through_parse() {
-        for style in [
-            ZeroInitialStyle::OLed,
-            ZeroInitialStyle::FirstLetter,
-        ] {
+        for style in [ZeroInitialStyle::OLed, ZeroInitialStyle::FirstLetter] {
             assert_eq!(ZeroInitialStyle::parse(style.as_str()), Some(style));
         }
     }
@@ -693,10 +691,11 @@ mod tests {
     #[test]
     fn test_linguistic_finals_hold_the_set_the_published_layouts_name() {
         let finals = linguistic_finals();
-        for final_text in ["a", "ai", "an", "ang", "ao", "e", "en", "eng", "er", "i", "u", "ü",
-            "üe", "ong", "iong", "iang", "uang", "uan", "uai", "ia", "ua", "ui", "un", "uo", "ou",
-            "in", "ing", "ian", "iao", "ie", "iu", "o", "ei", "ao", "ng", "m", "n", "ê"]
-        {
+        for final_text in [
+            "a", "ai", "an", "ang", "ao", "e", "en", "eng", "er", "i", "u", "ü", "üe", "ong",
+            "iong", "iang", "uang", "uan", "uai", "ia", "ua", "ui", "un", "uo", "ou", "in", "ing",
+            "ian", "iao", "ie", "iu", "o", "ei", "ao", "ng", "m", "n", "ê",
+        ] {
             assert!(
                 finals.contains(&final_text),
                 "{final_text} must be a syllable-table final"

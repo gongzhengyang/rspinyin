@@ -233,7 +233,11 @@ pub fn execute_with(declared: &str, cwd: &Path, injected: &[(String, String)]) -
     let output = Command::new(line.program())
         .args(line.args())
         .current_dir(cwd)
-        .envs(injected.iter().map(|(name, value)| (name.as_str(), value.as_str())))
+        .envs(
+            injected
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str())),
+        )
         .output();
     match output {
         Ok(output) => CommandRun {

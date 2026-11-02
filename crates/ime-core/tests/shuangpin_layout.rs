@@ -22,8 +22,8 @@ use ime_core::shuangpin::layout::{
     LAYOUT_DIAGNOSTIC_KEY, LayoutDocument, LayoutTables, compile_layout, parse_layout,
 };
 use ime_core::shuangpin::{
-    SCHEME_KEYS, SchemeTable, key_index, map_syllable, microsoft, sogou, table_for, tables,
-    xiaohe, ziguang, ziranma,
+    SCHEME_KEYS, SchemeTable, key_index, map_syllable, microsoft, sogou, table_for, tables, xiaohe,
+    ziguang, ziranma,
 };
 use ime_types::{ImeError, SchemeId, SyllableId};
 
@@ -654,8 +654,9 @@ fn compiled(document: &LayoutDocument) -> SchemeTable {
 /// Asserts the document refuses, and that some diagnostic names `reason_part`.
 fn assert_refused(text: &str, reason_part: &str) {
     let errors = match parse_layout(text) {
-        Ok(document) => compile_layout(&document, SchemeId::FULL)
-            .expect_err("the document must refuse to load"),
+        Ok(document) => {
+            compile_layout(&document, SchemeId::FULL).expect_err("the document must refuse to load")
+        }
         Err(errors) => errors,
     };
     assert!(
@@ -736,8 +737,8 @@ fn test_compile_layout_rejects_an_o_led_document_without_the_zero_initial() {
 #[test]
 fn test_compile_layout_rejects_a_second_zero_initial() {
     // Microsoft is o-led; a second empty initial on `e` is mixed-school data.
-    let text = include_str!("../src/shuangpin/data/microsoft.toml")
-        .replacen("e = \"e\"", "e = \"\"", 1);
+    let text =
+        include_str!("../src/shuangpin/data/microsoft.toml").replacen("e = \"e\"", "e = \"\"", 1);
     assert_refused(&text, "only key `o` may carry the zero initial");
 }
 
@@ -758,8 +759,8 @@ fn test_compile_layout_rejects_a_document_without_a_name() {
 
 #[test]
 fn test_parse_layout_reports_a_syntax_error_with_a_line_and_no_content() {
-    let errors = parse_layout("[layout]\nname = \"x\"\n@@@\n")
-        .expect_err("the document is not TOML");
+    let errors =
+        parse_layout("[layout]\nname = \"x\"\n@@@\n").expect_err("the document is not TOML");
     assert_eq!(errors.len(), 1);
     let rendered = errors[0].to_string();
     assert!(
@@ -771,8 +772,10 @@ fn test_parse_layout_reports_a_syntax_error_with_a_line_and_no_content() {
 
 #[test]
 fn test_parse_layout_rejects_a_table_the_format_does_not_define() {
-    let errors = parse_layout("[layout]\nname = \"x\"\nzero_initial_style = \"o-led\"\n[bogus]\na = \"a\"\n")
-        .expect_err("the table is not part of the format");
+    let errors = parse_layout(
+        "[layout]\nname = \"x\"\nzero_initial_style = \"o-led\"\n[bogus]\na = \"a\"\n",
+    )
+    .expect_err("the table is not part of the format");
     let rendered = errors[0].to_string();
     assert!(
         rendered.contains("unknown table or key"),
@@ -793,10 +796,7 @@ fn test_compile_layout_never_quotes_a_rejected_entry_value() {
             !rendered.contains("xh"),
             "the value must not be quoted: {rendered}"
         );
-        assert!(
-            rendered.contains("key `b`"),
-            "the key is named: {rendered}"
-        );
+        assert!(rendered.contains("key `b`"), "the key is named: {rendered}");
     }
 }
 
@@ -924,7 +924,13 @@ fn test_the_config_maps_build_a_document_the_validator_accepts() {
         standalone: BTreeMap::new(),
     });
     let compiled = compiled(&document);
-    for keys in [&b"nihc"[..], &b"vsgo"[..], &b"aa"[..], &b"lv"[..], &b"tk"[..]] {
+    for keys in [
+        &b"nihc"[..],
+        &b"vsgo"[..],
+        &b"aa"[..],
+        &b"lv"[..],
+        &b"tk"[..],
+    ] {
         assert_eq!(
             map_syllable(&compiled, keys).expect("alphabet keys"),
             map_syllable(xiaohe::table(), keys).expect("alphabet keys"),

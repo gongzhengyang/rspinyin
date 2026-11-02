@@ -17,8 +17,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(tag: &str) -> Self {
-        let path =
-            std::env::temp_dir().join(format!("rspinyin-xvfb-{tag}-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("rspinyin-xvfb-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("creating the scratch directory");
         Self { path }
@@ -135,7 +134,10 @@ fn test_display_is_taken_reads_the_socket_and_the_lock_file() {
 
     let socket = socket_path(&unix, 5);
     fs::write(&socket, b"").expect("writing the socket placeholder");
-    assert!(display_is_taken(&unix, &tmp, 5), "a socket claims the number");
+    assert!(
+        display_is_taken(&unix, &tmp, 5),
+        "a socket claims the number"
+    );
 
     fs::remove_file(&socket).expect("removing the placeholder");
     let lock = lock_path(&tmp, 5);
@@ -287,7 +289,10 @@ fn test_unix_socket_servable_asks_for_the_sticky_bit_the_transport_layer_wants()
     let strict = scratch.subdir("strict");
     fs::set_permissions(&strict, fs::Permissions::from_mode(0o1777))
         .expect("setting the sticky mode");
-    assert!(unix_socket_servable(&strict), "1777 is what xtrans asks for");
+    assert!(
+        unix_socket_servable(&strict),
+        "1777 is what xtrans asks for"
+    );
 
     let lax = scratch.subdir("lax");
     fs::set_permissions(&lax, fs::Permissions::from_mode(0o777)).expect("setting 0777");
@@ -347,7 +352,11 @@ fn test_channel_env_injects_display_only_when_the_channel_is_up() {
 fn test_open_serves_a_display_the_injection_probe_accepts() {
     let mut display = VirtualDisplay::open().expect("a machine with Xvfb installed");
     display.wait_ready().expect("a fresh server is ready");
-    assert!(display.display().starts_with(':'), "{:?}", display.display());
+    assert!(
+        display.display().starts_with(':'),
+        "{:?}",
+        display.display()
+    );
 
     let session = X11Session::connect(Some(display.display()))
         .expect("the virtual display answers a connection");

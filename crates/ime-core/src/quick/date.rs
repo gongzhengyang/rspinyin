@@ -29,13 +29,25 @@ const MONTH_NAMES: [&str; 13] = [
 
 /// The weekday names of the three formats, indexed with Monday at zero.
 const WEEKDAY_FULL: [&str; 7] = [
-    "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日",
+    "星期一",
+    "星期二",
+    "星期三",
+    "星期四",
+    "星期五",
+    "星期六",
+    "星期日",
 ];
 /// The short weekday names, same indexing.
 const WEEKDAY_SHORT: [&str; 7] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 /// The colloquial weekday names, same indexing.
 const WEEKDAY_COLLOQUIAL: [&str; 7] = [
-    "礼拜一", "礼拜二", "礼拜三", "礼拜四", "礼拜五", "礼拜六", "礼拜日",
+    "礼拜一",
+    "礼拜二",
+    "礼拜三",
+    "礼拜四",
+    "礼拜五",
+    "礼拜六",
+    "礼拜日",
 ];
 
 /// Renders the candidate list one date-family trigger answers with.
@@ -255,7 +267,15 @@ mod tests {
     use crate::quick::tests::pinned_time;
 
     /// A snapshot variant with the fields the caller overrides.
-    fn time_at(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8, weekday: u8) -> CivilTime {
+    fn time_at(
+        year: i32,
+        month: u8,
+        day: u8,
+        hour: u8,
+        minute: u8,
+        second: u8,
+        weekday: u8,
+    ) -> CivilTime {
         CivilTime {
             year,
             month,
@@ -346,10 +366,7 @@ mod tests {
             .into_iter()
             .map(|candidate| candidate.text)
             .collect();
-        assert_eq!(
-            texts,
-            ["2026-10-28T12:34:56Z", "2026-10-28T12:34:56+00:00"]
-        );
+        assert_eq!(texts, ["2026-10-28T12:34:56Z", "2026-10-28T12:34:56+00:00"]);
     }
 
     #[test]

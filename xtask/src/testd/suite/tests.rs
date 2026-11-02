@@ -675,8 +675,8 @@ fn test_suite_args_default_to_the_results_tree_and_the_core_module() {
         !matches.get_flag("xvfb"),
         "the default channel is the machine's own display, not a virtual one"
     );
-    let virtual_display = SuiteArgs::augment_args(Command::new("suite"))
-        .get_matches_from(["suite", "--xvfb"]);
+    let virtual_display =
+        SuiteArgs::augment_args(Command::new("suite")).get_matches_from(["suite", "--xvfb"]);
     assert!(
         virtual_display.get_flag("xvfb"),
         "the flag names the xvfb channel"
@@ -731,8 +731,8 @@ fn args_with_xvfb(xvfb: bool) -> SuiteArgs {
 
 #[test]
 fn test_arrange_channel_runs_without_a_channel_when_the_flag_is_off() {
-    let channel = arrange_channel(&args_with_xvfb(false), &report())
-        .expect("the flag off is not a refusal");
+    let channel =
+        arrange_channel(&args_with_xvfb(false), &report()).expect("the flag off is not a refusal");
     assert!(
         channel.is_none(),
         "the default channel is the machine's own display"

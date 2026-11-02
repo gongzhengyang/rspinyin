@@ -29,8 +29,8 @@ use std::sync::OnceLock;
 
 use ime_types::SchemeId;
 
-use super::layout::{compile_layout, parse_layout};
 use super::SchemeTable;
+use super::layout::{compile_layout, parse_layout};
 
 /// The Xiaohe layout document.
 const XIAOHE: &str = include_str!("data/xiaohe.toml");
@@ -101,9 +101,7 @@ pub(super) fn table(id: SchemeId) -> &'static SchemeTable {
         .iter()
         .find(|(known, _)| *known == id)
         .map(|(_, table)| table)
-        .unwrap_or_else(|| {
-            UNMATCHED.get_or_init(|| SchemeTable::empty(id))
-        })
+        .unwrap_or_else(|| UNMATCHED.get_or_init(|| SchemeTable::empty(id)))
 }
 
 /// Parses, validates and compiles one embedded document.

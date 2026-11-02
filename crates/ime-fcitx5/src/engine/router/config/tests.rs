@@ -473,7 +473,8 @@ fn test_from_config_answers_a_refused_layout_with_the_selected_scheme() {
         "a refused layout is not active"
     );
     assert_eq!(
-        projected.session.scheme, SchemeId::XIAOHE,
+        projected.session.scheme,
+        SchemeId::XIAOHE,
         "the selected scheme is what answers the keys"
     );
     assert_eq!(
@@ -514,7 +515,10 @@ fn test_from_config_compiles_the_layout_file_the_section_names() {
     let _ = fs::remove_dir_all(&directory);
     assert!(fs::create_dir_all(&directory).is_ok(), "scratch directory");
     let path = directory.join("my-layout.toml");
-    assert!(fs::write(&path, USER_LAYOUT_DOCUMENT).is_ok(), "the layout file");
+    assert!(
+        fs::write(&path, USER_LAYOUT_DOCUMENT).is_ok(),
+        "the layout file"
+    );
 
     let mut config = Config::default();
     config.shuangpin.custom.file = path.display().to_string();
@@ -526,7 +530,10 @@ fn test_from_config_compiles_the_layout_file_the_section_names() {
         .session
         .custom_layout
         .expect("the named document compiled");
-    assert_eq!(table.name, "小鹤双拼", "the file's own name travels with it");
+    assert_eq!(
+        table.name, "小鹤双拼",
+        "the file's own name travels with it"
+    );
     let _ = fs::remove_dir_all(&directory);
 }
 
@@ -536,7 +543,10 @@ fn test_from_config_reports_a_layout_file_it_cannot_load() {
     let _ = fs::remove_dir_all(&directory);
     assert!(fs::create_dir_all(&directory).is_ok(), "scratch directory");
     let path = directory.join("broken.toml");
-    assert!(fs::write(&path, "not a layout\n").is_ok(), "the broken file");
+    assert!(
+        fs::write(&path, "not a layout\n").is_ok(),
+        "the broken file"
+    );
 
     // A document that is not a layout is the loader's parse diagnostic, under the
     // key every layout error carries; the slot stays empty and the selection stands.
@@ -573,7 +583,10 @@ fn test_from_config_makes_the_file_the_layout_when_both_forms_are_named() {
     let _ = fs::remove_dir_all(&directory);
     assert!(fs::create_dir_all(&directory).is_ok(), "scratch directory");
     let path = directory.join("my-layout.toml");
-    assert!(fs::write(&path, USER_LAYOUT_DOCUMENT).is_ok(), "the layout file");
+    assert!(
+        fs::write(&path, USER_LAYOUT_DOCUMENT).is_ok(),
+        "the layout file"
+    );
 
     let mut config = Config::default();
     let section = &mut config.shuangpin.custom;

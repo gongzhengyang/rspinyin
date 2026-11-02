@@ -84,8 +84,14 @@ fn test_shuangpin_section_parses_the_inline_tables_key_by_key() {
     assert_eq!(custom.initials.get("zh").map(String::as_str), Some("v"));
     assert_eq!(custom.initials.get("ch").map(String::as_str), Some("i"));
     assert!(custom.finals.is_empty(), "the document left the table out");
-    assert!(custom.standalone.is_empty(), "the document left the table out");
-    assert_eq!(config.ui.max_per_row, 7, "the other sections read as always");
+    assert!(
+        custom.standalone.is_empty(),
+        "the document left the table out"
+    );
+    assert_eq!(
+        config.ui.max_per_row, 7,
+        "the other sections read as always"
+    );
 }
 
 #[test]
@@ -98,7 +104,11 @@ fn test_shuangpin_section_absent_keeps_the_defaults() {
     assert!(warnings.is_empty(), "{warnings:?}");
     assert!(config.shuangpin.custom.is_unset());
     assert_eq!(config.shuangpin.custom.file, "");
-    assert_eq!(config, Config::default(), "the section is exactly the default");
+    assert_eq!(
+        config,
+        Config::default(),
+        "the section is exactly the default"
+    );
 }
 
 #[test]

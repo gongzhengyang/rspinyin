@@ -90,8 +90,8 @@ use anyhow::{Result, ensure};
 use clap::Args;
 
 use crate::budget;
-use crate::tune::purity::PurityCheck;
 use crate::testd::x11::Window;
+use crate::tune::purity::PurityCheck;
 
 /// Everything the soak tool can refuse to do before a run exists.
 ///
