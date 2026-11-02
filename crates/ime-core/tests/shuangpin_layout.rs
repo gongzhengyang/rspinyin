@@ -400,6 +400,7 @@ fn compiled_defines(table: &SchemeTable, slot: usize) -> bool {
 
 /// Asserts the compiled mapping is the golden one, naming the layout and input on
 /// failure.
+#[allow(clippy::panic)] // The failure payload is the paired diagnostics, not one value.
 fn assert_same_mapping(
     golden: &Golden,
     keys: &[u8],
@@ -464,6 +465,7 @@ fn test_builtin_tables_behave_identically_to_the_pre_migration_tables() {
 }
 
 /// The spellings the whole key space of a table reaches.
+#[allow(clippy::expect_used)] // Alphabet keys cannot fail outside a broken fixture.
 fn reachable_through(table: &SchemeTable) -> Vec<&'static str> {
     let keys = alphabet();
     let mut out = Vec::new();
@@ -514,6 +516,7 @@ fn test_every_builtin_layout_spells_every_required_syllable_of_the_table() {
 }
 
 /// Maps `keys` through the named built-in layout and returns the spelling.
+#[allow(clippy::expect_used)] // Test helper: the expectations are the assertions.
 fn spelled(table: &SchemeTable, keys: &[u8]) -> &'static str {
     let mapped = map_syllable(table, keys)
         .expect("keys inside the alphabet")
@@ -647,11 +650,13 @@ fn mutated(replacement: &str, needle: &str) -> String {
 }
 
 /// Compiles a document, failing the test when the load unexpectedly refuses.
+#[allow(clippy::expect_used)] // Test helper: the expectation is the assertion.
 fn compiled(document: &LayoutDocument) -> SchemeTable {
     compile_layout(document, SchemeId::FULL).expect("the document must load")
 }
 
 /// Asserts the document refuses, and that some diagnostic names `reason_part`.
+#[allow(clippy::expect_used)] // expect_err names the refused load directly.
 fn assert_refused(text: &str, reason_part: &str) {
     let errors = match parse_layout(text) {
         Ok(document) => {

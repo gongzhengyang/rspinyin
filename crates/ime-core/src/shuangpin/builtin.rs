@@ -136,10 +136,11 @@ mod tests {
         for (id, text) in EMBEDDED {
             match parse_layout(text) {
                 Err(errors) => panic!("parse of {id:?} failed: {errors:?}"),
-                Ok(document) => match compile_layout(&document, id) {
-                    Err(errors) => panic!("compile of {id:?} failed: {errors:?}"),
-                    Ok(_) => {}
-                },
+                Ok(document) => {
+                    if let Err(errors) = compile_layout(&document, id) {
+                        panic!("compile of {id:?} failed: {errors:?}");
+                    }
+                }
             }
         }
     }
