@@ -171,14 +171,16 @@ fn test_grid_value_renders_flag_compatible_strings() {
 
 #[test]
 fn test_metrics_of_carries_the_objective_numbers() {
-    let mut bands = LengthBandAccuracy::default();
-    bands.single = Top1Band {
-        cases: 50,
-        first: 45,
-    };
-    bands.two = Top1Band {
-        cases: 100,
-        first: 88,
+    let bands = LengthBandAccuracy {
+        single: Top1Band {
+            cases: 50,
+            first: 45,
+        },
+        two: Top1Band {
+            cases: 100,
+            first: 88,
+        },
+        ..LengthBandAccuracy::default()
     };
     let report = QualityReport {
         top1_rate: 0.75,

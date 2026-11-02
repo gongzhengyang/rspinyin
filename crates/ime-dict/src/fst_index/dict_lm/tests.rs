@@ -69,7 +69,7 @@ fn test_successors_orders_one_segment_by_score_and_provider_id() {
         (7 << 32 | 3, 1_024),
         (7 << 32 | 1, PROB_Q12_MAX),
         (7 << 32 | 2, PROB_Q12_MAX),
-        (8 << 32 | 0, PROB_Q12_MAX),
+        (8 << 32, PROB_Q12_MAX),
     ]);
 
     let successors = model.successors(WordId::new(7), u8::MAX);
@@ -86,7 +86,7 @@ fn test_successors_orders_one_segment_by_score_and_provider_id() {
 #[test]
 fn test_successors_truncates_at_the_predecessor_segment_end() {
     let model = model_with_bigrams(&[
-        (7 << 32 | 0, PROB_Q12_MAX),
+        (7 << 32, PROB_Q12_MAX),
         (7 << 32 | 1, PROB_Q12_MAX),
         (8 << 32 | 2, PROB_Q12_MAX),
     ]);

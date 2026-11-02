@@ -573,8 +573,8 @@ fn unix_socket_servable(socket_dir: &Path) -> bool {
 ///
 /// Never.
 pub fn tcp_fallback_note(socket_dir: &Path) -> Option<&'static str> {
-    (!unix_socket_servable(socket_dir)).then(
-        || "the X socket directory cannot serve unix sockets, so the display also listens on TCP",
+    (!unix_socket_servable(socket_dir)).then_some(
+        "the X socket directory cannot serve unix sockets, so the display also listens on TCP",
     )
 }
 

@@ -433,7 +433,7 @@ fn compile_point(exe: &Path, container: &Path, assignment: &Assignment) -> Resul
     for (name, value) in &assignment.values {
         let knob = BUILD_KNOBS
             .iter()
-            .find(|knob| &knob.name == name)
+            .find(|knob| knob.name == *name)
             .with_context(|| format!("sweep: `{name}` has no dictc flag to carry it"))?;
         command.arg(format!("{}={}", knob.flag, value.as_flag_value()));
     }
