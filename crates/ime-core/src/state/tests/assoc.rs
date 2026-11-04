@@ -21,7 +21,7 @@ pub(in crate::state) struct AssocProviderStub {
 }
 
 impl AssocProviderStub {
-    fn new(kind: AssocSourceKind, hits: &[(&str, &str)]) -> Self {
+    pub(in crate::state) fn new(kind: AssocSourceKind, hits: &[(&str, &str)]) -> Self {
         Self {
             kind,
             hits: hits
@@ -32,7 +32,7 @@ impl AssocProviderStub {
         }
     }
 
-    fn empty(kind: AssocSourceKind) -> Self {
+    pub(in crate::state) fn empty(kind: AssocSourceKind) -> Self {
         Self::new(kind, &[])
     }
 

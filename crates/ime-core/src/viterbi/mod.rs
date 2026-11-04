@@ -216,11 +216,9 @@ mod tests {
         let lm = InMemoryLm::new();
         for raw in ["nihao", "woaini", "zhongguo", "beijingdaxue"] {
             let expected = fingerprint(&decode(raw, &lexicon, &lm));
-            // Rank decay deliberately collapses materially weaker sentence alternatives;
-            // determinism needs a stable non-empty answer, not a fixed minimum width.
             assert!(
-                !expected.is_empty(),
-                "{raw} must rank at least one candidate"
+                expected.len() > 1,
+                "{raw} must rank more than one candidate"
             );
             for run in 0..100 {
                 let seen = fingerprint(&decode(raw, &lexicon, &lm));

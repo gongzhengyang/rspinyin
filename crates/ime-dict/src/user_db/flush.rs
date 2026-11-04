@@ -132,6 +132,10 @@ type Coined = Vec<(Box<str>, Box<str>, u32)>;
 /// The coined rows one flush takes out as removals, by their composite row key.
 type CoinedRemoved = Vec<Box<str>>;
 
+/// The penalty rows one flush takes out of the delta map: the key, and the absolute
+/// level the row should carry -- a zero being the row's removal.
+type Penalties = Vec<(Box<str>, u8)>;
+
 /// How long an explicit flush waits for the flush thread to stand aside.
 ///
 /// The bound is what keeps a disk that has stopped answering from holding the owner's
@@ -157,6 +161,9 @@ pub(super) struct Batch<'a> {
     pub(super) coined: &'a [(Box<str>, Box<str>, u32)],
     /// The coined words whose records the batch removes.
     pub(super) coined_removed: &'a [Box<str>],
+    /// The penalty rows the batch writes: the key, and the absolute level the row
+    /// should carry -- a zero being the row's removal.
+    pub(super) penalties: &'a [(Box<str>, u8)],
     /// How hard the write promises the data survived.
     pub(super) durability: Durability,
 }
@@ -300,13 +307,14 @@ impl Inner {
         // two clocks at different moments would date one batch from two instants.
         let now_nanos = self.clock.now_nanos();
         let now_ms = self.clock.now_ms();
-        let (drained, removed, pinned, key_rows, coined, coined_removed): (
+        let (drained, removed, pinned, key_rows, coined, coined_removed, penalties): (
             Drained,
             Removed,
             Pinned,
             KeyRows,
             Coined,
             CoinedRemoved,
+            Penalties,
         ) = {
             let mut pending = lock(&self.pending);
             if pending.entries.is_empty()
@@ -315,6 +323,7 @@ impl Inner {
                 && pending.key_rows.is_empty()
                 && pending.coined.is_empty()
                 && pending.coined_removed.is_empty()
+                && pending.penalties.is_empty()
             {
                 return Ok(CommitReport::default());
             }
@@ -331,6 +340,7 @@ impl Inner {
                 .map(|(composite, (word, count))| (composite, word, count))
                 .collect();
             let coined_removed = pending.coined_removed.drain().collect();
+            let penalties = pending.penalties.drain().collect();
             (
                 drained,
                 pending.removed.drain().collect(),
@@ -338,6 +348,7 @@ impl Inner {
                 key_rows,
                 coined,
                 coined_removed,
+                penalties,
             )
         };
         let started = self.clock.now_nanos();
@@ -348,6 +359,7 @@ impl Inner {
             key_rows: &key_rows,
             coined: &coined,
             coined_removed: &coined_removed,
+            penalties: &penalties,
             durability,
         }) {
             Ok(()) => {
@@ -378,6 +390,7 @@ impl Inner {
             key_rows,
             coined,
             coined_removed,
+            penalties,
             durability,
         } = batch;
         #[cfg(test)]
@@ -399,11 +412,20 @@ impl Inner {
             let mut key_pins = txn
                 .open_table(USER_KEY_PINS)
                 .map_err(|error| error.to_string())?;
+            let mut penalty_rows = txn
+                .open_table(USER_PENALTIES)
+                .map_err(|error| error.to_string())?;
             for key in removed {
                 words
                     .remove(key.as_ref())
                     .map_err(|error| error.to_string())?;
                 meta.remove(key.as_ref())
+                    .map_err(|error| error.to_string())?;
+                // A forgotten word's penalty goes with the word: a row left behind would
+                // shadow the first record a later commit of the same key writes, giving
+                // the fresh word a distrust the user aimed at the one before it.
+                penalty_rows
+                    .remove(key.as_ref())
                     .map_err(|error| error.to_string())?;
             }
             // The pin's two rows land together: the flag the ranking reads, and the
@@ -452,6 +474,22 @@ impl Inner {
                         (previous.0.saturating_add(*count), previous.1),
                     )
                     .map_err(|error| error.to_string())?;
+            }
+            // The penalty rows land in the same transaction as everything else, and each
+            // names the absolute level the row should carry: the window coalesced the
+            // presses and the decays into one state, so the write is that state. A zero
+            // removes the row rather than writing it, which is what keeps the table down
+            // to the words the user has actually penalized.
+            for (key, level) in penalties {
+                if *level == 0 {
+                    penalty_rows
+                        .remove(key.as_ref())
+                        .map_err(|error| error.to_string())?;
+                } else {
+                    penalty_rows
+                        .insert(key.as_ref(), *level)
+                        .map_err(|error| error.to_string())?;
+                }
             }
             for (key, delta) in drained {
                 let previous = words

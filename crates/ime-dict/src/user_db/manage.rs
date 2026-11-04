@@ -101,6 +101,36 @@ impl UserDb {
         self.inner.forget(key)
     }
 
+    /// Raises `key`'s negative-feedback penalty by one level, answering whether there was
+    /// a record to penalize.
+    ///
+    /// The penalty is the negative-feedback half of the ranking signal: one level is one
+    /// right shift of the frequency the read paths answer, so the very next decode ranks
+    /// the word lower, and a normal commit of the word lowers the level again -- the
+    /// recoverability that keeps this distinct from [`UserDb::forget_with_outcome`], which
+    /// is the delete. A word that was never learned answers `false` and changes nothing:
+    /// a penalty is a statement about a record, and a record the store does not hold is
+    /// nothing to distrust.
+    ///
+    /// The level is capped at [`MAX_PENALTY`], the last shift the frequency arithmetic can
+    /// express; a press past the cap changes nothing the cap had not already made total.
+    /// The change reaches the disk with the next flush the user's typing earns, like every
+    /// other write of the store: the in-memory map is what the next decode reads, and the
+    /// durability of a trust level is not worth a flush of its own (`ASM-04`, `ASM-20`).
+    ///
+    /// # Returns
+    ///
+    /// Whether a record was there to penalize. `false` is also the answer of a read-only
+    /// store, the way it is for [`UserFreqSource::forget`]; the host layer reports the
+    /// not-found code for both, which is the compromise the forget path already makes.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn reduce_frequency(&self, key: &str) -> bool {
+        self.inner.penalize(key)
+    }
+
     /// Enrols one coined word: `key` is the syllable string the word was coined under,
     /// `word` its text.
     ///
@@ -258,17 +288,20 @@ impl Inner {
             .unwrap_or_default()
     }
 
-    pub(super) fn forget(&self, key: &str) -> ForgetOutcome {
-        if self.readonly.load(std::sync::atomic::Ordering::Acquire) {
-            return ForgetOutcome::Readonly;
-        }
-        // The coin rows the word holds are found before any lock work: they are what
-        // makes the removal answer "removed" for a word the frequency tables never
-        // learned.
-        let coined = self.coined_composites(key);
-        // The lock order the module fixes: `committed` before `pending`; `cache` and
-        // `pinned` are leaves, never held while another lock is taken.
-        let present = if self.is_hydrated {
+    /// Whether the store knows `key`: a record the file holds, or one the unflushed
+    /// delta already carries.
+    ///
+    /// This is the presence check `forget` and the penalty press share, and the locks it
+    /// takes follow the module's fixed order -- `committed` before `pending`, the cache
+    /// consulted before either, all as leaves. For a store past its hydrate ceiling the
+    /// answer covers only the keys this session has touched, which is the degradation
+    /// `forget` already documents.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn known(&self, key: &str) -> bool {
+        if self.is_hydrated {
             let committed = lock(&self.committed);
             let known = committed.contains_key(key);
             let pending = lock(&self.pending);
@@ -283,13 +316,108 @@ impl Inner {
             };
             let pending = lock(&self.pending);
             pending.entries.contains_key(key) || cached
+        }
+    }
+
+    /// Raises `key`'s penalty one level and queues the row the flush should write,
+    /// answering whether there was a record to penalize.
+    ///
+    /// The in-memory map is what the next decode reads, so the level is raised there
+    /// first; the pending queue then carries the absolute level, the way the pin queue
+    /// carries the absolute flag, so a window of presses coalesces into one row write.
+    /// The two locks take their turns in separate scopes -- the map, then the queue --
+    /// the discipline the module fixes for its leaves.
+    ///
+    /// A read-only store changes nothing, and a key nothing was learned about is not
+    /// penalized: a penalty is a statement about a record.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn penalize(&self, key: &str) -> bool {
+        if self.readonly.load(std::sync::atomic::Ordering::Acquire) {
+            return false;
+        }
+        let present = self.known(key);
+        if !present {
+            return false;
+        }
+        let due = {
+            let raised = {
+                let mut penalties = lock(&self.penalties);
+                let current = penalties.get(key).copied().unwrap_or(0);
+                let raised = current.saturating_add(1).min(MAX_PENALTY);
+                penalties.insert(Box::from(key), raised);
+                raised
+            };
+            let mut pending = lock(&self.pending);
+            pending.penalties.insert(Box::from(key), raised);
+            pending.penalties.len() >= PENDING_CAPACITY
         };
+        if due {
+            self.request_flush();
+        }
+        true
+    }
+
+    /// Lowers `key`'s penalty one level, the work a normal commit of the word does.
+    ///
+    /// A commit is positive evidence about the spelling, so it earns back one level of
+    /// trust; the level reaching zero takes the row out of the memory map, and the zero
+    /// the queue then carries is the flush's order to remove the row from the file. The
+    /// map is a leaf, taken and released before the queue is; a key with no penalty does
+    /// not take the queue's lock at all, which is what keeps the record path's cost
+    /// unchanged for every word the user has never pressed the negative-feedback key on.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn decay_penalty(&self, key: &str) {
+        let lowered = {
+            let mut penalties = lock(&self.penalties);
+            let Some(current) = penalties.get(key).copied() else {
+                return;
+            };
+            let lowered = current.saturating_sub(1);
+            if lowered == 0 {
+                penalties.remove(key);
+            } else {
+                penalties.insert(Box::from(key), lowered);
+            }
+            lowered
+        };
+        let due = {
+            let mut pending = lock(&self.pending);
+            pending.penalties.insert(Box::from(key), lowered);
+            pending.penalties.len() >= PENDING_CAPACITY
+        };
+        if due {
+            self.request_flush();
+        }
+    }
+
+    pub(super) fn forget(&self, key: &str) -> ForgetOutcome {
+        if self.readonly.load(std::sync::atomic::Ordering::Acquire) {
+            return ForgetOutcome::Readonly;
+        }
+        // The coin rows the word holds are found before any lock work: they are what
+        // makes the removal answer "removed" for a word the frequency tables never
+        // learned.
+        let coined = self.coined_composites(key);
+        let present = self.known(key);
+        // The penalty goes with the word: the memory map loses it now -- the very next
+        // decode must rank as the table stands -- and the queue carries the zero that is
+        // the flush's order to remove the row. A stale level left behind would shadow the
+        // first record a later commit of the same key writes. The map is a leaf and takes
+        // its own scope, the way the coin map's does below.
+        lock(&self.penalties).remove(key);
         let due = {
             let mut pending = lock(&self.pending);
             // A key with an unflushed delta loses it: the user is saying the word is not
             // theirs, and a count recorded before that is not evidence to the contrary.
             pending.entries.remove(key);
             pending.removed.insert(Box::from(key));
+            pending.penalties.insert(Box::from(key), 0);
             // The word's own coin rows go with it, so the next flush removes what the
             // coin path wrote and nothing the word did not hold.
             for composite in &coined {

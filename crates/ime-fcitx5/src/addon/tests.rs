@@ -784,3 +784,71 @@ fn test_backup_notice_reports_the_two_failures_and_stays_quiet_otherwise() {
 //
 // The packaging descriptors Fcitx5 resolves are pinned in `tests::packaging`, which is
 // where the assertions about them live now that this module has more than one subject.
+
+// ── the symbol documents' reload hook ──────────────────────────────────────────────
+
+#[test]
+fn test_reload_symbols_swaps_the_documents_the_slot_holds() {
+    // The reload hook's contract: the documents are re-read from the data
+    // directory in force and the panel's table is replaced whole, so the next
+    // key serves the new domains. A directory whose symbols.tsv is gone takes
+    // the panel away, which is the degradation the start-up path answers with.
+    use ime_dict::paths::BaseDirs;
+
+    use super::layout::prepare_data_dirs_in;
+    use super::session::{reload_symbols, session_env, session_sources, symbol_slot};
+
+    let dir = scratch_dir("symbol-reload");
+    let bases = BaseDirs {
+        config_home: dir.join("config"),
+        data_home: dir.join("data"),
+    };
+    prepare_data_dirs_in(&bases).expect("the step never fails");
+    let data_dir = super::layout::layout()
+        .expect("the step installed the layout")
+        .data_dir;
+    fs::write(data_dir.join("symbols.tsv"), "1\t数字\t０１\n").expect("writing the table");
+    fs::write(data_dir.join("emoji.tsv"), "😀\txiao\n").expect("writing the domain");
+
+    // The start-up half of the slot's life: the environment build reads the
+    // documents once and stores the table.
+    let _ = session_env(session_sources());
+    {
+        let live = symbol_slot().load().expect("the documents built a table");
+        let served = live.serve("e").expect("the emoji domain serves");
+        assert_eq!(served.symbols.as_slice(), &['😀']);
+        let served = live.serve("1").expect("the digit category serves");
+        assert_eq!(served.symbols.as_slice(), &['０', '１']);
+    }
+
+    // The reload half: both documents are re-read, and the swap is whole --
+    // the edited categories and the edited domain land together or not at all.
+    fs::write(data_dir.join("symbols.tsv"), "1\t数字\tＡ\n").expect("editing the table");
+    fs::write(data_dir.join("emoji.tsv"), "😊\tlian\n").expect("editing the domain");
+    reload_symbols();
+    {
+        let live = symbol_slot().load().expect("the reload kept a table");
+        let served = live.serve("1").expect("the digit category serves");
+        assert_eq!(
+            served.symbols.as_slice(),
+            &['Ａ'],
+            "the edited category serves"
+        );
+        let served = live.serve("e").expect("the emoji domain serves");
+        assert_eq!(
+            served.symbols.as_slice(),
+            &['😊'],
+            "the edited domain serves"
+        );
+    }
+
+    // A directory whose documents are gone is the panel-off degradation, not
+    // an error: the slot empties, and `v` decodes as a build before the panel.
+    fs::remove_file(data_dir.join("symbols.tsv")).expect("removing the table");
+    fs::remove_file(data_dir.join("emoji.tsv")).expect("removing the domain");
+    reload_symbols();
+    assert!(
+        symbol_slot().load().is_none(),
+        "no documents, no panel -- the pass-through degradation"
+    );
+}

@@ -5,6 +5,13 @@
 //! lowercase spelling as the key and the word's own casing as the display text, so that
 //! `github` reaches the entry spelled `GitHub` (ADR-0016).
 //!
+//! The compiler also applies the build-time ranking mark the collision reduce list
+//! carries (`data/raw/reduce-eng.tsv`): an entry whose spelling a pinyin typist leaves
+//! mid-syllable — `ranch` cuts `ran|ch` — carries a quarter of its rank into the unigram
+//! scaling, which is the only rank channel an English entry has. The judgment the list
+//! is built on lives in the dictc `marks` module; `--emit-collisions` writes the
+//! machine-judged candidates a reviewer confirms the list from.
+//!
 //! Boundaries: this is a plain compiler, not the L1–L5 pipeline. There is no reading to
 //! compose, no polyphone to correct and no expansion to band: an English word is its own
 //! key, and the ranking it carries is the one the file states. The unigram table is
@@ -38,6 +45,14 @@ pub struct EngArgs {
     /// Source allowlist.
     #[arg(long, default_value = "data/sources.toml")]
     sources: PathBuf,
+    /// The collision reduce list: one ASCII word per row, entries whose rank
+    /// the compiler scales down by the marks module's reduce factor.
+    #[arg(long, default_value = super::marks::DEFAULT_REDUCE_LIST)]
+    reduce_list: PathBuf,
+    /// Write the machine-judged collision candidates to a review file instead
+    /// of only compiling: `word<TAB>rank<TAB>cut`, heaviest first.
+    #[arg(long, value_name = "PATH")]
+    emit_collisions: Option<PathBuf>,
 }
 
 /// One accepted row: the word as the user typed it in the list, and the rank it carries.
@@ -59,6 +74,10 @@ pub fn run(args: EngArgs) -> Result<()> {
     let input_path = root.join(&args.input);
     let output_path = root.join(&args.output);
     super::check_source(&allowlist, &input_path)?;
+    // The reduce list is a source like any other: registered and permissive
+    // before the build reads a row of it.
+    let reduce_path = root.join(&args.reduce_list);
+    super::check_source(&allowlist, &reduce_path)?;
 
     let started = std::time::Instant::now();
     let text = fs::read_to_string(&input_path)
@@ -101,6 +120,54 @@ pub fn run(args: EngArgs) -> Result<()> {
     }
     let count = rows.len();
     ensure!(count > 0, "{}: the list is empty", input_path.display());
+
+    // The collision review artifact, when the caller asked for one: every
+    // entry the judgment selects, with the rank it carries in the source list.
+    // The rows are the pre-mark ranks -- the review decides what the list
+    // holds, and the reduction below is what the confirmed list does.
+    if let Some(path) = args.emit_collisions.as_deref() {
+        let report_path = root.join(path);
+        let judged = collision_rows(&rows);
+        let mut report = String::from(
+            "# machine-judged collision candidates: word<TAB>rank<TAB>cut.\n\
+             # The cut names the syllable|initial split the judgment found;\n\
+             # review the rows and move the confirmed ones into the reduce list.\n",
+        );
+        for (word, rank, cut) in &judged {
+            report.push_str(&format!("{word}\t{rank}\t{cut}\n"));
+        }
+        if let Some(parent) = report_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        fs::write(&report_path, &report)
+            .with_context(|| format!("writing {}", report_path.display()))?;
+        println!(
+            "eng.dict: {} collision candidates written to {}",
+            judged.len(),
+            report_path.display()
+        );
+    }
+
+    // The collision mark: an entry the reviewed reduce list names carries a
+    // quarter of its rank into the unigram scaling, the only rank channel an
+    // English entry has. A word the list names that the input list does not
+    // hold is simply inert.
+    let reduce_set = super::marks::load_reduce_list(&reduce_path)?;
+    let mut reduced = 0usize;
+    for (key, row) in rows.iter_mut() {
+        if reduce_set.contains(key) {
+            row.weight = reduced_weight(row.weight);
+            reduced += 1;
+        }
+    }
+    if reduced > 0 {
+        println!(
+            "eng.dict: {} entries reduced by the collision list {}",
+            reduced,
+            reduce_path.display()
+        );
+    }
 
     // Word ids are positions in hash order, the order the word list stores and the
     // unigram section is searched in.
@@ -192,6 +259,35 @@ fn prob_q12(weight: u32, max_weight: u32) -> u16 {
     scaled.clamp(1, i64::from(PROB_Q12_MAX) / 2) as u16
 }
 
+/// The rank one collision reduction leaves: the weight over the reduce
+/// denominator.
+///
+/// Integer division floors, and the unigram scaling clamps every rank above
+/// zero, so a reduced entry stays visible to the model -- the reduction sinks
+/// a candidate, it does not erase one.
+fn reduced_weight(weight: u32) -> u32 {
+    weight / super::marks::REDUCE_DENOMINATOR
+}
+
+/// The rows the collision judgment selects, heaviest first.
+///
+/// The review artifact `--emit-collisions` writes: every entry whose lowercase
+/// spelling cuts into a syllable plus an initial, with the rank it carries in
+/// the source list, so a reviewer reads the head of the ranking first and
+/// confirms the rows the reduce list should hold.
+fn collision_rows(rows: &BTreeMap<String, Row>) -> Vec<(&str, u32, String)> {
+    let mut judged: Vec<(&str, u32, String)> = rows
+        .iter()
+        .filter_map(|(key, row)| {
+            let cut = super::marks::collision_cut(key)?;
+            let (head, tail) = (&key[..cut], &key[cut..]);
+            Some((key.as_str(), row.weight, format!("{head}+{tail}")))
+        })
+        .collect();
+    judged.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)));
+    judged
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +305,46 @@ mod tests {
         assert_eq!(prob_q12(0, 1000), 2);
         assert_eq!(prob_q12(1, 1000), 2);
         assert_eq!(prob_q12(5000, 1000), PROB_Q12_MAX / 2);
+    }
+
+    #[test]
+    fn test_reduced_weight_scales_the_rank_and_stays_visible() {
+        assert_eq!(reduced_weight(800), 200);
+        assert_eq!(reduced_weight(798), 199, "integer division floors");
+        assert_eq!(reduced_weight(3), 0);
+        // A floored-to-zero rank still scores: the unigram scaling clamps
+        // every rank above zero, so the reduction sinks a candidate, it does
+        // not erase one.
+        assert!(prob_q12(reduced_weight(3), 1000) >= 1);
+    }
+
+    #[test]
+    fn test_collision_rows_lists_only_the_judged_rows_heaviest_first() {
+        let rows: BTreeMap<String, Row> = [
+            ("butter", 796),
+            ("sad", 798),
+            ("mama", 500),
+            ("push", 643),
+        ]
+        .into_iter()
+        .map(|(word, weight)| {
+            (
+                word.to_owned(),
+                Row {
+                    word: word.to_owned(),
+                    weight,
+                },
+            )
+        })
+        .collect();
+        let judged = collision_rows(&rows);
+        assert_eq!(
+            judged,
+            vec![
+                ("sad", 798, String::from("sa+d")),
+                ("push", 643, String::from("pu+sh")),
+            ],
+            "`butter` and `mama` cut no syllable-plus-initial"
+        );
     }
 }

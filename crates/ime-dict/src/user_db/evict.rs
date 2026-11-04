@@ -333,7 +333,9 @@ impl Inner {
     /// takes -- and there is nothing left for the per-key rule to protect there. The metadata
     /// row goes with the record: it is keyed by the same key, and a row left behind would be
     /// read by the next record that takes that key, giving it a creation time and a pin
-    /// that belonged to the word the user had before.
+    /// that belonged to the word the user had before. The penalty row goes for the same
+    /// reason: the sweep removes the record, and the trust judgement the user passed on the
+    /// word they had before is not a judgement about the word a later commit re-learns.
     fn delete_batch(&self, keys: &[Box<str>]) -> Result<(), ImeError> {
         let mut txn = self
             .db
@@ -346,11 +348,17 @@ impl Inner {
             let mut meta = txn
                 .open_table(USER_META)
                 .map_err(|error| store_error(&self.path, &error))?;
+            let mut penalty_rows = txn
+                .open_table(USER_PENALTIES)
+                .map_err(|error| store_error(&self.path, &error))?;
             for key in keys {
                 table
                     .remove(key.as_ref())
                     .map_err(|error| store_error(&self.path, &error))?;
                 meta.remove(key.as_ref())
+                    .map_err(|error| store_error(&self.path, &error))?;
+                penalty_rows
+                    .remove(key.as_ref())
                     .map_err(|error| store_error(&self.path, &error))?;
             }
         }
@@ -359,6 +367,7 @@ impl Inner {
             .map_err(|error| store_error(&self.path, &error))?;
         for key in keys {
             self.forget_committed(key);
+            lock(&self.penalties).remove(key.as_ref());
         }
         if let Some(mut cache) = lock_cache(&self.cache) {
             for key in keys {

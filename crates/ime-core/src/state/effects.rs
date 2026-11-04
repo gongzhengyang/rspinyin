@@ -75,6 +75,20 @@ pub enum Effect {
         /// is the key its frequency was recorded under.
         key: String,
     },
+    /// Raise the highlighted candidate's negative-feedback penalty by one level.
+    ///
+    /// The demotion itself is the store's: the effect is the receipt the host acts on, and
+    /// the session -- which touches no file (0.4 rule 4) and does not read the store --
+    /// changes nothing about the list it is showing. The host executes the penalty and then
+    /// re-decodes the unchanged input, which is the step where the candidate moves down:
+    /// the session's own view of the list cannot move it, because the session sees the
+    /// store only through the environment the next decode reads. A word the store never
+    /// learned answers the effect with the not-found diagnostic, and nothing moves.
+    ReduceUserFreq {
+        /// The word to penalize: the text of the highlighted candidate, which is the key
+        /// its frequency was recorded under.
+        key: String,
+    },
     /// Toggle the highlighted candidate's pin for the current input.
     ToggleUserPin {
         /// The input the pin belongs to.

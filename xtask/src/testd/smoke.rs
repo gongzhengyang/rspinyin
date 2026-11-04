@@ -17,7 +17,7 @@
 //!
 //! # What a case asserts
 //!
-//! The expectation column has one literal and three prefixed forms:
+//! The expectation column has one literal and five prefixed forms:
 //!
 //! * bare text, and `@first:<text>` -- the top-1 candidate, which is what the space key
 //!   would commit first, must be exactly this text. The two spellings are the same
@@ -30,30 +30,82 @@
 //! * `@regex:<pattern>` -- the top-1 candidate matches a regular expression. This is
 //!   the form for commits whose text varies (composed dates, mixed English), which the
 //!   later composition cards introduce.
+//! * `@top3:<a>|<b>|...` -- order-sensitive membership in the top three: each named
+//!   text matches some candidate of the first three, at strictly ascending positions.
+//!   This is the ranking form: it pins that `a` outranks `b` without pinning either as
+//!   the first choice, so a re-order inside a band turns it red while an unrelated
+//!   candidate joining the page does not.
+//! * `@today:<fmt>` -- the top-1 candidate is exactly the run's clock rendered through
+//!   the format. The clock is injected ([`clock::Clock`]): the CLI reads the wall
+//!   clock, the tests pin a fixed instant, so the check is deterministic. A `@today`
+//!   row must carry the `flags:quick` column, because the quick panel is the only
+//!   surface that renders the current time.
+//! * `@empty` -- the candidate list is empty. Only an association row can answer it:
+//!   a decode is never empty (the pass-through contract), and a recognized quick
+//!   trigger always renders.
+//!
+//! # The v2 columns and the flags matrix
+//!
+//! A v1 row is `case_id, keys, expect[, tags...]` and stays exactly that. A v2 row
+//! adds one column after the expectation, recognized by its `flags:` prefix:
+//! `case_id, keys, expect, flags:<names>[, tags...]`. The names are the switches the
+//! row turns on -- the fuzzy class bits and the abbreviation, correction and English
+//! switches, spelled exactly as the scenario `[decode]` section spells them, plus the
+//! scenario switches `quick`, `assoc` (association on) and `assoc-off` (the shipped
+//! default, driven through the same session script) -- and a row that names none
+//! decodes as a v1 row. The matrix band uses the column to pin each opt-in
+//! behaviour's switched-on answer beside the shipped default for the same keys, so a
+//! switch that starts leaking into the default turns red on the next run.
 //!
 //! # Boundaries
 //!
-//! Headless and deterministic: the driver opens exactly two files (the case set and the
-//! dictionary), reads no clock, consults no environment and talks to no display. The
-//! assertions are about the decode contract; a claim about the host or the compositor
+//! Headless and deterministic: the driver opens at most three files (the case set, the
+//! dictionary, and -- only when a row needs it -- the English dictionary), consults no
+//! environment and talks to no display. The one clock read is behind
+//! [`clock::Clock`], and a run that names no `@today:` row never makes it. The
+//! assertions are about the engine contract; a claim about the host or the compositor
 //! belongs to the XTEST channel, and the two are never reported as each other.
+
+mod cli;
+mod clock;
+mod derive;
+mod v2;
+
+#[cfg(test)]
+mod tests;
+
+pub use crate::testd::smoke::cli::{SmokeArgs, run};
+pub use crate::testd::smoke::clock::Clock;
+pub use crate::testd::smoke::derive::derive;
+
+// Plain `use`, not `pub use`: these are what this file's own functions name, and
+// re-exporting the internals was a surface nothing consumed.
+use crate::testd::smoke::clock::{format_civil, validate_format};
+use crate::testd::smoke::v2::RowFlags;
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
-use clap::Args;
+use ime_core::quick::CivilTime;
 use ime_core::viterbi::Decoder;
+use ime_core::viterbi::{DecodeScratch, DecodeSources};
 use ime_dict::fst_index::FstLexicon;
 use ime_dict::fst_index::dict_lm::DictLm;
-use ime_types::{DecodeRequest, UserFreqSource};
+use ime_types::{DecodeFlags, DecodeRequest, Lexicon, UserFreqSource};
 
 /// The case file `xtask testd-smoke` runs when `--cases` is not given.
 pub const DEFAULT_CASES: &str = "tests/smoke/cases.tsv";
 
 /// The compiled dictionary the cases decode against by default.
 pub const DEFAULT_DICT: &str = "data/compiled/base.dict";
+
+/// The compiled English dictionary the `ENGLISH` rows decode against by default.
+///
+/// Mounted only when a row carries the switch: a run without such rows never opens
+/// the file, which keeps the default path's file set and its duration where they were.
+pub const DEFAULT_ENGLISH: &str = "data/compiled/eng.dict";
 
 /// The tag of the derived band: the cases regenerated from the holdout set.
 pub const CORE_TAG: &str = "core";
@@ -72,39 +124,21 @@ pub const CORE_QUOTA: usize = 170;
 /// act on.
 const PAGE: usize = 9;
 
-/// Command-line surface of `xtask testd-smoke`.
-#[derive(Debug, Args)]
-pub struct SmokeArgs {
-    /// The case file to run; `-` reads it from stdin for ad-hoc runs.
-    #[arg(long, default_value = DEFAULT_CASES, value_name = "FILE")]
-    pub cases: PathBuf,
-    /// The compiled dictionary the cases decode against.
-    #[arg(long, default_value = DEFAULT_DICT, value_name = "FILE")]
-    pub dict: PathBuf,
-    /// Print the first page of candidates for every failing case.
-    #[arg(long, conflicts_with = "derive_from_holdout")]
-    pub verbose: bool,
-    /// Regenerate the core band from a holdout file instead of running.
-    ///
-    /// Every holdout row the engine already answers with its expected first choice
-    /// becomes a `core` case, up to [`CORE_QUOTA`]. The file named by `--cases` is
-    /// rewritten: the cases that do not carry the [`CORE_TAG`] survive untouched (the
-    /// handwritten bands), the cases that do are replaced by the derivation. A baseline
-    /// that ranking work legitimately improved is refreshed by re-running this, never by
-    /// editing the generated lines by hand.
-    #[arg(long, value_name = "HOLDOUT_TSV")]
-    pub derive_from_holdout: Option<PathBuf>,
-}
-
 /// One row of the case set.
 #[derive(Clone, Debug)]
 pub struct SmokeCase {
     /// The stable identifier a failure is reported by.
     pub id: String,
     /// The key sequence, raw and lower case; `'` forces a syllable boundary.
+    ///
+    /// An association row's column holds a script instead: pinyin chunks interleaved
+    /// with `<commit>` and `<assoc-select-N>` markers, which [`v2::parse_script`]
+    /// reads.
     pub keys: String,
     /// What the decode owes the user for these keys.
     pub expect: Expectation,
+    /// The switches the row turns on; empty for every v1 row.
+    pub flags: RowFlags,
     /// The band tags the row carries (`core`, `ambiguity`, ...).
     pub tags: Vec<String>,
 }
@@ -130,6 +164,12 @@ pub enum ExpectKind {
     Contains(String),
     /// The top-1 candidate matches this pattern.
     Regex(regex::Regex),
+    /// The first three candidates hold these texts, in this relative order.
+    Top3(Vec<String>),
+    /// The top-1 candidate is the run's clock rendered through this format.
+    Today(String),
+    /// The candidate list is empty.
+    Empty,
 }
 
 /// One case the engine answered differently from what the file pins.
@@ -143,6 +183,9 @@ pub struct SmokeFailure {
     pub expected: String,
     /// What the engine answered: the top-1 text, or the marker for none.
     pub got: String,
+    /// The whole first page the answer came from, slash-joined, for the verbose
+    /// report; the marker for none when the answer was empty.
+    pub page: String,
 }
 
 /// The verdict of one run over a whole case set.
@@ -156,17 +199,20 @@ pub struct SmokeReport {
     pub failures: Vec<SmokeFailure>,
 }
 
-/// The compiled dictionary mounted for a run, and the model built over it.
+/// The compiled dictionaries mounted for a run, and the model built over the main one.
 ///
 /// The lexicon owns its mapping and the model reads the lexicon's own sections, so the
-/// two live and die together.
+/// two live and die together. The English lexicon is mounted only when a row asked for
+/// it, and stays `None` -- meaning "never queried" -- otherwise.
 pub struct Mounted {
     /// The decoder, built with the shipped configuration.
-    decoder: Decoder,
+    pub(super) decoder: Decoder,
     /// The compiled dictionary, verified in full at mount time.
-    lexicon: FstLexicon,
+    pub(super) lexicon: FstLexicon,
     /// The unigram and bigram model of the same container.
-    lm: DictLm,
+    pub(super) lm: DictLm,
+    /// The English lexicon, when a row's requests carry the switch.
+    pub(super) english: Option<FstLexicon>,
 }
 
 /// The user-frequency source a run ranks with: a store that has never recorded a
@@ -174,7 +220,7 @@ pub struct Mounted {
 ///
 /// The baseline pins what a fresh installation answers; a user word that outranked a
 /// case's expectation on one machine and not on another would make the file undecidable.
-struct FreshUser;
+pub(super) struct FreshUser;
 
 impl UserFreqSource for FreshUser {
     fn freq(&self, _key: &str) -> u32 {
@@ -188,76 +234,28 @@ impl UserFreqSource for FreshUser {
     }
 }
 
-/// Runs `xtask testd-smoke`.
-///
-/// # Errors
-///
-/// The derivation path and the check path each propagate their own failures: a
-/// holdout or case file that cannot be read or parsed names the offending line, a
-/// dictionary that cannot be mounted carries the loader's stable code, and a check with
-/// at least one failing case ends in an error that quotes the count, which is what
-/// turns the gate red.
-///
-/// # Panics
-///
-/// Never.
-pub fn run(args: SmokeArgs) -> Result<()> {
-    if let Some(holdout) = args.derive_from_holdout {
-        let summary = derive(&args.cases, &holdout, &args.dict)?;
-        println!(
-            "smoke: derived {} core cases from {} ({} holdout rows scanned, {} non-core cases kept)",
-            summary.derived,
-            holdout.display(),
-            summary.scanned,
-            summary.kept
-        );
-        return Ok(());
-    }
-    let report = run_cases(&args.cases, &args.dict)?;
-    for failure in &report.failures {
-        println!(
-            "FAIL  {}\tkeys={}\texpected={}\tgot={}",
-            failure.id, failure.keys, failure.expected, failure.got
-        );
-        if args.verbose {
-            println!(
-                "      (use `xtask testd-engine` with a scenario naming these keys to see the page)"
-            );
-        }
-    }
-    println!(
-        "smoke: {}/{} cases passed against {}",
-        report.passed,
-        report.total,
-        args.dict.display()
-    );
-    if report.failures.is_empty() {
-        Ok(())
-    } else {
-        bail!(
-            "smoke: {} of {} cases diverge from the baseline",
-            report.failures.len(),
-            report.total
-        )
-    }
-}
-
 /// Runs the case set against the mounted dictionary and answers the report.
 ///
-/// This is the library entry the CLI prints: the run itself reads the two files, mounts
-/// the dictionary once and decodes each case's keys once.
+/// This is the library entry the CLI prints: the run itself reads the files, mounts the
+/// dictionary once and observes each case once.
 ///
 /// # Errors
 ///
-/// A case file that is missing, unreadable or malformed, and a dictionary that cannot
-/// be mounted, each end in an error that names the file and the reason. A case set that
-/// parses to nothing is refused rather than reported green: a baseline of zero cases
-/// pins nothing.
+/// A case file that is missing, unreadable or malformed, a dictionary that cannot be
+/// mounted, and an English dictionary that a row needs but that cannot be mounted, each
+/// end in an error that names the file and the reason. A case set that parses to
+/// nothing is refused rather than reported green: a baseline of zero cases pins
+/// nothing.
 ///
 /// # Panics
 ///
 /// Never.
-pub fn run_cases(cases: &Path, dict: &Path) -> Result<SmokeReport> {
+pub fn run_cases(
+    cases: &Path,
+    dict: &Path,
+    english: Option<&Path>,
+    clock: Clock,
+) -> Result<SmokeReport> {
     let text = read_input(cases)?;
     let set = parse_cases(&text).with_context(|| format!("in {}", cases.display()))?;
     ensure!(
@@ -265,8 +263,9 @@ pub fn run_cases(cases: &Path, dict: &Path) -> Result<SmokeReport> {
         "smoke: {} holds no case; a baseline of zero pins nothing",
         cases.display()
     );
-    let mounted = mount(dict)?;
-    Ok(evaluate(&set, &mounted))
+    let needs_english = set.iter().any(|case| case.flags.needs_english());
+    let mounted = mount(dict, if needs_english { english } else { None })?;
+    Ok(evaluate(&set, &mounted, clock))
 }
 
 /// Evaluates a parsed case set against a mounted dictionary.
@@ -274,33 +273,108 @@ pub fn run_cases(cases: &Path, dict: &Path) -> Result<SmokeReport> {
 /// # Panics
 ///
 /// Never.
-pub(crate) fn evaluate(set: &[SmokeCase], mounted: &Mounted) -> SmokeReport {
+pub(crate) fn evaluate(set: &[SmokeCase], mounted: &Mounted, clock: Clock) -> SmokeReport {
     let mut report = SmokeReport {
         total: set.len(),
         passed: 0,
         failures: Vec::new(),
     };
     for case in set {
-        let texts = decode_texts(mounted, &case.keys);
-        if satisfied(&case.expect.kind, &texts) {
+        // One civil reading per case: the quick panel's render and a `@today`
+        // comparison must see the same instant, or a second boundary between two
+        // reads would flake a row that is in fact green. A fixed clock answers the
+        // same fields on every read; the system clock is the one this ordering
+        // protects.
+        let civil = clock.civil();
+        let texts = observe(mounted, case, civil);
+        // A `@today` form is resolved against that same reading before it is
+        // compared, so the satisfaction check stays a plain text comparison.
+        let satisfied = match &case.expect.kind {
+            ExpectKind::Today(fmt) => {
+                let rendered = format_civil(&civil, fmt);
+                texts.first().is_some_and(|got| *got == rendered)
+            }
+            kind => satisfied(kind, &texts),
+        };
+        if satisfied {
             report.passed += 1;
         } else {
-            let got = texts
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "(no candidate)".to_owned());
             report.failures.push(SmokeFailure {
                 id: case.id.clone(),
                 keys: case.keys.clone(),
                 expected: case.expect.raw.clone(),
-                got,
+                got: observed_summary(&case.expect.kind, &texts),
+                page: first_page(texts.as_slice()),
             });
         }
     }
     report
 }
 
-/// Mounts the compiled dictionary and the model built over it.
+/// Collects the candidate texts one case's observation answers with.
+///
+/// The dispatch is the flags column's: a quick row reads the panel against the civil
+/// reading the caller supplies, an association row drives the session script with the
+/// feature in the state the column names, and every other row decodes the keys with
+/// whatever switches the row named.
+///
+/// # Panics
+///
+/// Never.
+fn observe(mounted: &Mounted, case: &SmokeCase, civil: CivilTime) -> Vec<String> {
+    if case.flags.quick {
+        return v2::quick_texts(&case.keys, civil);
+    }
+    if case.flags.assoc {
+        // The script was validated at parse time, so the drive cannot meet an
+        // unparseable column here.
+        let Ok(script) = v2::parse_script(&case.keys) else {
+            return Vec::new();
+        };
+        return v2::assoc_texts(mounted, &script, case.flags.assoc_enabled);
+    }
+    decode_texts(mounted, &case.keys, case.flags.decode)
+}
+
+/// Summarizes what the engine answered, for a failure's `got` column.
+///
+/// The exact-match forms name the top-1, which is the text the check read; the
+/// membership forms name the whole first page, because the information a failure
+/// needs is where the expected text went.
+///
+/// # Panics
+///
+/// Never.
+fn observed_summary(kind: &ExpectKind, texts: &[String]) -> String {
+    let wants_page = matches!(kind, ExpectKind::Top3(_) | ExpectKind::Empty);
+    if !wants_page {
+        return texts
+            .first()
+            .cloned()
+            .unwrap_or_else(|| String::from("(no candidate)"));
+    }
+    first_page(texts)
+}
+
+/// Joins the first page's texts the way a failure report spells them.
+///
+/// # Panics
+///
+/// Never.
+fn first_page(texts: &[String]) -> String {
+    if texts.is_empty() {
+        return String::from("(no candidate)");
+    }
+    texts
+        .iter()
+        .take(PAGE)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Mounts the compiled dictionary -- and the English one, when a path is given -- and
+/// the model built over the main container.
 ///
 /// # Errors
 ///
@@ -312,29 +386,64 @@ pub(crate) fn evaluate(set: &[SmokeCase], mounted: &Mounted) -> SmokeReport {
 /// # Panics
 ///
 /// Never.
-pub(crate) fn mount(dict: &Path) -> Result<Mounted> {
+pub(crate) fn mount(dict: &Path, english: Option<&Path>) -> Result<Mounted> {
     let lexicon = FstLexicon::load(dict)
         .with_context(|| format!("cannot mount the smoke dictionary {}", dict.display()))?;
     let lm = DictLm::new(&lexicon);
+    let english_lexicon = match english {
+        Some(path) => Some(FstLexicon::load(path).with_context(|| {
+            format!(
+                "cannot mount the smoke English dictionary {}",
+                path.display()
+            )
+        })?),
+        None => None,
+    };
     Ok(Mounted {
         decoder: Decoder::default(),
         lexicon,
         lm,
+        english: english_lexicon,
     })
 }
 
-/// Decodes `keys` and answers the texts of the candidates, in ranked order.
+/// Decodes `keys` with `extra` switches over the defaults and answers the candidate
+/// texts, in ranked order.
+///
+/// The decode goes through the shared workspace form, which is the same path
+/// [`Decoder::decode`] takes, so a plain row's answer is bit-identical to a v1 run's.
 ///
 /// # Panics
 ///
 /// Never.
-pub(crate) fn decode_texts(mounted: &Mounted, keys: &str) -> Vec<String> {
+pub(crate) fn decode_texts(mounted: &Mounted, keys: &str, extra: DecodeFlags) -> Vec<String> {
     let user = FreshUser;
-    let request = DecodeRequest::new(keys);
-    let result = mounted
-        .decoder
-        .decode(&request, &mounted.lexicon, &user, &mounted.lm);
-    result.candidates.into_iter().map(|c| c.text).collect()
+    let mut request = DecodeRequest::new(keys);
+    // The row's switches are inserted over the defaults, the same union the scenario
+    // harness applies, so a row cannot silently drop the default switches.
+    request.flags.insert(extra);
+    let english = mounted
+        .english
+        .as_ref()
+        .map(|lexicon| lexicon as &dyn Lexicon);
+    let mut scratch = DecodeScratch::new();
+    mounted.decoder.decode_into(
+        &mut scratch,
+        &request,
+        DecodeSources {
+            lexicon: &mounted.lexicon,
+            user_freq: &user,
+            lm: &mounted.lm,
+            english,
+            hints: None,
+        },
+    );
+    scratch
+        .into_result()
+        .candidates
+        .into_iter()
+        .map(|c| c.text)
+        .collect()
 }
 
 /// Answers whether the candidate texts satisfy the expectation.
@@ -350,22 +459,54 @@ pub(crate) fn satisfied(expect: &ExpectKind, texts: &[String]) -> bool {
             .take(PAGE)
             .any(|candidate| candidate.contains(text.as_str())),
         ExpectKind::Regex(pattern) => texts.first().is_some_and(|got| pattern.is_match(got)),
+        ExpectKind::Top3(items) => top3_satisfied(items, texts),
+        // Resolved against the clock by the caller; a `Today` reaching here means the
+        // caller wanted the plain form, and the honest answer is the comparison's.
+        ExpectKind::Today(_) => false,
+        ExpectKind::Empty => texts.is_empty(),
     }
+}
+
+/// Answers whether the first page's first three candidates hold `items` in order.
+///
+/// A greedy left-to-right scan: each item is consumed by the first candidate at or
+/// after the previous match's position, which is exactly the "in this relative order"
+/// reading of the form -- equal-text candidates never both match one item, and a
+/// later item cannot be matched by an earlier position.
+///
+/// # Panics
+///
+/// Never.
+fn top3_satisfied(items: &[String], texts: &[String]) -> bool {
+    let window = texts.iter().take(3);
+    let mut cursor = 0usize;
+    'items: for item in items {
+        for (offset, candidate) in window.clone().enumerate().skip(cursor) {
+            if candidate == item {
+                cursor = offset + 1;
+                continue 'items;
+            }
+        }
+        return false;
+    }
+    true
 }
 
 /// Parses the case set's text into cases.
 ///
 /// `#` lines and blank lines are skipped. Every other line is at least three
-/// tab-separated columns -- identifier, key sequence, expectation -- with any further
-/// column read as a band tag.
+/// tab-separated columns -- identifier, key sequence, expectation -- with an optional
+/// fourth `flags:` column naming the row's switches, and any further column read as a
+/// band tag.
 ///
 /// # Errors
 ///
 /// A row with too few columns, an empty identifier or key sequence, a key sequence that
 /// is not lower-case pinyin over the apostrophe, an expectation that names no known
-/// form, a pattern that does not compile, or an identifier another row already holds --
-/// each refuses the whole set with the line number, because a set that half-parses
-/// would report on half the behaviours it claims to pin.
+/// form, a flags column that names an undrivable switch or an impossible combination, a
+/// pattern or `@today` format that does not compile, or an identifier another row
+/// already holds -- each refuses the whole set with the line number, because a set that
+/// half-parses would report on half the behaviours it claims to pin.
 ///
 /// # Panics
 ///
@@ -395,12 +536,32 @@ pub fn parse_cases(text: &str) -> Result<Vec<SmokeCase>> {
             "smoke: line {number}: the id {id:?} is used twice"
         );
         seen.insert(id.to_owned());
-        ensure_keys(keys).with_context(|| format!("smoke: line {number} (case {id})"))?;
+        // The column after the expectation is the v2 flags column when it carries the
+        // prefix, and the first tag column when it does not, which is what keeps every
+        // v1 row reading exactly as it always did.
+        let rest: Vec<&str> = columns.collect();
+        let (flags, tag_columns) = match rest.split_first() {
+            Some((first, tail)) if first.starts_with("flags:") => (v2::parse_flags(first), tail),
+            _ => (Ok(RowFlags::default()), rest.as_slice()),
+        };
+        let flags = flags.with_context(|| format!("smoke: line {number} (case {id})"))?;
+        // The cohesion rules hold for the plain rows too: a `@today` row with no
+        // flags column is exactly the row that can never answer, so the check is not
+        // reserved for rows that name a switch.
+        v2::check_row_cohesion(
+            &flags,
+            keys,
+            expect_column.starts_with("@today:"),
+            expect_column == "@empty",
+        )
+        .with_context(|| format!("smoke: line {number} (case {id})"))?;
         let expect = expectation(expect_column)
             .with_context(|| format!("smoke: line {number} (case {id})"))?;
-        // Every column past the expectation is tag text, and the tags inside one
+        ensure_keys_for(keys, &flags)
+            .with_context(|| format!("smoke: line {number} (case {id})"))?;
+        // Every column past the flags column is tag text, and the tags inside one
         // column are whitespace-separated, so `ambiguity  extra` reads as two.
-        let tags: Vec<String> = raw_columns[3..]
+        let tags: Vec<String> = tag_columns
             .iter()
             .flat_map(|column| column.split_whitespace())
             .map(str::to_owned)
@@ -409,31 +570,30 @@ pub fn parse_cases(text: &str) -> Result<Vec<SmokeCase>> {
             id: id.to_owned(),
             keys: keys.to_owned(),
             expect,
+            flags,
             tags,
         });
     }
     Ok(cases)
 }
 
-/// Reads the case set, from stdin when the path asks for it.
+/// Validates one row's keys column against what its flags turn on.
 ///
 /// # Errors
 ///
-/// A named file that cannot be read is carried with the path.
+/// A quick row's trigger and a plain row's keys must be lower-case pinyin spellings; an
+/// association row's column holds a script instead and is checked by parsing it here,
+/// so a malformed marker is a load-time refusal rather than a run-time empty answer
+/// that an `@empty` row would silently pass on.
 ///
 /// # Panics
 ///
 /// Never.
-fn read_input(path: &Path) -> Result<String> {
-    if path == Path::new("-") {
-        use std::io::Read;
-        let mut text = String::new();
-        std::io::stdin()
-            .read_to_string(&mut text)
-            .context("cannot read the case set from stdin")?;
-        return Ok(text);
+fn ensure_keys_for(keys: &str, flags: &RowFlags) -> Result<()> {
+    if flags.assoc {
+        return v2::parse_script(keys).map(|_| ());
     }
-    fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))
+    ensure_keys(keys)
 }
 
 /// Validates one key sequence: lower-case ASCII letters with `'` between syllables.
@@ -450,7 +610,7 @@ fn read_input(path: &Path) -> Result<String> {
 /// # Panics
 ///
 /// Never.
-fn ensure_keys(keys: &str) -> Result<()> {
+pub(crate) fn ensure_keys(keys: &str) -> Result<()> {
     ensure!(!keys.is_empty(), "the key sequence is empty");
     for ch in keys.chars() {
         ensure!(
@@ -468,7 +628,9 @@ fn ensure_keys(keys: &str) -> Result<()> {
 /// A column that starts with `@` but names no known form is refused rather than read as
 /// literal text: a misspelled prefix would otherwise pin the wrong string and pass for
 /// the wrong reason. A `@regex:` pattern that does not compile is refused with the
-/// pattern, and an empty expectation of any form is refused outright.
+/// pattern, an empty expectation of any form is refused outright, and a `@top3:` list
+/// with an empty member is refused because an empty member would match nothing and
+/// turn the row red for a reason the file did not mean.
 ///
 /// # Panics
 ///
@@ -476,6 +638,12 @@ fn ensure_keys(keys: &str) -> Result<()> {
 pub fn expectation(column: &str) -> Result<Expectation> {
     ensure!(!column.is_empty(), "the expectation column is empty");
     let raw = column.to_owned();
+    if column == "@empty" {
+        return Ok(Expectation {
+            kind: ExpectKind::Empty,
+            raw,
+        });
+    }
     let Some((prefix, value)) = column.split_once(':') else {
         ensure_literal_form(column)?;
         return Ok(Expectation {
@@ -499,11 +667,37 @@ pub fn expectation(column: &str) -> Result<Expectation> {
                     .with_context(|| format!("the @regex pattern {value:?} does not compile"))?,
             )
         }
+        "@top3" => ExpectKind::Top3(top3_items(value)?),
+        "@today" => {
+            ensure!(!value.is_empty(), "@today names no format");
+            validate_format(value)?;
+            ExpectKind::Today(value.to_owned())
+        }
         _ => bail!(
-            "unknown expectation form {prefix:?}; the forms are @first:, @contains: and @regex:"
+            "unknown expectation form {prefix:?}; the forms are @first:, @contains:, @regex:, @top3:, @today: and @empty"
         ),
     };
     Ok(Expectation { kind, raw })
+}
+
+/// Splits a `@top3:` value into its ordered items.
+///
+/// # Errors
+///
+/// A value holding an empty item -- a leading, trailing or doubled `|` -- is refused,
+/// because an empty item can never match a candidate and would keep the row red for a
+/// reason the file did not state.
+///
+/// # Panics
+///
+/// Never.
+fn top3_items(value: &str) -> Result<Vec<String>> {
+    let items: Vec<String> = value.split('|').map(str::to_owned).collect();
+    ensure!(
+        items.iter().all(|item| !item.is_empty()),
+        "the @top3 list {value:?} holds an empty item"
+    );
+    Ok(items)
 }
 
 /// Guards the literal spelling of the expectation column.
@@ -519,167 +713,28 @@ pub fn expectation(column: &str) -> Result<Expectation> {
 fn ensure_literal_form(column: &str) -> Result<()> {
     ensure!(
         !column.starts_with('@'),
-        "the expectation {column:?} starts a form but names none; the forms are @first:, @contains: and @regex:"
+        "the expectation {column:?} starts a form but names none; the forms are @first:, @contains:, @regex:, @top3:, @today: and @empty"
     );
     Ok(())
 }
 
-/// What the derivation did, for the run's one summary line.
-pub struct DeriveSummary {
-    /// Holdout rows that were decoded.
-    pub scanned: usize,
-    /// Core cases the derivation wrote.
-    pub derived: usize,
-    /// Cases that are not in the core band and survived the rewrite.
-    pub kept: usize,
-}
-
-/// Regenerates the core band of the case set from a holdout file.
-///
-/// The holdout rows are decoded against the dictionary in the file's own order, and
-/// every row the engine already answers with its expected first choice becomes a `core`
-/// case, deduplicated by key sequence, until [`CORE_QUOTA`] is reached. The cases of
-/// the current set that do not carry the [`CORE_TAG`] are carried over unchanged, so
-/// the handwritten bands are never touched by a regeneration.
+/// Reads the case set, from stdin when the path asks for it.
 ///
 /// # Errors
 ///
-/// A holdout file that cannot be read or whose rows do not parse, a dictionary that
-/// cannot be mounted, and a current case set that cannot be re-parsed each end in an
-/// error naming the file and the line.
+/// A named file that cannot be read is carried with the path.
 ///
 /// # Panics
 ///
 /// Never.
-pub fn derive(cases: &Path, holdout: &Path, dict: &Path) -> Result<DeriveSummary> {
-    let mounted = mount(dict)?;
-    let text = fs::read_to_string(holdout)
-        .with_context(|| format!("cannot read the holdout set {}", holdout.display()))?;
-    let rows = parse_holdout(&text).with_context(|| format!("in {}", holdout.display()))?;
-    let scanned = rows.len();
-    let mut derived = Vec::new();
-    let mut seen_keys = BTreeSet::new();
-    for (keys, expected) in rows {
-        if derived.len() >= CORE_QUOTA {
-            break;
-        }
-        if !seen_keys.insert(keys.clone()) {
-            continue;
-        }
-        let texts = decode_texts(&mounted, &keys);
-        if texts.first().is_some_and(|got| got == &expected) {
-            let id = format!("core_{:03}", derived.len() + 1);
-            derived.push(format!("{id}\t{keys}\t@first:{expected}\t{CORE_TAG}"));
-        }
+fn read_input(path: &Path) -> Result<String> {
+    if path == Path::new("-") {
+        use std::io::Read;
+        let mut text = String::new();
+        std::io::stdin()
+            .read_to_string(&mut text)
+            .context("cannot read the case set from stdin")?;
+        return Ok(text);
     }
-    // The handwritten bands survive the rewrite: everything that is not the derived
-    // band is a case a person wrote, and a regeneration has no business editing it.
-    let kept_text = if cases.exists() {
-        let current = fs::read_to_string(cases)
-            .with_context(|| format!("cannot read the current case set {}", cases.display()))?;
-        let current = parse_cases(&current).with_context(|| format!("in {}", cases.display()))?;
-        let kept: Vec<&SmokeCase> = current
-            .iter()
-            .filter(|case| !case.tags.iter().any(|tag| tag == CORE_TAG))
-            .collect();
-        let lines: Vec<String> = kept
-            .iter()
-            .map(|case| {
-                let mut line = format!("{}\t{}\t{}", case.id, case.keys, case.expect.raw);
-                for tag in &case.tags {
-                    line.push('\t');
-                    line.push_str(tag);
-                }
-                line
-            })
-            .collect();
-        fs::create_dir_all(cases.parent().unwrap_or(Path::new("."))).with_context(|| {
-            format!(
-                "cannot create {}",
-                cases.parent().unwrap_or(Path::new(".")).display()
-            )
-        })?;
-        format_lines(&lines)
-    } else {
-        String::new()
-    };
-    let header = format!(
-        "# rspinyin decode smoke baseline, regenerated by `xtask testd-smoke --derive-from-holdout`.\n\
-         # The `core` band is derived; the bands below the marker are handwritten. One case\n\
-         # per line, TAB separated: case_id  key_sequence  expected_text  [tags...]\n\
-         # `key_sequence` is raw pinyin; `'` forces a syllable boundary.\n\
-         # The file is a regression pin: it holds what the engine answers today, and a\n\
-         # ranking change that turns a line red has to either fix the ranking or make a\n\
-         # case for the new behaviour by hand.\n\n\
-         # ── handwritten bands (ambiguity, boundaries) ──\n\
-         {kept_text}\n\
-         # ── derived core band, from the holdout evaluation set ──\n"
-    );
-    let mut body = header;
-    for line in &derived {
-        body.push_str(line);
-        body.push('\n');
-    }
-    let kept = kept_text
-        .lines()
-        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
-        .count();
-    fs::write(cases, body)
-        .with_context(|| format!("cannot write the case set {}", cases.display()))?;
-    Ok(DeriveSummary {
-        scanned,
-        derived: derived.len(),
-        kept,
-    })
+    fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))
 }
-
-/// Joins the handwritten lines back into file text, one per line.
-///
-/// # Panics
-///
-/// Never.
-fn format_lines(lines: &[String]) -> String {
-    let mut text = String::new();
-    for line in lines {
-        text.push_str(line);
-        text.push('\n');
-    }
-    text
-}
-
-/// Parses a holdout evaluation set into `(keys, expected first choice)` rows.
-///
-/// The set's own two columns are the pinyin and the expected first choice; the optional
-/// third (the layer that has to serve the word) is read past.
-///
-/// # Errors
-///
-/// A row that does not hold two columns, and a key sequence outside the case alphabet,
-/// each refuse the file with the line number.
-///
-/// # Panics
-///
-/// Never.
-fn parse_holdout(text: &str) -> Result<Vec<(String, String)>> {
-    let mut rows = Vec::new();
-    for (number, line) in text.lines().enumerate() {
-        let number = number + 1;
-        let trimmed = line.trim_end_matches(['\r']);
-        if trimmed.trim().is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let mut columns = trimmed.split('\t').map(str::trim);
-        let keys = columns.next().unwrap_or_default();
-        let expected = columns.next().unwrap_or_default();
-        ensure!(
-            !keys.is_empty() && !expected.is_empty(),
-            "smoke: holdout line {number}: expected `pinyin<TAB>expected`"
-        );
-        ensure_keys(keys).with_context(|| format!("smoke: holdout line {number}"))?;
-        rows.push((keys.to_owned(), expected.to_owned()));
-    }
-    Ok(rows)
-}
-
-#[cfg(test)]
-mod tests;

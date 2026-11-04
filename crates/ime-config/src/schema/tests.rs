@@ -654,3 +654,29 @@ fn test_data_section_repairs_decay_values_a_document_writes_out_of_range() {
         ],
     );
 }
+
+#[test]
+fn test_english_section_reads_spacing_from_a_document() {
+    let (config, warnings) = parsed_document("[english]\nspacing = \"off\"\n");
+    assert!(warnings.is_empty(), "every value is usable: {warnings:?}");
+    assert_eq!(config.english.spacing, EnglishSpacing::Off);
+
+    // Auto is what a document that never mentions the key gets, and a document
+    // that says so explicitly is the built-in configuration.
+    assert_eq!(
+        parsed_document("[english]\nspacing = \"auto\"\n").0,
+        Config::default()
+    );
+}
+
+#[test]
+fn test_english_section_repairs_an_unknown_spacing_to_the_auto_default() {
+    let (config, warnings) = parsed_document("[english]\nspacing = \"sometimes\"\n");
+
+    assert_eq!(rejected(&warnings), [String::from("english.spacing")]);
+    assert_eq!(
+        config.english.spacing,
+        EnglishSpacing::Auto,
+        "the repaired mode answers with the shipped boundary rule"
+    );
+}

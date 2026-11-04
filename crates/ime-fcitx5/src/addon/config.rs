@@ -314,6 +314,10 @@ pub fn on_config_reload() -> RoutingConfig {
         // against exactly the file the user saved, and a swap that does not pass its
         // validation leaves the live dictionary serving.
         super::session::apply_staged_dictionary(&data);
+        // The symbol documents are re-read beside the dictionary: a reload swaps the
+        // panel's table, so the next key serves the new domains, while a frame already
+        // in flight keeps the table it was built from alive through its `Arc`.
+        super::session::reload_symbols();
     }
     install_routing_config(routing);
     routing

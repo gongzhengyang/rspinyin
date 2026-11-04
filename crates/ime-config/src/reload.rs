@@ -45,8 +45,9 @@ mod merge;
 mod store;
 
 use self::merge::{
-    merge_assoc, merge_data, merge_diagnostics, merge_engine, merge_fuzzy, merge_keys,
-    merge_phrases, merge_quick_input, merge_scheme, merge_shuangpin, merge_theme, merge_ui,
+    merge_assoc, merge_data, merge_diagnostics, merge_engine, merge_english, merge_fuzzy,
+    merge_keys, merge_phrases, merge_quick_input, merge_scheme, merge_shuangpin, merge_theme,
+    merge_ui,
 };
 pub use load::default_path;
 pub use store::{ConfigStore, ReloadOutcome};
@@ -288,6 +289,14 @@ max_candidates = 5
 # memory dies with the session and is never written to disk. Takes effect on reload.
 history_depth = 8
 
+[english]
+# How a commit an English candidate produces meets the text already on the screen:
+# "auto" takes the one space the boundary between the two texts asks for -- Chinese
+# into English and English into English -- and "off" commits every candidate exactly
+# as it is spelled. The casing the candidate goes out in is not this key's to
+# switch. Takes effect on reload.
+spacing = "auto"
+
 [quick_input]
 # Recognise whole-buffer quick-input triggers such as the date family and the
 # calculator. Off by default: a trigger that turns ordinary spelling into a domain is
@@ -362,6 +371,7 @@ struct PartialConfig {
     engine: Option<PartialEngine>,
     assoc: Option<PartialAssoc>,
     quick_input: Option<PartialQuickInput>,
+    english: Option<PartialEnglish>,
     ui: Option<PartialUi>,
     theme: Option<PartialTheme>,
     keys: Option<PartialKeys>,
@@ -410,6 +420,12 @@ struct PartialQuickInput {
     enabled: Option<bool>,
     date_prefixes: Option<Vec<String>>,
     calc_enabled: Option<bool>,
+}
+
+/// The `[english]` table of a document.
+#[derive(Deserialize)]
+struct PartialEnglish {
+    spacing: Option<String>,
 }
 
 /// The `[fuzzy]` table of a document.
@@ -707,6 +723,7 @@ impl Config {
         merge_assoc(partial.assoc, &mut config);
 
         merge_quick_input(partial.quick_input, &mut config);
+        merge_english(partial.english, &mut config, &mut warnings);
         merge_ui(partial.ui, &mut config);
         merge_theme(partial.theme, &mut config, &mut warnings);
         merge_keys(partial.keys, &mut config, &mut warnings);

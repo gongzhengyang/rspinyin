@@ -10,6 +10,7 @@
 //! to nothing wider.
 
 use super::*;
+use crate::state::transitions::filter_hidden_candidates;
 
 impl Session {
     /// Re-segments and re-decodes the current input, then repairs everything derived.
@@ -118,6 +119,12 @@ impl Session {
             self.scratch
                 .rerank_with_context_band(Some(context), env.lm, self.context_band);
         }
+        // The hide set is the session's own negative feedback: the candidates it names
+        // leave the list here, before the repairs below read it, so the order the user
+        // sees, reconciles against and pages through is one and the same. The three
+        // fields the filter reads are disjoint from the `prev` borrow above, which is
+        // why the filter is a function of them rather than of the session.
+        filter_hidden_candidates(&mut self.scratch, &self.hidden, self.buf.raw());
         self.paging
             .reconcile(prev, &self.scratch.result().candidates);
         if rewritten {
@@ -161,6 +168,9 @@ impl Session {
             self.scratch
                 .rerank_with_context_band(Some(context), env.lm, self.context_band);
         }
+        // The wider rung filters through the same hide set the narrow one did, so the
+        // hidden candidate cannot come back through a page the user asked past.
+        filter_hidden_candidates(&mut self.scratch, &self.hidden, self.buf.raw());
     }
 
     /// Materializes the next ladder rung when paging asks past the current supply.
@@ -169,6 +179,14 @@ impl Session {
     /// is retained as a duplicate-free prefix. The return value says whether new
     /// candidates became available.
     pub(in crate::state) fn expand_candidate_supply(&mut self, env: &SessionEnv<'_>) -> bool {
+        // The panel materializes its whole list on every refresh, so there is no
+        // wider rung for it: a decode here would replace the symbols on screen
+        // with decoded words. The refresh pins the ladder shut as well; this
+        // guard keeps the invariant local to the one expansion that must honour
+        // it.
+        if self.symbol_mode {
+            return false;
+        }
         let materialized = self.candidate_supply;
         let quota = SessionConfig::candidate_supply_quota(materialized);
         if quota == materialized {

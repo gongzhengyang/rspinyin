@@ -75,24 +75,32 @@ impl UserFreqSource for UserDb {
             let commits = committed.get(key).map_or(0, |record| record.commits);
             let commits = pending.map_or(commits, |delta| commits.saturating_add(delta.count));
             // A tombstone outranks the count the file still holds: the user asked for the
-            // word to go, and the flush that makes the file agree has not run yet.
+            // word to go, and the flush that makes the file agree has not run yet. A pin
+            // outranks the penalty the same way: the user asked for the word to stay, and
+            // "stay" is the stronger of the two statements. What is left takes the
+            // penalty's shift last, after the decay has had its say -- decay measures
+            // time, the penalty measures trust, and the two compose rather than compete.
             return if forgotten {
                 0
             } else {
                 if lock(&self.inner.pinned).contains(key) {
                     PINNED_FREQ
                 } else {
-                    self.inner.decay.effective_freq(commits, answer)
+                    let answer = self.inner.decay.effective_freq(commits, answer);
+                    self.inner.with_penalty(key, answer)
                 }
             };
         }
         // The store was too large to load, so the answer has to come from the file. The
         // fallback is bounded by the ceiling rather than by the word count: `on_demand`
-        // opens one transaction per distinct word per session.
+        // opens one transaction per distinct word per session. The penalty applies to the
+        // fallback's answer the same way it applies to the loaded one, so a penalized word
+        // reads the same whichever path answers.
         if self.inner.is_pinned(key) {
             PINNED_FREQ
         } else {
-            self.inner.on_demand(key)
+            let answer = self.inner.on_demand(key);
+            self.inner.with_penalty(key, answer)
         }
     }
 
@@ -103,7 +111,9 @@ impl UserFreqSource for UserDb {
     /// performed here: the delta map's own entry point owns the batching policy, and the flush
     /// thread owns the disk. What is left on this path is one monotonic reading, one lock of
     /// the delta map, one hash lookup, and -- only for a key the map has not seen -- one
-    /// allocation.
+    /// allocation. A key that carries a penalty pays one more map lookup to have one level of
+    /// it decayed: a normal commit is the user's word for "I meant this one", which is what
+    /// makes the demotion recoverable through use.
     fn record(&self, key: &str, _weight_hint: u16) {
         if self.is_readonly() {
             return;
@@ -111,6 +121,7 @@ impl UserFreqSource for UserDb {
         if self.inner.record_delta(key) {
             self.inner.request_flush();
         }
+        self.inner.decay_penalty(key);
     }
 
     fn is_user_word(&self, key: &str) -> bool {

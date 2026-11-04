@@ -57,6 +57,8 @@ use ime_types::{
     StatusStrip, UiEvent, UiFrame, UserFreqSource,
 };
 
+use std::collections::HashSet;
+
 use crate::assoc::AssocRuntime;
 use crate::confusable::ConfusableTable;
 use crate::input::InputBuffer;
@@ -220,8 +222,27 @@ pub struct Session {
     /// candidates without a second source of truth. The view dies on any boundary,
     /// never crosses a focus change and is not persisted or logged.
     pub(super) assoc_view: Option<AssocView>,
+    /// The candidates the user hid with the negative-feedback hide, as
+    /// `(input key, candidate text)` pairs.
+    ///
+    /// Session memory and nothing else -- nothing here reaches the store, an effect
+    /// after the keystroke or the frame, and hiding across sessions is the forget
+    /// action's job, which is why the set dies with the session rather than with the
+    /// composition: the user who hid a candidate does not want it back because they
+    /// finished one word and started another, only because they restarted the session.
+    /// Every refresh filters the freshly decoded list through it; the empty set costs
+    /// one branch, which is the whole cost for a session that never used the action.
+    pub(super) hidden: HashSet<(Box<str>, Box<str>)>,
     /// The session-only ring of recently committed association words.
     pub(super) assoc_history: crate::assoc::HistorySource,
+    /// The commit-side bridge's memory: what the screen holds after the last
+    /// landed commit, and the commit text in flight ([`crate::state::spacing`]).
+    ///
+    /// Session memory and nothing else, like the context word beside it -- it
+    /// reaches no effect, no log line and no frame. It exists so that an English
+    /// candidate's commit can take the space the boundary between it and the text
+    /// already on the screen asks for, and it dies with the session.
+    pub(super) spacing: crate::state::spacing::SpacingState,
     /// Id the next composition will take.
     next_session_id: u64,
 }
@@ -317,7 +338,9 @@ pub enum SessionEvent {
     /// Like [`SessionEvent::PreeditCleared`], this is a row of the design's table
     /// rather than a variant of the card's sketch.
     CommitDone,
-    /// The host applied a pin toggle; the session re-decodes the unchanged input.
+    /// The host applied a pin toggle or a negative-feedback penalty; the session
+    /// re-decodes the unchanged input, because the store's answer for it has moved and
+    /// the list on screen still ranks the way the store answered before.
     PinApplied,
 }
 
@@ -376,7 +399,9 @@ impl Session {
             context_word: None,
             context_keys: 0,
             assoc_view: None,
+            hidden: HashSet::new(),
             assoc_history: crate::assoc::HistorySource::new(),
+            spacing: crate::state::spacing::SpacingState::default(),
             next_session_id: next,
         }
     }

@@ -44,6 +44,9 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use super::flush::Delta;
 use super::hydrate::COMPOSITE_SEPARATOR;
 use super::*;

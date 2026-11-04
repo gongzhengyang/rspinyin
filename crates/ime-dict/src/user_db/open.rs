@@ -90,6 +90,12 @@ impl UserDb {
         // read transaction is the caller's own call and not a keystroke's. The map is what
         // `forget` and `is_user_word` consult so that neither has to scan the file later.
         let coined_words = load_coined(&db, &path);
+        // The penalty levels ride one more small load of the same shape: the shift the read
+        // paths apply is taken from memory, so a penalty the user pressed ranks the next
+        // decode, and a store past its record ceiling keeps its penalties like it keeps its
+        // pins -- the table holds only the penalized keys, never the reason a store is too
+        // large to load.
+        let penalties = load_penalties(&db, &path);
         // A v1 store served read-only carries no clock at all -- its migration, the
         // only thing that would have written one, failed. Zero is the clock a fresh
         // store starts with, and a read-only store never advances it.
@@ -105,6 +111,7 @@ impl UserDb {
             committed: Mutex::new(records),
             pinned: Mutex::new(pins.0),
             key_pins: Mutex::new(pins.1),
+            penalties: Mutex::new(penalties),
             coined_words: Mutex::new(coined_words),
             tick: AtomicU64::new(tick),
             schema_migrated: matches!(schema, SchemaOutcome::Migrated | SchemaOutcome::V1Degraded),

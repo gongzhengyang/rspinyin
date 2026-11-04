@@ -35,8 +35,8 @@ mod data;
 mod repair;
 
 pub use self::config::{
-    AnimationConfig, AssocConfig, Config, EngineConfig, FuzzyConfig, KeysConfig, PhraseConfig,
-    QuickInputConfig, ThemeConfig, UiConfig,
+    AnimationConfig, AssocConfig, Config, EngineConfig, EnglishConfig, FuzzyConfig, KeysConfig,
+    PhraseConfig, QuickInputConfig, ThemeConfig, UiConfig,
 };
 pub use self::data::{DataConfig, DiagnosticsConfig};
 
@@ -232,6 +232,19 @@ closed_set! {
     /// Which colour scheme the candidate window uses: the `theme.scheme` key.
     ThemeScheme, key = "theme.scheme", message = "unknown scheme",
     default = Auto, values = { Auto => "auto", Light => "light", Dark => "dark" }
+}
+
+closed_set! {
+    /// How the English commit bridge behaves: the `[english] spacing` key.
+    ///
+    /// `Auto` is the shipped behaviour -- the boundary rule between the text on
+    /// the screen and the commit reads the two texts' character classes and
+    /// takes its single space where the classes ask for one. `Off` shuts the
+    /// bridge: every commit leaves exactly as the candidate spelled it. The
+    /// casing transform is not this key's to switch -- the two transforms share
+    /// the commit door, and only the spacing is configurable here.
+    EnglishSpacing, key = "english.spacing", message = "unknown spacing mode",
+    default = Auto, values = { Auto => "auto", Off => "off" }
 }
 
 closed_set! {

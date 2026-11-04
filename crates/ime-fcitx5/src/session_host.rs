@@ -57,6 +57,7 @@ use ime_core::privacy::InputContextKind;
 use ime_core::state::SessionEnv;
 use ime_dict::hot_swap::LexiconSlot;
 use ime_dict::script::ScriptIndex;
+use ime_dict::symbols::SymbolSlot;
 use ime_dict::user_lexicon::UserLexiconHandle;
 use ime_types::{Anchor, UiEvent};
 
@@ -524,6 +525,9 @@ pub fn install(
     if let Some(user) = lexicons.user {
         router = router.with_user_lexicon(user);
     }
+    if let Some(symbols) = lexicons.symbol_slot {
+        router = router.with_symbol_slot(symbols);
+    }
     // The quick panel's time domains render from an injected clock; the startup
     // sequence installs the production clock here so a panel never reads the
     // process environment on its own. The slot guard above makes this run once
@@ -545,6 +549,9 @@ pub struct RouterLexicons<'a> {
     pub system: Option<&'a LexiconSlot>,
     /// The user's own words, when the process assembled them.
     pub user: Option<&'a UserLexiconHandle>,
+    /// The slot the v-mode panel's symbol table is re-read through, when the process
+    /// loaded one.
+    pub symbol_slot: Option<&'a SymbolSlot>,
 }
 
 /// Installs the variant table the script mode converts through, when a host is installed.

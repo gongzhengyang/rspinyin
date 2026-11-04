@@ -2,7 +2,7 @@
 
 use ime_types::ImeError;
 
-use super::{MAX_SYMBOLS_PER_CATEGORY, SYMBOLS_FILE_KEY, SymbolTable};
+use super::{MAX_EMOJI_PER_DOMAIN, MAX_SYMBOLS_PER_CATEGORY, SYMBOLS_FILE_KEY, SymbolTable};
 
 #[test]
 fn test_parse_reads_categories_and_answers_the_code() {
@@ -95,4 +95,153 @@ fn test_empty_table_names_nothing() {
     assert!(table.is_empty());
     assert_eq!(table.len(), 0);
     assert!(table.longest_prefix("1").is_none());
+}
+
+/// A three-entry emoji document: two homophones and one distinct alias.
+const EMOJI_DOCUMENT: &str = "😀\txiao\n😁\txiao\n😊\tlian\n";
+
+#[test]
+fn test_add_emoji_domain_installs_the_domain_and_answers_its_code() {
+    let mut table = SymbolTable::empty();
+    let report = table.add_emoji_domain(EMOJI_DOCUMENT);
+    assert_eq!(report.loaded, 1);
+    assert_eq!(report.skipped, 0);
+    assert_eq!(report.overridden, 0);
+    // `ve` answers the whole list in file order; the label is the domain's own.
+    let served = table.serve("e").expect("the code names the domain");
+    assert_eq!(served.label, "表情");
+    assert_eq!(served.symbols.as_slice(), &['😀', '😁', '😊']);
+}
+
+#[test]
+fn test_serve_filters_the_emoji_domain_by_alias_prefix() {
+    // The suffix typed past the domain's code narrows the list to the entries
+    // whose alias starts with it; the kept entries stay in file order.
+    let mut table = SymbolTable::empty();
+    let _ = table.add_emoji_domain(EMOJI_DOCUMENT);
+    let served = table.serve("ex").expect("the code names the domain");
+    assert_eq!(
+        served.symbols.as_slice(),
+        &['😀', '😁'],
+        "the entries whose alias starts with the suffix, in file order"
+    );
+    let served = table
+        .serve("exiao")
+        .expect("the alias names the homophones");
+    assert_eq!(
+        served.symbols.as_slice(),
+        &['😀', '😁'],
+        "homophones stay side by side in file order"
+    );
+    let served = table
+        .serve("elian")
+        .expect("the alias names the third entry");
+    assert_eq!(served.symbols.as_slice(), &['😊']);
+}
+
+#[test]
+fn test_serve_answers_the_whole_list_for_a_category_without_aliases() {
+    // A plain category serves its list whole, and a suffix typed past its
+    // prefix is ignored exactly as the table documents -- the emoji filter is
+    // the alias-carrying category's behaviour alone.
+    let table = SymbolTable::parse("1\t数字\t０１\n").expect("rows are usable");
+    let served = table.serve("1x").expect("the longest prefix wins");
+    assert_eq!(served.label, "数字");
+    assert_eq!(served.symbols.as_slice(), &['０', '１']);
+}
+
+#[test]
+fn test_serve_answers_an_empty_list_when_no_alias_matches() {
+    // A filter that keeps nothing is an empty list on an open panel, not a
+    // fall-through: the code still names the domain, and the user narrows it
+    // further or backs up.
+    let mut table = SymbolTable::empty();
+    let _ = table.add_emoji_domain(EMOJI_DOCUMENT);
+    let served = table.serve("ezz").expect("the code names the domain");
+    assert!(served.symbols.as_slice().is_empty());
+}
+
+#[test]
+fn test_add_emoji_domain_counts_skipped_rows() {
+    // Rows the reader refused are counted and the walk continues: a multi-code-
+    // point character, an upper-case alias, an empty alias and a stray fourth
+    // column are each one skip, and the usable rows still serve.
+    let mut table = SymbolTable::empty();
+    let report =
+        table.add_emoji_domain("😀\txiao\n👍🏽\tzan\n😁\tZAN\n😊\t\n😂\txiao\textra\n🤣\tpeng\n");
+    assert_eq!(report.loaded, 1);
+    assert_eq!(report.skipped, 4);
+    assert_eq!(
+        table.serve("e").expect("served").symbols.as_slice(),
+        &['😀', '🤣']
+    );
+}
+
+#[test]
+fn test_add_emoji_domain_with_nothing_usable_installs_nothing() {
+    let mut table = SymbolTable::empty();
+    let report = table.add_emoji_domain("# only a comment\nbroken row\n");
+    assert_eq!(report.loaded, 0);
+    assert!(table.serve("e").is_none(), "no domain was installed");
+    assert!(table.longest_prefix("e").is_none());
+}
+
+#[test]
+fn test_add_emoji_domain_overrides_an_existing_category_of_the_code() {
+    // The document the plain reader holds may already define the emoji domain's
+    // code; the domain replaces it whole, the same last-definition-wins rule a
+    // later line of the plain document follows.
+    let mut table = SymbolTable::parse("e\t编程\t⌨\n1\t数字\t０\n").expect("rows are usable");
+    let report = table.add_emoji_domain("😀\txiao\n");
+    assert_eq!(report.overridden, 1);
+    assert_eq!(table.len(), 2, "the category kept its position");
+    let served = table.serve("e").expect("the code names the domain");
+    assert_eq!(served.label, "表情");
+    assert_eq!(served.symbols.as_slice(), &['😀']);
+}
+
+#[test]
+fn test_add_emoji_domain_refuses_rows_past_the_domain_bound() {
+    // The bound is what keeps a file that is not an emoji document from being
+    // loaded as one; the extra rows are skips, not a truncated domain.
+    let rows: String = (0..MAX_EMOJI_PER_DOMAIN + 3)
+        .map(|_| "😀\txiao\n")
+        .collect();
+    let mut table = SymbolTable::empty();
+    let report = table.add_emoji_domain(&rows);
+    assert_eq!(report.loaded, 1);
+    assert_eq!(report.skipped, 3);
+    let served = table.serve("e").expect("served");
+    assert_eq!(
+        served.symbols.as_slice().len(),
+        MAX_EMOJI_PER_DOMAIN,
+        "the domain holds exactly the bound"
+    );
+}
+
+#[test]
+fn test_domains_lists_codes_and_labels_in_table_order() {
+    // The index page is one candidate per domain in exactly this order, which
+    // is what makes a selection's position name the domain it selects.
+    let mut table = SymbolTable::parse("1\t数字\t０\nx\t箭头\t←\n").expect("rows are usable");
+    let _ = table.add_emoji_domain("😀\txiao\n");
+    let domains: Vec<(String, String)> = table
+        .domains()
+        .map(|domain| (String::from(domain.code), String::from(domain.label)))
+        .collect();
+    assert_eq!(
+        domains,
+        [
+            (String::from("1"), String::from("数字")),
+            (String::from("x"), String::from("箭头")),
+            (String::from("e"), String::from("表情")),
+        ],
+        "the document's order, with the emoji domain last"
+    );
+}
+
+#[test]
+fn test_domains_of_an_empty_table_answer_nothing() {
+    let table = SymbolTable::empty();
+    assert_eq!(table.domains().count(), 0);
 }

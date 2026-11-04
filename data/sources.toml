@@ -174,3 +174,32 @@ spdx = "MIT OR Apache-2.0"
 retrieved = ""
 sha256 = ""
 permissive = true
+
+# v 模式 e 域（emoji）符号表：表情⇥拼音别名 两列，条目均为单个 Unicode 码位。
+# 表情是码位事实清单，拼音别名为项目自拟；未拷贝任何 GPL emoji 表
+# （rime-ice symbols_v/emoji.json 不入此表）。
+[[source]]
+id = "emoji"
+kind = "derived"
+layer = "L5"
+url = "https://github.com/gongzhengyang/rspinyin"
+license = "Project-owned (MIT OR Apache-2.0)"
+spdx = "MIT OR Apache-2.0"
+retrieved = ""
+sha256 = ""
+permissive = true
+
+# English entries whose spelling a pinyin typist leaves mid-syllable
+# (`ranch` = ran|ch): the machine judgment lives in dictc's marks module,
+# the emitted candidates are reviewed by hand, and a confirmed row scales
+# the entry's rank down at eng-dict compile time.
+[[source]]
+id = "reduce-eng"
+kind = "derived"
+layer = "L5"
+url = "https://github.com/gongzhengyang/rspinyin"
+license = "Project-owned (MIT OR Apache-2.0)"
+spdx = "MIT OR Apache-2.0"
+retrieved = ""
+sha256 = ""
+permissive = true

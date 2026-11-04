@@ -113,6 +113,23 @@ fn test_from_config_projects_context_tie_band_onto_the_session() {
 }
 
 #[test]
+fn test_from_config_projects_the_english_spacing_onto_the_session() {
+    // The shipped section is the boundary rule, and the shipped view says the same:
+    // the two defaults cannot drift apart while this holds.
+    let (projected, warnings) = RoutingConfig::from_config(&Config::default());
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(projected.session.english_spacing, SpacingMode::Auto);
+
+    // Off is the bridge shut, and the projection is where the section's own
+    // spelling becomes the session's.
+    let mut config = Config::default();
+    config.english.spacing = ime_config::schema::EnglishSpacing::Off;
+    let (projected, warnings) = RoutingConfig::from_config(&config);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(projected.session.english_spacing, SpacingMode::Off);
+}
+
+#[test]
 fn test_from_config_reads_the_binding_lists_as_flag_sets() {
     let config = keys_with(
         vec![KeyName::Minus, KeyName::PageDown],

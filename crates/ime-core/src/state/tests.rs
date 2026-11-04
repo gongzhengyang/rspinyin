@@ -6,13 +6,16 @@
 //! Everything is driven from in-memory doubles: no dictionary file, no clock, no
 //! environment, no display server.
 
-mod assoc;
+// Widened to the state module's own visibility so the character-selection tests
+// beside the transitions can build the same provider stub the assoc tests run on.
+pub(in crate::state) mod assoc;
 mod commit;
 mod composing;
 mod frame;
 mod idle;
 mod scheme;
 mod session;
+mod symbols;
 mod transitions;
 mod workspace;
 
@@ -178,6 +181,21 @@ impl Fixture {
         }
     }
 
+    /// Borrows the sources as the environment a step reads, with one English
+    /// lexicon attached beside them, for the mixed-English tests.
+    pub(super) fn env_with_english<'env>(&'env self, english: &'env MockLexicon) -> SessionEnv<'env> {
+        SessionEnv {
+            decoder: &self.decoder,
+            lexicon: &self.lexicon,
+            user_freq: &self.user,
+            lm: &self.lm,
+            english: Some(english),
+            confusables: None,
+            symbols: None,
+            assoc: None,
+        }
+    }
+
     /// Borrows the sources with one association provider and an explicit policy.
     ///
     /// The provider is test-owned, so every call is observable without a dictionary
@@ -238,6 +256,7 @@ fn kind(effect: &Effect) -> &'static str {
         Effect::CoinUserWords { .. } => "coin-user-words",
         Effect::AddPhrase { .. } => "add-phrase",
         Effect::ForgetUserWord { .. } => "forget-user-word",
+        Effect::ReduceUserFreq { .. } => "reduce-user-freq",
         Effect::ToggleUserPin { .. } => "toggle-user-pin",
         Effect::Diagnose(_) => "diagnose",
         Effect::SetClientPreedit(_) => "set-client-preedit",

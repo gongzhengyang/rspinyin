@@ -75,6 +75,7 @@ use ime_core::privacy::InputContextKind;
 use ime_core::state::{SessionEnv, SessionEvent, SessionState};
 use ime_dict::hot_swap::{LexiconBundle, LexiconSlot};
 use ime_dict::script::ScriptIndex;
+use ime_dict::symbols::SymbolSlot;
 use ime_dict::user_lexicon::{ChainedLexicon, UserLexiconHandle};
 use ime_types::{Anchor, KeyAction, UiEvent};
 
@@ -157,6 +158,12 @@ struct StepCtx<'a, 'b> {
     /// The process-local state the header's slot is resolved through when a frame is
     /// posted; the `engine::badge` module owns the resolution.
     badge: &'b mut BadgeState,
+    /// The user's own words, when the process assembled them: the handle the
+    /// negative-feedback receipt is executed through. The frozen frequency trait the
+    /// environment carries has no penalty call -- the penalty is store state the frozen
+    /// contract does not name -- so the store half travels the handle the router was
+    /// built with, the same store the environment's frequencies answer from.
+    user_lexicon: Option<&'a UserLexiconHandle>,
     /// The word pairs a commit coined, waiting for the user-lexicon write the step's
     /// dictionary lock forbids. Collected here, drained by the caller after the step.
     coins: Vec<(String, String)>,
@@ -189,6 +196,12 @@ pub struct KeyRouter<'a> {
     /// a test router, or a router over a degraded start — decodes against [`KeyRouter::env`]
     /// as it stands.
     lexicon_slot: Option<&'a LexiconSlot>,
+    /// The slot the v-mode panel's symbol table is re-read through at every step,
+    /// when the process installed one; a router without one reads
+    /// [`KeyRouter::env`]'s table, which is what a test router and a degraded
+    /// start do. The `Arc` a step's load hands back keeps the table alive to the
+    /// end of the step, so a reload cannot tear a frame being built.
+    symbol_slot: Option<&'a SymbolSlot>,
     /// The user's own words, when the process assembled them: read under a lock held for
     /// the length of a decode-bearing step, written by the drain that runs after it.
     user_lexicon: Option<&'a UserLexiconHandle>,
@@ -255,6 +268,7 @@ impl<'a> KeyRouter<'a> {
         Self {
             env,
             lexicon_slot: None,
+            symbol_slot: None,
             user_lexicon: None,
             privacy,
             config,
@@ -291,39 +305,6 @@ impl<'a> KeyRouter<'a> {
     pub fn with_user_lexicon(mut self, handle: &'a UserLexiconHandle) -> Self {
         self.user_lexicon = Some(handle);
         self
-    }
-
-    /// Writes what a step collected for the user's lexicon, after its dictionary lock has
-    /// gone.
-    ///
-    /// The step reads the lexicon under a lock it must hold to the end -- a decode may
-    /// not wait behind a writer -- so the writes the step was asked for wait instead, and
-    /// this is the drain: coins are enrolled into the memory table and the store's write
-    /// queue, a forgotten word leaves the memory table, and a pin toggle moves the flag
-    /// eviction honours. An empty set of changes is the ordinary case and costs one
-    /// branch.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    fn apply_user_lexicon_changes(
-        &mut self,
-        coins: Vec<(String, String)>,
-        forget_words: Vec<String>,
-        pin_changes: Vec<String>,
-    ) {
-        let Some(handle) = self.user_lexicon else {
-            return;
-        };
-        if !coins.is_empty() {
-            handle.coin(&coins);
-        }
-        for word in forget_words {
-            handle.forget_word(&word);
-        }
-        for word in pin_changes {
-            handle.toggle_pin(&word);
-        }
     }
 
     /// Installs `index` as the variant table the script mode converts through.
@@ -410,6 +391,9 @@ impl<'a> KeyRouter<'a> {
         // drain at the end instead of running inside it.
         let assoc_sensitive = !self.privacy.should_learn(ic);
         let bundle = self.lexicon_slot.map(LexiconSlot::load);
+        // The panel's table travels the same atomic road the dictionary does: the
+        // Arc this load hands back keeps the table whole to the end of the step.
+        let symbols = self.symbol_slot.and_then(SymbolSlot::load);
         let user = self.user_lexicon.map(UserLexiconHandle::lock);
         let chain = match (&user, &bundle) {
             (Some(user), Some(bundle)) => Some(ChainedLexicon::new(user, bundle.lexicon())),
@@ -430,7 +414,7 @@ impl<'a> KeyRouter<'a> {
             },
             english: self.env.english,
             confusables: self.env.confusables,
-            symbols: self.env.symbols,
+            symbols: symbols.as_deref().or(self.env.symbols),
             assoc: self.env.assoc.map(|runtime| AssocRuntime {
                 sensitive: assoc_sensitive,
                 ..runtime
@@ -441,6 +425,7 @@ impl<'a> KeyRouter<'a> {
             config,
             privacy,
             badge,
+            user_lexicon,
             ..
         } = self;
         let mut step = StepCtx {
@@ -448,6 +433,7 @@ impl<'a> KeyRouter<'a> {
             config,
             privacy,
             badge,
+            user_lexicon: *user_lexicon,
             coins: Vec::new(),
             forget_words: Vec::new(),
             pin_changes: Vec::new(),
@@ -495,8 +481,14 @@ impl<'a> KeyRouter<'a> {
             // it did when the table claimed no punctuation: the policy's composition
             // half — a mark that carries the pending candidates out — is session-machine
             // work that has not landed. A letter never satisfies this, so the composing
-            // input is untouched.
+            // input is untouched. The two brackets are the one exception: when the
+            // highlight sits on a candidate a character can be taken from they are the
+            // character-selection route's, and `effects::select_char` answers `None`
+            // for a mark that is not a selection, which keeps the old answer here.
             if ctx.session.state != SessionState::Idle && is_policy_mark(ch) {
+                if let Some(acted) = effects::select_char::answer(ctx, &mut step, ic, ch, host) {
+                    return acted;
+                }
                 return false;
             }
             if ctx.session.state == SessionState::Idle {
@@ -604,6 +596,7 @@ impl<'a> KeyRouter<'a> {
         // locked and chained for the step's whole run, the writes drained after it.
         let assoc_sensitive = !self.privacy.should_learn(ic);
         let bundle = self.lexicon_slot.map(LexiconSlot::load);
+        let symbols = self.symbol_slot.and_then(SymbolSlot::load);
         let user = self.user_lexicon.map(UserLexiconHandle::lock);
         let chain = match (&user, &bundle) {
             (Some(user), Some(bundle)) => Some(ChainedLexicon::new(user, bundle.lexicon())),
@@ -624,7 +617,7 @@ impl<'a> KeyRouter<'a> {
             },
             english: self.env.english,
             confusables: self.env.confusables,
-            symbols: self.env.symbols,
+            symbols: symbols.as_deref().or(self.env.symbols),
             assoc: self.env.assoc.map(|runtime| AssocRuntime {
                 sensitive: assoc_sensitive,
                 ..runtime
@@ -635,6 +628,7 @@ impl<'a> KeyRouter<'a> {
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            user_lexicon: self.user_lexicon,
             coins: Vec::new(),
             forget_words: Vec::new(),
             pin_changes: Vec::new(),
@@ -710,12 +704,14 @@ impl<'a> KeyRouter<'a> {
         }
         self.config = config;
         let bundle = self.lexicon_slot.map(LexiconSlot::load);
-        let env = step_env(self.env, bundle.as_ref());
+        let symbols = self.symbol_slot.and_then(SymbolSlot::load);
+        let env = step_env(self.env, bundle.as_ref(), symbols.as_deref());
         let mut step = StepCtx {
             env: &env,
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            user_lexicon: self.user_lexicon,
             coins: Vec::new(),
             forget_words: Vec::new(),
             pin_changes: Vec::new(),
@@ -767,12 +763,14 @@ impl<'a> KeyRouter<'a> {
         host: &mut dyn Host,
     ) -> bool {
         let bundle = self.lexicon_slot.map(LexiconSlot::load);
-        let env = step_env(self.env, bundle.as_ref());
+        let symbols = self.symbol_slot.and_then(SymbolSlot::load);
+        let env = step_env(self.env, bundle.as_ref(), symbols.as_deref());
         let mut step = StepCtx {
             env: &env,
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            user_lexicon: self.user_lexicon,
             coins: Vec::new(),
             forget_words: Vec::new(),
             pin_changes: Vec::new(),

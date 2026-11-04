@@ -23,8 +23,10 @@
 //! temporary directory, and no test here touches the environment, the clock or a display
 //! server.
 
+mod feedback;
 mod pool;
 mod quick;
+mod select_char;
 
 use std::fs;
 use std::path::PathBuf;

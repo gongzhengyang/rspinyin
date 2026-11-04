@@ -13,7 +13,8 @@
 //!
 //! The module is split by responsibility: this root holds the command line, the
 //! source allowlist and the pipeline, [`source`] reads the raw text formats,
-//! [`build`] assembles the container, and [`audit`] holds the per-entry value
+//! [`build`] assembles the container, [`marks`] holds the ranking marks the
+//! compilers bake into the weights, and [`audit`] holds the per-entry value
 //! model the audit channel reports and the trim pass plans with.
 //!
 //! # Why the expansion is bounded
@@ -35,6 +36,7 @@ mod budget;
 pub(crate) mod build;
 pub mod eng;
 mod manifest;
+pub(crate) mod marks;
 pub(crate) mod normalize;
 pub mod quality;
 pub(crate) mod source;
@@ -535,6 +537,11 @@ fn report(
         "dictc: L3c polyphone corrections: {} keys added or reweighted, {} rows unmatched, \
          {} (key, word) pairs dropped at the 32-word ceiling",
         stats.polyphone_keys, stats.polyphone_unmatched, stats.truncated_pairs
+    );
+    println!(
+        "dictc: long-word marks: {} within-key pairs promoted below position {}",
+        stats.long_word_promoted,
+        marks::LONG_WORD_POSITION
     );
     println!(
         "dictc: weight bands (unigram channel): {} char-freq, {} core-true-freq, {} tail-flat \

@@ -203,6 +203,15 @@ pub fn decay_floor(rank: usize, base: i32) -> i32 {
 /// The caller supplies scores in Q8.8 and must provide candidates in descending score
 /// order; a caller that cannot guarantee that order must not call this helper.
 ///
+/// # Deployment note
+///
+/// The decode path does not call this today: the sweep materializes one first-word
+/// candidate beside the whole sentences, so a sentence the floor removed has no
+/// word-level candidate to give its slot to, and the removed drafts take text buffers
+/// the next decode would have reused. Wiring it back in is a change to the sweep's
+/// finishing pass that has to arrive together with a wider word-level supply and a
+/// re-anchored allocation budget.
+///
 /// # Panics
 ///
 /// Never panics: an empty list, an absent sentence prefix and a first-sentence miss are

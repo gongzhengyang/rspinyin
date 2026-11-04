@@ -320,7 +320,6 @@ fn draft_of(text: &str) -> crate::viterbi::sweep::Draft {
         syllables: 2,
         score: 0,
         corrected: false,
-        whole_sentence: false,
         readings: String::new(),
         words: crate::viterbi::sweep::WordSpans::EMPTY,
     }

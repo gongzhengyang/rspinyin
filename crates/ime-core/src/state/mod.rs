@@ -54,6 +54,8 @@ pub mod machine;
 pub mod outcome;
 pub mod paging;
 mod scheme;
+mod spacing;
+mod symbols_view;
 mod transitions;
 
 #[cfg(test)]
@@ -70,6 +72,7 @@ pub use crate::state::machine::{
 pub use crate::state::paging::{
     DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MAX_PAGES, MAX_REACHABLE_CANDIDATES, MIN_PAGE_SIZE, Paging,
 };
+pub use crate::state::spacing::SpacingMode;
 
 use ime_types::SchemeId;
 
@@ -161,6 +164,15 @@ pub struct SessionConfig {
     /// the switch off the decode never queries the English lexicon, whatever it
     /// holds.
     pub english: bool,
+    /// `[english] spacing`: whether a commit an English candidate produces takes
+    /// the one space the boundary between it and the text on the screen asks for.
+    ///
+    /// Auto -- the shipped value -- lets the bridge decide from the two texts'
+    /// character classes; Off shuts the bridge and commits every candidate exactly
+    /// as it is spelled. The bridge is the English domain's own polish, so a build
+    /// whose English domain is off pays nothing for the switch: no English
+    /// candidate exists to dress.
+    pub english_spacing: SpacingMode,
     /// `engine.on_im_switch`: what a live composition does when the input method
     /// is switched away from or reset.
     pub on_im_switch: ImSwitchPolicy,
@@ -240,6 +252,7 @@ impl Default for SessionConfig {
             abbrev: false,
             correction: false,
             english: false,
+            english_spacing: SpacingMode::Auto,
             on_im_switch: ImSwitchPolicy::Clear,
             context_band: ContextBand::default(),
             assoc: AssocSessionConfig::default(),

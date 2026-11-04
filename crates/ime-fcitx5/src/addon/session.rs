@@ -48,6 +48,7 @@ use ime_dict::format::reader::Verify;
 use ime_dict::fst_index::FstLexicon;
 use ime_dict::hot_swap::{LexiconBundle, LexiconSlot};
 use ime_dict::script::ScriptIndex;
+use ime_dict::symbols::SymbolSlot;
 use ime_dict::user_lexicon::UserLexiconHandle;
 use ime_types::{DictError, ImeError, Lexicon, UserFreqSource};
 
@@ -130,13 +131,20 @@ static ENGLISH_LEXICON: OnceLock<Option<FstLexicon>> = OnceLock::new();
 /// model as one.
 static CONFUSABLES: OnceLock<Option<ConfusableTable>> = OnceLock::new();
 
-/// The symbol table of the process, when the data directory carries one.
+/// The symbol table of the process, behind the slot a reload swaps.
 ///
 /// The document the v-mode panel serves; a directory without the file -- an install
-/// that predates the panel -- holds `None`, and an input that starts with `v`
-/// decodes exactly as a build before the panel existed. The table is never
-/// replaced: it is shipped data, not a user document.
-static SYMBOLS: OnceLock<Option<SymbolTable>> = OnceLock::new();
+/// that predates the panel -- leaves the slot empty, and an input that starts with
+/// `v` decodes exactly as a build before the panel existed. The slot is the point of
+/// the indirection: a configuration reload re-reads the documents and stores a fresh
+/// table, and every step of every session re-reads the slot, so the next key serves
+/// the new table while a frame already in flight keeps the old one alive through the
+/// `Arc` the step holds -- no reader ever sees a half-loaded table, which is the
+/// atomicity the panel's hot swap asks for.
+static SYMBOL_SLOT: SymbolSlot = SymbolSlot::empty();
+
+/// Guards the one-time read of the symbol documents at start-up.
+static SYMBOLS_INSTALLED: OnceLock<()> = OnceLock::new();
 
 /// What every session reads besides the dictionary: the user's own frequencies.
 ///
@@ -206,6 +214,10 @@ pub(super) fn install_session_host() -> Result<(), ImeError> {
         session_host::RouterLexicons {
             system: lexicon_slot(),
             user: user_lexicon_handle(),
+            // The panel's table travels through its own slot, so a reload
+            // swaps it under the same atomic guarantee the dictionary's
+            // staged swap has.
+            symbol_slot: Some(symbol_slot()),
         },
     ) {
         // The variant table the script mode converts through: the built-in seed, which
@@ -231,6 +243,13 @@ pub(super) fn install_session_host() -> Result<(), ImeError> {
 /// references are what a start without a container decodes against, which is the
 /// pass-through degradation.
 ///
+/// The symbol table is deliberately not here even when the slot holds one: a
+/// `&'static` borrowed from the slot's `Arc` would dangle across the swap a reload
+/// makes, so the router reads the slot at every step instead -- which is also what
+/// makes the swap visible to the very next key. A test that wants a table of its own
+/// in the environment hands one over directly; [`RouterLexicons`](session_host::RouterLexicons)
+/// is how the process router gets the slot.
+///
 /// # Arguments
 ///
 /// * `sources` — the user's frequencies, which must outlive every session built from this
@@ -244,6 +263,10 @@ pub(super) fn install_session_host() -> Result<(), ImeError> {
 ///
 /// Never.
 pub(super) fn session_env(sources: &'static SessionSources) -> SessionEnv<'static> {
+    // The symbol documents are read on the first environment build, exactly
+    // where the table used to be read; a start without a layout leaves the slot
+    // empty, and the pass-through degradation is unchanged.
+    install_symbols_once();
     SessionEnv {
         decoder: decoder(),
         lexicon: &MISSING_DICTIONARY,
@@ -251,7 +274,7 @@ pub(super) fn session_env(sources: &'static SessionSources) -> SessionEnv<'stati
         lm: &MISSING_LANGUAGE_MODEL,
         english: english_lexicon().map(|lexicon| lexicon as &dyn Lexicon),
         confusables: confusables(),
-        symbols: symbols(),
+        symbols: None,
         assoc: None,
     }
 }
@@ -324,48 +347,138 @@ fn confusables() -> Option<&'static ConfusableTable> {
         .as_ref()
 }
 
-/// The symbol table of the process, loaded on the first call.
+/// Reads the symbol documents of the data directory into a table.
 ///
-/// The load is best-effort by design: a data directory without `symbols.tsv` holds
-/// `None`, which is an install that predates the panel and not a defect, so it
-/// reports nothing and the v-mode stays off. A document that cannot be read is
-/// reported the way the dictionary's own failures are, but the sequence carries on
-/// either way: the panel is an addition to the input method, never a condition of
-/// it.
-fn symbols() -> Option<&'static SymbolTable> {
-    SYMBOLS
-        .get_or_init(|| {
-            let path = layout::symbols_path()?;
-            let document = match std::fs::read_to_string(&path) {
-                Ok(document) => document,
-                // A file that is not there is the install that predates the
-                // panel, and not a defect; anything else is reported.
-                Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => return None,
-                Err(cause) => {
-                    let error = ImeError::DictUnavailable {
-                        path: path.clone(),
-                        cause: cause.into(),
-                    };
-                    report_step_failure("symbol-table", &error);
-                    return None;
-                }
+/// `symbols.tsv` is the categories; `emoji.tsv`, when the directory carries it, is
+/// added as the emoji domain. The read is best-effort by design: a data directory
+/// without `symbols.tsv` yields no table, which is an install that predates the
+/// panel and not a defect, so it reports nothing and the v-mode stays off. A
+/// document that cannot be read is reported the way the dictionary's own failures
+/// are, but the sequence carries on either way: the panel is an addition to the
+/// input method, never a condition of it.
+fn read_symbol_table() -> Option<SymbolTable> {
+    let path = layout::symbols_path()?;
+    let document = match std::fs::read_to_string(&path) {
+        Ok(document) => document,
+        // A file that is not there is the install that predates the
+        // panel, and not a defect; anything else is reported.
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(cause) => {
+            let error = ImeError::DictUnavailable {
+                path: path.clone(),
+                cause: cause.into(),
             };
-            let (table, report) = SymbolTable::load(&document);
-            if report.skipped > 0 {
-                // A row the reader refused is a packaging fault in shipped data, and
-                // the build wants to know; the categories that were read still serve.
-                let error = ImeError::ConfigInvalid {
-                    key: String::from("symbols.file"),
-                    reason: format!(
-                        "{} row(s) of the installed table could not be used",
-                        report.skipped
-                    ),
-                };
-                report_step_failure("symbol-table", &error);
-            }
-            Some(table)
-        })
-        .as_ref()
+            report_step_failure("symbol-table", &error);
+            return None;
+        }
+    };
+    let (mut table, report) = SymbolTable::load(&document);
+    if report.skipped > 0 {
+        // A row the reader refused is a packaging fault in shipped data, and
+        // the build wants to know; the categories that were read still serve.
+        let error = ImeError::ConfigInvalid {
+            key: String::from("symbols.file"),
+            reason: format!(
+                "{} row(s) of the installed table could not be used",
+                report.skipped
+            ),
+        };
+        report_step_failure("symbol-table", &error);
+    }
+    install_emoji_domain(&mut table);
+    Some(table)
+}
+
+/// Adds the emoji domain to `table`, when the data directory carries the document.
+///
+/// Absent is the ordinary case for an install that predates the domain, so it
+/// reports nothing; a document that cannot be read is reported without stopping
+/// the sequence, and rows the reader refused are a packaging fault in shipped
+/// data, reported while the entries that were read still serve.
+fn install_emoji_domain(table: &mut SymbolTable) {
+    let Some(path) = emoji_path() else {
+        return;
+    };
+    let document = match std::fs::read_to_string(&path) {
+        Ok(document) => document,
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => return,
+        Err(cause) => {
+            let error = ImeError::DictUnavailable {
+                path: path.clone(),
+                cause: cause.into(),
+            };
+            report_step_failure("emoji-domain", &error);
+            return;
+        }
+    };
+    let report = table.add_emoji_domain(&document);
+    if report.skipped > 0 {
+        let error = ImeError::ConfigInvalid {
+            key: String::from("emoji.file"),
+            reason: format!(
+                "{} row(s) of the installed emoji domain could not be used",
+                report.skipped
+            ),
+        };
+        report_step_failure("emoji-domain", &error);
+    }
+}
+
+/// The name the emoji domain document is installed under inside the data
+/// directory.
+///
+/// The document the v-mode panel's emoji domain reads; absent is the ordinary
+/// case for an install that predates the domain, and `ve` decodes exactly as it
+/// did before the domain existed.
+const EMOJI_DATA_FILE: &str = "emoji.tsv";
+
+/// The path the emoji domain document is read from, or `None` when the layout is
+/// unknown.
+///
+/// # Panics
+///
+/// Never.
+fn emoji_path() -> Option<PathBuf> {
+    layout::layout().map(|paths| paths.data_dir.join(EMOJI_DATA_FILE))
+}
+
+/// Reads the symbol documents once per process and stores the table in the slot.
+///
+/// The start-up half of the slot's life; a reload goes through
+/// [`reload_symbols`], which re-reads and stores without this guard.
+///
+/// # Panics
+///
+/// Never.
+fn install_symbols_once() {
+    SYMBOLS_INSTALLED.get_or_init(|| SYMBOL_SLOT.store(read_symbol_table()));
+}
+
+/// The slot the panel's symbol table lives in, for the router to re-read at
+/// every step.
+///
+/// # Panics
+///
+/// Never.
+pub(super) fn symbol_slot() -> &'static SymbolSlot {
+    &SYMBOL_SLOT
+}
+
+/// The reload hook: re-reads the symbol documents and swaps the slot.
+///
+/// The reload path calls this beside the staged-dictionary swap, after the
+/// adopted document is in force. The store is one atomic pointer write, so a
+/// step running through the router either read the old table whole or reads the
+/// new one whole, and the frame it is building keeps whichever it read alive
+/// through its `Arc`. A reload whose data directory no longer carries the
+/// documents takes the panel away, which is the same degradation the start-up
+/// path answers with.
+///
+/// # Panics
+///
+/// Never.
+pub(super) fn reload_symbols() {
+    SYMBOL_SLOT.store(read_symbol_table());
 }
 
 /// The sources every session decodes against, built on the first call.

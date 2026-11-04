@@ -48,9 +48,48 @@ use super::context;
 use super::context::Context;
 use super::phrases::PHRASE_ADDED_CODE;
 
+/// Writes what a step collected for the user's lexicon, after its dictionary lock has
+/// gone.
+///
+/// The step reads the lexicon under a lock it must hold to the end -- a decode may
+/// not wait behind a writer -- so the writes the step was asked for wait instead, and
+/// this is the drain: coins are enrolled into the memory table and the store's write
+/// queue, a forgotten word leaves the memory table, and a pin toggle moves the flag
+/// eviction honours. An empty set of changes is the ordinary case and costs one
+/// branch.
+///
+/// # Panics
+///
+/// Never.
+impl super::KeyRouter<'_> {
+    pub(super) fn apply_user_lexicon_changes(
+        &mut self,
+        coins: Vec<(String, String)>,
+        forget_words: Vec<String>,
+        pin_changes: Vec<String>,
+    ) {
+        let Some(handle) = self.user_lexicon else {
+            return;
+        };
+        if !coins.is_empty() {
+            handle.coin(&coins);
+        }
+        for word in forget_words {
+            handle.forget_word(&word);
+        }
+        for word in pin_changes {
+            handle.toggle_pin(&word);
+        }
+    }
+}
+
 // The quick-input panel is a sibling of the executor so the context can hold its
 // state; the visibility stops at the router's own module tree.
 pub(super) mod quick;
+
+// The character-selection route answers the composing brackets where the session
+// can take a character from the highlight; the visibility stops at the router.
+pub(super) mod select_char;
 
 /// What one round of effect execution did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -64,8 +103,10 @@ struct Applied {
     /// Whether the application's preedit area was emptied, which is the other thing the
     /// session waits for the host to confirm.
     preedit_cleared: bool,
-    /// Whether a pin toggle reached the store, which the session ranks again after.
-    pin_applied: bool,
+    /// Whether a store change the session ranks with -- a pin toggle, or a
+    /// negative-feedback penalty -- reached the store, which the session re-decodes the
+    /// unchanged input after.
+    feedback_applied: bool,
 }
 
 impl Context {
@@ -137,7 +178,7 @@ impl Context {
                 pending = Some(SessionEvent::CommitDone);
             } else if applied.preedit_cleared {
                 pending = Some(SessionEvent::PreeditCleared);
-            } else if applied.pin_applied {
+            } else if applied.feedback_applied {
                 pending = Some(SessionEvent::PinApplied);
             }
         }
@@ -264,13 +305,37 @@ impl Context {
                         Ok(()) => {
                             crate::addon::probes::bump_user_pin();
                             applied.acted = true;
-                            applied.pin_applied = true;
+                            applied.feedback_applied = true;
                         }
                         Err(err) => host.diagnose(self.ic, &err),
                     }
                     // The lexicon's own eviction-protection flag follows the toggle;
                     // the write waits for the drain like every other one.
                     ctx.pin_changes.push(word);
+                }
+                Effect::ReduceUserFreq { key } => {
+                    // The one path from a penalized candidate to the user's frequencies.
+                    // The receipt the session sent names the word alone: the store knows
+                    // whether a record stood behind it, and the answer -- not the
+                    // session's guess -- is what the diagnostic reports from. A read-only
+                    // store answers `false` the way it answers a forget, which is the
+                    // compromise the forget path already documents.
+                    //
+                    // The penalty travels the router's own handle rather than the frozen
+                    // trait, because the contract names no penalty call; the handle is
+                    // the store the environment's frequencies answer from, so the
+                    // follow-up re-decode this flag feeds ranks with the new level at
+                    // once -- that re-decode is what moves the candidate down, the
+                    // visible answer the key exists for.
+                    let reduced = ctx
+                        .user_lexicon
+                        .is_some_and(|handle| handle.reduce_frequency(&key));
+                    applied.acted = true;
+                    if reduced {
+                        applied.feedback_applied = true;
+                    } else {
+                        host.diagnose(self.ic, &ImeError::UserWordNotFound);
+                    }
                 }
                 Effect::Diagnose(err) => host.diagnose(self.ic, &err),
                 Effect::ModeFlash { bit } => {

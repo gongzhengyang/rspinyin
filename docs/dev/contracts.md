@@ -83,3 +83,9 @@ fn set_pinned(&self, key: &str, word: Option<&str>) -> Result<(), ImeError> {
 - 时钟/随机注入：`ClockSource`/`RngSource`（5.01.01 定义，`engine/host.rs` 为 ime-core 内部 trait，非冻结契约；5.01.02 七类翻译器与 5.03.01 sweep 消费）
 - `ime-config`：Round-2 配置骨架（4.01.01）；`RETIRED_KEYS` 退役键机制（6.09.01 交付；6.12.01 同文件键操作，串行防冲突）
 - 数据/构建面：词典辅码列与拆字表（6.06.01 交付，6.07.01 复用）；构建期排序标记（6.05.01，受 4.01.02 体积治理前置）；冒烟 TSV v2 断言语法（5.05.01，`tests/smoke/cases.tsv` + `xtask testd-smoke` 扩展）
+
+## 9. TASK-6.04.01 英文域提交桥契约
+
+- `ime-config` 新增 `[english]` 节：`spacing` 键，闭集拼写 `"auto" | "off"`，默认 `"auto"`（枚举 `EnglishSpacing`，节结构 `EnglishConfig`）。
+- 引擎投影：`Config.english.spacing` → `ime_core::state::SpacingMode`，写入 `SessionConfig::english_spacing`（`engine/router/config.rs` 投影点，随 `ConfigReloaded` 生效，不打断在组会话）。
+- 提交桥语义（`ime-core/src/state/spacing.rs`）：仅普通候选提交且 `CandidateSource::English` 穿衣（套壳 + 边界空格）；选字/联想提交为延续文本不穿衣；`Effect::Commit` 携带穿衣后文本，学习记录 `PendingCommit::key` 保持词条原拼写；tail 仅在主机确认落地（`CommitDone`）后晋升，`FocusLost`/`Reset` 丢弃在途暂存；`spacing=off` 仅关空格，套壳保留。

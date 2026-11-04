@@ -145,6 +145,47 @@ pub(super) fn load_pins(db: &Database, path: &Path, v1: bool) -> PinTables {
     read_pins(&txn, path).unwrap_or_default()
 }
 
+/// Reads the penalty state a store holds: the negative-feedback level of every key
+/// that has one.
+///
+/// Only the penalized keys are kept, so a store whose user never pressed the
+/// negative-feedback key loads an empty map. The map is what the read paths apply as a
+/// right shift of the answer, and it is loaded whole at open for every store -- a store
+/// past its record ceiling included -- because the fallback read applies the shift too,
+/// and a penalty the user pressed must rank the very next decode rather than the next
+/// open.
+///
+/// # Errors
+/// Returns [`ImeError::DictUnavailable`] when the read transaction or the table fails.
+pub(super) fn read_penalties(
+    txn: &redb::ReadTransaction,
+    path: &Path,
+) -> Result<HashMap<Box<str>, u8>, ImeError> {
+    let mut penalties = HashMap::new();
+    let table = txn
+        .open_table(USER_PENALTIES)
+        .map_err(|error| store_error(path, &error))?;
+    for entry in table.iter().map_err(|error| store_error(path, &error))? {
+        let (key, level) = entry.map_err(|error| store_error(path, &error))?;
+        penalties.insert(Box::from(key.value()), level.value());
+    }
+    Ok(penalties)
+}
+
+/// Reads the penalty state of a store whose read the open path cannot vouch for.
+///
+/// A v1 store served read-only carries no penalty table at all, and a table that cannot
+/// be read is the empty map: a penalty is a ranking signal, and a store that cannot
+/// answer it answers un-penalized -- the same degradation a count read takes. A store
+/// written before the negative-feedback work has no table either, which is the same
+/// answer: the default of zero the additive schema promises.
+pub(super) fn load_penalties(db: &Database, path: &Path) -> HashMap<Box<str>, u8> {
+    let Ok(txn) = db.begin_read() else {
+        return HashMap::new();
+    };
+    read_penalties(&txn, path).unwrap_or_default()
+}
+
 impl Inner {
     /// Reads the flushed frequency of `key`; zero when it is absent or unreadable.
     ///

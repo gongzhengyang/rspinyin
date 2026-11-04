@@ -4,9 +4,10 @@
 //! Driven entirely from the in-memory doubles next door. No dictionary file, no
 //! clock, no environment, no display server.
 
-use ime_types::{KeyAction, UiEvent};
+use ime_types::{CandidateSource, KeyAction, UiEvent};
 
-use crate::state::{Session, SessionConfig, SessionEvent, SessionState, step};
+use crate::state::{Session, SessionConfig, SessionEnv, SessionEvent, SessionState, SpacingMode, step};
+use crate::viterbi::lattice::testing::MockLexicon;
 
 use super::{Fixture, committed, composing, kinds, recorded};
 
@@ -182,4 +183,186 @@ fn test_committing_ignores_a_second_commit_key() {
         "a commit in flight is not started twice"
     );
     assert_eq!(session.state, SessionState::Committing);
+}
+
+/// The mixed-English configuration the commit-bridge tests run under: the
+/// English domain on, the spacing switch at the value the case names.
+fn cfg_english(spacing: SpacingMode) -> SessionConfig {
+    SessionConfig {
+        english: true,
+        english_spacing: spacing,
+        ..SessionConfig::default()
+    }
+}
+
+/// Types `raw` into a session that already exists, the way a conversation
+/// continues after a landed commit.
+fn type_raw(session: &mut Session, raw: &str, cfg: &SessionConfig, env: &SessionEnv<'_>) {
+    for ch in raw.chars() {
+        let _ = session.handle_key(KeyAction::InputChar(ch), cfg, env);
+    }
+}
+
+/// Moves the highlight onto the English candidate, the one commit the bridge
+/// dresses.
+fn highlight_english(session: &mut Session) {
+    let index = u16::try_from(
+        session
+            .decoded()
+            .candidates
+            .iter()
+            .position(|candidate| candidate.source == CandidateSource::English)
+            .expect("the English edge answers an input no pinyin reading cuts"),
+    )
+    .expect("the candidate list is short");
+    session.paging.highlight = index;
+}
+
+#[test]
+fn test_commit_highlighted_english_after_a_chinese_commit_takes_the_boundary_space() {
+    let cfg = cfg_english(SpacingMode::Auto);
+    let fixture = Fixture::with_dictionary(&[("ni", "你")]);
+    let english = MockLexicon::with(&[("github", "GitHub")]);
+    let env = fixture.env_with_english(&english);
+    let mut session = composing(&cfg, &env, "ni");
+    let _ = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
+    let _ = step(&mut session, SessionEvent::CommitDone, &cfg, &env);
+
+    type_raw(&mut session, "github", &cfg, &env);
+    highlight_english(&mut session);
+    let effects = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
+
+    assert_eq!(
+        committed(&effects),
+        Some(" GitHub"),
+        "the boundary between 你 and the word takes its space, and the entry's own casing stands"
+    );
+    let done = step(&mut session, SessionEvent::CommitDone, &cfg, &env);
+    assert_eq!(
+        recorded(&done).map(|(key, _)| key),
+        Some("GitHub"),
+        "the record keys the entry as authored, never the dressed commit"
+    );
+    assert_eq!(
+        session.spacing.tail_for_test(),
+        Some(" GitHub"),
+        "the landing promoted the dressed text, which is what the screen holds"
+    );
+}
+
+#[test]
+fn test_commit_done_promotes_the_tail_so_the_next_english_commit_takes_one_space() {
+    let cfg = cfg_english(SpacingMode::Auto);
+    let fixture = Fixture::with_dictionary(&[]);
+    let english = MockLexicon::with(&[("hi", "hi")]);
+    let env = fixture.env_with_english(&english);
+    let mut session = Session::new();
+
+    type_raw(&mut session, "hi", &cfg, &env);
+    highlight_english(&mut session);
+    let first = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
+    assert_eq!(
+        committed(&first),
+        Some("hi"),
+        "the first commit has no screen to bridge against"
+    );
+    let _ = step(&mut session, SessionEvent::CommitDone, &cfg, &env);
+    assert_eq!(session.spacing.tail_for_test(), Some("hi"));
+
+    type_raw(&mut session, "hi", &cfg, &env);
+    highlight_english(&mut session);
+    let second = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
+
+    assert_eq!(
+        committed(&second),
+        Some(" hi"),
+        "the promoted tail answers the boundary, so exactly one space"
+    );
+}
+
+#[test]
+fn test_committing_focus_lost_drops_the_staged_commit_and_keeps_the_tail() {
+    let cfg = cfg_english(SpacingMode::Auto);
+    let fixture = Fixture::with_dictionary(&[("ni", "你")]);
+    let english = MockLexicon::with(&[("hi", "hi")]);
+    let env = fixture.env_with_english(&english);
+    let mut session = composing(&cfg, &env, "ni");
+    let _ = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
+    let _ = step(&mut session, SessionEvent::CommitDone, &cfg, &env);
+    assert_eq!(session.spacing.tail_for_test(), Some("你"));
+
+    type_raw(&mut session, "hi", &cfg, &env);
+    highlight_english(&mut session);
+    let effects = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
+    assert_eq!(committed(&effects), Some(" hi"));
+
+    let _ = step(&mut session, SessionEvent::FocusLost, &cfg, &env);
+
+    assert_eq!(
+        session.spacing.staged_for_test(),
+        None,
+        "a commit the focus took away never landed, so its staging is forgotten"
+    );
+    assert_eq!(
+        session.spacing.tail_for_test(),
+        Some("你"),
+        "the tail is still what the screen holds"
+    );
+}
+
+#[test]
+fn test_commit_highlighted_with_spacing_off_skips_the_space_and_keeps_the_casing() {
+    let cfg = cfg_english(SpacingMode::Off);
+    let fixture = Fixture::with_dictionary(&[("ni", "你")]);
+    let english = MockLexicon::with(&[("github", "GitHub")]);
+    let env = fixture.env_with_english(&english);
+    let mut session = composing(&cfg, &env, "ni");
+    let _ = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
+    let _ = step(&mut session, SessionEvent::CommitDone, &cfg, &env);
+
+    type_raw(&mut session, "GITHUB", &cfg, &env);
+    highlight_english(&mut session);
+    let effects = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
+
+    assert_eq!(
+        committed(&effects),
+        Some("GITHUB"),
+        "the switch shuts the space, not the casing"
+    );
+    let done = step(&mut session, SessionEvent::CommitDone, &cfg, &env);
+    assert_eq!(
+        recorded(&done).map(|(key, _)| key),
+        Some("GitHub"),
+        "the record keys the entry as authored"
+    );
+}
+
+#[test]
+fn test_commit_highlighted_chinese_candidate_is_not_dressed() {
+    let cfg = cfg_english(SpacingMode::Auto);
+    let fixture = Fixture::with_dictionary(&[("ni", "你")]);
+    let english = MockLexicon::with(&[("hi", "hi")]);
+    let env = fixture.env_with_english(&english);
+    let mut session = Session::new();
+
+    type_raw(&mut session, "hi", &cfg, &env);
+    highlight_english(&mut session);
+    let _ = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
+    let _ = step(&mut session, SessionEvent::CommitDone, &cfg, &env);
+    assert_eq!(session.spacing.tail_for_test(), Some("hi"));
+
+    type_raw(&mut session, "ni", &cfg, &env);
+    let effects = session.handle_key(KeyAction::CommitHighlighted, &cfg, &env);
+
+    assert_eq!(
+        committed(&effects),
+        Some("你"),
+        "the boundary has no opinion on English into Chinese, and the commit carries none"
+    );
+    let _ = step(&mut session, SessionEvent::CommitDone, &cfg, &env);
+    assert_eq!(
+        session.spacing.tail_for_test(),
+        Some("你"),
+        "the landing promoted the Chinese text, which is what the next boundary reads"
+    );
 }

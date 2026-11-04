@@ -124,6 +124,13 @@ pub(super) const PAYLOADS: &[Payload] = &[
         budget: None,
     },
     Payload {
+        name: "emoji.tsv",
+        artifact: &["data/raw/emoji.tsv"],
+        destination: Destination::Data,
+        optional: true,
+        budget: None,
+    },
+    Payload {
         name: "fcitx-rspinyin.png",
         artifact: &["assets/icon-48.png"],
         destination: Destination::Icon { size: "48x48" },

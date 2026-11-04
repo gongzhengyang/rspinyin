@@ -418,6 +418,66 @@ fn test_prob_q12_scales_to_the_heaviest_word() {
 }
 
 #[test]
+fn test_compile_applies_the_long_word_gradient_within_a_shared_key() {
+    // One key holding candidates of three lengths: the two-character head and
+    // its two-character neighbors keep their weights, and the three- and
+    // four-character candidates are promoted below the anchor -- the ranking
+    // mark the container's own order stores. The words share a key the way an
+    // expansion can hand a word a shorter reading: the compiler keys by the
+    // key string, not by the character count.
+    let l1 = test_l1();
+    let words = vec![
+        word("中国", "zhong'guo", 5_000, &l1),
+        word("国中", "zhong'guo", 300, &l1),
+        word("国好", "zhong'guo", 40, &l1),
+        word("国好中", "zhong'guo", 5, &l1),
+        word("中国好长", "zhong'guo", 3, &l1),
+        word("国心", "zhong'guo", 2, &l1),
+    ];
+    let band = Band {
+        threshold: 10_000,
+        requested: 50_000,
+    };
+    let compiled = compile(&words, band, 4, &[], NormalizeRules::default()).expect("compiling");
+    assert_eq!(
+        compiled.stats.long_word_promoted, 2,
+        "only the two longer-than-head pairs move"
+    );
+    let reader = Reader::parse(image_of(&compiled), Verify::Full).expect("parsing");
+    assert_eq!(
+        reader.key_words("zhong'guo").expect("lookup"),
+        vec!["中国", "国中", "国好", "中国好长", "国好中", "国心"],
+        "the four-character word rides factor 4 ahead of the three-character one"
+    );
+}
+
+#[test]
+fn test_long_word_gradient_repeated_compiles_produce_identical_wordlists() {
+    // The idempotency the mark promises: a repeated compilation reads the same
+    // pre-mark weights and marks the same pairs, so the byte order one build
+    // ships is the byte order the next one reproduces.
+    let l1 = test_l1();
+    let words = vec![
+        word("中国", "zhong'guo", 5_000, &l1),
+        word("国好", "zhong'guo", 40, &l1),
+        word("国好中", "zhong'guo", 5, &l1),
+        word("中国好长", "zhong'guo", 3, &l1),
+    ];
+    let band = Band {
+        threshold: 10_000,
+        requested: 50_000,
+    };
+    let first = compile(&words, band, 4, &[], NormalizeRules::default()).expect("first");
+    let second = compile(&words, band, 4, &[], NormalizeRules::default()).expect("second");
+    assert_eq!(first.wordlist, second.wordlist);
+    assert_eq!(first.fst, second.fst);
+    assert_eq!(
+        first.stats.long_word_promoted,
+        second.stats.long_word_promoted
+    );
+}
+
+#[test]
 fn test_band_threshold_reads_the_frequency_ranking() {
     let dir = scratch("band");
     let path = dir.join("jieba-dict.tsv");

@@ -95,15 +95,35 @@ impl Clock for TestClock {
     }
 }
 
-/// Creates a per-test directory under the system temp directory.
+/// Creates a per-test directory for the store.
+///
+/// A RAM-backed directory is preferred when one exists (`/dev/shm` on Linux): the store's
+/// durability machinery is exactly what these tests pin, but redb's `Durability::Immediate`
+/// commits each cost a real disk flush there, and on some setups (WSL2) that is hundreds
+/// of milliseconds per open or commit -- enough to push any two-open test past the suite's
+/// one-second per-test budget without teaching the test anything new. `fsync` on tmpfs is
+/// a no-op, so every guarantee under test is still exercised through the same API; only
+/// the hardware behind it changes. Systems without `/dev/shm` fall back to the system
+/// temp directory.
 ///
 /// The store takes its path as an argument precisely so that a test can own it: no test
 /// here touches a real XDG directory.
 pub(super) fn temp_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rspinyin-userdb-{}-{label}", std::process::id()));
+    let base = ram_backed_base().unwrap_or_else(std::env::temp_dir);
+    let dir = base.join(format!("rspinyin-userdb-{}-{label}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("creating the test directory");
     dir
+}
+
+/// The RAM-backed directory tests prefer, when one exists.
+///
+/// Only a plain existence check is made: `/dev/shm` is tmpfs wherever it appears, which is
+/// the whole point. A writability probe would race the create below anyway, which already
+/// fails loudly enough through the `expect` in [`temp_dir`].
+fn ram_backed_base() -> Option<PathBuf> {
+    let shm = PathBuf::from("/dev/shm");
+    if shm.is_dir() { Some(shm) } else { None }
 }
 
 /// The path of the store inside a test directory.

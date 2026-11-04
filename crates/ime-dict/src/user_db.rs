@@ -22,6 +22,8 @@
 //!   user_key_pins  &str -> &str   the word pinned under an input key, one row per pin
 //!   user_lexicon   &str -> (u32 commits, u64 last_used_ms)   one row per coined entry;
 //!                  the row key is `<syllable key>\u{1}<word>`, so one pair is one row
+//!   user_penalties &str -> u8   the negative-feedback trust penalty of one key, one row
+//!                  per penalized word; a row at zero is removed rather than kept
 //!   meta           &str -> u64                               schema_version
 //! ```
 //!
@@ -51,6 +53,16 @@
 //! no metadata row is simply one an older build wrote, and it reads as what it was: unpinned
 //! and unstamped. A `pinned` column is stored as a `u64` rather than a `bool` for the same
 //! class of reason -- redb's `bool` decoder is `unreachable!()` on any byte but 0 and 1.
+//!
+//! The penalty bit follows the same additive discipline inside schema 2. It is the
+//! negative-feedback half of the ranking signal: one penalty level is one right shift of
+//! the effective frequency the read paths answer, and a normal commit of the word lowers
+//! the penalty one level, which is what makes the demotion recoverable through use -- the
+//! property that keeps it distinct from a removal, which is `forget`'s. The `u8` column
+//! cannot fail to decode (every byte is a valid `u8`), and a store an older build wrote
+//! has no rows in the table at all, so every key reads its default of zero. Like the pins,
+//! only the penalized keys are held in memory, so a store whose user never pressed the
+//! negative-feedback key pays for an empty map.
 //!
 //! Durability: records accumulate in memory and reach the disk on the first of three
 //! triggers -- [`COMMIT_BATCH`] distinct keys, [`COMMIT_INTERVAL_MS`] of typing, or the
@@ -90,9 +102,6 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use ime_types::{DictError, ImeError, UserFreqSource};
 use redb::{Database, Durability, ReadableTable, ReadableTableMetadata, TableDefinition};
 
-#[cfg(test)]
-use std::cell::Cell;
-
 mod backup;
 mod cache;
 mod clock;
@@ -110,7 +119,7 @@ mod source;
 use self::cache::MissCache;
 use self::evict::{Sweep, start_sweep};
 use self::flush::{Delta, FLUSH_SETTLE_TIMEOUT_MS, FlushThread, Pending};
-use self::hydrate::{load_coined, load_committed, load_pins};
+use self::hydrate::{load_coined, load_committed, load_penalties, load_pins};
 use self::records::{Stored, StoredRow, WordsView, dee_q16};
 use self::schema::{SchemaOutcome, dee_bits, prepare_path, prepare_schema, read_tick};
 
@@ -133,6 +142,9 @@ mod manage_tests;
 
 #[cfg(test)]
 mod export_tests;
+
+#[cfg(test)]
+mod penalty_tests;
 
 /// Distinct keys that accumulate before a flush is due.
 pub const COMMIT_BATCH: usize = 32;
@@ -212,6 +224,14 @@ const SCHEMA_VERSION: u64 = 2;
 const SCHEMA_VERSION_V1: u64 = 1;
 /// Key the schema version is stored under.
 const SCHEMA_KEY: &str = "schema_version";
+/// The highest penalty level a record can carry.
+///
+/// The penalty is applied as a right shift of the effective frequency, and `u32` is the
+/// widest answer the read paths produce, so level 31 is the last shift the arithmetic
+/// can still express: past it every value would read as zero anyway, and a cap at the
+/// edge of the domain is what keeps the stored number meaningful for the whole of its
+/// range. A record at the cap recovers one level per commit, like any other.
+pub const MAX_PENALTY: u8 = 31;
 /// One record per key: commits so far, the last wall-clock use, the record's logical
 /// tick, and the decay accumulator in its storage encoding (f32 bits; all arithmetic
 /// on the value happens in Q16.16 after the store hydrates it).
@@ -257,6 +277,16 @@ const USER_KEY_PINS: TableDefinition<&str, &str> = TableDefinition::new("user_ke
 /// The table is additive within schema 2: an older build that does not know it ignores it,
 /// because `redb` keeps tables an open does not name, so the version stays where it was.
 const USER_LEXICON: TableDefinition<&str, (u32, u64)> = TableDefinition::new("user_lexicon");
+/// The negative-feedback trust penalty of one key, one row per penalized word.
+///
+/// The table is additive within schema 2, exactly as [`USER_LEXICON`] is: an older build
+/// that does not know it ignores it, because `redb` keeps tables an open does not name,
+/// so the version stays where it was, and a store an older build wrote simply has no
+/// rows here -- which is the default of zero the read paths apply. A row whose value has
+/// decayed to zero is removed rather than rewritten, so the table holds only the words
+/// the user has actually penalized. The `u8` value cannot fail to decode: every byte is
+/// a valid `u8`, which is why the column is not a `bool`.
+const USER_PENALTIES: TableDefinition<&str, u8> = TableDefinition::new("user_penalties");
 /// Store-wide markers; version 2 holds the schema version.
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 
@@ -288,6 +318,15 @@ struct PendingState {
     coined: HashMap<Box<str>, (Box<str>, u32)>,
     /// Coined rows the user asked to forget, by their composite row key.
     coined_removed: HashSet<Box<str>>,
+    /// Penalty levels waiting for the next flush, as the absolute value the row should
+    /// carry after the window coalesces.
+    ///
+    /// The value is absolute rather than relative for the same reason the pin flags are:
+    /// two penalty presses of one window are one row write, and the flush applies the
+    /// state the window ended in, not the history that led to it. A queued zero is the
+    /// row's removal, which is what a decayed-to-nothing and a forgotten penalty both
+    /// write; the word itself is absent by then either way.
+    penalties: HashMap<Box<str>, u8>,
     /// Monotonic nanoseconds of the last flush, so that the interval trigger measures
     /// typing time rather than wall-clock time.
     last_flush_nanos: u64,
@@ -373,6 +412,19 @@ struct Inner {
     /// are loaded at open for the same reason the counts are: a keystroke that asks to
     /// forget a word may not open a read transaction to find out whether it is pinned.
     pinned: Mutex<HashSet<Box<str>>>,
+    /// The negative-feedback penalty of every penalized key, in memory.
+    ///
+    /// Authoritative for reads -- the shift the read paths apply is taken from here, so a
+    /// penalty the user just pressed ranks the very next decode -- and kept equal to the
+    /// file by the same three paths that keep the counts equal: [`load_penalties`] fills it
+    /// at open, `write_batch` adopts what it wrote, and the sweep and `forget` drop what
+    /// they removed. Only the penalized keys are held, so a store whose user never
+    /// penalized anything pays for an empty map; the map is loaded whole at open for every
+    /// store, hydrated or not, because the fallback read path applies the shift too.
+    ///
+    /// This is a leaf lock in the module's order, like `pinned`: never held while another
+    /// lock is taken.
+    penalties: Mutex<HashMap<Box<str>, u8>>,
     /// The input key each pinned word is pinned under.
     ///
     /// The ranking reads [`Inner::pinned`] alone -- `freq` is asked about a word -- but
@@ -441,6 +493,25 @@ impl Inner {
         let now = self.tick.load(Ordering::Relaxed);
         let aged = self.decay.fold(record.dee_q16, record.tick, now);
         self.decay.effective_freq(record.commits, aged)
+    }
+
+    /// Applies one key's penalty to a computed frequency: one level is one right shift.
+    ///
+    /// The shift is the whole of the penalty's read-side cost -- one lock of the penalties
+    /// map, one hash lookup -- and it is applied last, after the decay fold has produced
+    /// the un-penalized answer, so the two signals compose instead of competing: decay
+    /// measures time, the penalty measures trust. A shift past the width of the answer
+    /// reads as zero, which is the honest reading of a record the user has pushed to the
+    /// bottom of its key; [`MAX_PENALTY`] caps the stored level at the last shift the
+    /// arithmetic can express, so the lookup below cannot be reached with a wider one
+    /// unless a foreign file wrote one, and the answer for that is zero too.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn with_penalty(&self, key: &str, freq: u32) -> u32 {
+        let penalty = lock(&self.penalties).get(key).copied().unwrap_or(0);
+        freq.checked_shr(u32::from(penalty)).unwrap_or(0)
     }
 
     /// Opens the words table the file carries, in the schema this open found.
@@ -607,120 +678,23 @@ impl UserDb {
     fn commit_inner(&self, durability: Durability) -> Result<CommitReport, ImeError> {
         self.inner.flush_now(durability)
     }
-
-    /// How many records are waiting to be flushed.
-    ///
-    /// Test-only: the count is an implementation detail, and production code reads it
-    /// through [`UserDb::record_count`] after a flush.
-    #[cfg(test)]
-    fn pending_len(&self) -> usize {
-        lock(&self.inner.pending).entries.len()
-    }
-
-    /// How many removals are waiting to be flushed.
-    ///
-    /// Test-only, and the counterpart of [`UserDb::pending_len`]: a tombstone is the one
-    /// other thing the pending state holds.
-    #[cfg(test)]
-    fn pending_removed_len(&self) -> usize {
-        lock(&self.inner.pending).removed.len()
-    }
-
-    /// How many keys the in-memory counts hold, or `None` when the store was not loaded.
-    ///
-    /// Test-only: the count is an implementation detail, and production code reads the
-    /// store's size through [`UserDb::record_count`].
-    #[cfg(test)]
-    fn committed_len(&self) -> Option<usize> {
-        if !self.inner.is_hydrated {
-            return None;
-        }
-        Some(lock(&self.inner.committed).len())
-    }
-
-    /// Waits until the flush thread has served everything it was asked to.
-    ///
-    /// Test-only: the production paths that need this are `commit` and `final_commit`, and
-    /// both flush on the caller's own thread. A test that asserts what a trigger wrote cannot
-    /// otherwise tell "not yet" from "never", and the bound is generous because a flush of a
-    /// batch is bounded by one write transaction -- a thread that misses it is broken rather
-    /// than slow, which is what the assertion says.
-    #[cfg(test)]
-    fn wait_for_flush(&self) {
-        if let Some(writer) = self.inner.writer.get().and_then(|set| set.as_ref()) {
-            assert!(
-                writer.settle(std::time::Duration::from_secs(5)),
-                "the flush thread did not settle"
-            );
-        }
-    }
-
-    /// Whether the store was opened with the fallback path's cache.
-    ///
-    /// Test-only: it is what turns "the cache exists only for a store that was not loaded"
-    /// from a code-review item into an assertion.
-    #[cfg(test)]
-    fn has_miss_cache(&self) -> bool {
-        self.inner.cache.is_some()
-    }
 }
 
+// The test-only seams live in their own module, both for the line limit the store's own
+// file works under and because the seams are a responsibility of their own: they are what
+// turns "the degradation is deterministic" and "the hot path opens no read transaction"
+// from claims into assertions, and nothing here runs in a production build.
 #[cfg(test)]
-thread_local! {
-    /// Test-only: makes the next flush fail.
-    ///
-    /// The degradation path has to be exercised deterministically, and a real refusal
-    /// needs a read-only filesystem or a full disk -- neither of which a test may assume,
-    /// and neither of which a write through an already-open descriptor respects anyway.
-    static INJECTED_FAILURE: Cell<bool> = const { Cell::new(false) };
+mod test_hooks;
 
-    /// Test-only: makes the next schema migration fail.
-    ///
-    /// The v1-read-only degradation has the same shape as the flush one -- a write
-    /// transaction that fails is what both degrade on -- and a test reaches it the same
-    /// way: by arming the failure instead of building a disk that refuses writes.
-    static INJECTED_MIGRATION_FAILURE: Cell<bool> = const { Cell::new(false) };
-
-    /// Test-only: counts the store reads this thread has opened.
-    ///
-    /// The hot path's whole claim is that a lookup on a loaded store opens no read
-    /// transaction, and a count of zero cannot be asserted without a counter -- the
-    /// alternative is to time the call, which no test in this workspace may do.
-    static STORE_READS: Cell<u64> = const { Cell::new(0) };
-}
-
-/// Counts one store read. Test-only.
+// The arm-the-failure hook is re-exported publicly enough for the crate's other test
+// modules -- the coin table's own tests arm a flush failure the same way the store's
+// do -- and the rest stay private to the store's own subtree, which is the whole of
+// what reads them.
 #[cfg(test)]
-fn note_store_read() {
-    STORE_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
-}
-
-/// Store reads this thread has opened so far. Test-only.
+pub(crate) use self::test_hooks::inject_failure;
 #[cfg(test)]
-fn store_reads() -> u64 {
-    STORE_READS.with(|reads| reads.get())
-}
-
-/// Arms the next flush to fail. Test-only.
-#[cfg(test)]
-pub(crate) fn inject_failure() {
-    INJECTED_FAILURE.with(|flag| flag.set(true));
-}
-
-/// Consumes an armed failure. Test-only.
-#[cfg(test)]
-fn take_injected_failure() -> bool {
-    INJECTED_FAILURE.with(|flag| flag.replace(false))
-}
-
-/// Arms the next schema migration to fail. Test-only.
-#[cfg(test)]
-fn inject_migration_failure() {
-    INJECTED_MIGRATION_FAILURE.with(|flag| flag.set(true));
-}
-
-/// Consumes an armed migration failure. Test-only.
-#[cfg(test)]
-fn take_injected_migration_failure() -> bool {
-    INJECTED_MIGRATION_FAILURE.with(|flag| flag.replace(false))
-}
+use self::test_hooks::{
+    inject_migration_failure, note_store_read, store_reads, take_injected_failure,
+    take_injected_migration_failure,
+};

@@ -20,7 +20,7 @@ use super::*;
 use crate::keymap::{
     BINDING_CONFLICT_CODE, FlipSet, HighlightSet, UNROUTABLE_BINDING_CODE, project_keys,
 };
-use crate::schema::{DigitZero, Durability, LogLevel, PunctMode, ThemeScheme};
+use crate::schema::{DigitZero, Durability, EnglishSpacing, LogLevel, PunctMode, ThemeScheme};
 
 /// A scratch directory for one test, named after the test so two tests never share
 /// one. The loader is given an explicit path and an explicit stamp, so no test reads
@@ -664,6 +664,22 @@ fn test_fuzzy_section_merges_key_by_key_over_the_defaults() {
         !config.fuzzy.enabled && !config.fuzzy.ch_c && !config.fuzzy.in_ing,
         "and every key it leaves out keeps its default"
     );
+}
+
+#[test]
+fn test_english_section_merges_key_by_key_over_the_defaults() {
+    let document = "schema_version = 2\n[english]\nspacing = \"off\"\n";
+    let (config, warnings) = Config::from_document(document).expect("a legal document");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(config.english.spacing, EnglishSpacing::Off);
+
+    // A section the document leaves out keeps the built-in value: the same
+    // document naming only another section is the defaults for this one.
+    let document = "schema_version = 2\n[assoc]\nenabled = true\n";
+    let (config, warnings) = Config::from_document(document).expect("a legal document");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(config.assoc.enabled);
+    assert_eq!(config.english.spacing, EnglishSpacing::Auto);
 }
 
 #[test]

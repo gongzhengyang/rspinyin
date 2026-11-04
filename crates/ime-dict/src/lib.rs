@@ -17,5 +17,6 @@ pub mod mmap;
 pub mod paths;
 pub mod recover;
 pub mod script;
+pub mod symbols;
 pub mod user_db;
 pub mod user_lexicon;

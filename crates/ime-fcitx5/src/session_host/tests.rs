@@ -14,7 +14,9 @@
 use ime_core::lm::InMemoryLm;
 use ime_core::privacy::DefaultPolicy;
 use ime_core::state::SessionEnv;
+use ime_core::symbols::SymbolTable;
 use ime_core::viterbi::Decoder;
+use ime_dict::symbols::SymbolSlot;
 use ime_types::{
     Anchor, DismissReason, ImeError, Lexicon, Placement, RectI, ScreenId, SyllableId, UiCommand,
     UiEvent, UserFreqSource, WordFlags, WordIter, WordRef,
@@ -44,6 +46,15 @@ const KEY_I: u32 = 0x0069;
 
 /// `FcitxKey_space`, which commits the highlighted candidate.
 const KEY_SPACE: u32 = 0x0020;
+
+/// `FcitxKey_v`, which opens the symbol panel.
+const KEY_V: u32 = 0x0076;
+
+/// `FcitxKey_1`, which names the panel's digit domain.
+const KEY_1: u32 = 0x0031;
+
+/// `FcitxKey_x`, a letter that extends a panel code.
+const KEY_X: u32 = 0x0078;
 
 /// A key press of `sym` with no modifier held.
 fn press(sym: u32) -> FcitxKeyEvent {
@@ -828,4 +839,64 @@ fn test_focus_through_the_slot_ends_the_composition_and_keeps_the_context() {
         "focus arriving again finds the context it left and starts a clean composition"
     );
     assert_eq!(shutdown(), 1, "the context focus brought back reports live");
+}
+
+/// The symbol slot the panel walkthrough installs, and the swap test replaces
+/// the table in. A static because the router borrows it for the process's
+/// life; `SymbolSlot::empty` is a `const fn`, which is what a static wants.
+static SYMBOL_SLOT: SymbolSlot = SymbolSlot::empty();
+
+#[test]
+fn test_symbol_slot_swap_reaches_the_next_key_through_the_router() {
+    // The panel's table travels the router the way the dictionary does: the
+    // slot is read at every step, so a reload that swaps it between two keys is
+    // on screen by the next one -- inside the still-live composition, which the
+    // swap must not disturb. A frame already delivered keeps the table it was
+    // built from; the fresh frame outranks it by revision.
+    let _slot = lock_slot_for_tests();
+    let _ = shutdown();
+    SYMBOL_SLOT.store(Some(SymbolTable::load("1\t数字\t０１\n").0));
+    assert!(install(
+        sources(),
+        privacy(),
+        RoutingConfig::default(),
+        RouterLexicons {
+            system: None,
+            user: None,
+            symbol_slot: Some(&SYMBOL_SLOT),
+        },
+    ));
+    let mut host = RecordingHost::default();
+    activate(IC);
+    key_event(IC, &press(KEY_V), &mut host);
+    key_event(IC, &press(KEY_1), &mut host);
+    assert_eq!(
+        host.frame.preedit, "v1",
+        "the panel is open on the digit domain"
+    );
+    assert_eq!(
+        host.frame.candidates,
+        ["０", "１"],
+        "the table the slot held at the first key"
+    );
+
+    // The reload swaps the slot between the keys; the composition is untouched,
+    // and the next key decodes against the new table.
+    let delivered = host.frame.revision;
+    SYMBOL_SLOT.store(Some(SymbolTable::load("1\t数字\tＸＹ\n").0));
+    key_event(IC, &press(KEY_X), &mut host);
+    assert_eq!(
+        host.frame.preedit, "v1x",
+        "the composition survived the swap"
+    );
+    assert_eq!(
+        host.frame.candidates,
+        ["Ｘ", "Ｙ"],
+        "the new table serves the very next key"
+    );
+    assert!(
+        host.frame.revision > delivered,
+        "the fresh frame outranks the one the old table built"
+    );
+    assert_eq!(shutdown(), 1, "the walkthrough's session reports live");
 }

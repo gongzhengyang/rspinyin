@@ -63,6 +63,19 @@ pub(super) fn merge_quick_input(partial: Option<PartialQuickInput>, config: &mut
     quick.calc_enabled = partial.calc_enabled.unwrap_or(quick.calc_enabled);
 }
 
+/// Copies the `[english]` keys the document sets over the defaults.
+///
+/// The one key is a closed set of spellings, so a value outside the set is
+/// rejected and reported here, against the key it was read from.
+pub(super) fn merge_english(
+    partial: Option<PartialEnglish>,
+    config: &mut Config,
+    warnings: &mut Warnings,
+) {
+    let Some(partial) = partial else { return };
+    take_enum(partial.spacing, &mut config.english.spacing, warnings);
+}
+
 /// Copies the `[fuzzy]` keys the document sets over the defaults.
 ///
 /// The section is nine bools and nothing else, so there is no value to repair: a key

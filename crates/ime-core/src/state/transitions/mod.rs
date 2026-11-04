@@ -21,12 +21,21 @@
 
 use ime_types::{Candidate, CandidateSource, HideReason, ImeError, KeyAction, PageDir, UiEvent};
 
+mod feedback;
+mod select_char;
+
+// The hide filter is the refresh's post-pass as much as it is a transition's helper, so
+// the rebuild half of the machine calls it through this re-export rather than through a
+// wider opening in the module tree.
+pub(in crate::state) use self::feedback::filter_hidden_candidates;
+
 use crate::input::BackspaceOutcome;
 use crate::preedit::build_preedit_into;
 use crate::state::ImSwitchPolicy;
 use crate::state::effects::ModeBit;
 use crate::state::machine::{Ctx, Effect, PendingCommit, Session, SessionEvent, SessionState};
 use crate::state::outcome::write_boundaries;
+use crate::state::symbols_view;
 use crate::symbols::SymbolTable;
 
 impl Session {
@@ -46,15 +55,27 @@ impl Session {
             SessionEvent::Key(action) => self.on_key(action, ctx),
             SessionEvent::Ui(event) => self.on_ui(event, ctx),
             SessionEvent::ConfigReloaded(next) => self.on_config_reloaded(&next, ctx),
-            SessionEvent::FocusLost => self.on_focus_lost(ctx),
+            SessionEvent::FocusLost => {
+                // A commit the focus took away never lands: its staging is forgotten.
+                self.spacing.dropped();
+                self.on_focus_lost(ctx);
+            }
             // Shutting the plugin down has the same session-side effect as losing the
             // focus: nothing is committed and the window goes away. The engine posts
             // `UiCommand::Shutdown` itself, which is not a session concern. The
             // one difference a configuration can ask for is the switch-away policy:
             // a user who chose to keep what they typed commits the raw input first.
-            SessionEvent::Reset => self.on_reset(ctx),
+            SessionEvent::Reset => {
+                // The same answer a focus loss gives: nothing in flight was confirmed.
+                self.spacing.dropped();
+                self.on_reset(ctx);
+            }
             SessionEvent::PreeditCleared => self.on_preedit_cleared(),
-            SessionEvent::CommitDone => self.on_commit_done(ctx),
+            SessionEvent::CommitDone => {
+                // The landing is confirmed: the staged text is what the screen holds.
+                self.spacing.landed();
+                self.on_commit_done(ctx);
+            }
             SessionEvent::PinApplied => self.refresh_composing(ctx),
         }
     }
@@ -70,6 +91,17 @@ impl Session {
             return;
         }
         if self.is_assoc_active() {
+            // A character selection acts on the association view itself: the
+            // character is taken from the hit's commit text, which only the
+            // session reads, so the two actions are answered here, before the
+            // view's own routing hands them to a boundary.
+            if matches!(
+                action,
+                KeyAction::SelectFirstChar | KeyAction::SelectLastChar
+            ) {
+                self.select_assoc_char(action == KeyAction::SelectFirstChar, ctx);
+                return;
+            }
             self.on_key_assoc(action, ctx);
             return;
         }
@@ -207,8 +239,11 @@ impl Session {
             KeyAction::SelectIndex(digit) => {
                 // Inside the panel the digit keys the code, and the one candidate
                 // interaction it replaces is selection: Space and the highlight
-                // keys still select, and the number keys build `v1` instead.
-                if self.symbol_mode {
+                // keys still select, and the number keys build `v1` instead. The
+                // index page is the exception: its input takes no code, so the
+                // digit selects the domain candidate it names, the way a digit
+                // selects on a decoded list.
+                if self.symbol_mode && !symbols_view::is_open(self.buf.raw()) {
                     let ch = char::from(b'0' + digit.min(9));
                     if self.push_char(ch, ctx) {
                         self.refresh(ctx.env);
@@ -241,17 +276,13 @@ impl Session {
             KeyAction::PinHighlighted => self.toggle_pin(ctx),
             KeyAction::ForgetHighlighted => self.forget_highlighted(ctx),
             KeyAction::AddPhrase => self.add_phrase(ctx),
-            // The character-selection and feedback routes do not exist yet, and
-            // reporting that through `dict/unsupported` is what the contract
-            // reserves that code for; the work that adds each route replaces its
-            // arm. A silent no-op here would look to the user like a key that
-            // does nothing, with no diagnostic to explain it.
-            KeyAction::SelectFirstChar
-            | KeyAction::SelectLastChar
-            | KeyAction::ReduceFrequency
-            | KeyAction::HideCandidate => {
-                ctx.push(Effect::Diagnose(ImeError::Unsupported));
-            }
+            KeyAction::SelectFirstChar => self.select_char(true, ctx),
+            KeyAction::SelectLastChar => self.select_char(false, ctx),
+            // The negative-feedback pair answers beside its siblings: the penalty leaves
+            // as a receipt the host executes before the re-decode that moves the rank,
+            // and the hide is the session's own set, filtered on the refreshes below.
+            KeyAction::ReduceFrequency => self.reduce_highlighted(ctx),
+            KeyAction::HideCandidate => self.hide_highlighted(ctx),
             // The host decides what `Ignore` means, and the session agrees: nothing.
             KeyAction::Ignore => {}
         }
@@ -347,16 +378,33 @@ impl Session {
 
     /// Commits the highlighted candidate.
     fn commit_highlighted(&mut self, ctx: &mut Ctx<'_>) {
+        // The index page's candidates are not text to commit: selecting one is
+        // the domain jump the page exists for. The branch runs before the
+        // highlight is read, because the jump needs the mutable session the read
+        // would borrow, and a page over a table with no domains has no highlight
+        // to jump with -- the jump's own guard answers that.
+        if self.symbol_mode && symbols_view::is_open(self.buf.raw()) {
+            self.jump_to_domain(ctx);
+            return;
+        }
         let Some(candidate) = self.highlighted_candidate() else {
             return;
         };
-        let text = String::from(candidate.text.as_str());
+        let entry = String::from(candidate.text.as_str());
+        let source = candidate.source;
         let weight_hint = Session::weight_hint(candidate);
         // The pairs the reading offers to coining are captured now, from the workspace's
         // record of the candidate the highlight is on: every keystroke after this decodes a
         // new input into the same buffers, and what the commit reports must be what the
         // user is looking at.
         let coins = self.coin_pairs_for(usize::from(self.paging.highlight));
+        // The bridge dresses a decoded candidate's text; the panel's and an
+        // association click's commits are chosen text, and go out as spelled.
+        let text = if self.symbol_mode || source == CandidateSource::Assoc {
+            entry.clone()
+        } else {
+            self.spacing.outgoing(&entry, source, self.buf.raw(), ctx.cfg.english_spacing)
+        };
         if self.symbol_mode {
             // A panel candidate is chosen, not spelled: the commit lands like a
             // raw one, with nothing recorded and nothing to coin.
@@ -364,7 +412,7 @@ impl Session {
         } else {
             self.set_pending(Some(PendingCommit {
                 is_learning_commit: true,
-                key: text.clone(),
+                key: entry,
                 weight_hint,
                 coins,
             }));
@@ -454,12 +502,15 @@ impl Session {
     /// The panel is entered by the bare `v` -- that is how the mode is found --
     /// and held by a code one of its categories names: `v1` stays in the panel
     /// and `vzhishi` falls back to the ordinary decode, which is where the `v`
-    /// is dropped exactly as it was before the panel existed.
+    /// is dropped exactly as it was before the panel existed. The index page's
+    /// code is reserved ahead of the categories: the exact string typed after
+    /// the `v` opens the page, because a prefix category (`h` in the shipped
+    /// table) would otherwise swallow it.
     pub(super) fn symbol_table_serves(&self, table: &SymbolTable) -> bool {
         let Some(code) = self.buf.raw().strip_prefix('v') else {
             return false;
         };
-        code.is_empty() || table.longest_prefix(code).is_some()
+        code.is_empty() || code == symbols_view::INDEX_CODE || table.longest_prefix(code).is_some()
     }
 
     /// Assembles the symbol panel's candidates for the input on screen.
@@ -471,23 +522,33 @@ impl Session {
     /// preedit rebuild run as they do after a decode, which is what keeps paging,
     /// the number keys and the highlight working unchanged.
     ///
-    /// The bare `v` assembles nothing: the panel is open with an empty list, and
-    /// the categories are one keystroke away. A code longer than the prefix that
-    /// serves it is the prefix's business and the rest is ignored, which the
-    /// symbol table documents.
+    /// Three answers the code can draw. The index page's, when the reserved code
+    /// is typed exactly: one candidate per domain, the trigger key as the
+    /// annotation. A category's, served whole -- or filtered through the emoji
+    /// alias, when the suffix typed past the category's prefix narrows the list.
+    /// And none, for a prefix with nothing behind it: the panel is open with an
+    /// empty list, and the categories are one keystroke away.
     pub(super) fn refresh_symbols(&mut self, table: &SymbolTable) {
         self.symbol_mode = true;
         self.clear_decode_graph();
-        // The lookup borrows the buffer; the candidates borrow the table. Both
-        // loans end before the workspace is written, which is why the two facts
-        // the candidates need from them are taken out first.
+        // The lookup borrows the buffer; the candidates borrow the table -- or
+        // are owned, when an emoji alias filtered them. The answer is drawn
+        // before the workspace is opened for writing, because it borrows the
+        // input and the workspace borrows the session mutably, and the two
+        // loans cannot overlap; both end with the block, the way a decode's own
+        // refresh scopes them.
         let code = self.buf.raw().strip_prefix('v').unwrap_or_default();
-        let hit = table.longest_prefix(code);
         let consumed = u16::try_from(self.buf.raw().chars().count()).unwrap_or(u16::MAX);
+        let index_open = code == symbols_view::INDEX_CODE;
+        let served = if index_open { None } else { table.serve(code) };
         {
             let out = self.decoded_mut();
-            if let Some(hit) = hit {
-                for (position, symbol) in hit.symbols.iter().enumerate() {
+            if index_open {
+                symbols_view::write_candidates(out, table, consumed);
+            } else if let Some(served) = served {
+                let label = served.label;
+                let symbols = served.symbols.as_slice();
+                for (position, symbol) in symbols.iter().enumerate() {
                     // The display number is the position, 1-based, and the slots
                     // of a longer previous list are reused the way a decode
                     // reuses them.
@@ -499,7 +560,7 @@ impl Session {
                             slot.index = index;
                             slot.text.clear();
                             slot.text.push(*symbol);
-                            slot.annotation = Some(String::from(hit.label));
+                            slot.annotation = Some(String::from(label));
                             slot.source = CandidateSource::Symbol;
                             slot.score = 0.0;
                             slot.consumed_syllables = consumed;
@@ -507,14 +568,14 @@ impl Session {
                         None => out.candidates.push(Candidate {
                             index,
                             text: symbol.to_string(),
-                            annotation: Some(String::from(hit.label)),
+                            annotation: Some(String::from(label)),
                             source: CandidateSource::Symbol,
                             score: 0.0,
                             consumed_syllables: consumed,
                         }),
                     }
                 }
-                out.candidates.truncate(hit.symbols.len());
+                out.candidates.truncate(symbols.len());
             } else {
                 out.candidates.clear();
             }
@@ -522,6 +583,13 @@ impl Session {
             out.segments.clear();
             out.degraded = false;
         }
+        // The panel's list is whole the moment it is written, so the supply
+        // ladder is closed: a page request past the list is answered from the
+        // list, never by a wider decode, which would replace the symbols on
+        // screen with decoded words. Shipped categories already hold more than
+        // the first rung materializes, so pinning the ladder shut here is what
+        // lets the panel page at all; the expansion below keeps the same guard.
+        self.candidate_supply = u16::MAX;
         // The text the highlight was on, taken out before the reconciliation
         // borrows the paging state mutably. The three writes below borrow
         // disjoint fields of the session, the way the decode's own refresh does.

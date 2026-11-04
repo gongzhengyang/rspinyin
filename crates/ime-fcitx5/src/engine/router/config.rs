@@ -36,7 +36,7 @@ use ime_config::keymap::{KeyBindings, project_keys};
 use ime_config::{Config, SchemeChoice, ShareState};
 use ime_core::shuangpin::SchemeTable;
 use ime_core::shuangpin::layout::{LayoutDocument, LayoutTables, compile_layout, parse_layout};
-use ime_core::state::{AssocSessionConfig, ImSwitchPolicy, SessionConfig};
+use ime_core::state::{AssocSessionConfig, ImSwitchPolicy, SessionConfig, SpacingMode};
 use ime_core::viterbi::context::ContextBand;
 use ime_types::{ImeError, SchemeId};
 
@@ -257,6 +257,13 @@ impl RoutingConfig {
         session.abbrev = config.engine.abbrev;
         session.correction = config.engine.correction;
         session.english = config.engine.mixed_english;
+        // The commit bridge's switch is the `[english]` section's own spelling, and
+        // the two layers name the choice differently: the projection is where one
+        // becomes the other, like the switch policy matched beside it.
+        session.english_spacing = match config.english.spacing {
+            ime_config::schema::EnglishSpacing::Auto => SpacingMode::Auto,
+            ime_config::schema::EnglishSpacing::Off => SpacingMode::Off,
+        };
         session.on_im_switch = match config.engine.on_im_switch {
             ime_config::schema::ImSwitch::Clear => ImSwitchPolicy::Clear,
             ime_config::schema::ImSwitch::CommitRaw => ImSwitchPolicy::CommitRaw,

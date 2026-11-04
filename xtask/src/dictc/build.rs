@@ -21,6 +21,7 @@ use ime_dict::format::{
     collision_limit, count_colliding_hashes, find_colliding_hashes, hash_word, pack_fst_value,
 };
 
+use super::marks::apply_long_word_gradient;
 use super::normalize::{NormalizeReport, NormalizeRules};
 use super::source::{Word, baseline_key, compose_readings};
 
@@ -296,6 +297,8 @@ pub(crate) struct Stats {
     pub(crate) polyphone_keys: u64,
     /// Polyphone rows that named a word outside the compiled list.
     pub(crate) polyphone_unmatched: u64,
+    /// (key, word) pairs the long-word gradient promoted within their key.
+    pub(crate) long_word_promoted: u64,
     /// (key, word) pairs dropped because the key was already at its word ceiling.
     pub(crate) truncated_pairs: u64,
     /// Keys the word ceiling cut, from the truncation audit.
@@ -412,9 +415,14 @@ pub(crate) fn compile(
     // One bucket per FST key. Iterating a `BTreeMap` yields the byte order the FST
     // builder requires, which is also why no hash map appears in this pipeline.
     let mut keys: BTreeMap<String, Vec<(u32, u32)>> = BTreeMap::new();
+    // The character count of every word, by word id: the long-word gradient
+    // reads the length of a candidate rather than re-deriving it from the text
+    // the string pool stores.
+    let mut char_counts: Vec<usize> = Vec::with_capacity(ordered.len());
     for (id, word) in ordered.iter().enumerate() {
         let id = id as u32;
         let characters = word.text.chars().count();
+        char_counts.push(characters);
         stats.shape[characters.clamp(1, 5) - 1] += 1;
         stats
             .weight_bands
@@ -464,6 +472,12 @@ pub(crate) fn compile(
             stats.polyphone_keys += 1;
         }
     }
+
+    // The long-word gradient marks the per-key candidate order the FST stores,
+    // the display-order half of the ranking marks. It reads the pre-mark
+    // weights the loop above assembled, so a repeated compilation over the
+    // same word list marks the same pairs the same way.
+    stats.long_word_promoted = apply_long_word_gradient(&mut keys, &char_counts);
 
     // The truncation audit reads the map whole, before the ceiling cuts it: once
     // the surplus words are dropped they no longer exist, and this report is what

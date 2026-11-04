@@ -6,15 +6,20 @@
 //! What is deliberately not here is the key path: a key that arrives for a context goes
 //! through the same [`KeyRouter`] it always did, and this module reads none of it.
 
+use ime_core::symbols::SymbolTable;
+
 use super::*;
 
-/// The environment one step runs against, over a possibly swapped-in dictionary.
+/// The environment one step runs against, over a possibly swapped-in dictionary
+/// and a possibly swapped-in symbol table.
 ///
 /// `bundle` is the slot's current container, fetched once by the caller and held bound for
 /// the step's whole run: the environment's dictionary and model read the mapping that
 /// `Arc` keeps alive, so the words a lookup in this step hands back stay readable however
-/// many swaps land afterwards. `None` — a router with no slot — leaves `env` as it stands,
-/// which is the whole story for a router over a degraded start or a test's own sources.
+/// many swaps land afterwards. `symbols` is the panel's table the same way; the caller
+/// passes the `Arc` it loaded the slot with, and the environment borrows through it.
+/// `None` — a router with no slot — leaves `env` as it stands, which is the whole story
+/// for a router over a degraded start or a test's own sources.
 ///
 /// The fetch is the entire cost the hot swap asks of the key path: one atomic read per
 /// step, and nothing per lookup.
@@ -25,26 +30,45 @@ use super::*;
 pub(super) fn step_env<'a, 'b>(
     env: SessionEnv<'a>,
     bundle: Option<&'b Arc<LexiconBundle>>,
+    symbols: Option<&'b SymbolTable>,
 ) -> SessionEnv<'b>
 where
     'a: 'b,
 {
-    match bundle {
-        Some(bundle) => SessionEnv {
-            decoder: env.decoder,
-            lexicon: bundle.lexicon(),
-            user_freq: env.user_freq,
-            lm: bundle.lm(),
-            english: env.english,
-            confusables: env.confusables,
-            symbols: env.symbols,
-            assoc: env.assoc,
+    SessionEnv {
+        decoder: env.decoder,
+        lexicon: match bundle {
+            Some(bundle) => bundle.lexicon(),
+            None => env.lexicon,
         },
-        None => env,
+        user_freq: env.user_freq,
+        lm: match bundle {
+            Some(bundle) => bundle.lm(),
+            None => env.lm,
+        },
+        english: env.english,
+        confusables: env.confusables,
+        symbols: symbols.or(env.symbols),
+        assoc: env.assoc,
     }
 }
 
 impl<'a> KeyRouter<'a> {
+    /// Hands the router the slot the panel's symbol table is re-read through at
+    /// every step.
+    ///
+    /// The process router's builder calls this once, right after [`KeyRouter::new`],
+    /// with the slot the data assembly stores the table in; a router built without it
+    /// serves the panel from its environment's own table for the whole of its life.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn with_symbol_slot(mut self, slot: &'a SymbolSlot) -> Self {
+        self.symbol_slot = Some(slot);
+        self
+    }
+
     /// Creates the session of an input context the host has activated.
     ///
     /// The context is observed as [`ContextReport::Unreported`], which every policy treats
@@ -150,12 +174,14 @@ impl<'a> KeyRouter<'a> {
     /// Never.
     pub fn deactivate(&mut self, ic: u64, host: &mut dyn Host) {
         let bundle = self.lexicon_slot.map(LexiconSlot::load);
-        let env = step_env(self.env, bundle.as_ref());
+        let symbols = self.symbol_slot.and_then(SymbolSlot::load);
+        let env = step_env(self.env, bundle.as_ref(), symbols.as_deref());
         let mut step = StepCtx {
             env: &env,
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            user_lexicon: self.user_lexicon,
             coins: Vec::new(),
             forget_words: Vec::new(),
             pin_changes: Vec::new(),
@@ -218,12 +244,14 @@ impl<'a> KeyRouter<'a> {
     /// Never.
     pub fn reset(&mut self, ic: u64, host: &mut dyn Host) {
         let bundle = self.lexicon_slot.map(LexiconSlot::load);
-        let env = step_env(self.env, bundle.as_ref());
+        let symbols = self.symbol_slot.and_then(SymbolSlot::load);
+        let env = step_env(self.env, bundle.as_ref(), symbols.as_deref());
         let mut step = StepCtx {
             env: &env,
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            user_lexicon: self.user_lexicon,
             coins: Vec::new(),
             forget_words: Vec::new(),
             pin_changes: Vec::new(),
@@ -287,12 +315,14 @@ impl<'a> KeyRouter<'a> {
     /// Never.
     pub fn focus_out(&mut self, ic: u64, host: &mut dyn Host) {
         let bundle = self.lexicon_slot.map(LexiconSlot::load);
-        let env = step_env(self.env, bundle.as_ref());
+        let symbols = self.symbol_slot.and_then(SymbolSlot::load);
+        let env = step_env(self.env, bundle.as_ref(), symbols.as_deref());
         let mut step = StepCtx {
             env: &env,
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            user_lexicon: self.user_lexicon,
             coins: Vec::new(),
             forget_words: Vec::new(),
             pin_changes: Vec::new(),

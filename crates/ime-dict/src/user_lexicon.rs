@@ -555,6 +555,23 @@ impl UserLexiconHandle {
         self.lock().forget_word(word)
     }
 
+    /// Raises the store's negative-feedback penalty on `word`'s record by one level,
+    /// answering whether there was a record to penalize.
+    ///
+    /// The penalty is store state alone -- it shifts the frequency the store answers
+    /// with, and nothing in the decode-side table reads it -- so this is delegation and
+    /// nothing more: the table's entries and their weights are untouched, exactly as a
+    /// pin's memory-side flag is the only thing [`UserLexiconHandle::toggle_pin`] touches
+    /// after the store's own toggle has run. `false` names a word the store never
+    /// learned, which is the caller's cue to report it.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn reduce_frequency(&self, word: &str) -> bool {
+        self.store.reduce_frequency(word)
+    }
+
     /// Records the user's pin on every entry whose word is `text`.
     ///
     /// # Panics

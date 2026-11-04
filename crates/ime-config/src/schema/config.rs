@@ -293,6 +293,25 @@ pub struct QuickInputConfig {
     pub calc_enabled: bool,
 }
 
+/// The `[english]` section: the polish the mixed-English domain applies to its
+/// commits.
+///
+/// The typed section is internal configuration. It names the commit bridge's
+/// behaviour only; the casing transform is not configurable, and the English
+/// domain itself is switched by `[engine] mixed_english`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnglishConfig {
+    /// `spacing`: whether a commit an English candidate produces takes the one
+    /// space the boundary between it and the text on the screen asks for.
+    ///
+    /// `Auto` -- the shipped value -- lets the boundary rule decide from the two
+    /// texts' character classes; `Off` shuts the bridge and commits every
+    /// candidate exactly as it is spelled. The rule is fail-safe: a text whose
+    /// characters do not share one class -- the `X光` form -- names no class,
+    /// and no space is ever inserted beside it.
+    pub spacing: EnglishSpacing,
+}
+
 /// The `[shuangpin]` section: the data-defined double-pinyin layouts.
 ///
 /// The section carries what the user wrote; the layout loader in
@@ -396,6 +415,8 @@ pub struct Config {
     pub assoc: AssocConfig,
     /// The `[quick_input]` section.
     pub quick_input: QuickInputConfig,
+    /// The `[english]` section.
+    pub english: EnglishConfig,
     /// The `[shuangpin]` section.
     pub shuangpin: ShuangpinConfig,
 }
@@ -494,6 +515,9 @@ impl Default for Config {
                 date_prefixes: vec![String::from("rq"), String::from("dt")],
                 calc_enabled: false,
             },
+            english: EnglishConfig {
+                spacing: EnglishSpacing::Auto,
+            },
             // Unset: no custom layout exists until the user writes one, and the
             // built-in layouts are exactly the double-pinyin layouts a fresh
             // installation ships.
@@ -512,6 +536,15 @@ mod tests {
         assert!(!quick.enabled);
         assert_eq!(quick.date_prefixes, ["rq", "dt"]);
         assert!(!quick.calc_enabled);
+    }
+
+    #[test]
+    fn test_config_default_english_section_is_auto() {
+        // The shipped behaviour pinned here so a default that moves is a
+        // conscious edit: Auto is the boundary rule the benchmark's spacer
+        // translates, and a drift to Off would silently strip the one space
+        // every mixed sentence after it expects.
+        assert_eq!(Config::default().english.spacing, EnglishSpacing::Auto);
     }
 
     #[test]
