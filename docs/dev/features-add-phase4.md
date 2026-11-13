@@ -18,7 +18,8 @@
   - 对标参考锚点 (Benchmark Reference)：WindInput `wind-assoc/src/lib.rs:50-110`（来源枚举契约形态，SCOUT-D-09）；rime-ice `select_character.lua:20-60`、`cold_word_drop/processor.lua:169-202`（按键动作语义，SCOUT-ICE-14/04）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-types/src/ui.rs`（CandidateSource 枚举）、`crates/ime-types/src/key.rs`（KeyAction 枚举）、`crates/ime-config/src/schema/config.rs`（`[assoc]` 节骨架）、`docs/dev/adr/0017-round2-contract-batch.md`（新建）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：crates/ime-types/src/ui.rs (CandidateSource::Assoc) + key.rs (SelectFirstChar/SelectLastChar/ReduceFrequency/HideCandidate) + ime-config schema AssocConfig + docs/dev/adr/0017-round2-contract-batch.md; stage22(00419bb)已落盘, 本轮只读核对+check -p ime-config 零警告通过
 - **目标与价值**：把 Round-2 全部契约增量收敛为一次 ADR 裁决与一次枚举扩展，消除后续 10+ 张卡的契约等待与多卡同文件冲突（§8.4 热点规则）。完成本卡后，`TASK-4.04.01`、`TASK-6.02.01`、`TASK-6.03.01` 等消费方卡可完全并行。
 - **技术设计与代码级接入细节**：
   - **契约变体（全部只增不改，ADR-0017 落盘后生效）**：
@@ -72,7 +73,8 @@ pub enum KeyAction {
   - 对标参考锚点 (Benchmark Reference)：rime-ice `cn_dicts/` 六分表职责纪律与「权重属词条不属字」（SCOUT-ICE 摘要 §三）；librime `entry_collector.cc:198-201` 建库期质量门（SCOUT-A）
   - 本项目代码落地锚点 (Code Anchor)：`xtask/src/dictc/audit.rs`（新建：词条价值审计）、`xtask/src/dictc/normalize.rs`（裁剪 pass 挂载点）、`xtask/src/dictc.rs`（审计/裁剪参数）、`data/compiled/`（产物）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：xtask dictc audit.rs(ValueBandRow/trim_rank全序/审计报告落盘 container.audit.json 本轮补齐)+normalize trim pass+manifest TrimRecord; HEAD已有主体; base.dict 现 15.49MiB≤16.5MiB; 全量验证归阶段3门禁
 - **目标与价值**：base.dict 17.6MiB 已占 20MiB 预算 84%（B-04），任何词表/标记/辅码列扩充都会顶格。本卡建立「词条价值分位审计 → 确定性裁剪 → 质量门对照」闭环，目标**裁剪后体积 ≤ 16.5MiB（腾出 ≥1.0MiB）且 holdout top1 不降**，为 TASK-4.03.01（pair 预算）与 Phase 6 扩表卡（辅码列/构建期标记）解除阻塞。
 - **技术设计与代码级接入细节**：
   - **价值模型**：每词条计 `value = f(频带, 词长, 来源, 冗余度)`——频带取归一化后权重分位；冗余度 = 同键同前缀近邻数（长尾重复模式）；单字与两字高频带永不在裁剪集。裁剪按确定性排序（value 升序 → 键序 → 词序）取尾，参数化 `trim_target_mib`。
@@ -116,7 +118,8 @@ pub struct ValueBandRow {
   - 对标参考锚点 (Benchmark Reference)：librime `poet.cc:325-341` cutoff_threshold 随名次衰减 ×(1−1/N)（SCOUT-A-09）；WindInput `pinyin/viterbi.rs:353`「k=1 与单路径逐位相同」零回归约束 + `handle_candidate.rs:1106` 供给阶梯（SCOUT-D-08/D-11）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-core/src/viterbi/kbest.rs`（TopK 槽后处理）、`crates/ime-core/src/viterbi/decoder.rs`（候选配额参数）、`crates/ime-core/src/state/mod.rs`（SessionConfig 候选数投影）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：ime-core viterbi kbest.rs+decoder.rs: rank decay(Q8.8 step24)+supply ladder(24→48→64)+trace截断计数+双跑确定性测试为本轮补齐; 定向冒烟 8/8 PASS; 衰减解码接线为 draft.rs 文档化部署决策(词级供给到位后接线)
 - **目标与价值**：当前 k-best 整句候选无论质量差距多大都占满候选位，低质量整句挤掉词级候选（重码/短输入场景可感知）。本卡引入名次衰减截断（质量差距超阈值的整句不再产出，腾位给词格候选）与按需供给阶梯（翻页深位才扩大物化量），提升候选列表前几屏的信息密度；top1 与首选序列零变化（WindInput 同款零回归约束）。
 - **技术设计与代码级接入细节**：
   - **名次衰减截断（Q8.8 整数化）**：
@@ -158,7 +161,8 @@ fn decay_floor(rank: usize, base: i32) -> i32 {
   - 对标参考锚点 (Benchmark Reference)：librime `contextual_translation`（组内重排每轮 ≤32，SCOUT-A）；WindInput K-best 工程约束（SCOUT-D-08）；rime-ice 三层归一化的参数纪律（SCOUT-ICE §2.1）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-core/src/viterbi/context.rs`（tie band 参数化）、`crates/ime-core/src/state/machine/rebuild.rs:113`（调用点）、`xtask/src/dictc/bigram.rs:18-24`（BigramConfig 参数重估）、`crates/ime-config/src/schema/config.rs`（`[data] context_tie_band_q16` 键）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：ContextBand+context_tie_band_q16 配置键+坏值修复+v1等序测试+pair扫描工具均已落地; third-bigram 评估报告落盘 docs/dev/research/third-bigram-evaluation.md 结论不立项; 已知限制: 在产容器 BIGRAM 段为空(dictc 无 corpus 输入设计行为), pair 物理投产待语料源 ADR-0000 裁决
 - **目标与价值**：上文重排目前仅单词上文 + 硬编码近平局带 `1<<8`（B-02），bigram pair 双截断（`max_pairs`/`min_score`）为手工常数（B-03）——两者都是 top1 残留封顶点。本卡把带宽度参数化并由数据重估默认值，pair 预算按治理后的段份额重新裁剪（在 2.5MiB 段上限内提高 pair 存活数），并产出 third-bigram（二阶上文）的评估结论（立项或明确不做）。
 - **技术设计与代码级接入细节**：
   - **带宽度参数化**：
@@ -196,7 +200,8 @@ pub struct ContextBand { pub q16: i64 }
   - 对标参考锚点 (Benchmark Reference)：WindInput `wind-assoc/src/lib.rs:50-110,329` 四源逐源配额 + `AssocHit{text, commit}` 分离 + `boundary_broken` 断链（SCOUT-D-09/E-15）；`wind-dict/src/composite.rs:163` 层优先级纪律（SCOUT-D）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-core/src/assoc.rs`（新建：trait + 三源 + 配额合并）、`crates/ime-dict/src/fst_index/dict_lm.rs`（后继区间查询）、`crates/ime-dict/src/user_db.rs`（最近 commit 环）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：ime-core assoc.rs(AssocSource trait/AssocHit/merge_assoc/HistorySource)+ime-dict dict_lm.rs successors()+benches/assoc_successors; 侦察核对 DONE(物理产物项归阶段3)
 - **目标与价值**：交付联想的引擎内核：上一 commit 词之后，从 **Bigram 后继**（既有 BIGRAM 段）、**用户历史**（redb 用户词最近 commit 环）、**词表前缀延伸**（FST `prefix` 走查）三源按固定优先级取配额，产出带 `CandidateSource::Assoc` 标记的候选。三源契约照搬 WindInput 的语义转写：跨源不比分数（量纲不同）、展示与上屏文本分离、配额合并确定性。
 - **技术设计与代码级接入细节**：
   - **核心抽象（引擎纯函数侧，输入全部显式注入）**：
@@ -250,7 +255,8 @@ pub fn merge_assoc(
   - 对标参考锚点 (Benchmark Reference)：WindInput 联想呈现「复用 candidates 通道、无独立 UI」（SCOUT-E-15 呈现侧注释）；`boundary_broken` 断链语义（SCOUT-D-09）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-core/src/state/machine.rs`（commit 后联想态）、`crates/ime-core/src/state/transitions.rs`（跃迁与 Effect）、`crates/ime-fcitx5/src/engine/router/phrases.rs`（回执与重排 Effect 消费点旁路）、`crates/ime-config/src/reload/`（`[assoc]` 投影）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：ime-core state/assoc.rs+assoc_view.rs+ime-fcitx5 router/config.rs 投影; state/tests/assoc.rs 13测试; [assoc]默认关零变化; 侦察核对 DONE
 - **目标与价值**：把联想内核接入会话生命周期：commit 之后无输入时，候选窗直接呈现联想候选（带「联想」annotation）；任意按键立即回到常规解码（断链语义）；数字/翻页/高亮键在联想态下工作；选择即上屏 `commit` 文本。用户体验对齐主流输入法的「打完一个词，紧接着出下一个词的候选」。
 - **技术设计与代码级接入细节**：
   - **状态机跃迁**：`Committed --(assoc enabled & hits non-empty)--> Composing(assoc 视图)`。assoc 视图复用 `UiFrame` 候选列表（`CandidateSource::Assoc` 标记 + annotation「联想」）；`Reset/BackSpace/任意可打印键 --> 常规 Composing`（断链）；`数字键/Space --> 提交所选联想词`；`方向键 --> 移动高亮（不重解码）`。

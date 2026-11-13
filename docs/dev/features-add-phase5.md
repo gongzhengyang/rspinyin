@@ -18,7 +18,8 @@
   - 对标参考锚点 (Benchmark Reference)：rime-ice `date_translator.lua:32-132`（触发键/输出契约，SCOUT-ICE-05）、`unicode.lua:12-33`（码点域，SCOUT-ICE-22）；其 `os.time()` 直读被 `ASM-A-13` 否决——时钟必须注入
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-fcitx5/src/engine/host.rs`（ClockSource/RngSource 关联 trait）、`crates/ime-core/src/quick.rs`（新建：快捷域判定与候选骨架）、`crates/ime-config/src/schema/config.rs`（`[quick_input]` 节）、根 `Cargo.toml`（`[workspace.dependencies]` 预注册表达式解析器）
   - 引入依赖白名单：`meval <pin 最新稳定>`（数学表达式解析，纯求值无 IO/无 exec；预审结论：无网络、无 proc 依赖、维护活跃——AGENTS §3.5 审计后登记）。`TASK-5.01.02` 消费
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：快捷域底座收尾: quick/mod.rs 387→412行, 补2条时钟缺席降级测试 (date域clock:None→空候选且对照Some非空; Number/Codepoint/Calc三域不受时钟缺席影响), 2/2绿 (cargo nextest run -p ime-core -E 'test(candidates_clock_absent)' 0.036s); 域骨架/前缀判定8条既有测试+meval注册已在树; check-net/check-deps与冒烟归阶段3终门禁
 - **目标与价值**：快捷输入族（日期/时间/大写数字/金额/计算器/码点）的公共底座：触发判定（前缀域识别 O(1)）、时钟与随机源的注入通道、候选产出契约、以及表达式解析器的依赖注册。rime-ice 的七类翻译器机制级转写为引擎原生能力，但**纯函数红线不破**：一切时间/随机读取经宿主注入。
 - **技术设计与代码级接入细节**：
   - **宿主注入 trait（ime-fcitx5 内部边界，随 crate 发布）**：
@@ -70,7 +71,8 @@ pub struct ClockSnapshot {
   - 对标参考锚点 (Benchmark Reference)：rime-ice `date_translator.lua:32-132`（rq/sj/xq/dt/ts 七前缀多格式）、`number_translator.lua:114-161` + `convert_ar_num_to_zh.lua`（四式大写 + 壹拾会计特判，SCOUT-ICE-06）、`calc_translator.lua:208-222`（双候选契约：值 + expr=value；其 `load()` 动态执行被否决）、`unicode.lua:12-33`（码点直输 + 后 16 码点联想 + 超限防崩，SCOUT-ICE-22/24）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-core/src/quick/`（`date.rs`/`number.rs`/`calc.rs`/`codepoint.rs` 四模块）、`crates/ime-fcitx5/src/engine/router/`（快捷域按键消费与选择上屏）
   - 引入依赖白名单：`meval`（已在 TASK-5.01.01 注册，本卡消费）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：ime-core quick/{date,number,codepoint,calc}.rs 六域全齐: rq四格式/时段五段/xq三式/dt ISO/AmountStyle四式含壹拾特判/码点16后继/代理区拒绝/calc 64字符白名单+quick/expr/invalid; quick 44测试+router 11测试; meval=0.2 已登记; 侦察核对 DONE(X11手验产物归阶段3)
 - **目标与价值**：交付六类高频快捷能力（农历/UUID 列为**非目标**，扩展点保留——compare-add.md §8 反膨胀裁决）：`rq` 日期四格式、`sj` 时间（含时段中文）、`xq` 星期、`dt` ISO 8601、`R+数字` 小写/大写/金额小写/金额大写四式（含「壹拾X」会计规范）、`U+hex` 码点直输（附后 16 码点联想 + 超 `0x10FFFF` 报 `quick/expr/invalid` 防崩）、`cC+表达式` 计算器（值与 `expr=value` 双候选）。所有算法自实现（rime-ice GPL 代码零拷贝，仅机制与输出格式契约转写）。
 - **技术设计与代码级接入细节**：
   - **数字大写核心（纯算法直译，含会计特判）**：
@@ -109,7 +111,8 @@ pub fn render_amount(digits: &str, style: AmountStyle) -> Option<String>;
   - 对标参考锚点 (Benchmark Reference)：WindInput `data/schemas/shuangpin/*.toml` 三表模型 + `official_zero_initial_strokes_work` 击键覆盖测试 + 「零声母两大流派不可互抄」注释规范（SCOUT-D-14）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-config/src/schema/config.rs`（`[shuangpin.custom]` 节：布局文件路径或内联表）、`crates/ime-core/src/shuangpin/`（布局装载与校验，新 `layout.rs`）、`xtask/`（布局校验子命令挂 quality 旁，可选）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：自定义双拼布局数据化: layout.rs 三表模型+校验器已在树(715行); layout_tests.rs 11条校验器测试+既有内置覆盖共44/44绿 (cargo nextest run -p ime-core -E 'test(layout)' 0.077s); 主agent修复2处: layout.rs:437 conflict消息解构错位(first槽取到spelling致同名键打印两次, 改为(_, holder)), layout_tests.rs unreachable-final断言对齐实际per-syllable消息粒度
 - **目标与价值**：双拼布局从「6 个硬编码方案（`decode.rs:149-161`，B-11）」升级为「数据定义 + 校验装载」：用户提供 TOML 三表（声母/韵母/零声母）即可新增布局，无需改代码发版。既有 6 方案转为内置默认数据（行为逐字节不变），自定义布局走显式 opt-in。
 - **技术设计与代码级接入细节**：
   - **布局数据格式（机制转写，字段自定）**：
@@ -152,6 +155,7 @@ ang = "h"; eng = "g"; ...
   - 本项目代码落地锚点 (Code Anchor)：`xtask/src/tune/`（sweep 扩展）、`xtask/src/dictc/quality.rs`（目标函数复用）、`xtask/src/main.rs`（tune 子命令参数扩展——本 Phase 唯一允许动 Command 枚举的卡）
   - 引入依赖白名单：`无`
   - 当前状态：`[ ] 待开始`
+  - 遗留阻塞：代码与自动化面已全齐(sweep引擎/purity precheck/排序契约+21条测试); 唯余首轮 sweep 实跑与默认值回写: 卡面明确工具只推荐、裁决权在人, 需空闲机(负载<25%核数)实跑数小时+人工裁决回写+holdout前后对照, 不属本轮可代行范围, 声明遗留待用户执行
 - **目标与价值**：归一化（`core_min_freq`/`tail_flat_weight`）、衰减（半衰期）、bigram（`max_pairs`/`min_score`）、上文带（`context_tie_band_q16`）目前全部手工常数（B-03/B-14）。本卡把 `xtask tune` 扩展为「以 holdout top1（分带）为目标函数的网格 sweep」，产出参数推荐表并回写默认值；同时把「空闲机采集」从纪律升级为 precheck 门禁（load/干扰进程探测，B-14）。
 - **技术设计与代码级接入细节**：
   - **sweep 骨架**：参数空间声明式（TOML：参数名 → 网格点），每点跑 `dictc`（如涉及编译参数）+ `quality` 评估，输出按 `top1_overall`（tie-break：`top1_2char` → 编译时长）排序的推荐表 + 参数敏感性摘要；确认后的推荐值由人工裁决回写默认（工具只推荐不自动改默认——门禁值只升不降的裁决权在人）。
@@ -191,7 +195,8 @@ impl PurityCheck {
   - 对标参考锚点 (Benchmark Reference)：WindInput `scripts/linux/e2e.sh`（Xvfb + dbus-run-session 全隔离、探活走真实通路不 sleep、xcompmgr 下合成截图不可信的坑位记录，SCOUT-F-12）
   - 本项目代码落地锚点 (Code Anchor)：`xtask/src/testd/`（新增 `xvfb` 通道模块：会话编排 + DISPLAY 注入）、`justfile`（`check-e2e-xvfb` 菜谱）
   - 引入依赖白名单：`无`（Xvfb/xvfb-run 为系统包，属环境依赖不属 Cargo 依赖；CI 缺包时按 `NeedsEnvironment` 三态记录）
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：xtask testd/xvfb.rs+env_gate XvfbSession 三态+suite --xvfb 通道+justfile check-e2e-xvfb; xvfb/tests.rs 10条(探活真实按键通路/超时/清理); 侦察核对 DONE(Xvfb档实跑账本归阶段3门禁)
 - **目标与价值**：E2E 渲染回归（XTEST 注入/截图/golden 对比）目前依赖真 X server（B-08），CI 环境跑不了。本卡为 testd 增加第三执行通道：在 Xvfb 虚拟显示里拉起完整会话跑既有 smoke/acceptance 用例，让渲染回归进 CI。**定位边界**（`ASM-A-15`）：Xvfb 档只挡「渲染不崩、几何稳定、截图可采」，视觉工艺终审仍在真机 X11 档。
 - **技术设计与代码级接入细节**：
   - **通道编排**：`xvfb-run`（或自管 `Xvfb :N -screen 0 1280x800x24`）→ 注入 `DISPLAY` → 拉起沙盒会话（复用既有 testd sandbox 编排）→ 既有 suite/screenshot/golden 流程零改动跑在虚拟屏上。
@@ -219,7 +224,8 @@ impl PurityCheck {
   - 对标参考锚点 (Benchmark Reference)：rime-ice `others/script/smoke/cases/*.tsv`（`@today:%Y-%m-%d` 时间相对断言 + `@regex:` 版本位断言 + stderr E 级即失败的纪律，SCOUT-ICE-17）
   - 本项目代码落地锚点 (Code Anchor)：`tests/smoke/cases.tsv`（v2 列扩展）、`xtask/src/testd/smoke.rs`（断言引擎扩展）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：testd/smoke.rs 五断言器(@first/@contains/@regex/@top3/@today)+clock 注入+cases.tsv 239例(≥232); smoke/tests.rs 断言器与时钟偏移测试; 侦察核对 DONE; 已知限制: 变异抽查记录与显式默认关对照行为运营项(默认态由216条v1行钉死)
 - **目标与价值**：202 例冒烟全部只锚首选（`@first:`，B-09）：top3/top5 命中、页序稳定性、以及 fuzzy/abbrev/correction/english/assoc **开档行为**无任何回归 pin——排序类改动（如 TASK-4.02/4.03）只能靠人工对照。本卡把冒烟 TSV 升级为 v2：多维断言 + 开档矩阵 + 动态断言，使排序与功能改动有自动回归网。
 - **技术设计与代码级接入细节**：
   - **TSV v2 列契约（向后兼容：v1 行原样合法）**：

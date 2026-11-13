@@ -278,7 +278,7 @@ pub mod number;
 
 #[cfg(test)]
 mod tests {
-    use super::{CivilTime, QuickDomain, recognize};
+    use super::{CivilTime, QuickDomain, QuickMatch, candidates, recognize};
 
     /// The snapshot the date-family tests pin their formats against.
     pub(super) fn pinned_time() -> CivilTime {
@@ -382,5 +382,55 @@ mod tests {
             recognize(true, "rq", &["", "rq"], true).map(|found| found.domain),
             Some(QuickDomain::Date)
         );
+    }
+
+    #[test]
+    fn test_candidates_clock_absent_date_renders_empty_list() {
+        // The documented degradation: a matched date trigger with no injected
+        // snapshot renders an empty list rather than an error or a guessed date.
+        let matched = QuickMatch {
+            domain: QuickDomain::Date,
+            trigger_len: 2,
+        };
+        assert!(candidates(matched, "rq", None).is_empty());
+        // The emptiness is the absent clock itself: with a snapshot the same
+        // trigger still renders its formats.
+        assert!(!candidates(matched, "rq", Some(&pinned_time())).is_empty());
+    }
+
+    #[test]
+    fn test_candidates_clock_absent_leaves_other_domains_unaffected() {
+        // Only the date family reads the clock: every other domain must answer
+        // identically whether the host supplied a snapshot or not.
+        let time = pinned_time();
+        let cases = [
+            (
+                QuickMatch {
+                    domain: QuickDomain::Number,
+                    trigger_len: 1,
+                },
+                "R12",
+            ),
+            (
+                QuickMatch {
+                    domain: QuickDomain::Codepoint,
+                    trigger_len: 1,
+                },
+                "U4f60",
+            ),
+            (
+                QuickMatch {
+                    domain: QuickDomain::Calc,
+                    trigger_len: 2,
+                },
+                "cc1+2",
+            ),
+        ];
+        for (matched, buffer) in cases {
+            let without_clock = candidates(matched, buffer, None);
+            let with_clock = candidates(matched, buffer, Some(&time));
+            assert!(!without_clock.is_empty(), "{buffer} rendered nothing");
+            assert_eq!(without_clock, with_clock, "{buffer} changed with the clock");
+        }
     }
 }

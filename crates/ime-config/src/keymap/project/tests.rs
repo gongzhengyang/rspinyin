@@ -103,6 +103,89 @@ fn test_project_keys_copies_the_scalar_keys() {
 }
 
 #[test]
+fn test_project_keys_select_char_defaults_are_the_brackets() {
+    // The shipped keys pinned here so a default that moves is a conscious edit; the
+    // whole-value drift guard above holds the table and the document together, and this
+    // one holds both to the brackets the route's behaviour is written against.
+    let (bindings, warnings) = project_keys(&Config::default().keys);
+
+    assert!(warnings.is_empty(), "the shipped keys are routable");
+    assert_eq!(bindings.select_first_char, SelectCharKey::BracketLeft);
+    assert_eq!(bindings.select_last_char, SelectCharKey::BracketRight);
+    assert_eq!(
+        KeyBindings::default().select_first_char,
+        SelectCharKey::BracketLeft
+    );
+    assert_eq!(
+        KeyBindings::default().select_last_char,
+        SelectCharKey::BracketRight
+    );
+}
+
+#[test]
+fn test_project_keys_copies_the_select_char_keys() {
+    let mut config = Config::default();
+    config.keys.select_first_char = SelectCharKey::Comma;
+    config.keys.select_last_char = SelectCharKey::Period;
+
+    let (bindings, warnings) = project_keys(&config.keys);
+
+    assert!(
+        warnings.is_empty(),
+        "two marks no other setting names cannot conflict"
+    );
+    assert_eq!(bindings.select_first_char, SelectCharKey::Comma);
+    assert_eq!(bindings.select_last_char, SelectCharKey::Period);
+}
+
+#[test]
+fn test_project_keys_select_char_off_is_a_choice_not_an_error() {
+    // Both keys off is the gesture switched off entirely; one key off leaves the other
+    // alone. Neither is a mistake the diagnostic channel has anything to say about.
+    let mut config = Config::default();
+    config.keys.select_first_char = SelectCharKey::Off;
+    config.keys.select_last_char = SelectCharKey::Off;
+
+    let (bindings, warnings) = project_keys(&config.keys);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(bindings.select_first_char, SelectCharKey::Off);
+    assert_eq!(bindings.select_last_char, SelectCharKey::Off);
+
+    let mut half_off = Config::default();
+    half_off.keys.select_first_char = SelectCharKey::Off;
+
+    let (bindings, warnings) = project_keys(&half_off.keys);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(bindings.select_first_char, SelectCharKey::Off);
+    assert_eq!(bindings.select_last_char, SelectCharKey::BracketRight);
+}
+
+#[test]
+fn test_project_keys_reports_a_mark_both_select_keys_bound() {
+    let mut config = Config::default();
+    config.keys.select_first_char = SelectCharKey::Comma;
+    config.keys.select_last_char = SelectCharKey::Comma;
+
+    let (bindings, warnings) = project_keys(&config.keys);
+
+    assert_eq!(codes(&warnings), [String::from(BINDING_CONFLICT_CODE)]);
+    let reason = reason_of(&warnings);
+    assert!(reason.contains(KEY_SELECT_FIRST_CHAR), "{reason}");
+    assert!(reason.contains(KEY_SELECT_LAST_CHAR), "{reason}");
+    assert!(reason.contains("\"comma\""), "{reason}");
+    assert_eq!(
+        bindings.select_first_char,
+        SelectCharKey::Comma,
+        "the first-character key is the one that stays"
+    );
+    assert_eq!(
+        bindings.select_last_char,
+        SelectCharKey::Off,
+        "the mark answers one question only"
+    );
+}
+
+#[test]
 fn test_project_keys_projects_the_page_keys() {
     // `page_up` and `page_down` are the two names the four-field table this replaced
     // could not carry: accepted by the configuration, then dropped in silence.

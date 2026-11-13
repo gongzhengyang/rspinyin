@@ -864,6 +864,7 @@ fn test_symbol_slot_swap_reaches_the_next_key_through_the_router() {
             system: None,
             user: None,
             symbol_slot: Some(&SYMBOL_SLOT),
+            ..Default::default()
         },
     ));
     let mut host = RecordingHost::default();

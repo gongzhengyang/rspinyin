@@ -64,11 +64,20 @@ use super::probes;
 use super::report_step_failure;
 use super::user_store::user_store;
 
+pub(super) mod aux_view;
+mod emoji;
+pub(super) mod reverse_view;
 pub(super) mod sources;
 
 // Re-exported `pub(super)` so the addon's own tests can name the stand-ins: the
 // environment of a degraded start is exactly these values.
 pub(super) use self::sources::{MISSING_DICTIONARY, MISSING_LANGUAGE_MODEL, UserFrequency};
+// The refinement view travels the same road: the session-host step reads it here,
+// and the addon's tests read it to assert what the assembly produced.
+pub(super) use self::aux_view::aux_source;
+// The reverse-lookup view travels the same road: the session-host step reads it
+// here, and the addon's tests read it to assert what the assembly produced.
+pub(super) use self::reverse_view::reverse_source;
 
 /// Diagnostic reported once when a mapped dictionary has no BIGRAM model.
 const BIGRAM_ABSENT_CODE: &str = "dict/bigram/absent";
@@ -218,6 +227,14 @@ pub(super) fn install_session_host() -> Result<(), ImeError> {
             // swaps it under the same atomic guarantee the dictionary's
             // staged swap has.
             symbol_slot: Some(symbol_slot()),
+            // The refinement gate's view of the container: `None` when the
+            // start mapped nothing or the container carries no column, which
+            // is the degradation the lead key's own report names.
+            aux_source: aux_source(),
+            // The `u`-domain's view of the container: `None` when the start
+            // mapped nothing or the container carries no index, which is the
+            // degradation the lead key's own report names.
+            reverse_source: reverse_source(),
         },
     ) {
         // The variant table the script mode converts through: the built-in seed, which
@@ -385,61 +402,8 @@ fn read_symbol_table() -> Option<SymbolTable> {
         };
         report_step_failure("symbol-table", &error);
     }
-    install_emoji_domain(&mut table);
+    emoji::install_emoji_domain(&mut table);
     Some(table)
-}
-
-/// Adds the emoji domain to `table`, when the data directory carries the document.
-///
-/// Absent is the ordinary case for an install that predates the domain, so it
-/// reports nothing; a document that cannot be read is reported without stopping
-/// the sequence, and rows the reader refused are a packaging fault in shipped
-/// data, reported while the entries that were read still serve.
-fn install_emoji_domain(table: &mut SymbolTable) {
-    let Some(path) = emoji_path() else {
-        return;
-    };
-    let document = match std::fs::read_to_string(&path) {
-        Ok(document) => document,
-        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => return,
-        Err(cause) => {
-            let error = ImeError::DictUnavailable {
-                path: path.clone(),
-                cause: cause.into(),
-            };
-            report_step_failure("emoji-domain", &error);
-            return;
-        }
-    };
-    let report = table.add_emoji_domain(&document);
-    if report.skipped > 0 {
-        let error = ImeError::ConfigInvalid {
-            key: String::from("emoji.file"),
-            reason: format!(
-                "{} row(s) of the installed emoji domain could not be used",
-                report.skipped
-            ),
-        };
-        report_step_failure("emoji-domain", &error);
-    }
-}
-
-/// The name the emoji domain document is installed under inside the data
-/// directory.
-///
-/// The document the v-mode panel's emoji domain reads; absent is the ordinary
-/// case for an install that predates the domain, and `ve` decodes exactly as it
-/// did before the domain existed.
-const EMOJI_DATA_FILE: &str = "emoji.tsv";
-
-/// The path the emoji domain document is read from, or `None` when the layout is
-/// unknown.
-///
-/// # Panics
-///
-/// Never.
-fn emoji_path() -> Option<PathBuf> {
-    layout::layout().map(|paths| paths.data_dir.join(EMOJI_DATA_FILE))
 }
 
 /// Reads the symbol documents once per process and stores the table in the slot.
@@ -586,6 +550,13 @@ pub(super) fn sources_for(dictionary: Option<&Path>) -> SessionSources {
     // The process's one slot: a second install would mean a second `sources_for`, which
     // the `OnceLock` over [`SOURCES`] already makes unreachable.
     let _ = LEXICON_SLOT.set(LexiconSlot::new(bundle));
+    // The refinement view anchors the bundle the slot now owns, so the codes it
+    // answers with stay mapped for the process's whole life; [`aux_view`] holds the
+    // whole story of what a staged swap then means for it.
+    aux_view::anchor_once();
+    // The reverse-lookup view anchors the same bundle, so the `u`-domain's reads
+    // stay mapped the same way; [`reverse_view`] holds its story.
+    reverse_view::anchor_once();
     sources
 }
 

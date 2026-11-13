@@ -135,14 +135,24 @@ impl<'a> KeyRouter<'a> {
             None => {
                 let base = self.next_session_base;
                 self.next_session_base = self.next_session_base.saturating_add(SESSION_ID_STRIDE);
+                // The preset is a creation parameter: the pool's miss is what makes
+                // this context fresh, and a fresh context starts where its
+                // application's profile says. An application the configuration names
+                // no profile for -- an unknown one included -- starts where the
+                // document projects it, which is every build's behaviour before the
+                // section existed.
+                let preset = self.config.preset_for(kind.app_id.raw());
                 Context::fresh(
                     ic,
                     key,
                     base,
-                    self.phrases.clone(),
-                    self.script.clone(),
-                    self.config.output,
-                    client_preedit_of(report),
+                    FreshEnv {
+                        phrases: self.phrases.clone(),
+                        script: self.script.clone(),
+                        output: self.config.output,
+                        preset,
+                        preedit_supported: client_preedit_of(report),
+                    },
                 )
             }
         };
@@ -181,6 +191,8 @@ impl<'a> KeyRouter<'a> {
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            reverse: self.reverse_source,
+            reverse_absent_reported: &mut self.reverse_absent_reported,
             user_lexicon: self.user_lexicon,
             coins: Vec::new(),
             forget_words: Vec::new(),
@@ -190,7 +202,8 @@ impl<'a> KeyRouter<'a> {
             ctx.run(SessionEvent::Reset, &mut step, host);
             self.park(ctx);
         }
-        self.compose_fallback.reset();
+        // The context's own compose state left with the removal: a dead-key sequence
+        // is per input context, so there is nothing router-level left to clear.
         self.privacy.forget(ic);
     }
 
@@ -251,6 +264,8 @@ impl<'a> KeyRouter<'a> {
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            reverse: self.reverse_source,
+            reverse_absent_reported: &mut self.reverse_absent_reported,
             user_lexicon: self.user_lexicon,
             coins: Vec::new(),
             forget_words: Vec::new(),
@@ -259,7 +274,7 @@ impl<'a> KeyRouter<'a> {
         if let Some(ctx) = self.contexts.get_mut(&ic) {
             ctx.run(SessionEvent::Reset, &mut step, host);
         }
-        self.compose_fallback.reset();
+        self.reset_compose_fallback(ic);
     }
 
     /// Ensures the session of an input context that gained focus.
@@ -322,6 +337,8 @@ impl<'a> KeyRouter<'a> {
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            reverse: self.reverse_source,
+            reverse_absent_reported: &mut self.reverse_absent_reported,
             user_lexicon: self.user_lexicon,
             coins: Vec::new(),
             forget_words: Vec::new(),
@@ -358,6 +375,21 @@ impl<'a> KeyRouter<'a> {
     /// # Panics
     ///
     /// Never.
+    /// Clears the dead-key sequence the built-in table holds for this context.
+    ///
+    /// A reset, or a key the host composed itself, cancels whatever fallback sequence
+    /// was pending. The state is the context's own, so a context that has already
+    /// gone has nothing left to clear and this does nothing.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn reset_compose_fallback(&mut self, ic: u64) {
+        if let Some(context) = self.contexts.get_mut(&ic) {
+            context.compose_fallback.reset();
+        }
+    }
+
     /// Answers whether the compose step may ask the host about a key of this
     /// context: only an idle session that is not passing keys through is
     /// composing nothing of its own, and those are the keys a dead-key sequence

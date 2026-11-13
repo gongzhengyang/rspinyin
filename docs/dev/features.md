@@ -784,6 +784,10 @@ pub enum ConfigError {
 | `config/migration-failed` | `ime-config` | 配置迁移失败，以默认值启动并保留原件 | 是 |
 | `ui/script/unavailable` | 简繁转换 | 简繁表缺失，降级为原样输出 | **否**（预留；`ime-dict` 的 `ScriptIndex::unavailable()` 已提供该降级值，但还没有上报方——承接卡 `ADD-FEAT-P0.02.05` 的模块层已落地，引擎提交路径未接线） |
 | `phrase/table-unavailable` | 短语引擎 | 短语表缺失或不可读 | 是（常量 `PHRASE_TABLE_UNAVAILABLE`，由加载器上报） |
+| `aux/absent` | `ime-fcitx5` 的辅码引导键门卫（常量在 `ime-core::aux`） | 活动容器不带 AUX 列：引导键不消费直接穿透，每进程只报一次 | 是（常量 `ime_core::aux::ABSENT_COLUMN_CODE`） |
+| `aux/row-unreadable` | `ime-fcitx5` 的辅码会话（打开会话时逐词读码） | 会话打开时某个候选的辅码读不出来（结构校验通过却读失败的防御分支）：放弃本次打开并交还引导键，不消费 | 是（常量 `engine::router::effects::aux::ROW_UNREADABLE_CODE`） |
+| `reverse/absent` | `ime-fcitx5` 的拆字反查域门卫（常量在 `ime-core::reverse`） | 活动容器不带 REVERSE 块：`u` 载荷不认领、缓冲回退普通解码，每进程只报一次 | 是（常量 `ime_core::reverse::ABSENT_INDEX_CODE`） |
+| `reverse/row-unreadable` | `ime-fcitx5` 的拆字反查面板（载荷增长时读索引） | 面板打开后一次索引读失败（结构校验通过却读失败的防御分支）：关闭面板交还管线，与打开路径的 abort 语义一致 | 是（常量 `engine::router::effects::reverse::ROW_UNREADABLE_CODE`） |
 | `phrase/limit-exceeded` | 短语引擎 | 短语文档的条目数超过 `[phrases] max_entries`；超出的行被丢弃并计数 | 是（常量 `PHRASE_LIMIT_EXCEEDED_CODE`） |
 | `phrase/added` | 短语引擎 | `KeyAction::AddPhrase` 把高亮候选写进用户短语文档 | 是（常量 `PHRASE_ADDED_CODE`；由延迟写线程上报） |
 | `decode/abbrev-truncated` | `ime-core` 的简拼展开 | 一个切分节点的缩写读数超过 `MAX_READINGS`，只保留最具体的若干条 | 是（常量 `ABBREV_TRUNCATED_CODE`） |

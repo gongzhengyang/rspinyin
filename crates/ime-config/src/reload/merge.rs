@@ -7,6 +7,9 @@
 //! did not mention.
 
 use super::*;
+use crate::schema::{
+    AppProfile, AppScriptPref, KEY_SELECT_FIRST_CHAR, KEY_SELECT_LAST_CHAR, SelectCharKey,
+};
 
 /// Copies the `[engine]` keys the document sets over the defaults.
 pub(super) fn merge_engine(
@@ -34,6 +37,8 @@ pub(super) fn merge_engine(
     take_enum(partial.on_im_switch, &mut engine.on_im_switch, warnings);
     engine.compose = partial.compose.unwrap_or(engine.compose);
     take_enum(partial.share_state, &mut engine.share_state, warnings);
+    engine.aux_refinement = partial.aux_refinement.unwrap_or(engine.aux_refinement);
+    engine.reverse_lookup = partial.reverse_lookup.unwrap_or(engine.reverse_lookup);
 }
 
 /// Copies the `[assoc]` keys the document sets over the defaults.
@@ -177,6 +182,50 @@ pub(super) fn merge_shuangpin(partial: Option<PartialShuangpin>, config: &mut Co
     }
 }
 
+/// Copies the `[app_profiles]` keys the document sets over the defaults.
+///
+/// The profile table is replaced whole when the document carries it, like the scheme's
+/// custom tables: a table is a unit, and merging the document's entries into the ones
+/// the previous configuration held would leave an application the user removed still
+/// carrying its preset. A `script` spelling outside its whitelist is reported against
+/// the key it was read from and leaves the field at "no opinion" -- the shipped
+/// initial -- rather than costing the entry the profile's other fields. Whether a key
+/// is a hashed identifier at all, and how many entries the table may hold, is
+/// `Config::repaired`'s judgment, not the merge's.
+pub(super) fn merge_app_profiles(
+    partial: Option<PartialAppProfiles>,
+    config: &mut Config,
+    warnings: &mut Warnings,
+) {
+    let Some(partial) = partial else { return };
+    let Some(profiles) = partial.profiles else {
+        return;
+    };
+    let mut merged = BTreeMap::new();
+    for (key, entry) in profiles {
+        let script = match entry.script {
+            Some(raw) => match AppScriptPref::parse(&raw) {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    warnings.report_error(error);
+                    None
+                }
+            },
+            None => None,
+        };
+        merged.insert(
+            key,
+            AppProfile {
+                ascii: entry.ascii,
+                script,
+                full_width: entry.full_width,
+                punct_full: entry.punct_full,
+            },
+        );
+    }
+    config.app_profiles.profiles = merged;
+}
+
 /// Copies the `[ui]` keys the document sets over the defaults.
 ///
 /// No key of this section can be rejected: every one of them is a number or a flag, and
@@ -226,6 +275,12 @@ pub(super) fn merge_theme(
 }
 
 /// Copies the `[keys]` keys the document sets over the defaults.
+///
+/// The two character-selection keys are parsed against their own key names, so a
+/// value outside the mark whitelist is reported against the key it was read from and
+/// the shipped bracket stays. Whether the two keys name one mark is the projection's
+/// question, not the merge's: the merge answers what the document said, and the
+/// projection answers whether a table can be built from it.
 pub(super) fn merge_keys(
     partial: Option<PartialKeys>,
     config: &mut Config,
@@ -240,6 +295,18 @@ pub(super) fn merge_keys(
     }
     if let Some(names) = partial.highlight_keys {
         keys.highlight_keys = key_names(names, KEY_HIGHLIGHT_KEYS, warnings);
+    }
+    if let Some(raw) = partial.select_first_char {
+        match SelectCharKey::parse(&raw, KEY_SELECT_FIRST_CHAR) {
+            Ok(value) => keys.select_first_char = value,
+            Err(error) => warnings.report_error(error),
+        }
+    }
+    if let Some(raw) = partial.select_last_char {
+        match SelectCharKey::parse(&raw, KEY_SELECT_LAST_CHAR) {
+            Ok(value) => keys.select_last_char = value,
+            Err(error) => warnings.report_error(error),
+        }
     }
 }
 

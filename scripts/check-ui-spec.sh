@@ -892,7 +892,14 @@ def main():
     features = read(FEATURES)
     theme_text = read(THEME_SLINT)
     candidate_text = read(CANDIDATE_SLINT)
-    theme_rs_text = read(THEME_RS)
+    # The theme module grew submodules (theme/palette.rs and friends): the spec
+    # checks span the whole module, so the text is the root plus every child
+    # file in a stable order.
+    theme_dir = Path("crates/ime-ui/src/theme")
+    theme_rs_text = read(THEME_RS) + "".join(
+        (ROOT / theme_dir / name).read_text(encoding="utf-8")
+        for name in sorted(p.name for p in (ROOT / theme_dir).glob("*.rs"))
+    )
     scheme_rs_text = read(SCHEME_RS)
     metrics_rs_text = read(METRICS_RS)
 

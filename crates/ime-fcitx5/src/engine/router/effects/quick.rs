@@ -39,17 +39,13 @@ use std::sync::OnceLock;
 
 use ime_core::quick::{self, CivilTime, QuickCandidate, QuickDomain, QuickMatch};
 use ime_core::state::SessionEvent;
-use ime_types::{
-    Candidate, CandidateSource, KeyAction, LayoutHint, PageDir, PageState, Placement, Preedit,
-    UiCommand, UiEvent, UiFrame,
-};
+use ime_types::{KeyAction, PageDir, UiEvent};
 
-use crate::engine::badge;
 use crate::engine::host::{ClockSource, Host};
-use crate::ffi::emit_diagnostic;
 
 use super::super::StepCtx;
-use super::super::context::{Context, resolve_client_preedit};
+use super::super::context::Context;
+use super::panel::{PanelFrame, PanelPaging, post_frame};
 
 /// The most date-family triggers the trigger table walks.
 ///
@@ -119,10 +115,8 @@ pub(in crate::engine::router) struct QuickPanel {
     /// The revision of the last frame posted for this panel; UI events carrying any
     /// other revision are stale and dropped.
     revision: u32,
-    /// Zero-based global position of the keyboard highlight.
-    highlight: u16,
-    /// Zero-based index of the page on show.
-    page: u8,
+    /// The page on show and the keyboard highlight, shared with the reverse panel.
+    paging: PanelPaging,
 }
 
 /// What one routed event became in the panel's hands.
@@ -211,8 +205,7 @@ fn open(
         buffer,
         candidates,
         revision: 0,
-        highlight: 0,
-        page: 0,
+        paging: PanelPaging::new(),
     };
     show(&mut panel, ctx, step, host);
     ctx.quick = Some(panel);
@@ -285,7 +278,7 @@ fn panel_key(
             }
         },
         KeyAction::CommitHighlighted => {
-            let index = usize::from(panel.highlight);
+            let index = usize::from(panel.paging.highlight);
             if index >= panel.candidates.len() {
                 return (Verdict::Claimed(false), true);
             }
@@ -314,12 +307,12 @@ fn panel_key(
             (Verdict::Claimed(true), true)
         }
         KeyAction::PageFirst | KeyAction::PageLast => {
-            panel.page = if action == KeyAction::PageFirst {
+            panel.paging.page = if action == KeyAction::PageFirst {
                 0
             } else {
                 panel.last_page(page_size)
             };
-            panel.highlight = panel.page_start(page_size);
+            panel.paging.highlight = panel.page_start(page_size);
             show(panel, ctx, step, host);
             (Verdict::Claimed(true), true)
         }
@@ -382,8 +375,7 @@ fn grow(
     }
     panel.buffer = prospective;
     panel.candidates = candidates;
-    panel.page = 0;
-    panel.highlight = 0;
+    panel.paging = PanelPaging::new();
     show(panel, ctx, step, host);
     (Verdict::Claimed(true), true)
 }
@@ -404,8 +396,7 @@ fn shrink(
         return (Verdict::Pass, false);
     }
     panel.candidates = candidates;
-    panel.page = 0;
-    panel.highlight = 0;
+    panel.paging = PanelPaging::new();
     show(panel, ctx, step, host);
     (Verdict::Claimed(true), true)
 }
@@ -515,6 +506,10 @@ fn commit(panel: &QuickPanel, index: usize, ctx: &mut Context, host: &mut dyn Ho
 
 /// Posts the panel's frame: the preedit, the show and the frame, in the order the
 /// window drops nothing of.
+///
+/// The frame itself is the machinery the rendered panels share
+/// (`post_frame`); this wrapper hands it the panel's own state and takes the
+/// clamped page back.
 fn show(
     panel: &mut QuickPanel,
     ctx: &mut Context,
@@ -523,93 +518,19 @@ fn show(
 ) {
     let revision = ctx.session.revision.next();
     panel.revision = revision.value();
-    // The application's preedit area follows the same negotiation an ordinary
-    // frame's preedit does: the configuration is the upper bound, the application's
-    // capability the floor.
-    if resolve_client_preedit(step.config.client_preedit, ctx.preedit_supported) {
-        host.set_preedit(ctx.ic, &panel.buffer, buffer_caret(&panel.buffer));
-    } else {
-        host.clear_preedit(ctx.ic);
-    }
-    let mut anchor = ctx.session.frame_context().anchor;
-    anchor.placement = Placement::Auto;
-    host.post_ui(
-        ctx.ic,
-        UiCommand::Show {
+    panel.paging.page = u8::try_from(post_frame(
+        PanelFrame {
+            buffer: &panel.buffer,
+            candidates: &panel.candidates,
             revision: panel.revision,
-            anchor,
+            highlight: panel.paging.highlight,
+            requested_page: usize::from(panel.paging.page),
         },
-    );
-    let total = panel.candidates.len();
-    let page_size = usize::from(step.config.session.max_per_row).max(1);
-    let last_page = total.saturating_sub(1) / page_size;
-    let page = usize::from(panel.page).min(last_page);
-    panel.page = u8::try_from(page).unwrap_or(0);
-    let start = page * page_size;
-    let end = total.min(start + page_size);
-    let page_candidates: Vec<Candidate> = panel.candidates[start..end]
-        .iter()
-        .enumerate()
-        .map(|(position, quick)| Candidate {
-            index: u16::try_from(start + position + 1).unwrap_or(u16::MAX),
-            text: quick.text.clone(),
-            annotation: quick.annotation.clone(),
-            source: CandidateSource::Symbol,
-            score: 0.0,
-            consumed_syllables: 0,
-        })
-        .collect();
-    let highlight = usize::from(panel.highlight);
-    let mut frame = UiFrame {
-        revision: panel.revision,
-        preedit: Preedit {
-            text: panel.buffer.clone(),
-            caret: buffer_caret(&panel.buffer),
-            spans: Vec::new(),
-        },
-        candidates: page_candidates,
-        page: PageState {
-            current: u8::try_from(page + 1).unwrap_or(u8::MAX),
-            total: u8::try_from(last_page + 1).unwrap_or(u8::MAX),
-            page_size: u8::try_from(page_size).unwrap_or(9),
-        },
-        status: ctx.session.frame_context().status.clone(),
-        anchor,
-        layout: LayoutHint {
-            max_per_row: step.config.session.max_per_row,
-            show_annotation: step.config.session.show_annotation,
-            max_width_dp: step.config.session.max_width_dp,
-        },
-        highlight: (highlight >= start && highlight < end)
-            .then(|| u16::try_from(highlight - start).unwrap_or(0)),
-    };
-    // The header's slot resolves where every frame resolves: here, with the frame's
-    // own page and candidates known and the process-local hint state at hand. The
-    // panel's lists are far under the display limit, so the overflow bit is always
-    // the honest `false`.
-    let has_candidates = !frame.candidates.is_empty();
-    let mode = ctx
-        .modes
-        .mode_label(ctx.session.temp_english, step.config.scheme_hint);
-    let (label, overflow_started) = badge::resolve(
-        mode,
-        &step.config.keys,
-        frame.page,
-        has_candidates,
-        false,
-        step.badge,
-    );
-    if overflow_started {
-        emit_diagnostic(badge::UI_CANDIDATE_OVERFLOW_CODE);
-    }
-    frame.status.mode_label = label;
-    host.post_ui(ctx.ic, UiCommand::Frame(Box::new(frame)));
-}
-
-/// The caret the panel's preedit carries: the end of the buffer, which is ASCII by
-/// the trigger table's construction and therefore always on a character boundary.
-fn buffer_caret(buffer: &str) -> u32 {
-    u32::try_from(buffer.len()).unwrap_or(u32::MAX)
+        ctx,
+        step,
+        host,
+    ))
+    .unwrap_or(0);
 }
 
 impl QuickPanel {
@@ -626,49 +547,25 @@ impl QuickPanel {
 
     /// The zero-based index the page on show starts at.
     fn page_start(&self, page_size: usize) -> u16 {
-        u16::try_from(usize::from(self.page) * page_size.max(1)).unwrap_or(u16::MAX)
+        self.paging.page_start(page_size)
     }
 
     /// The zero-based index of the last page the list fills.
     fn last_page(&self, page_size: usize) -> u8 {
-        let page_size = page_size.max(1);
-        u8::try_from(self.candidates.len().saturating_sub(1) / page_size).unwrap_or(0)
+        self.paging.last_page(self.candidates.len(), page_size)
     }
 
     /// Flips one page, following the highlight to the page it lands on. A flip past
     /// either end is inert, and the key stays claimed: a page key is punctuation to
     /// the application and must not leak through the panel.
     fn flip_page(&mut self, dir: PageDir, page_size: usize) {
-        let last = self.last_page(page_size);
-        match dir {
-            PageDir::Next => {
-                if self.page < last {
-                    self.page += 1;
-                }
-            }
-            PageDir::Prev => {
-                if self.page > 0 {
-                    self.page -= 1;
-                }
-            }
-        }
-        self.highlight = self.page_start(page_size);
+        self.paging.flip_page(dir, self.candidates.len(), page_size);
     }
 
     /// Moves the keyboard highlight, paging when it crosses an edge.
     fn move_highlight(&mut self, delta: i8, page_size: usize) {
-        let count = self.candidates.len();
-        if count == 0 {
-            return;
-        }
-        let distance = usize::from(delta.unsigned_abs());
-        let next = if delta >= 0 {
-            (usize::from(self.highlight) + distance).min(count - 1)
-        } else {
-            usize::from(self.highlight).saturating_sub(distance)
-        };
-        self.highlight = u16::try_from(next).unwrap_or(0);
-        self.page = u8::try_from(next / page_size.max(1)).unwrap_or(0);
+        self.paging
+            .move_highlight(delta, self.candidates.len(), page_size);
     }
 }
 
@@ -691,8 +588,7 @@ mod tests {
                 })
                 .collect(),
             revision: 0,
-            highlight: 0,
-            page: 0,
+            paging: super::super::panel::PanelPaging::new(),
         }
     }
 
@@ -717,28 +613,28 @@ mod tests {
     fn test_quick_panel_flip_page_stays_inside_the_list() {
         let mut panel = panel(17);
         panel.flip_page(PageDir::Prev, 5);
-        assert_eq!(panel.page, 0, "a flip past the first page is inert");
-        assert_eq!(panel.highlight, 0);
-        panel.page = 3;
+        assert_eq!(panel.paging.page, 0, "a flip past the first page is inert");
+        assert_eq!(panel.paging.highlight, 0);
+        panel.paging.page = 3;
         panel.flip_page(PageDir::Next, 5);
-        assert_eq!(panel.page, 3, "a flip past the last page is inert");
+        assert_eq!(panel.paging.page, 3, "a flip past the last page is inert");
         panel.flip_page(PageDir::Prev, 5);
-        assert_eq!(panel.page, 2);
-        assert_eq!(panel.highlight, 10, "the highlight follows the page");
+        assert_eq!(panel.paging.page, 2);
+        assert_eq!(panel.paging.highlight, 10, "the highlight follows the page");
     }
 
     #[test]
     fn test_quick_panel_move_highlight_clamps_at_both_ends() {
         let mut panel = panel(17);
         panel.move_highlight(50, 5);
-        assert_eq!(panel.highlight, 16);
-        assert_eq!(panel.page, 3);
+        assert_eq!(panel.paging.highlight, 16);
+        assert_eq!(panel.paging.page, 3);
         panel.move_highlight(-50, 5);
-        assert_eq!(panel.highlight, 0);
-        assert_eq!(panel.page, 0);
+        assert_eq!(panel.paging.highlight, 0);
+        assert_eq!(panel.paging.page, 0);
         panel.move_highlight(7, 5);
-        assert_eq!(panel.highlight, 7);
-        assert_eq!(panel.page, 1);
+        assert_eq!(panel.paging.highlight, 7);
+        assert_eq!(panel.paging.page, 1);
     }
 
     #[test]

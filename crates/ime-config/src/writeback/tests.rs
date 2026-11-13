@@ -7,6 +7,7 @@ use ime_types::ImeError;
 
 use super::*;
 use crate::reload::{DEFAULT_CONFIG_TOML, FILE_NAME};
+use crate::schema::SelectCharKey;
 
 /// A scratch directory for one test, named after the test and the process id.
 fn scratch(name: &str) -> PathBuf {
@@ -41,6 +42,8 @@ fn bindings(
         enter_commit_raw,
         flip_keys: flip.to_vec(),
         highlight_keys: highlight.to_vec(),
+        select_first_char: SelectCharKey::BracketLeft,
+        select_last_char: SelectCharKey::BracketRight,
     }
 }
 
@@ -73,6 +76,8 @@ const PRESERVED_BLOCK: &str = concat!(
     "enter_commit_raw = true\n",
     "flip_keys = [\"minus\", \"equal\"]\n",
     "highlight_keys = [\"tab\", \"shift_tab\"]\n",
+    "select_first_char = \"bracket_left\"\n",
+    "select_last_char = \"bracket_right\"\n",
 );
 
 #[test]
@@ -290,6 +295,68 @@ fn test_digit_zero_spelling_round_trips_through_the_closed_set() {
 }
 
 #[test]
+fn test_write_keys_renders_the_select_char_keys_and_round_trips_them() {
+    let path = scratch("select-char").join(FILE_NAME);
+    let mut new = bindings(DigitZero::Flip, false, &[KeyName::Minus], &[KeyName::Tab]);
+    new.select_first_char = SelectCharKey::Comma;
+    new.select_last_char = SelectCharKey::Period;
+    write_text(&path, DEFAULT_CONFIG_TOML);
+
+    write_keys(&path, &parsed(DEFAULT_CONFIG_TOML).keys, &new).expect("the write succeeds");
+
+    let written = read_text(&path);
+    assert!(
+        written.contains("select_first_char = \"comma\""),
+        "the configured mark is written out: {written}"
+    );
+    assert!(
+        written.contains("select_last_char = \"period\""),
+        "the configured mark is written out: {written}"
+    );
+    // A section the writeback wrote is a section the loader reads back to the values
+    // the caller held, so the next write cannot race with itself.
+    assert_eq!(parsed(&written).keys, new);
+}
+
+#[test]
+fn test_write_keys_disabled_select_char_keys_round_trip_as_off() {
+    let path = scratch("select-char-off").join(FILE_NAME);
+    let mut new = bindings(DigitZero::Passthrough, false, &[], &[]);
+    new.select_first_char = SelectCharKey::Off;
+    new.select_last_char = SelectCharKey::Off;
+    write_text(&path, DEFAULT_CONFIG_TOML);
+
+    write_keys(&path, &parsed(DEFAULT_CONFIG_TOML).keys, &new).expect("the write succeeds");
+
+    assert_eq!(parsed(&read_text(&path)).keys, new);
+}
+
+#[test]
+fn test_select_char_spelling_round_trips_through_parse() {
+    // `as_str` and `parse` are the two halves of one mapping: a spelling the writeback
+    // produces is a spelling the loader accepts, for every value the type can hold.
+    for value in [
+        SelectCharKey::Off,
+        SelectCharKey::Exclamation,
+        SelectCharKey::Quote,
+        SelectCharKey::ParenLeft,
+        SelectCharKey::ParenRight,
+        SelectCharKey::Comma,
+        SelectCharKey::Period,
+        SelectCharKey::Colon,
+        SelectCharKey::Semicolon,
+        SelectCharKey::Question,
+        SelectCharKey::At,
+        SelectCharKey::BracketLeft,
+        SelectCharKey::BracketRight,
+    ] {
+        let parsed_back = SelectCharKey::parse(value.as_str(), "keys.select_first_char")
+            .expect("the spelling is in the set");
+        assert_eq!(parsed_back, value);
+    }
+}
+
+#[test]
 fn test_write_data_clears_the_staged_path_and_preserves_the_rest() {
     let path = scratch("data-clear").join(FILE_NAME);
     // The [data] table sits between two other sections whose bytes must travel
@@ -407,4 +474,73 @@ fn test_write_assoc_region_changed_after_the_load_reports_a_race() {
 
     assert!(matches!(result, Err(WritebackError::Race { .. })));
     assert_eq!(read_text(&path), edited);
+}
+
+/// A `[app_profiles]` section as a user might have written one, with the nested table
+/// its entries live in.
+const APP_PROFILES_BLOCK: &str = concat!(
+    "[app_profiles]\n",
+    "# one preset per application, keyed by the hashed identifier the tool prints.\n",
+    "[app_profiles.profiles]\n",
+    "\"0x123456789abcdef0\" = { ascii = true, script = \"traditional\" }\n",
+    "\n",
+);
+
+#[test]
+fn test_write_keys_preserves_a_trailing_app_profiles_section() {
+    // The section the preset feature adds is the user's own document, never the
+    // keymap's to rewrite: a `[keys]` write must carry it through byte for byte, the
+    // way every other section travels.
+    let path = scratch("profiles-after-keys").join(FILE_NAME);
+    let original = format!("[keys]\ndigit_zero = \"passthrough\"\n\n{APP_PROFILES_BLOCK}");
+    write_text(&path, &original);
+    let previous = parsed(&original).keys;
+    let new = bindings(
+        DigitZero::Flip,
+        true,
+        &[KeyName::Minus, KeyName::Equal],
+        &[KeyName::Tab, KeyName::ShiftTab],
+    );
+
+    write_keys(&path, &previous, &new).expect("the write succeeds");
+
+    let written = read_text(&path);
+    assert!(
+        written.contains(APP_PROFILES_BLOCK),
+        "the profiles section travels whole: {written}"
+    );
+    assert_eq!(parsed(&written).keys, new);
+}
+
+/// The `[assoc]` block the tests rewrite, spelled out so the assertion pins the format.
+const ASSOC_SHIPPED_BLOCK: &str =
+    "[assoc]\nenabled = false\nmax_candidates = 5\nhistory_depth = 8\n";
+
+#[test]
+fn test_write_assoc_preserves_a_leading_app_profiles_section() {
+    // The section sitting before the rewritten table is the other placement the
+    // region scanner has to hold: a nested table header
+    // (`[app_profiles.profiles]`) ends the region above it like any other.
+    let path = scratch("profiles-before-assoc").join(FILE_NAME);
+    let original = format!("{APP_PROFILES_BLOCK}\n{ASSOC_SHIPPED_BLOCK}");
+    write_text(&path, &original);
+    let previous = parsed(&original).assoc;
+    let new = AssocConfig {
+        enabled: true,
+        max_candidates: 7,
+        history_depth: 12,
+    };
+
+    write_assoc(&path, &previous, &new).expect("the write succeeds");
+
+    let written = read_text(&path);
+    assert!(
+        written.starts_with(APP_PROFILES_BLOCK),
+        "the profiles section is untouched ahead of the rewrite: {written}"
+    );
+    assert_eq!(parsed(&written).assoc, new);
+    assert!(
+        parsed(&written).app_profiles == parsed(&original).app_profiles,
+        "and reads back to the same profiles the document held"
+    );
 }

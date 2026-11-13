@@ -36,11 +36,14 @@
 //! * [`UNROUTABLE_BINDING_CODE`] -- a name the whitelist accepts that a list has no binding
 //!   for.
 //! * [`BINDING_CONFLICT_CODE`] -- one key claimed twice: the same name twice in one list,
-//!   or one name in both lists.
+//!   one name in both lists, or a mark both character-selection keys bind.
 
 use ime_types::ImeError;
 
-use crate::schema::{DigitZero, KEY_FLIP_KEYS, KEY_HIGHLIGHT_KEYS, KeyName, KeysConfig};
+use crate::schema::{
+    DigitZero, KEY_FLIP_KEYS, KEY_HIGHLIGHT_KEYS, KEY_SELECT_FIRST_CHAR, KEY_SELECT_LAST_CHAR,
+    KeyName, KeysConfig, SelectCharKey,
+};
 
 #[cfg(test)]
 mod tests;
@@ -54,9 +57,10 @@ pub const UNROUTABLE_BINDING_CODE: &str = "keys/unroutable-binding";
 
 /// The code a key claimed twice carries.
 ///
-/// Two shapes share it, and the reason tells them apart: the same name twice in one list,
-/// and one name in both lists. Both used to be settled by whichever entry the table read
-/// first -- a decision the user never saw -- so both are reported instead.
+/// Three shapes share it, and the reason tells them apart: the same name twice in one
+/// list, one name in both lists, and a mark both character-selection keys bind. All
+/// used to be settled by whichever entry the table read first -- a decision the user
+/// never saw -- so all are reported instead.
 pub const BINDING_CONFLICT_CODE: &str = "keys/binding-conflict";
 
 /// The names `keys.flip_keys` can page with, in the order the diagnostics list them.
@@ -145,6 +149,12 @@ pub struct KeyBindings {
     pub flip_keys: FlipSet,
     /// The keys that move the candidate highlight (`keys.highlight_keys`).
     pub highlight_keys: HighlightSet,
+    /// The mark that takes the highlighted candidate's first character
+    /// (`keys.select_first_char`).
+    pub select_first_char: SelectCharKey,
+    /// The mark that takes the highlighted candidate's last character
+    /// (`keys.select_last_char`).
+    pub select_last_char: SelectCharKey,
 }
 
 impl Default for KeyBindings {
@@ -165,6 +175,8 @@ impl Default for KeyBindings {
                 | FlipSet::HOME
                 | FlipSet::END,
             highlight_keys: HighlightSet::TAB | HighlightSet::SHIFT_TAB,
+            select_first_char: SelectCharKey::BracketLeft,
+            select_last_char: SelectCharKey::BracketRight,
         }
     }
 }
@@ -213,8 +225,9 @@ impl KeyBindings {
 ///
 /// The table the routing layer reads, and one diagnostic per entry that could not become a
 /// binding. A projection always answers with a usable table: an entry a list cannot use, an
-/// entry a list names twice, and a key both lists bound are dropped and reported rather than
-/// refused, because a key binding must not be able to stop the input method from working.
+/// entry a list names twice, a key both lists bound, and a mark both character-selection
+/// keys bind are dropped and reported rather than refused, because a key binding must not
+/// be able to stop the input method from working.
 ///
 /// # Errors
 ///
@@ -271,11 +284,30 @@ pub fn project_keys(keys: &KeysConfig) -> (KeyBindings, Vec<ImeError>) {
     }
     flip_keys.remove(collisions);
     report_collisions(collisions, &mut warnings);
+    // The two character-selection marks are one setting over two keys: a mark both of
+    // them name can only ever take one of the two characters, and which one that is
+    // must not be whatever the route happens to test first. The first-character key is
+    // the one that stays -- it is the gesture of the two the user makes more often --
+    // and the other key is disabled, so the mark answers one question only. This is
+    // settled here rather than in the schema's repair rules, because the route reads
+    // the projected table: a conflict resolved here is resolved exactly where it
+    // matters.
+    let select_first_char = keys.select_first_char;
+    let mut select_last_char = keys.select_last_char;
+    if select_first_char != SelectCharKey::Off && select_first_char == select_last_char {
+        warnings.push(binding_error(
+            BINDING_CONFLICT_CODE,
+            select_char_collision(select_first_char),
+        ));
+        select_last_char = SelectCharKey::Off;
+    }
     let bindings = KeyBindings {
         digit_zero: keys.digit_zero,
         enter_commit_raw: keys.enter_commit_raw,
         flip_keys,
         highlight_keys,
+        select_first_char,
+        select_last_char,
     };
     (bindings, warnings)
 }
@@ -403,6 +435,15 @@ fn collision(name: KeyName) -> String {
         "\"{}\" is bound by both {KEY_FLIP_KEYS} (page) and {KEY_HIGHLIGHT_KEYS} (highlight); \
          the highlight binding is kept",
         name.as_str()
+    )
+}
+
+/// The message for a mark both character-selection keys bound.
+fn select_char_collision(mark: SelectCharKey) -> String {
+    format!(
+        "\"{}\" is bound by both {KEY_SELECT_FIRST_CHAR} and {KEY_SELECT_LAST_CHAR}; \
+         the first-character binding is kept",
+        mark.as_str()
     )
 }
 

@@ -2,7 +2,8 @@
 //!
 //! Responsibility: map `base.dict`, verify it through the container reader, keep the five
 //! zero-copy views the read path needs -- the FST, the entry table, the string pool, the
-//! word list and the unigram table -- and answer the [`Lexicon`] queries the decoder makes.
+//! word list and the unigram table -- keep the parsed reader that carries the AUX
+//! column's verified offset, and answer the [`Lexicon`] queries the decoder makes.
 //! It does not compile, write or repair a dictionary, it never copies a word -- every
 //! [`WordRef`] it hands out borrows the mapping -- and it scores nothing itself: the
 //! language model is [`DictLm`], a view over the same unigram table.
@@ -49,8 +50,10 @@ use crate::format::{
 };
 use crate::mmap::{MappedFile, WordPool};
 
+mod aux;
 pub mod dict_lm;
 mod read;
+mod reverse;
 
 pub use crate::fst_index::dict_lm::DictLm;
 
@@ -171,6 +174,14 @@ pub struct FstLexicon {
     wordlist: &'static [u8],
     unigram: &'static [u8],
     bigram: &'static [u8],
+    /// The parsed container the tail blocks hang off.
+    ///
+    /// The AUX column is not a section-table section, so no slice of it is kept here:
+    /// what the lexicon keeps is the reader's verified block offset, and the aux view
+    /// in this module's `aux` submodule resolves a word's code through it. The reader
+    /// borrows the same image the views above borrow, holds no mapping of its own and
+    /// is never written to after the parse, which is what keeps it a view like the rest.
+    reader: Reader<&'static [u8]>,
     entry_count: u32,
     /// Where the dictionary was loaded from, so that a failure can name the file the
     /// user has to replace. An image-loaded lexicon names the synthetic `<memory>`.
@@ -260,7 +271,8 @@ impl FstLexicon {
     ///
     /// `backing` keeps whatever owns the bytes alive for as long as the lexicon does;
     /// the views are sliced out of the image itself rather than borrowed from the
-    /// reader, which is dropped before this function returns.
+    /// reader. The reader itself is kept as a field -- it is the view the tail AUX
+    /// column hangs off -- so nothing it verified has to be re-derived here.
     fn parse_image(
         image: &'static [u8],
         path: PathBuf,
@@ -283,6 +295,7 @@ impl FstLexicon {
         // container: this call is what turns "these bytes came out of a dictionary that
         // passed its checks" into the value every later word conversion rests on.
         let strpool = section(image, sections, SectionKind::StrPool)?;
+        let entry_count = reader.entry_count();
         Ok(Self {
             fst,
             entries: section(image, sections, SectionKind::Entries)?,
@@ -290,7 +303,8 @@ impl FstLexicon {
             wordlist: section(image, sections, SectionKind::WordList)?,
             unigram: section(image, sections, SectionKind::Unigram)?,
             bigram: section(image, sections, SectionKind::Bigram)?,
-            entry_count: reader.entry_count(),
+            reader,
+            entry_count,
             path,
             backing,
         })

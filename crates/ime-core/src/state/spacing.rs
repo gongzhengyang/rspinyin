@@ -131,9 +131,7 @@ impl SpacingState {
         mode: SpacingMode,
     ) -> String {
         let shaped = match source {
-            CandidateSource::English => {
-                apply_shape(entry, input_shape(raw))
-            }
+            CandidateSource::English => apply_shape(entry, input_shape(raw)),
             _ => String::from(entry),
         };
         let text = match mode {
@@ -144,10 +142,7 @@ impl SpacingState {
                 // reads its class through that space -- a leading space names no
                 // class of its own -- or every English-into-English commit after
                 // the first would lose its word boundary.
-                self.tail
-                    .as_deref()
-                    .map(str::trim_start)
-                    .and_then(class_of),
+                self.tail.as_deref().map(str::trim_start).and_then(class_of),
                 class_of(&shaped),
             ) {
                 // Chinese into English, and English into English: the word
@@ -271,7 +266,10 @@ mod tests {
 
     #[test]
     fn test_outgoing_english_into_chinese_takes_nothing() {
-        assert_eq!(bridged(Some("hello"), "你好", CandidateSource::Dict), "你好");
+        assert_eq!(
+            bridged(Some("hello"), "你好", CandidateSource::Dict),
+            "你好"
+        );
     }
 
     #[test]
@@ -288,7 +286,10 @@ mod tests {
             bridged(Some("你好"), "123", CandidateSource::English),
             " 123"
         );
-        assert_eq!(bridged(Some("123"), "456", CandidateSource::English), " 456");
+        assert_eq!(
+            bridged(Some("123"), "456", CandidateSource::English),
+            " 456"
+        );
         assert_eq!(bridged(Some("123"), "你好", CandidateSource::Dict), "你好");
     }
 
@@ -353,10 +354,20 @@ mod tests {
         // The casing and the spacing compose: an all-caps spelling of an entry the
         // lexicon authored `GitLab`, over a Han tail, comes out spaced and uppercased.
         let mut state = state_with_tail(Some("你好"));
-        let text = state.outgoing("GitLab", CandidateSource::English, "GITLAB", SpacingMode::Auto);
+        let text = state.outgoing(
+            "GitLab",
+            CandidateSource::English,
+            "GITLAB",
+            SpacingMode::Auto,
+        );
         assert_eq!(text, " GITLAB");
         // And the mixed spelling names no shape, so the entry's own casing stands.
-        let identity = state.outgoing("GitLab", CandidateSource::English, "GitH", SpacingMode::Auto);
+        let identity = state.outgoing(
+            "GitLab",
+            CandidateSource::English,
+            "GitH",
+            SpacingMode::Auto,
+        );
         assert_eq!(identity, " GitLab");
     }
 

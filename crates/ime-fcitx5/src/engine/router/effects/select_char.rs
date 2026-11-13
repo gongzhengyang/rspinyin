@@ -1,12 +1,13 @@
-//! The character-selection route: what the composing brackets do when the
-//! highlight sits on a candidate a character can be taken from.
+//! The character-selection route: what the composing marks the configuration names
+//! do when the highlight sits on a candidate a character can be taken from.
 //!
 //! # Responsibility
 //!
-//! `[` and `]` reach the router as input characters -- they are marks of the
-//! punctuation row, and with nothing composing the passthrough policy answers
-//! them exactly as it always has. While a composition is live, this module
-//! upgrades the two to [`KeyAction::SelectFirstChar`] and
+//! The two marks `keys.select_first_char` and `keys.select_last_char` name -- the
+//! brackets of the shipped document -- reach the router as input characters: they are
+//! marks of the punctuation row, and with nothing composing the passthrough policy
+//! answers them exactly as it always has. While a composition is live, this module
+//! upgrades the configured marks to [`KeyAction::SelectFirstChar`] and
 //! [`KeyAction::SelectLastChar`] when the highlight sits on a candidate the
 //! session can take a character from, steps the session with the action, and --
 //! once the step has trimmed the input the character was spelled with -- stages
@@ -14,7 +15,8 @@
 //! end of the candidate's UTF-8 text, so it is constant time and cannot panic;
 //! a candidate without a character at the asked-for end is not a selection, and
 //! the key then keeps the old answer every mark has: it travels back to the
-//! application.
+//! application. `Off` on a key leaves its mark to that old answer, so the gesture
+//! can be taken away one half at a time.
 //!
 //! The association view answers through its own transition (the character is
 //! taken from a hit's commit text, which only the session reads), so a
@@ -27,6 +29,7 @@
 //! failing answers "not ours", which is the safe direction -- a commit is only
 //! staged after the session reported that it trimmed something.
 
+use ime_config::keymap::KeyBindings;
 use ime_core::state::{Session, SessionEvent, SessionState};
 use ime_types::{CandidateSource, KeyAction};
 
@@ -38,9 +41,9 @@ use super::context::Context;
 /// Which end of the highlighted candidate a key takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Which {
-    /// The first character, which `[` asks for.
+    /// The first character, which the mark `keys.select_first_char` names asks for.
     First,
-    /// The last character, which `]` asks for.
+    /// The last character, which the mark `keys.select_last_char` names asks for.
     Last,
 }
 
@@ -77,6 +80,27 @@ fn char_at_boundaries(text: &str, which: Which) -> Option<&str> {
     }
 }
 
+/// Which end of the highlighted candidate the mark asks for, as the binding table
+/// in force answers it.
+///
+/// The first-character key is asked before the last-character one, which is also the
+/// order the projection settles a conflict in: a mark both keys name is resolved to
+/// the first-character gesture there, so the second arm is the tiebreak the table can
+/// no longer reach.
+///
+/// # Panics
+///
+/// Never.
+fn which_of(keys: &KeyBindings, ch: char) -> Option<Which> {
+    if keys.select_first_char.mark() == Some(ch) {
+        Some(Which::First)
+    } else if keys.select_last_char.mark() == Some(ch) {
+        Some(Which::Last)
+    } else {
+        None
+    }
+}
+
 /// Returns the action `which` is routed as.
 fn action_of(which: Which) -> KeyAction {
     match which {
@@ -108,15 +132,12 @@ fn is_selectable_source(source: CandidateSource) -> bool {
 ///
 /// `None` is the old answer -- the mark belongs to the application, exactly as
 /// it did before this route existed -- and it covers every guard: a session
-/// that is not composing, no highlight, a candidate that is not a reading, and
-/// an empty text. An association candidate stages the session's own commit,
-/// because the character is taken from the hit's commit text there.
-fn prepare(session: &Session, ch: char) -> Option<(KeyAction, Staged)> {
-    let which = match ch {
-        '[' => Which::First,
-        ']' => Which::Last,
-        _ => return None,
-    };
+/// that is not composing, a mark the configuration does not name, no highlight, a
+/// candidate that is not a reading, and an empty text. An association candidate
+/// stages the session's own commit, because the character is taken from the hit's
+/// commit text there.
+fn prepare(session: &Session, keys: &KeyBindings, ch: char) -> Option<(KeyAction, Staged)> {
+    let which = which_of(keys, ch)?;
     if session.state != SessionState::Composing {
         return None;
     }
@@ -167,7 +188,7 @@ pub(in crate::engine::router) fn answer(
     ch: char,
     host: &mut dyn Host,
 ) -> Option<bool> {
-    let (action, staged) = prepare(&ctx.session, ch)?;
+    let (action, staged) = prepare(&ctx.session, &step.config.keys, ch)?;
     // The frame context is written for the same reason the ordinary key path
     // writes it: the step's repaint should carry the mode bits as they stand.
     ctx.write_frame_context(step.config);
@@ -186,7 +207,9 @@ pub(in crate::engine::router) fn answer(
 
 #[cfg(test)]
 mod tests {
-    use super::{Which, char_at_boundaries, prepare};
+    use ime_config::schema::SelectCharKey;
+
+    use super::{KeyBindings, Which, char_at_boundaries, prepare, which_of};
 
     #[test]
     fn test_char_at_boundaries_takes_the_first_scalar_of_each_shape() {
@@ -210,14 +233,51 @@ mod tests {
     }
 
     #[test]
+    fn test_which_of_names_the_configured_marks_on_both_ends() {
+        let shipped = KeyBindings::default();
+        assert_eq!(which_of(&shipped, '['), Some(Which::First));
+        assert_eq!(which_of(&shipped, ']'), Some(Which::Last));
+
+        let custom = KeyBindings {
+            select_first_char: SelectCharKey::Comma,
+            select_last_char: SelectCharKey::Period,
+            ..KeyBindings::default()
+        };
+        assert_eq!(which_of(&custom, ','), Some(Which::First));
+        assert_eq!(which_of(&custom, '.'), Some(Which::Last));
+        assert_eq!(
+            which_of(&custom, '['),
+            None,
+            "a mark the configuration no longer names keeps the old answer"
+        );
+    }
+
+    #[test]
+    fn test_which_of_answers_nothing_for_an_off_key_or_an_untouched_mark() {
+        let keys = KeyBindings {
+            select_first_char: SelectCharKey::Off,
+            select_last_char: SelectCharKey::Off,
+            ..KeyBindings::default()
+        };
+        assert_eq!(which_of(&keys, '['), None);
+        assert_eq!(which_of(&keys, ']'), None);
+        assert_eq!(
+            which_of(&keys, ','),
+            None,
+            "a mark no key names is not a selection"
+        );
+    }
+
+    #[test]
     fn test_prepare_rejects_an_idle_session_and_an_unrouted_mark() {
         let session = ime_core::state::Session::new();
-        assert_eq!(prepare(&session, '['), None, "nothing is composing");
-        assert_eq!(prepare(&session, ']'), None);
+        let keys = KeyBindings::default();
+        assert_eq!(prepare(&session, &keys, '['), None, "nothing is composing");
+        assert_eq!(prepare(&session, &keys, ']'), None);
         assert_eq!(
-            prepare(&session, ','),
+            prepare(&session, &keys, ','),
             None,
-            "only the two brackets are routed here"
+            "only the configured marks are routed here"
         );
     }
 }

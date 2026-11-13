@@ -39,6 +39,7 @@
 
 use std::borrow::Cow;
 
+use ime_config::schema::{AppProfile, AppScriptPref};
 use ime_core::passthrough::{PassthroughFlags, PunctMode, transform_committed};
 use ime_core::script::to_traditional;
 use ime_core::state::effects::ModeBit;
@@ -264,6 +265,38 @@ impl Modes {
             is_punct_full: projection.punct_full,
             is_traditional: false,
         }
+    }
+
+    /// Lays a per-application profile's initials over the projection the document named.
+    ///
+    /// Called once, where a fresh context is built: the bits are the context's starting
+    /// state, and every switch the user flips afterwards is theirs alone -- a preset
+    /// that re-applied itself would fight the user's runtime state. The script bit is
+    /// laid only when this build carries a variant table, mirroring the script toggle's
+    /// own degradation: without a table the preset cannot be honoured, and the shipped
+    /// simplified initial stays in force rather than a bit nothing can convert through.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn with_preset(
+        mut self,
+        preset: Option<AppProfile>,
+        script_available: bool,
+    ) -> Self {
+        let Some(preset) = preset else {
+            return self;
+        };
+        if let Some(full_width) = preset.full_width {
+            self.is_full_width = full_width;
+        }
+        if let Some(punct_full) = preset.punct_full {
+            self.is_punct_full = punct_full;
+        }
+        if preset.script == Some(AppScriptPref::Traditional) && script_available {
+            self.is_traditional = true;
+        }
+        self
     }
 }
 

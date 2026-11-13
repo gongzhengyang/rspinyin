@@ -1,9 +1,13 @@
 //! A minimal compose fallback for hosts without dead-key support.
 //!
 //! Responsibility: remember a dead key when the host answers unsupported, then resolve
-//! the next printable key against a small built-in table. The real host protocol remains
+//! the next key against a small built-in table. The real host protocol remains
 //! authoritative: this state is consulted only after
-//! [`ComposeOutcome::Unsupported`](crate::engine::host::ComposeOutcome::Unsupported).
+//! [`ComposeOutcome::Unsupported`](crate::engine::host::ComposeOutcome::Unsupported),
+//! and its answers mirror the host's own three ways -- a dead key opening a sequence is
+//! swallowed with no output, a resolved sequence commits its character once, and a
+//! sequence that dies without a result commits its mark exactly once and hands the key
+//! back. Nothing is ever committed twice for one gesture.
 //!
 //! Boundaries: the fallback holds no input-context identity. One composing dead key at
 //! a time is enough for the physical keyboard path that reaches the router, and a reset
@@ -18,281 +22,315 @@ const DIAERESIS: u32 = 0xa8;
 const TILDE: u32 = 0x7e;
 const CEDILLA: u32 = 0xb8;
 
-/// A dead key and the letter that completes it.
+/// What an unparseable keysym degrades to when it must be committed.
+///
+/// The fallback commits the dead mark it holds whenever a sequence ends without a
+/// result; a keysym outside the Unicode scalar range has no such mark, so the
+/// replacement character stands in rather than the commit being skipped -- swallowing
+/// input the user typed is worse than committing a visible placeholder.
+const REPLACEMENT: char = '\u{fffd}';
+
+/// One step the fallback asks of the router, the counterpart of the host's own
+/// [`ComposeOutcome`](crate::engine::host::ComposeOutcome).
+///
+/// The ways a dead-key sequence can leave a key mirror the host protocol: commit and
+/// stop, commit and let the key travel on, or swallow with no output at all. The last
+/// answer, `Pass`, is the key the sequence never touched.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ComposeStep {
+    /// Commits this character. The flag answers whether the key itself stops here:
+    /// `true` for a resolved or replaced sequence, `false` when the key that ended the
+    /// sequence keeps its own route -- the miss's single placeholder, and the mark a
+    /// sequence cancelled by a non-character key leaves behind.
+    Commit(char, bool),
+    /// The key is consumed and the application sees nothing: a dead key opening a
+    /// sequence, which is the host's `Swallowed` semantics.
+    Swallow,
+    /// The sequence did not touch this key; it routes as usual.
+    Pass,
+}
+
+/// One completion of a dead mark: the letter that follows it and the character the
+/// pair produces.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ComposeKey {
-    dead: u32,
     letter: char,
     result: char,
 }
 
-/// The fallback rows, ordered by dead key for a readable review.
-///
-/// Rows cover Latin letters only and deliberately include both letter cases. An
-/// unmatched second key falls back to the dead mark itself, matching the least
-/// surprising host behaviour.
-const ROWS: &[ComposeKey] = &[
+/// The completions of the grave mark.
+const GRAVE_ROWS: &[ComposeKey] = &[
     ComposeKey {
-        dead: GRAVE,
         letter: 'A',
         result: 'À',
     },
     ComposeKey {
-        dead: GRAVE,
         letter: 'E',
         result: 'È',
     },
     ComposeKey {
-        dead: GRAVE,
         letter: 'I',
         result: 'Ì',
     },
     ComposeKey {
-        dead: GRAVE,
         letter: 'O',
         result: 'Ò',
     },
     ComposeKey {
-        dead: GRAVE,
         letter: 'U',
         result: 'Ù',
     },
     ComposeKey {
-        dead: GRAVE,
         letter: 'a',
         result: 'à',
     },
     ComposeKey {
-        dead: GRAVE,
         letter: 'e',
         result: 'è',
     },
     ComposeKey {
-        dead: GRAVE,
         letter: 'i',
         result: 'ì',
     },
     ComposeKey {
-        dead: GRAVE,
         letter: 'o',
         result: 'ò',
     },
     ComposeKey {
-        dead: GRAVE,
         letter: 'u',
         result: 'ù',
     },
+];
+
+/// The completions of the acute mark.
+const ACUTE_ROWS: &[ComposeKey] = &[
     ComposeKey {
-        dead: ACUTE,
         letter: 'A',
         result: 'Á',
     },
     ComposeKey {
-        dead: ACUTE,
         letter: 'E',
         result: 'É',
     },
     ComposeKey {
-        dead: ACUTE,
         letter: 'I',
         result: 'Í',
     },
     ComposeKey {
-        dead: ACUTE,
         letter: 'O',
         result: 'Ó',
     },
     ComposeKey {
-        dead: ACUTE,
         letter: 'U',
         result: 'Ú',
     },
     ComposeKey {
-        dead: ACUTE,
         letter: 'Y',
         result: 'Ý',
     },
     ComposeKey {
-        dead: ACUTE,
         letter: 'a',
         result: 'á',
     },
     ComposeKey {
-        dead: ACUTE,
         letter: 'e',
         result: 'é',
     },
     ComposeKey {
-        dead: ACUTE,
         letter: 'i',
         result: 'í',
     },
     ComposeKey {
-        dead: ACUTE,
         letter: 'o',
         result: 'ó',
     },
     ComposeKey {
-        dead: ACUTE,
         letter: 'u',
         result: 'ú',
     },
     ComposeKey {
-        dead: ACUTE,
         letter: 'y',
         result: 'ý',
     },
+];
+
+/// The completions of the circumflex mark.
+const CIRCUMFLEX_ROWS: &[ComposeKey] = &[
     ComposeKey {
-        dead: CIRCUMFLEX,
         letter: 'A',
         result: 'Â',
     },
     ComposeKey {
-        dead: CIRCUMFLEX,
         letter: 'E',
         result: 'Ê',
     },
     ComposeKey {
-        dead: CIRCUMFLEX,
         letter: 'I',
         result: 'Î',
     },
     ComposeKey {
-        dead: CIRCUMFLEX,
         letter: 'O',
         result: 'Ô',
     },
     ComposeKey {
-        dead: CIRCUMFLEX,
         letter: 'U',
         result: 'Û',
     },
     ComposeKey {
-        dead: CIRCUMFLEX,
         letter: 'a',
         result: 'â',
     },
     ComposeKey {
-        dead: CIRCUMFLEX,
         letter: 'e',
         result: 'ê',
     },
     ComposeKey {
-        dead: CIRCUMFLEX,
         letter: 'i',
         result: 'î',
     },
     ComposeKey {
-        dead: CIRCUMFLEX,
         letter: 'o',
         result: 'ô',
     },
     ComposeKey {
-        dead: CIRCUMFLEX,
         letter: 'u',
         result: 'û',
     },
+];
+
+/// The completions of the diaeresis mark.
+const DIAERESIS_ROWS: &[ComposeKey] = &[
     ComposeKey {
-        dead: DIAERESIS,
         letter: 'A',
         result: 'Ä',
     },
     ComposeKey {
-        dead: DIAERESIS,
         letter: 'E',
         result: 'Ë',
     },
     ComposeKey {
-        dead: DIAERESIS,
         letter: 'I',
         result: 'Ï',
     },
     ComposeKey {
-        dead: DIAERESIS,
         letter: 'O',
         result: 'Ö',
     },
     ComposeKey {
-        dead: DIAERESIS,
         letter: 'U',
         result: 'Ü',
     },
     ComposeKey {
-        dead: DIAERESIS,
         letter: 'Y',
         result: 'Ÿ',
     },
     ComposeKey {
-        dead: DIAERESIS,
         letter: 'a',
         result: 'ä',
     },
     ComposeKey {
-        dead: DIAERESIS,
         letter: 'e',
         result: 'ë',
     },
     ComposeKey {
-        dead: DIAERESIS,
         letter: 'i',
         result: 'ï',
     },
     ComposeKey {
-        dead: DIAERESIS,
         letter: 'o',
         result: 'ö',
     },
     ComposeKey {
-        dead: DIAERESIS,
         letter: 'u',
         result: 'ü',
     },
     ComposeKey {
-        dead: DIAERESIS,
         letter: 'y',
         result: 'ÿ',
     },
+];
+
+/// The completions of the tilde mark.
+const TILDE_ROWS: &[ComposeKey] = &[
     ComposeKey {
-        dead: TILDE,
         letter: 'A',
         result: 'Ã',
     },
     ComposeKey {
-        dead: TILDE,
         letter: 'N',
         result: 'Ñ',
     },
     ComposeKey {
-        dead: TILDE,
         letter: 'O',
         result: 'Õ',
     },
     ComposeKey {
-        dead: TILDE,
         letter: 'a',
         result: 'ã',
     },
     ComposeKey {
-        dead: TILDE,
         letter: 'n',
         result: 'ñ',
     },
     ComposeKey {
-        dead: TILDE,
         letter: 'o',
         result: 'õ',
     },
+];
+
+/// The completions of the cedilla mark.
+const CEDILLA_ROWS: &[ComposeKey] = &[
     ComposeKey {
-        dead: CEDILLA,
         letter: 'C',
         result: 'Ç',
     },
     ComposeKey {
-        dead: CEDILLA,
         letter: 'c',
         result: 'ç',
     },
 ];
+
+/// Resolves one dead mark against the letter that followed it.
+///
+/// The first character dispatches: the mark picks its bucket in one `match` step, so a
+/// lookup never crosses a mark it does not belong to, and every bucket is a dozen rows
+/// or fewer. The whole query is therefore a small constant no matter how many rows the
+/// table grows to in total.
+///
+/// # Panics
+///
+/// Never.
+fn lookup(dead: u32, letter: char) -> Option<char> {
+    let rows = match dead {
+        GRAVE => GRAVE_ROWS,
+        ACUTE => ACUTE_ROWS,
+        CIRCUMFLEX => CIRCUMFLEX_ROWS,
+        DIAERESIS => DIAERESIS_ROWS,
+        TILDE => TILDE_ROWS,
+        CEDILLA => CEDILLA_ROWS,
+        _ => return None,
+    };
+    rows.iter()
+        .find(|row| row.letter == letter)
+        .map(|row| row.result)
+}
+
+/// The mark a keysym commits as, when a sequence ends without a result.
+///
+/// # Panics
+///
+/// Never.
+fn mark_of(sym: u32) -> char {
+    char::from_u32(sym).unwrap_or(REPLACEMENT)
+}
+
+/// Whether a keysym is one of the fallback's dead marks.
+fn is_dead_key(sym: u32) -> bool {
+    matches!(
+        sym,
+        GRAVE | ACUTE | CIRCUMFLEX | DIAERESIS | TILDE | CEDILLA
+    )
+}
 
 /// Fallback compose state for one key-routing stream.
 #[derive(Default)]
@@ -320,10 +358,15 @@ impl ComposeFallback {
 
     /// Processes one key when the host cannot compose.
     ///
-    /// A dead key opens the sequence. The next printable key resolves it: a hit
-    /// commits the composed character, and a miss commits the dead mark and leaves the
-    /// current key to normal routing. A second dead key replaces the first, also
-    /// committing the previous mark so no input is silently swallowed.
+    /// A dead key opens the sequence and is swallowed with no output, which is the
+    /// host's own `Swallowed` semantics: nothing reaches the application until the
+    /// sequence resolves. The next key resolves it. A hit commits the composed
+    /// character and stops the key. A miss commits the dead mark once -- the single
+    /// placeholder the failed sequence owed -- and leaves the current key to normal
+    /// routing, so `´x` reads `´x` and not `´´x`. A second dead key commits the
+    /// previous mark and takes its place, so `´` then `` ` `` then `a` reads `´à`. A
+    /// key that is no character at all cancels the sequence the same way a miss does:
+    /// the mark stands in once and the key keeps its own route.
     ///
     /// # Arguments
     ///
@@ -331,52 +374,42 @@ impl ComposeFallback {
     ///
     /// # Returns
     ///
-    /// `Some` with a character to commit and whether the router should stop routing the
-    /// current key, or `None` to route it normally.
+    /// The step the router takes, as [`ComposeStep`].
     ///
     /// # Panics
     ///
     /// Never.
-    pub fn process(&mut self, key: &FcitxKeyEvent) -> Option<(char, bool)> {
+    pub fn process(&mut self, key: &FcitxKeyEvent) -> ComposeStep {
         if key.is_release || key.state != 0 {
-            return None;
+            return ComposeStep::Pass;
         }
         let Some(dead) = self.pending.take() else {
             return if is_dead_key(key.sym) {
                 self.pending = Some(key.sym);
-                Some((char::from_u32(key.sym).unwrap_or('\u{fffd}'), true))
+                ComposeStep::Swallow
             } else {
-                None
+                ComposeStep::Pass
             };
         };
         let Some(character) = char::from_u32(key.sym) else {
-            return Some((char::from_u32(dead).unwrap_or('\u{fffd}'), true));
+            return ComposeStep::Commit(mark_of(dead), false);
         };
         if is_dead_key(key.sym) {
             self.pending = Some(key.sym);
-            return Some((char::from_u32(dead).unwrap_or('\u{fffd}'), true));
+            return ComposeStep::Commit(mark_of(dead), true);
         }
-        match ROWS
-            .iter()
-            .find(|row| row.dead == dead && row.letter == character)
-        {
-            Some(row) => Some((row.result, true)),
-            None => Some((char::from_u32(dead).unwrap_or('\u{fffd}'), false)),
+        match lookup(dead, character) {
+            Some(result) => ComposeStep::Commit(result, true),
+            None => ComposeStep::Commit(mark_of(dead), false),
         }
     }
 }
 
-/// Whether a keysym is one of the fallback's dead marks.
-fn is_dead_key(sym: u32) -> bool {
-    matches!(
-        sym,
-        GRAVE | ACUTE | CIRCUMFLEX | DIAERESIS | TILDE | CEDILLA
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::ComposeFallback;
+    use super::{
+        ACUTE, CEDILLA, CIRCUMFLEX, ComposeFallback, ComposeStep, DIAERESIS, GRAVE, TILDE, lookup,
+    };
     use crate::ffi::FcitxKeyEvent;
 
     fn press(sym: u32) -> FcitxKeyEvent {
@@ -391,37 +424,114 @@ mod tests {
     #[test]
     fn test_process_dead_then_letter_composes_character() {
         let mut fallback = ComposeFallback::new();
-        assert_eq!(fallback.process(&press(0xb4)), Some(('´', true)));
-        assert_eq!(fallback.process(&press(b'e' as u32)), Some(('é', true)));
-        assert_eq!(fallback.process(&press(b'x' as u32)), None);
+        // The opening dead key is swallowed with no output, the host's own semantics.
+        assert_eq!(fallback.process(&press(0xb4)), ComposeStep::Swallow);
+        assert_eq!(
+            fallback.process(&press(b'e' as u32)),
+            ComposeStep::Commit('é', true)
+        );
+        assert_eq!(fallback.process(&press(b'x' as u32)), ComposeStep::Pass);
     }
 
     #[test]
     fn test_process_miss_replays_letter_for_normal_routing() {
         let mut fallback = ComposeFallback::new();
-        assert_eq!(fallback.process(&press(0xa8)), Some(('¨', true)));
-        assert_eq!(fallback.process(&press(b'x' as u32)), Some(('¨', false)));
-        assert_eq!(fallback.process(&press(b'x' as u32)), None);
+        assert_eq!(fallback.process(&press(0xa8)), ComposeStep::Swallow);
+        // One placeholder, and the letter keeps its route: the application reads x.
+        assert_eq!(
+            fallback.process(&press(b'x' as u32)),
+            ComposeStep::Commit('¨', false)
+        );
+        assert_eq!(fallback.process(&press(b'x' as u32)), ComposeStep::Pass);
     }
 
     #[test]
     fn test_process_release_or_modifier_ignores_pending() {
         let mut fallback = ComposeFallback::new();
-        assert_eq!(fallback.process(&press(0x7e)), Some(('~', true)));
+        assert_eq!(fallback.process(&press(0x7e)), ComposeStep::Swallow);
         let mut release = press(b'n' as u32);
         release.is_release = true;
-        assert_eq!(fallback.process(&release), None);
+        assert_eq!(fallback.process(&release), ComposeStep::Pass);
         let mut modified = press(b'n' as u32);
         modified.state = 1;
-        assert_eq!(fallback.process(&modified), None);
-        assert_eq!(fallback.process(&press(b'n' as u32)), Some(('ñ', true)));
+        assert_eq!(fallback.process(&modified), ComposeStep::Pass);
+        // The pending mark survived both edges and resolves on the plain press.
+        assert_eq!(
+            fallback.process(&press(b'n' as u32)),
+            ComposeStep::Commit('ñ', true)
+        );
+    }
+
+    #[test]
+    fn test_process_uppercase_letter_composes_the_uppercase_character() {
+        let mut fallback = ComposeFallback::new();
+        assert_eq!(fallback.process(&press(0xb4)), ComposeStep::Swallow);
+        assert_eq!(
+            fallback.process(&press(b'E' as u32)),
+            ComposeStep::Commit('É', true)
+        );
+    }
+
+    #[test]
+    fn test_process_second_dead_key_replaces_pending_and_commits_the_previous_mark() {
+        let mut fallback = ComposeFallback::new();
+        assert_eq!(fallback.process(&press(0xb4)), ComposeStep::Swallow);
+        // The grave takes the acute's place, and the acute's mark is committed once:
+        // the application reads ´ before whatever the grave goes on to compose.
+        assert_eq!(
+            fallback.process(&press(0x60)),
+            ComposeStep::Commit('´', true)
+        );
+        assert_eq!(
+            fallback.process(&press(b'a' as u32)),
+            ComposeStep::Commit('à', true)
+        );
+    }
+
+    #[test]
+    fn test_process_function_key_cancels_sequence_and_keeps_its_own_route() {
+        let mut fallback = ComposeFallback::new();
+        assert_eq!(fallback.process(&press(0xa8)), ComposeStep::Swallow);
+        // A keysym that is no character at all cannot complete a sequence: the mark
+        // stands in once, the sequence ends, and the function key travels on.
+        assert_eq!(
+            fallback.process(&press(0xffbe)),
+            ComposeStep::Commit('¨', false)
+        );
+        assert_eq!(fallback.process(&press(b'c' as u32)), ComposeStep::Pass);
     }
 
     #[test]
     fn test_reset_clears_pending_dead_key() {
         let mut fallback = ComposeFallback::new();
-        assert_eq!(fallback.process(&press(0xb8)), Some(('¸', true)));
+        assert_eq!(fallback.process(&press(0xb8)), ComposeStep::Swallow);
         fallback.reset();
-        assert_eq!(fallback.process(&press(b'c' as u32)), None);
+        assert_eq!(fallback.process(&press(b'c' as u32)), ComposeStep::Pass);
+    }
+
+    #[test]
+    fn test_lookup_resolves_every_builtin_row() {
+        // Every row the built-in buckets declare must resolve through the dispatched
+        // lookup, which is the guarantee that the per-mark buckets hold the same data
+        // the table's rows spell out.
+        let buckets = [
+            (GRAVE, super::GRAVE_ROWS),
+            (ACUTE, super::ACUTE_ROWS),
+            (CIRCUMFLEX, super::CIRCUMFLEX_ROWS),
+            (DIAERESIS, super::DIAERESIS_ROWS),
+            (TILDE, super::TILDE_ROWS),
+            (CEDILLA, super::CEDILLA_ROWS),
+        ];
+        for (mark, rows) in buckets {
+            for row in rows {
+                assert_eq!(lookup(mark, row.letter), Some(row.result));
+            }
+        }
+    }
+
+    #[test]
+    fn test_lookup_unknown_mark_or_letter_answers_none() {
+        assert_eq!(lookup(b'x' as u32, 'e'), None, "not a dead mark");
+        assert_eq!(lookup(ACUTE, 'z'), None, "a letter no row completes");
     }
 }

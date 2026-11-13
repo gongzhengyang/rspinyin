@@ -75,6 +75,29 @@ pub struct EngineConfig {
     pub mixed_english: bool,
     /// `share_state`: how sessions are shared across input contexts.
     pub share_state: ShareState,
+    /// `aux_refinement`: whether the backtick-led auxiliary-code session may open
+    /// over a composition, narrowing the candidate list the decode produced.
+    ///
+    /// Off by default: a lead key that starts filtering changes what the window
+    /// shows without the user asking for it, and a container without the
+    /// dictionary's aux column cannot answer the session at all. The key is the
+    /// configuration's half of the engine's `AuxGate` switch; the session itself
+    /// is the engine's, and a reload that moves the flag never disturbs the
+    /// composition the session was opened over (0.4 rule 10).
+    pub aux_refinement: bool,
+    /// `reverse_lookup`: whether a lowercase-`u` prefix at the start of the input
+    /// opens the decomposition reverse-lookup domain, where the rest of the input
+    /// is a component-code fragment and the window lists the characters that
+    /// decompose into it.
+    ///
+    /// Off by default: a `u` prefix is a legitimate start of ordinary pinyin
+    /// input, so claiming it changes what the window shows without the user
+    /// asking for it, and a container without the dictionary's reverse index
+    /// cannot answer the domain at all. The key is the configuration's half of
+    /// the engine's reverse gate; the domain itself is the engine's, and a
+    /// reload that moves the flag closes an open panel without touching the
+    /// composition underneath it (0.4 rule 10).
+    pub reverse_lookup: bool,
 }
 
 /// The `[fuzzy]` section: the fuzzy-equivalence classes the decoder widens with.
@@ -206,6 +229,11 @@ pub struct ThemeConfig {
     pub accent: Rgb,
 }
 
+/// The `keys.select_first_char` key.
+pub(crate) const KEY_SELECT_FIRST_CHAR: &str = "keys.select_first_char";
+/// The `keys.select_last_char` key.
+pub(crate) const KEY_SELECT_LAST_CHAR: &str = "keys.select_last_char";
+
 /// The `[keys]` section.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeysConfig {
@@ -222,6 +250,140 @@ pub struct KeysConfig {
     /// [`MAX_KEY_BINDINGS`] of them and without repeats. A key both lists name stays
     /// here, and the entry that gives way is the one in `flip_keys`.
     pub highlight_keys: Vec<KeyName>,
+    /// `select_first_char`: the mark that commits the highlighted candidate's first
+    /// character, so a word the input method cannot rank first can still give up the
+    /// one character the user meant.
+    ///
+    /// The value is one mark of the punctuation row or `Off`; see
+    /// [`SelectCharKey`] for the set and for why it is that set. The shipped key is
+    /// `[`.
+    pub select_first_char: SelectCharKey,
+    /// `select_last_char`: the mark that commits the highlighted candidate's last
+    /// character, the other half of the same gesture. The shipped key is `]`.
+    pub select_last_char: SelectCharKey,
+}
+
+/// The marks one of the character-selection keys may name: the values
+/// `keys.select_first_char` and `keys.select_last_char` accept.
+///
+/// The whitelist is the punctuation row the routing layer answers while a
+/// composition is live -- exactly the marks a selection can be read from without
+/// ever taking a key the routing table already binds, because while a composition is
+/// live the row hands every one of them back to the application unless the selection
+/// route claims it. A value the type accepts is therefore a value the routing layer
+/// can actually see; a key outside the row -- a letter, a digit, the syllable
+/// separator -- would be accepted by a wider type and then answered by nothing.
+///
+/// The type carries the mark itself rather than a keysym, because the route reads
+/// the character the punctuation row delivered; which physical key produced that
+/// character is the layout's business and not a thing a configuration can name
+/// portably. [`SelectCharKey::Off`] disables the gesture: the mark travels back to
+/// the application exactly as every composing mark does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectCharKey {
+    /// No key: the gesture is off.
+    Off,
+    /// `!`.
+    Exclamation,
+    /// `"`.
+    Quote,
+    /// `(`.
+    ParenLeft,
+    /// `)`.
+    ParenRight,
+    /// `,`.
+    Comma,
+    /// `.`.
+    Period,
+    /// `:`.
+    Colon,
+    /// `;`.
+    Semicolon,
+    /// `?`.
+    Question,
+    /// `@`.
+    At,
+    /// `[`.
+    BracketLeft,
+    /// `]`.
+    BracketRight,
+}
+
+impl SelectCharKey {
+    /// Parses one mark name.
+    ///
+    /// # Parameters
+    ///
+    /// - `raw`: the name as the document spells it, in lower snake case.
+    /// - `key`: the configuration key the name came from, so that the diagnostic
+    ///   names `keys.select_first_char` or `keys.select_last_char` rather than the
+    ///   section.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Invalid`] naming `key` when the name is not in the whitelist.
+    pub fn parse(raw: &str, key: &str) -> Result<Self, ConfigError> {
+        match raw {
+            "off" => Ok(Self::Off),
+            "exclamation" => Ok(Self::Exclamation),
+            "quote" => Ok(Self::Quote),
+            "paren_left" => Ok(Self::ParenLeft),
+            "paren_right" => Ok(Self::ParenRight),
+            "comma" => Ok(Self::Comma),
+            "period" => Ok(Self::Period),
+            "colon" => Ok(Self::Colon),
+            "semicolon" => Ok(Self::Semicolon),
+            "question" => Ok(Self::Question),
+            "at" => Ok(Self::At),
+            "bracket_left" => Ok(Self::BracketLeft),
+            "bracket_right" => Ok(Self::BracketRight),
+            other => Err(invalid(
+                key,
+                format!("unknown select-character key: {other}"),
+            )),
+        }
+    }
+
+    /// The spelling the configuration file uses, which is what
+    /// [`SelectCharKey::parse`] accepts.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Exclamation => "exclamation",
+            Self::Quote => "quote",
+            Self::ParenLeft => "paren_left",
+            Self::ParenRight => "paren_right",
+            Self::Comma => "comma",
+            Self::Period => "period",
+            Self::Colon => "colon",
+            Self::Semicolon => "semicolon",
+            Self::Question => "question",
+            Self::At => "at",
+            Self::BracketLeft => "bracket_left",
+            Self::BracketRight => "bracket_right",
+        }
+    }
+
+    /// The character the routing layer's punctuation row delivers for this key, or
+    /// `None` for [`SelectCharKey::Off`]. This is the form the selection route
+    /// matches the typed mark against.
+    pub const fn mark(self) -> Option<char> {
+        match self {
+            Self::Off => None,
+            Self::Exclamation => Some('!'),
+            Self::Quote => Some('"'),
+            Self::ParenLeft => Some('('),
+            Self::ParenRight => Some(')'),
+            Self::Comma => Some(','),
+            Self::Period => Some('.'),
+            Self::Colon => Some(':'),
+            Self::Semicolon => Some(';'),
+            Self::Question => Some('?'),
+            Self::At => Some('@'),
+            Self::BracketLeft => Some('['),
+            Self::BracketRight => Some(']'),
+        }
+    }
 }
 
 /// The `[phrases]` section: the shortcuts the user defined for their own text.
@@ -419,6 +581,9 @@ pub struct Config {
     pub english: EnglishConfig,
     /// The `[shuangpin]` section.
     pub shuangpin: ShuangpinConfig,
+    /// The `[app_profiles]` section: per-application session initial values, keyed by
+    /// the applications' hashed identifiers.
+    pub app_profiles: AppProfilesConfig,
 }
 
 impl Default for Config {
@@ -445,6 +610,8 @@ impl Default for Config {
                 mixed_english: false,
                 compose: false,
                 share_state: ShareState::Context,
+                aux_refinement: false,
+                reverse_lookup: false,
             },
             ui: UiConfig {
                 client_preedit: false,
@@ -477,6 +644,8 @@ impl Default for Config {
                     KeyName::End,
                 ],
                 highlight_keys: vec![KeyName::Tab, KeyName::ShiftTab],
+                select_first_char: SelectCharKey::BracketLeft,
+                select_last_char: SelectCharKey::BracketRight,
             },
             phrases: PhraseConfig {
                 enabled: true,
@@ -522,85 +691,13 @@ impl Default for Config {
             // built-in layouts are exactly the double-pinyin layouts a fresh
             // installation ships.
             shuangpin: ShuangpinConfig::default(),
+            // Empty: no application carries a preset until the user names one by its
+            // hash, and every session of a build before the section existed -- and of
+            // a document without the section -- starts exactly as it always started.
+            app_profiles: AppProfilesConfig::default(),
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_config_default_quick_input_section_is_disabled_with_bounded_prefixes() {
-        let quick = Config::default().quick_input;
-        assert!(!quick.enabled);
-        assert_eq!(quick.date_prefixes, ["rq", "dt"]);
-        assert!(!quick.calc_enabled);
-    }
-
-    #[test]
-    fn test_config_default_english_section_is_auto() {
-        // The shipped behaviour pinned here so a default that moves is a
-        // conscious edit: Auto is the boundary rule the benchmark's spacer
-        // translates, and a drift to Off would silently strip the one space
-        // every mixed sentence after it expects.
-        assert_eq!(Config::default().english.spacing, EnglishSpacing::Auto);
-    }
-
-    #[test]
-    fn test_config_default_assoc_section_is_disabled_with_shipped_bounds() {
-        // The values the section ships with, pinned here so a default that moves
-        // is a conscious edit: the section is an opt-in feature, and a default
-        // that drifted to enabled would put candidates after every commit for
-        // users who never asked for them. The document-level drift test in
-        // `reload` covers the same defaults from the template side; this one
-        // holds the type side on its own.
-        let assoc = Config::default().assoc;
-        assert!(!assoc.enabled);
-        assert_eq!(assoc.max_candidates, 5);
-        assert_eq!(assoc.history_depth, 8);
-    }
-
-    #[test]
-    fn test_config_default_assoc_section_needs_no_repair() {
-        // The shipped section sits inside every range the repair rules hold, so
-        // validating the defaults reports nothing: a fresh install never opens
-        // with a repaired-value notice it did nothing to earn.
-        assert!(Config::default().validate().is_empty());
-    }
-
-    #[test]
-    fn test_config_default_shuangpin_section_names_no_layout() {
-        // The section is an explicit opt-in: a fresh installation names no file
-        // and writes no inline tables, so no custom layout exists to load and the
-        // double-pinyin layouts are exactly the built-in ones.
-        let shuangpin = Config::default().shuangpin;
-        assert!(shuangpin.custom.is_unset());
-        assert_eq!(shuangpin.custom.file, "");
-        assert!(shuangpin.custom.initials.is_empty());
-        assert!(shuangpin.custom.finals.is_empty());
-        assert!(shuangpin.custom.standalone.is_empty());
-    }
-
-    #[test]
-    fn test_document_assoc_section_is_parsed_and_repaired_by_key() {
-        let document = concat!(
-            "[assoc]\n",
-            "enabled = true\n",
-            "max_candidates = 0\n",
-            "history_depth = 65\n",
-        );
-        let (config, warnings) = Config::from_document(document).expect("the document parses");
-
-        assert!(config.assoc.enabled);
-        assert_eq!(config.assoc.max_candidates, 5);
-        assert_eq!(config.assoc.history_depth, 8);
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
-        for (warning, key) in warnings
-            .iter()
-            .zip(["assoc.max_candidates", "assoc.history_depth"])
-        {
-            assert!(warning.to_string().contains(key), "{warning}");
-        }
-    }
-}
+mod tests;

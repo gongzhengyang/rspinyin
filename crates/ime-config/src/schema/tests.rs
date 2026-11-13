@@ -327,6 +327,52 @@ fn test_key_name_whitelist_round_trips_through_as_str() {
 }
 
 #[test]
+fn test_select_char_whitelist_round_trips_through_as_str() {
+    // The whitelist and `as_str` are two halves of one mapping, like `KeyName`'s: pinning
+    // them together means neither can be extended without the other. The marks are also
+    // pinned to their characters, because the selection route matches the mark the
+    // punctuation row delivered against exactly this value.
+    let whitelist = [
+        (SelectCharKey::Off, None),
+        (SelectCharKey::Exclamation, Some('!')),
+        (SelectCharKey::Quote, Some('"')),
+        (SelectCharKey::ParenLeft, Some('(')),
+        (SelectCharKey::ParenRight, Some(')')),
+        (SelectCharKey::Comma, Some(',')),
+        (SelectCharKey::Period, Some('.')),
+        (SelectCharKey::Colon, Some(':')),
+        (SelectCharKey::Semicolon, Some(';')),
+        (SelectCharKey::Question, Some('?')),
+        (SelectCharKey::At, Some('@')),
+        (SelectCharKey::BracketLeft, Some('[')),
+        (SelectCharKey::BracketRight, Some(']')),
+    ];
+    let mut seen: Vec<char> = Vec::new();
+    for (value, mark) in whitelist {
+        let written = SelectCharKey::parse(value.as_str(), KEY_SELECT_FIRST_CHAR)
+            .map(SelectCharKey::as_str)
+            .unwrap_or_default();
+        assert_eq!(written, value.as_str(), "the spelling round-trips");
+        assert_eq!(
+            value.mark(),
+            mark,
+            "{} names the wrong mark",
+            value.as_str()
+        );
+        if let Some(mark) = mark {
+            assert!(
+                !seen.contains(&mark),
+                "{} shares a mark with another key",
+                value.as_str()
+            );
+            seen.push(mark);
+        }
+    }
+    assert!(SelectCharKey::parse("tilde", KEY_SELECT_FIRST_CHAR).is_err());
+    assert!(SelectCharKey::parse("", KEY_SELECT_LAST_CHAR).is_err());
+}
+
+#[test]
 fn test_logs_input_characters_is_false_whatever_the_key_says() {
     let off = Config::default().diagnostics;
     assert!(!off.log_input_content, "the default is off");
@@ -453,6 +499,45 @@ fn test_engine_abbrev_leaves_the_other_keys_alone() {
 
     // Off is the default, so a configuration that spells it out is the built-in one.
     assert_eq!(tweaked(|c| c.engine.abbrev = false), Config::default());
+}
+
+#[test]
+fn test_engine_reverse_lookup_default_is_off() {
+    // A `u` prefix is ordinary pinyin input until the user asks for the domain, so
+    // a user who never enabled the reverse lookup must not have their `u`-led
+    // compositions answered from a decomposition table they did not know was there.
+    assert!(
+        !Config::default().engine.reverse_lookup,
+        "the default is off"
+    );
+    assert!(
+        Config::default().validate().is_empty(),
+        "a flag needs no repair rule"
+    );
+}
+
+#[test]
+fn test_engine_reverse_lookup_leaves_the_other_keys_alone() {
+    // The switch is one flag of one section. Turning it on, and leaving it off, must
+    // both leave every other key exactly as it was: a flag that moved anything beside
+    // itself would be a routing change nobody asked for.
+    let (repaired, warnings) = tweaked(|c| c.engine.reverse_lookup = true).repaired();
+    assert!(warnings.is_empty(), "a flag cannot hold an unusable value");
+    assert!(repaired.engine.reverse_lookup, "the value is carried");
+    assert_eq!(
+        EngineConfig {
+            reverse_lookup: false,
+            ..repaired.engine
+        },
+        Config::default().engine,
+        "only the switch moved"
+    );
+
+    // Off is the default, so a configuration that spells it out is the built-in one.
+    assert_eq!(
+        tweaked(|c| c.engine.reverse_lookup = false),
+        Config::default()
+    );
 }
 
 #[test]

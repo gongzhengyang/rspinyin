@@ -37,7 +37,11 @@ fn test_collision_cut_rejects_complete_pinyin_and_unpinnable_spellings() {
         "shi is a syllable, not an initial"
     );
     // No cut names a syllable head at all.
-    assert_eq!(collision_cut("hello"), None, "he|llo leaves no initial tail");
+    assert_eq!(
+        collision_cut("hello"),
+        None,
+        "he|llo leaves no initial tail"
+    );
     assert_eq!(collision_cut("github"), None);
     assert_eq!(collision_cut("wtf"), None);
     assert_eq!(collision_cut("the"), None);
@@ -115,18 +119,19 @@ fn test_apply_long_word_gradient_promotes_longer_candidates_below_the_anchor() {
     // pre-mark order buries at the tail, and a two-character tail the mark
     // must not touch.
     let rows: Vec<(u32, u32)> = vec![(5_000, 0), (300, 1), (40, 2), (5, 3), (3, 4), (2, 5)];
-    let mut keys = key_map([&rows[..]]);
+    let mut keys = key_map(&[&rows[..]]);
     let char_counts = [2, 2, 2, 3, 4, 2];
     let promoted = apply_long_word_gradient(&mut keys, &char_counts);
     assert_eq!(promoted, 2, "only the two longer-than-head pairs move");
-    let ranked = &keys["key0"];
+    // The mark writes weights, so the within-key ranking the container's own
+    // weight sort produces is the contract: the four-character candidate rides
+    // factor 4, the three-character one factor 2, and both rank below the
+    // anchor and above the untouched tail despite the lighter corpus weights.
+    let mut ranked = keys["key0"].clone();
+    ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
     assert_eq!(ranked[0], (5_000, 0), "the head keeps its weight");
     assert_eq!(ranked[1], (300, 1), "a shorter candidate keeps its weight");
     assert_eq!(ranked[2], (40, 2), "the anchor keeps its weight");
-    // The four-character candidate rides factor 4, the three-character one
-    // factor 2; both rank below the anchor and above the untouched tail,
-    // which is the insert-at-position-4 shape -- and the gradient, the longer
-    // word ahead despite the lighter corpus weight.
     assert_eq!(ranked[3], (12, 4), "four characters: 3 x 4");
     assert_eq!(ranked[4], (10, 3), "three characters: 5 x 2");
     assert_eq!(ranked[5], (2, 5), "no longer than the head: untouched");
@@ -137,13 +142,18 @@ fn test_apply_long_word_gradient_pulls_a_long_word_back_behind_the_anchor() {
     // A three-character candidate already ahead of the anchor is relocated
     // behind it, the way the benchmark's filter re-inserts at the position
     // rather than only lifting.
-    let mut keys = key_map([&[(1_000, 0), (900, 1), (500, 2), (10, 3)]]);
+    let mut keys = key_map(&[&[(1_000, 0), (900, 1), (500, 2), (10, 3)]]);
     let char_counts = [2, 3, 2, 2];
     let promoted = apply_long_word_gradient(&mut keys, &char_counts);
     assert_eq!(promoted, 1);
-    let ranked = &keys["key0"];
+    // The mark writes weights and leaves the pair positions alone: the
+    // relocation the filter performs is the capped word ranking below the
+    // anchor once the compiler's own weight sort runs, which is what the
+    // sorted view asserts.
+    let mut ranked = keys["key0"].clone();
+    ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
     assert_eq!(ranked[0], (1_000, 0));
-    assert_eq!(ranked[1], (500, 2), "the anchor's neighborhood keeps its order");
+    assert_eq!(ranked[1], (500, 2), "the anchor keeps its rank");
     assert_eq!(ranked[2], (499, 1), "capped just below the anchor weight");
     assert_eq!(ranked[3], (10, 3));
 }
@@ -152,7 +162,7 @@ fn test_apply_long_word_gradient_pulls_a_long_word_back_behind_the_anchor() {
 fn test_apply_long_word_gradient_appends_when_the_key_has_no_anchor() {
     // Three candidates: the anchor degrades to the last of them, so the
     // promotion appends, which is the same insertion at the end.
-    let mut keys = key_map([&[(1_000, 0), (300, 1), (100, 2)]]);
+    let mut keys = key_map(&[&[(1_000, 0), (300, 1), (100, 2)]]);
     let char_counts = [2, 2, 3];
     let promoted = apply_long_word_gradient(&mut keys, &char_counts);
     assert_eq!(promoted, 1);
@@ -169,8 +179,8 @@ fn test_apply_long_word_gradient_is_a_function_of_the_pre_mark_weights() {
     // is the reproducibility a repeated compilation exercises.
     let rows: Vec<(u32, u32)> = vec![(5_000, 0), (300, 1), (40, 2), (3, 3), (2, 4)];
     let char_counts = [2, 2, 2, 3, 2];
-    let mut first = key_map([&rows[..]]);
-    let mut second = key_map([&rows[..]]);
+    let mut first = key_map(&[&rows[..]]);
+    let mut second = key_map(&[&rows[..]]);
     let a = apply_long_word_gradient(&mut first, &char_counts);
     let b = apply_long_word_gradient(&mut second, &char_counts);
     assert_eq!(a, b);
@@ -182,7 +192,7 @@ fn test_apply_long_word_gradient_is_a_function_of_the_pre_mark_weights() {
 fn test_apply_long_word_gradient_skips_an_id_outside_the_counts() {
     // A defensive fallback, never produced by the compiler: an id past the
     // counts reads no length, and a pair with no length is never promoted.
-    let mut keys = key_map([&[(5_000, 9), (300, 7)]]);
+    let mut keys = key_map(&[&[(5_000, 9), (300, 7)]]);
     let char_counts = [2];
     let promoted = apply_long_word_gradient(&mut keys, &char_counts);
     assert_eq!(promoted, 0);

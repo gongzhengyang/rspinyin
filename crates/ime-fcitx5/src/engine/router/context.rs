@@ -15,15 +15,19 @@
 //! key is a function of the tier in force and the privacy layer's identifier.
 
 use ime_config::ShareState;
+use ime_config::schema::AppProfile;
 use ime_core::privacy::AppIdHash;
 use ime_core::state::{FrameContext, Session};
 use ime_dict::script::ScriptIndex;
 use ime_types::Anchor;
 
 use super::RoutingConfig;
+use super::effects::aux::AuxOverlay;
 use super::effects::quick::QuickPanel;
+use super::effects::reverse::ReversePanel;
 use super::modes::{Modes, OutputProjection};
 use super::phrases::PhraseHandle;
+use crate::engine::compose::ComposeFallback;
 
 /// The key a context's state is pooled by, from `[engine] share_state`.
 ///
@@ -162,29 +166,77 @@ pub(super) struct Context {
     /// not decoded — so it lives beside the session rather than inside it, and dies
     /// with the context: nothing parked in a pool slot survives a release.
     pub(super) quick: Option<QuickPanel>,
+    /// The auxiliary-code refinement session this context has open, when one is.
+    /// Like the quick panel it is a routing-layer view over a candidate list rather
+    /// than a second decoder, so it lives beside the session; unlike the panel its
+    /// candidates are the session's own, held as an owned snapshot of the frame the
+    /// session had on screen when the lead key opened the view. It dies with the
+    /// context the same way: nothing parked in a pool slot survives a release.
+    pub(super) aux: Option<AuxOverlay>,
+    /// The decomposition reverse-lookup panel this context has open, when one is.
+    /// Like the quick panel it is a routing-layer composition whose candidates are
+    /// rendered from a dictionary read rather than decoded, so it lives beside the
+    /// session and dies with the context: nothing parked in a pool slot survives a
+    /// release.
+    pub(super) reverse: Option<ReversePanel>,
+    /// The dead-key sequence this context holds against the built-in table when the
+    /// host cannot compose. It is the context's own, not the router's: two input
+    /// contexts must never resolve one another's pending marks, and a context that
+    /// ends takes its sequence with it.
+    pub(super) compose_fallback: ComposeFallback,
+}
+
+/// The environment a fresh context starts from, everything beyond the session
+/// identity (`ic`, pool key, session-id base) the first key event needs.
+pub(super) struct FreshEnv {
+    /// The phrase store the context reads its phrases through.
+    pub(super) phrases: PhraseHandle,
+    /// The per-context script (simplified/traditional) state, starting off.
+    pub(super) script: ScriptState,
+    /// The output projection the configuration in force names.
+    pub(super) output: OutputProjection,
+    /// What the application's profile names, or `None` when the configuration
+    /// names no profile for it. A creation parameter only: an adopted session
+    /// keeps the state the user left it in, and no preset is ever laid over one.
+    pub(super) preset: Option<AppProfile>,
+    /// Whether the host can compose; read once at creation.
+    pub(super) preedit_supported: bool,
 }
 
 impl Context {
     /// A context whose state starts fresh.
     ///
     /// The session is created from `session_base`, the start of this context's session id
-    /// range; the output bits start where the configuration in force projects them; the
-    /// script bit starts off in every context, because a toggle the user made is
-    /// per-context state rather than a document default.
-    pub(super) fn fresh(
-        ic: u64,
-        key: PoolKey,
-        session_base: u64,
-        phrases: PhraseHandle,
-        script: ScriptState,
-        output: OutputProjection,
-        preedit_supported: bool,
-    ) -> Self {
+    /// range; the output bits start where `env`'s projection lays them, laid over with
+    /// `env.preset` where the application's profile names a value; the script bit starts
+    /// off in every context, because a toggle the user made is per-context state rather
+    /// than a document default.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(super) fn fresh(ic: u64, key: PoolKey, session_base: u64, env: FreshEnv) -> Self {
+        let FreshEnv {
+            phrases,
+            script,
+            output,
+            preset,
+            preedit_supported,
+        } = env;
+        let mut session = Session::new_with_counter(session_base);
+        // The profile's English initial rides the temporary-English mode: a session in
+        // that mode hands every key to the application until Return or Escape leaves
+        // it, which is the pass-through a per-app English preset promises. Set at
+        // creation and never re-imposed -- the mode the user left a session in is the
+        // mode it keeps.
+        if preset.is_some_and(|preset| preset.ascii == Some(true)) {
+            session.temp_english = true;
+        }
         Self {
             ic,
             key,
-            session: Session::new_with_counter(session_base),
-            modes: Modes::from_projection(output),
+            session,
+            modes: Modes::from_projection(output).with_preset(preset, script.index().is_some()),
             phrases,
             script,
             // Until the host reports a cursor rectangle, the window is anchored at the
@@ -193,6 +245,9 @@ impl Context {
             anchor: FrameContext::default().anchor,
             preedit_supported,
             quick: None,
+            aux: None,
+            reverse: None,
+            compose_fallback: ComposeFallback::new(),
         }
     }
 
@@ -222,6 +277,9 @@ impl Context {
             preedit_supported,
             anchor: FrameContext::default().anchor,
             quick: None,
+            aux: None,
+            reverse: None,
+            compose_fallback: ComposeFallback::new(),
         }
     }
 

@@ -18,6 +18,7 @@ mod report;
 mod soak;
 mod testd;
 mod tune;
+mod userdict;
 mod verify;
 mod versions;
 
@@ -168,6 +169,11 @@ enum Command {
     /// Not boxed: the argument struct is flags and paths, far smaller than the boxed
     /// variants above.
     Golden(testd::golden_cli::GoldenArgs),
+    /// Operate on the user dictionary: list, export, import, forget, pin, unpin, stats.
+    ///
+    /// Not boxed: the argument struct is two flags and a subcommand enum, far smaller
+    /// than the boxed variants above.
+    UserDict(userdict::UserDictArgs),
 }
 
 /// Subcommands under `xtask dict`.
@@ -238,5 +244,6 @@ fn main() -> anyhow::Result<()> {
         Command::TestMirror(args) => testd::mirror_cli::run(*args),
         Command::Capture(args) => testd::capture_cli::run(args),
         Command::Golden(args) => testd::golden_cli::run(args),
+        Command::UserDict(args) => userdict::run(args),
     }
 }

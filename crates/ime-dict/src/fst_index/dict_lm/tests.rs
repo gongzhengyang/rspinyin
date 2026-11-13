@@ -65,9 +65,12 @@ fn model_with_bigrams(bigrams: &[(u64, u16)]) -> DictLm {
 
 #[test]
 fn test_successors_orders_one_segment_by_score_and_provider_id() {
+    // Three distinct probabilities: the strict score-descent asserts below
+    // need a mid-probability row between the max and the 1_024 one — two rows
+    // at `PROB_Q12_MAX` would tie at score zero and assert against themselves.
     let model = model_with_bigrams(&[
         (7 << 32 | 3, 1_024),
-        (7 << 32 | 1, PROB_Q12_MAX),
+        (7 << 32 | 1, 2_048),
         (7 << 32 | 2, PROB_Q12_MAX),
         (8 << 32, PROB_Q12_MAX),
     ]);

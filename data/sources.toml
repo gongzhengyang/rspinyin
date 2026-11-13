@@ -203,3 +203,18 @@ spdx = "MIT OR Apache-2.0"
 retrieved = ""
 sha256 = ""
 permissive = true
+
+# Per-character shape codes for the aux-code refinement domain: each common
+# character decomposes into the reading initials of its first components (the
+# table is maintained in-repo and reviewed by hand), and dictc bakes one aux
+# column per word entry into the container's tail section at compile time.
+[[source]]
+id = "chaizi"
+kind = "derived"
+layer = "L5"
+url = "https://github.com/gongzhengyang/rspinyin"
+license = "Project-owned (MIT OR Apache-2.0)"
+spdx = "MIT OR Apache-2.0"
+retrieved = ""
+sha256 = ""
+permissive = true

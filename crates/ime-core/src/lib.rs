@@ -9,6 +9,7 @@
 //! clock, or display server involved.
 
 pub mod assoc;
+pub mod aux;
 pub mod confusable;
 pub mod fuzzy;
 pub mod input;
@@ -18,6 +19,7 @@ pub mod phrase;
 pub mod preedit;
 pub mod privacy;
 pub mod quick;
+pub mod reverse;
 pub mod script;
 pub mod segment;
 pub mod shuangpin;

@@ -22,10 +22,12 @@ use std::path::Path;
 
 use ime_types::DictError;
 
+use crate::format::aux::{AUX_HEADER_SIZE, AUX_ROW_SIZE};
 use crate::format::{
-    self, BIGRAM_ENTRY_SIZE, BigramRecord, DictEntry, ENTRY_SIZE, FLAG_BIGRAM_PRESENT,
-    FORMAT_VERSION_V1, HEADER_SIZE, Header, SECTION_COUNT, SectionEntry, SectionKind,
-    UNIGRAM_ENTRY_SIZE, crc32, hash_word, parse_header, parse_section_table, unpack_fst_value,
+    self, BIGRAM_ENTRY_SIZE, BigramRecord, DictEntry, ENTRY_SIZE, FLAG_AUX_PRESENT,
+    FLAG_BIGRAM_PRESENT, FLAG_REVERSE_PRESENT, FORMAT_VERSION_V1, HEADER_SIZE, Header,
+    SECTION_COUNT, SECTIONS_OFFSET, SectionEntry, SectionKind, UNIGRAM_ENTRY_SIZE, align_up, crc32,
+    hash_word, parse_header, parse_section_table, unpack_fst_value,
 };
 
 /// How much of a container [`Reader::parse`] verifies while opening it.
@@ -52,9 +54,16 @@ pub enum Verify {
 /// property end to end.
 #[derive(Debug)]
 pub struct Reader<D = Vec<u8>> {
-    data: D,
-    header: Header,
-    sections: [SectionEntry; SECTION_COUNT],
+    pub(crate) data: D,
+    pub(crate) header: Header,
+    pub(crate) sections: [SectionEntry; SECTION_COUNT],
+    /// File offset of the tail AUX block, set exactly when the header's
+    /// [`crate::format::FLAG_AUX_PRESENT`] bit survived validation.
+    pub(crate) aux_start: Option<u64>,
+    /// File offset of the tail REVERSE index block, set exactly when the
+    /// header's [`crate::format::FLAG_REVERSE_PRESENT`] bit survived
+    /// validation. The block stacks after the AUX block's end.
+    pub(crate) reverse_start: Option<u64>,
 }
 
 impl Reader<Vec<u8>> {
@@ -93,10 +102,12 @@ impl<D: AsRef<[u8]>> Reader<D> {
     pub fn parse(data: D, verify: Verify) -> Result<Self, DictError> {
         let header = parse_header(data.as_ref())?;
         let sections = parse_section_table(data.as_ref())?;
-        let reader = Self {
+        let mut reader = Self {
             data,
             header,
             sections,
+            aux_start: None,
+            reverse_start: None,
         };
 
         let entries = reader.section(SectionKind::Entries)?;
@@ -170,6 +181,81 @@ impl<D: AsRef<[u8]>> Reader<D> {
                     });
                 }
             }
+        }
+
+        // The tail AUX block, when the flag announces one: placed at the
+        // aligned end of the table sections (the writer's rule) and validated
+        // in full, so every accessor below reads only checked bytes. The flag
+        // on a version-1 container is a structure the layout never defined.
+        if header.flags & FLAG_AUX_PRESENT != 0 {
+            if header.format_version == FORMAT_VERSION_V1 {
+                return Err(DictError::LengthOutOfRange {
+                    field: "aux_flags",
+                    value: u64::from(header.flags),
+                });
+            }
+            let body_end = reader
+                .sections
+                .iter()
+                .filter(|entry| !entry.is_absent())
+                .map(|entry| entry.offset + entry.len)
+                .max()
+                .unwrap_or(SECTIONS_OFFSET);
+            let start = align_up(body_end)?;
+            super::aux::validate_block(reader.data.as_ref(), start, &header, verify)?;
+            reader.aux_start = Some(start);
+        }
+
+        // The tail REVERSE index block, when the flag announces one: it
+        // stacks at the aligned end of the AUX block when that one is present,
+        // or of the table sections otherwise (the writer's rule), and is
+        // validated in full, so every accessor below reads only checked
+        // bytes. The flag on a version-1 container is a structure the layout
+        // never defined.
+        if header.flags & FLAG_REVERSE_PRESENT != 0 {
+            if header.format_version == FORMAT_VERSION_V1 {
+                return Err(DictError::LengthOutOfRange {
+                    field: "reverse_flags",
+                    value: u64::from(header.flags),
+                });
+            }
+            let body_end = match reader.aux_start {
+                Some(aux_start) => {
+                    let aux_len = u64::try_from(
+                        AUX_HEADER_SIZE
+                            + usize::try_from(header.entry_count)
+                                .map_err(|_| DictError::LengthOutOfRange {
+                                    field: "entry_count",
+                                    value: u64::from(header.entry_count),
+                                })?
+                                .checked_mul(AUX_ROW_SIZE)
+                                .ok_or(DictError::LengthOutOfRange {
+                                    field: "aux_len",
+                                    value: u64::from(header.entry_count),
+                                })?,
+                    )
+                    .map_err(|_| DictError::LengthOutOfRange {
+                        field: "aux_len",
+                        value: u64::from(header.entry_count),
+                    })?;
+                    aux_start
+                        .checked_add(aux_len)
+                        .ok_or(DictError::LengthOutOfRange {
+                            field: "aux_len",
+                            value: aux_start,
+                        })?
+                }
+                None => reader
+                    .sections
+                    .iter()
+                    .filter(|entry| !entry.is_absent())
+                    .map(|entry| entry.offset + entry.len)
+                    .max()
+                    .unwrap_or(SECTIONS_OFFSET),
+            };
+            let start = align_up(body_end)?;
+            crate::reverse::validate_block(reader.data.as_ref(), start, verify)?;
+            reader.reverse_start = Some(start);
         }
 
         if verify == Verify::Full {
@@ -329,45 +415,63 @@ impl<D: AsRef<[u8]>> Reader<D> {
 
     /// Looks a word up in the unigram table.
     ///
-    /// The table is sorted by [`hash_word`], so the search is a binary search; a
-    /// hash collision is resolved by comparing the candidate's text, which is
+    /// The table is sorted by [`hash_word`], so the search is a binary search;
+    /// a hash collision is resolved by comparing the candidate's text, which is
     /// possible because a `word_id` is the index into the hash-ordered `ENTRIES`
     /// table as well.
     ///
     /// # Errors
-    /// Returns the errors of [`Reader::unigram`] and [`Reader::word_at`] for a
+    /// Returns the errors of [`Reader::word_id`] and [`Reader::unigram`] for a
     /// table that is internally inconsistent.
     pub fn unigram_lookup(&self, word: &str) -> Result<Option<(u32, u16)>, DictError> {
+        let Some(index) = self.word_id(word)? else {
+            return Ok(None);
+        };
+        let (_, prob) = self.unigram(index)?;
+        Ok(Some((hash_word(word), prob)))
+    }
+
+    /// Resolves a word to its record index, the container's `word_id`.
+    ///
+    /// The unigram table is sorted by [`hash_word`], so the search is a binary
+    /// search over the table; a hash collision is resolved by comparing the
+    /// candidates' text, which is possible because a `word_id` indexes the
+    /// hash-ordered `ENTRIES` table as well.
+    ///
+    /// # Errors
+    /// Returns the errors of [`Reader::unigram`] and [`Reader::word_at`] for a
+    /// table that is internally inconsistent.
+    pub fn word_id(&self, word: &str) -> Result<Option<u32>, DictError> {
         let target = hash_word(word);
         let mut low = 0usize;
         let mut high = self.header.entry_count as usize;
         while low < high {
             let middle = low + (high - low) / 2;
-            let (hash, prob) = self.unigram(middle as u32)?;
+            let (hash, _) = self.unigram(middle as u32)?;
             if hash == target {
                 if self.word_at(middle as u32)? == word {
-                    return Ok(Some((hash, prob)));
+                    return Ok(Some(middle as u32));
                 }
                 // A colliding word sits next to this one; scan the equal-hash run.
                 let mut index = middle;
                 while index > 0 {
                     index -= 1;
-                    let (hash, prob) = self.unigram(index as u32)?;
+                    let (hash, _) = self.unigram(index as u32)?;
                     if hash != target {
                         break;
                     }
                     if self.word_at(index as u32)? == word {
-                        return Ok(Some((hash, prob)));
+                        return Ok(Some(index as u32));
                     }
                 }
                 let mut index = middle + 1;
                 while index < self.header.entry_count as usize {
-                    let (hash, prob) = self.unigram(index as u32)?;
+                    let (hash, _) = self.unigram(index as u32)?;
                     if hash != target {
                         break;
                     }
                     if self.word_at(index as u32)? == word {
-                        return Ok(Some((hash, prob)));
+                        return Ok(Some(index as u32));
                     }
                     index += 1;
                 }

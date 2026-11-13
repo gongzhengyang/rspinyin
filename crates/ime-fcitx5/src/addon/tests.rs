@@ -42,7 +42,9 @@ use super::{
     on_config_reload, routing_config, run_init_steps,
 };
 
+mod aux_view;
 mod packaging;
+mod reverse_view;
 mod steps;
 
 /// The stamp the backup tests write at: 2023-11-14 22:13:20 UTC, so the generation names

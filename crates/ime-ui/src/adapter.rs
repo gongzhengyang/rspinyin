@@ -35,17 +35,15 @@
 use std::rc::Rc;
 
 use ime_types::ui::OverlayFrame;
-use ime_types::{ImeError, Placement, Rgba8, ThemeSpec, UiFrame};
-use slint::{Color, ComponentHandle as _, SharedString, VecModel};
+use ime_types::{ImeError, Placement, Rgba8, UiFrame};
+use slint::{ComponentHandle as _, SharedString, VecModel};
 
 use crate::layout::{self, Metrics};
-use crate::spring::{
-    AnimationSet, Blend, BlendTransition, CROSSFADE_S, CubicBezier, FrameMotion, MotionConfig,
-    TRANSPARENT,
-};
-use crate::theme::{ThemeSink, ThemeTokens};
+use crate::spring::{AnimationSet, BlendTransition, FrameMotion, MotionConfig, TRANSPARENT};
+use crate::theme::ThemeSink;
 use crate::ui_generated::{CandidateData, CandidateWindow};
 
+use self::theme::ThemeGlide;
 use self::write::WindowTheme;
 
 mod arrow;
@@ -54,13 +52,14 @@ mod frame;
 mod highlight;
 mod overlay;
 mod preedit;
-mod write;
-
 #[cfg(test)]
 // Crate-visible rather than private: `surface`'s tests drive the same frames, and the
 // fixtures they share (`frame_with`, `anchor`) live here rather than being written twice.
 // The `#[cfg(test)]` keeps the module out of the shipped library entirely.
 pub(crate) mod tests;
+mod theme;
+mod window;
+mod write;
 
 pub use self::arrow::arrow_in_container;
 pub use self::cell::{CellState, Measure, PointerState, VisualState, local_position};
@@ -70,6 +69,7 @@ pub use self::preedit::{
     MIN_PREEDIT_WIDTH_DP, PREEDIT_MAX_CHARS, PreeditLayout, PreeditRun, RunKind,
     SECONDARY_STATUS_WIDTH_DP, layout_preedit,
 };
+pub use self::window::SURFACE_FAILED_CODE;
 
 /// Recorded when the candidate window's component cannot be created.
 ///
@@ -78,47 +78,6 @@ pub use self::preedit::{
 /// there is no self-drawn candidate window, and the host's own user interface has to take
 /// over.
 pub const COMPONENT_FAILED_CODE: &str = "ui/slint/component";
-
-/// Recorded when the window cannot be mapped or unmapped.
-pub const SURFACE_FAILED_CODE: &str = "ui/slint/surface";
-
-/// The two theme properties a crossfade can carry, as one blendable value.
-///
-/// The accent and the base alpha are the pair a resolved theme writes into the
-/// component's global; a theme switch glides them together on one clock, so the
-/// accent-derived tokens and the acrylic base move as one motion instead of two.
-/// The scheme flag itself is not interpolable and is written directly.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ThemeGlide {
-    /// 3.2 `accent.default`, opaque.
-    accent: Rgba8,
-    /// The base alpha the contrast gate approved, `0..=255`.
-    base_alpha: u8,
-}
-
-impl ThemeGlide {
-    /// The glide endpoints of a resolved theme.
-    fn of(tokens: &ThemeTokens) -> Self {
-        Self {
-            accent: tokens.accent,
-            base_alpha: tokens.base_alpha,
-        }
-    }
-}
-
-impl Blend for ThemeGlide {
-    fn blend(from: Self, to: Self, t: u16) -> Self {
-        Self {
-            accent: Rgba8::blend(from.accent, to.accent, t),
-            base_alpha: u8::blend(from.base_alpha, to.base_alpha, t),
-        }
-    }
-}
-
-/// A token colour as the component's colour type.
-fn color_of(colour: Rgba8) -> Color {
-    Color::from_argb_u8(colour.a, colour.r, colour.g, colour.b)
-}
 
 /// The candidate window's binding to one frame.
 ///
@@ -355,60 +314,6 @@ impl Adapter {
         true
     }
 
-    /// Writes a resolved theme into the component, as a crossfade.
-    ///
-    /// The scheme flag lands at once: it is not interpolable, and it gates the
-    /// panel, the grid and every dark-conditional token, so half a scheme would
-    /// be a window in no scheme at all. Everything that *can* blend then glides
-    /// over 3.3.2's 120ms: the global's accent and base alpha move on the theme
-    /// fade, and the status cluster's markers re-target at the new tokens and
-    /// crossfade with it. A first application, and a window with the motion
-    /// switched off, land everything at once instead -- there is no previous
-    /// palette to glide away from, and a screenshot needs a frame that does not
-    /// depend on how many frames came before it.
-    ///
-    /// The container radius is the one value that lives outside the global,
-    /// because the component owns its geometry.
-    ///
-    /// # Parameters
-    ///
-    /// * `spec` -- the host's theme request, which carries the configured corner radius.
-    /// * `tokens` -- the resolution to apply. Apply the tokens rather than the raw request, so
-    ///   the alpha written is the one the contrast gate approved.
-    ///
-    /// # Errors
-    ///
-    /// This function is infallible: it returns no `Result`.
-    ///
-    /// # Panics
-    ///
-    /// Never panics.
-    pub fn apply_theme(&mut self, spec: &ThemeSpec, tokens: &ThemeTokens) {
-        let glide = ThemeGlide::of(tokens);
-        let instant = !self.themed || !self.motion.is_enabled();
-        {
-            let mut sink = WindowTheme {
-                window: &self.window,
-            };
-            sink.set_dark(tokens.dark);
-            if instant {
-                sink.set_accent(glide.accent);
-                sink.set_base_alpha(f32::from(glide.base_alpha) / 255.0);
-            }
-        }
-        if instant {
-            self.theme_fade.snap_to(glide);
-            self.state.set_status_tokens(tokens, false);
-        } else {
-            self.theme_fade
-                .start(glide, CROSSFADE_S, CubicBezier::EASE_IN_OUT);
-            self.state.set_status_tokens(tokens, true);
-        }
-        self.themed = true;
-        self.window
-            .set_container_radius(f32::from(spec.corner_radius_dp));
-    }
-
     /// Draws the overlay mode, or returns the window to the candidate view.
     ///
     /// `Some(frame)` covers the panel with the overlay component and fills it from the
@@ -472,187 +377,6 @@ impl Adapter {
         };
         sink.set_font_family(family);
         true
-    }
-
-    /// Maps or unmaps the surface, and starts the motion that goes with it.
-    ///
-    /// Idempotent: asking for the visibility the window already has writes nothing. Mapping
-    /// the surface is what makes the component appear at all -- an unshown component is laid
-    /// out but never drawn into a buffer -- and it also starts 3.3.2's appear motion, so the
-    /// panel grows out of the caret instead of arriving at full size.
-    ///
-    /// Unmapping is *staged*, not executed: the window stays mapped while the disappear
-    /// motion fades it out, and [`Self::advance`] performs the real unmap once that motion
-    /// settles. Unmapping first would run the spring in a window nobody can see -- a stretch
-    /// of deadline wakeups that draws nothing -- and would cut the exit fade the appear
-    /// motion is the mirror of. A `Show` landing during the staged fade cancels the unmap:
-    /// the window never left the screen, so there is nothing to map, and the appear motion
-    /// resumes from the opacity the fade had reached.
-    ///
-    /// # Parameters
-    ///
-    /// * `visible` -- `true` to map the surface, `false` to stage its unmap.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ImeError::CompositorUnsupported`] carrying [`SURFACE_FAILED_CODE`] when the
-    /// platform refuses to map the window, which means the candidate window cannot be shown
-    /// at all. Staging an unmap cannot fail; the unmap itself reports through
-    /// [`Self::advance`] and [`Self::unmap_now`].
-    ///
-    /// # Panics
-    ///
-    /// This function does not panic.
-    pub fn set_visible(&mut self, visible: bool) -> Result<(), ImeError> {
-        // A second Hide is the request already being served; a Show during the fade keeps
-        // the window -- never unmapped -- and fades it back up from where the fade got to.
-        if self.pending_hide {
-            if !visible {
-                return Ok(());
-            }
-            self.pending_hide = false;
-            self.motion.appear();
-            return Ok(());
-        }
-        if self.visible == visible {
-            return Ok(());
-        }
-        if visible {
-            self.window.show().map_err(|_| surface_error())?;
-            self.visible = true;
-            self.motion.appear();
-            return Ok(());
-        }
-        self.pending_hide = true;
-        self.motion.disappear();
-        Ok(())
-    }
-
-    /// Advances the window's motion and colour fades by `dt` and writes the frame
-    /// they produced.
-    ///
-    /// The delta comes from the UI thread's clock, which is the only place an instant is read:
-    /// a session's first call passes zero, and a late frame passes a delta large enough that
-    /// the integrator clamps it, so a stalled compositor slows the motion down rather than
-    /// making it jump. The fades -- the theme's accent and alpha, and the status markers' --
-    /// advance on the same delta, and a fade frame equal to the one already written costs
-    /// nothing, so a window at rest still writes no property at all.
-    ///
-    /// A staged unmap ([`Self::set_visible`]) completes here: the first step after the exit
-    /// fade has settled performs the real unmap. Running it here rather than where the Hide
-    /// landed is what puts the fade on screen, and what lets the caller drop its frame
-    /// deadline on the very frame the motion runs out.
-    ///
-    /// # Parameters
-    ///
-    /// * `dt` -- seconds since the previous call. Negative, zero and unusable values carry no
-    ///   time rather than running the motion backwards.
-    ///
-    /// # Returns
-    ///
-    /// Whether anything is still in flight. `false` is what lets the caller block
-    /// indefinitely, which is the whole of the idle CPU budget: a window at rest must not keep
-    /// a timer armed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ImeError::CompositorUnsupported`] carrying [`SURFACE_FAILED_CODE`] when the
-    /// staged unmap cannot be performed, which would otherwise leave a fully transparent
-    /// window mapped for ever.
-    ///
-    /// # Panics
-    ///
-    /// Never panics.
-    pub fn advance(&mut self, dt: f32) -> Result<bool, ImeError> {
-        let motion = self.motion.step(dt, self.scale);
-        let fading = self.step_fades(dt);
-        // The visibility of the box is not part of `FrameMotion`, so it is checked against the
-        // component's own value rather than against the previous frame. A box that hid without
-        // moving -- the page emptied while the highlight was already at rest on a cell -- would
-        // otherwise produce a frame equal to the one before it and never reach the component,
-        // leaving it drawing a box the engine no longer has a candidate for.
-        let visible = self.motion.highlight().is_visible();
-        if self.drawn_motion != Some(motion) || self.window.get_highlight_visible() != visible {
-            self.write_motion(&motion);
-            // The pressed cell's scale travels in the motion frame, so a frame that
-            // differs at all writes it too and a settled window still writes nothing.
-            self.window.set_press_scale(motion.press_scale);
-            self.drawn_motion = Some(motion);
-            self.request_repaint();
-        }
-        if !motion.animating && !fading && self.pending_hide {
-            self.unmap_now()?;
-            return Ok(false);
-        }
-        Ok(motion.animating || fading)
-    }
-
-    /// Advances the theme crossfade and the markers' fades by `dt`.
-    ///
-    /// Whatever the step changed is written once -- the global's accent and base
-    /// alpha, and the cluster's four marker colours -- and compared against the
-    /// frame already written, so a fade that settled costs one final write and no
-    /// wake-up after it.
-    fn step_fades(&mut self, dt: f32) -> bool {
-        self.theme_fade.step(dt);
-        let markers = self.state.markers.step(dt);
-        let glide = self.theme_fade.value();
-        let colors = self.state.markers.values();
-        let frame = (glide.accent, glide.base_alpha, colors);
-        if frame != self.drawn_fade {
-            self.write_fade(glide, colors);
-            self.drawn_fade = frame;
-        }
-        !self.theme_fade.is_settled() || !markers
-    }
-
-    /// Writes one fade frame: the global's accent and alpha, and the cluster's
-    /// four marker colours. Followed by an explicit repaint, for the same reason
-    /// every other write path here asks for one.
-    fn write_fade(&self, glide: ThemeGlide, colors: [Rgba8; 4]) {
-        let mut sink = WindowTheme {
-            window: &self.window,
-        };
-        sink.set_accent(glide.accent);
-        sink.set_base_alpha(f32::from(glide.base_alpha) / 255.0);
-        self.window.set_mode_dot_color(color_of(colors[0]));
-        self.window.set_full_width_color(color_of(colors[1]));
-        self.window.set_punctuation_color(color_of(colors[2]));
-        self.window.set_lock_color(color_of(colors[3]));
-        self.request_repaint();
-    }
-
-    /// Unmaps the window now, ending a staged fade at whatever opacity it reached.
-    ///
-    /// [`Self::advance`] calls this on the frame a staged unmap's fade has settled; the
-    /// surface's shutdown path calls it directly, because the host's stop budget is 200ms,
-    /// the loop stops right after the close call, and a fade there has no frame to run on.
-    /// The fade is reset to the hidden baseline, so the next appear is identical to the
-    /// first one instead of continuing from the disappear's own end values.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ImeError::CompositorUnsupported`] carrying [`SURFACE_FAILED_CODE`] when
-    /// the platform refuses to unmap the window.
-    ///
-    /// # Panics
-    ///
-    /// Never panics.
-    pub fn unmap_now(&mut self) -> Result<(), ImeError> {
-        self.pending_hide = false;
-        if !self.visible {
-            return Ok(());
-        }
-        self.window.hide().map_err(|_| surface_error())?;
-        self.visible = false;
-        self.motion.reset_window_fade();
-        // The colour fades have no frame to run on once the window is unmapped, so
-        // they land on their end values here rather than keeping a deadline armed
-        // over a window nobody can see.
-        let glide = self.theme_fade.target();
-        self.theme_fade.snap_to(glide);
-        self.state.snap_markers();
-        Ok(())
     }
 
     /// Asks the platform for a repaint.
@@ -789,12 +513,5 @@ impl Adapter {
     #[cfg(test)]
     pub(crate) fn window(&self) -> &CandidateWindow {
         &self.window
-    }
-}
-
-/// The error a window that cannot be mapped or unmapped reports.
-fn surface_error() -> ImeError {
-    ImeError::CompositorUnsupported {
-        detail: String::from(SURFACE_FAILED_CODE),
     }
 }

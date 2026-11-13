@@ -5,10 +5,13 @@
 //! Responsibility: the `audit` channel reads a compiled container and reports the
 //! per-band share table ([`ValueBandRow`]) plus the tail band's raw-weight
 //! percentiles, which is what a human reads to choose a `--trim-target-mib`. The
-//! trim planner ([`plan_trim_drops`], [`projected_container_bytes`],
-//! [`floor_savings_bytes`]) lives here too because the compile-time trim pass in
-//! [`super::normalize`] consumes the very same model: the report a reader judged
-//! and the pass that acts on it cannot drift apart.
+//! report is written beside the manifest, as `<container>.audit.json` in the
+//! manifest's own file style, so a judged audit stays on disk with the container
+//! it described. The trim planner ([`plan_trim_drops`],
+//! [`projected_container_bytes`], [`floor_savings_bytes`]) lives here too because
+//! the compile-time trim pass in [`super::normalize`] consumes the very same
+//! model: the report a reader judged and the pass that acts on it cannot drift
+//! apart.
 //!
 //! # The value model
 //!
@@ -266,8 +269,8 @@ pub struct AuditArgs {
     #[arg(long, default_value_t = 20)]
     core_min_freq: u32,
     /// Simulate the trim pass against this container target, in mebibytes, and
-    /// report per band how many entries it would drop. The audit writes
-    /// nothing; the compile-time pass is `dictc --trim-target-mib`.
+    /// report per band how many entries it would drop. The compile-time pass is
+    /// `dictc --trim-target-mib`.
     #[arg(long)]
     trim_target_mib: Option<f64>,
     /// Print the machine-readable report instead of the human-readable one.
@@ -341,12 +344,14 @@ struct ExpansionView {
 /// Entry point for the value audit.
 ///
 /// Prints the per-band share table, the tail band's raw-weight percentiles and,
-/// when a target was requested, the trim simulation. Nothing is written.
+/// when a target was requested, the trim simulation, and writes the whole report
+/// beside the manifest as `<container>.audit.json`, in the manifest's own file
+/// style: pretty JSON ending in a newline, a function of the container alone.
 ///
 /// # Errors
 /// Returns an error when the container or the held-out set cannot be read or
-/// parsed, when the manifest beside the container is unreadable, or when the
-/// banding knobs do not validate.
+/// parsed, when the manifest beside the container is unreadable, when the
+/// banding knobs do not validate, or when the report cannot be written.
 pub fn run(args: AuditArgs) -> Result<AuditReport> {
     let root = super::resolve_root(args.root.as_deref())?;
     let rules = NormalizeRules {
@@ -474,14 +479,23 @@ pub fn run(args: AuditArgs) -> Result<AuditReport> {
         tail_percentiles: tail_percentiles(tail),
         trim,
     };
+    // The report lands beside the manifest so a judged audit stays re-examinable
+    // without the container and the holdout at hand: the volume-governance DoD
+    // reads the band rows from this file, not from a scrolled terminal.
+    let mut text =
+        serde_json::to_string_pretty(&report).context("rendering the audit report as JSON")?;
+    text.push('\n');
+    let report_path = audit_report_path(&dict);
+    fs::write(&report_path, &text)
+        .with_context(|| format!("audit: cannot write {}", report_path.display()))?;
     if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).context("rendering the audit report as JSON")?
-        );
+        // `print!` rather than `println!`: the text already ends in its
+        // newline, and stdout stays byte-identical with the pre-file output.
+        print!("{text}");
     } else {
         print_report(&report);
     }
+    println!("audit: report {}", report_path.display());
     Ok(report)
 }
 
@@ -685,6 +699,17 @@ fn tail_percentiles(mut tail: Vec<(u32, usize)>) -> Vec<TailPercentile> {
             }
         })
         .collect()
+}
+
+/// The audit report path that belongs to one container: `<container>.audit.json`.
+///
+/// The name derives from the container exactly as
+/// [`super::manifest::manifest_path`] derives the manifest's, so container,
+/// manifest and audit report travel together as one set.
+fn audit_report_path(container: &Path) -> PathBuf {
+    let mut name = container.file_name().unwrap_or_default().to_os_string();
+    name.push(".audit.json");
+    container.with_file_name(name)
 }
 
 /// The container path relative to the root, for the report line.

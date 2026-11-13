@@ -203,6 +203,12 @@ pub fn decay_floor(rank: usize, base: i32) -> i32 {
 /// The caller supplies scores in Q8.8 and must provide candidates in descending score
 /// order; a caller that cannot guarantee that order must not call this helper.
 ///
+/// # Diagnostics
+///
+/// Dropping anything emits one count-only `trace` event: the dropped, retained and
+/// visited sentence counts. Candidate text never enters the log, because the decay
+/// decides on scores alone and its diagnostic is counts alone.
+///
 /// # Deployment note
 ///
 /// The decode path does not call this today: the sweep materializes one first-word
@@ -262,7 +268,18 @@ pub fn retain_rank_decayed_sentences<T>(
         }
     }
     candidates.truncate(write);
-    sentence_count - retained_count
+    let dropped = sentence_count - retained_count;
+    if dropped > 0 {
+        // Count-only diagnostic: the decay walk has no reason to name the candidates it
+        // dropped, and a log that carried them would leak input content.
+        tracing::trace!(
+            dropped = dropped,
+            retained = retained_count,
+            sentences_seen = sentence_count,
+            "rank decay dropped the weak whole-sentence tail"
+        );
+    }
+    dropped
 }
 
 #[cfg(test)]
@@ -512,5 +529,28 @@ mod tests {
             candidates,
             vec![Item::sentence("s0", 100), Item::word("w0", -1_000)]
         );
+    }
+
+    #[test]
+    fn test_rank_decay_double_run_of_the_same_input_is_identical() {
+        // Determinism pin for the truncation path: two runs over one input must drop
+        // the same sentences at the same ranks and leave the same list behind.
+        let make_input = || {
+            vec![
+                Item::sentence("s0", 1_000),
+                Item::sentence("s1", 976),
+                Item::sentence("s2", 952),
+                Item::sentence("s3", 200),
+                Item::sentence("s4", 180),
+                Item::word("w0", 170),
+                Item::word("w1", 100),
+            ]
+        };
+        let mut first = make_input();
+        let mut second = make_input();
+        let dropped_first = decay(&mut first);
+        let dropped_second = decay(&mut second);
+        assert_eq!(dropped_first, dropped_second);
+        assert_eq!(first, second);
     }
 }

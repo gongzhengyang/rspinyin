@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 
 use ime_config::PunctMode;
 use ime_config::keymap::{KeyBindings, project_keys};
+use ime_config::schema::{AppProfile, AppProfilesConfig, MAX_APP_PROFILES};
 use ime_config::{Config, SchemeChoice, ShareState};
 use ime_core::shuangpin::SchemeTable;
 use ime_core::shuangpin::layout::{LayoutDocument, LayoutTables, compile_layout, parse_layout};
@@ -134,6 +135,35 @@ impl Default for QuickRouting {
     }
 }
 
+/// One per-application preset the routing layer carries, keyed by the hashed identifier.
+///
+/// The document's `[app_profiles]` section is a map keyed by text; the routing layer's
+/// copy is a fixed array of slots keyed by the raw hash bits, because
+/// [`RoutingConfig`] is `Copy` and travels by value into every step's context. The
+/// configuration layer has already bounded the section and dropped the keys that were
+/// not hashed identifiers, so the projection into the slots is a copy, never a second
+/// judgment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppPreset {
+    /// The hashed application identifier the preset answers to, as the privacy layer
+    /// computed it. The unknown identifier -- zero -- is the empty slot's value and can
+    /// never match: an application the host did not name starts where the document
+    /// projects it, never where a profile says.
+    pub app: u64,
+    /// The initial values the profile names. The fields it leaves unset keep the
+    /// document's own projection, and a preset is a creation parameter only: it is
+    /// projected onto a session when the session is created, and never again.
+    pub modes: AppProfile,
+}
+
+impl AppPreset {
+    /// The empty slot; its identifier is the unknown one, which never matches.
+    pub const EMPTY: Self = Self {
+        app: 0,
+        modes: AppProfile::EMPTY,
+    };
+}
+
 /// The configuration values the routing layer acts on.
 ///
 /// A view rather than the user's document: the routing table reads the `[keys]` rows
@@ -175,12 +205,29 @@ pub struct RoutingConfig {
     /// `[engine] share_state`: whether the state a window switch keeps is per input
     /// context or per application.
     pub share: ShareState,
+    /// `[engine] aux_refinement`: whether the backtick-led auxiliary-code session may
+    /// open over a composition.
+    ///
+    /// Off by default, which is the whole cost a build before the view existed pays:
+    /// the lead key is asked nothing and routes byte for byte as it always did.
+    pub aux_refinement: bool,
+    /// `[engine] reverse_lookup`: whether a lowercase-`u` prefix at the start of the
+    /// input may open the decomposition reverse-lookup domain.
+    ///
+    /// Off by default, which is the whole cost a build before the domain existed
+    /// pays: a `u`-led buffer routes byte for byte as ordinary pinyin input.
+    pub reverse_lookup: bool,
     /// `[quick_input]`: the trigger table and switches of the quick-input domains.
     ///
     /// Off by default, which is the whole cost a build before the panel existed
     /// pays: the step reads the switch once and routes the key exactly as it always
     /// did.
     pub quick: QuickRouting,
+    /// `[app_profiles]`: the per-application session presets, keyed by the hashed
+    /// identifier. Empty slots are past the document's entries and never match, which
+    /// is what keeps the whole cost of a build before the section existed at one
+    /// constant scan of empty slots on the creation path.
+    pub presets: [AppPreset; MAX_APP_PROFILES],
 }
 
 impl Default for RoutingConfig {
@@ -205,7 +252,10 @@ impl Default for RoutingConfig {
             compose: false,
             output: OutputProjection::default(),
             share: ShareState::Context,
+            aux_refinement: false,
+            reverse_lookup: false,
             quick: QuickRouting::default(),
+            presets: [AppPreset::EMPTY; MAX_APP_PROFILES],
         }
     }
 }
@@ -302,9 +352,33 @@ impl RoutingConfig {
                 punct_full: config.engine.punct_mode == PunctMode::Chinese,
             },
             share: config.engine.share_state,
+            aux_refinement: config.engine.aux_refinement,
+            reverse_lookup: config.engine.reverse_lookup,
             quick: project_quick(&config.quick_input, &mut warnings),
+            presets: project_presets(&config.app_profiles),
         };
         (routing, warnings)
+    }
+
+    /// The preset the configuration names for `app`, or `None` when it names none.
+    ///
+    /// The unknown identifier is answered `None` before the slots are read: an
+    /// application the host never reported starts where the document projects it,
+    /// which is the fail-closed reading of "we do not know what program this is". The
+    /// scan is bounded by [`MAX_APP_PROFILES`], so the lookup is a constant handful of
+    /// integer compares on the session-creation path.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub(crate) fn preset_for(&self, app: u64) -> Option<AppProfile> {
+        if app == 0 {
+            return None;
+        }
+        self.presets
+            .iter()
+            .find(|preset| preset.app == app)
+            .map(|preset| preset.modes)
     }
 }
 
@@ -341,6 +415,31 @@ fn project_quick(
         calc_enabled: section.calc_enabled,
         date_prefixes,
     }
+}
+
+/// Copies the configuration's per-application presets into the routing layer's slots.
+///
+/// The section arrived repaired: every key is a hashed identifier and the count is
+/// within the bound, so the copy cannot overflow the slots and reports nothing. A key
+/// that somehow is not a hash leaves its slot empty rather than failing -- a defensive
+/// arm for a caller that bypassed the schema, not a second judgment on the document.
+///
+/// # Panics
+///
+/// Never.
+fn project_presets(section: &AppProfilesConfig) -> [AppPreset; MAX_APP_PROFILES] {
+    let mut presets = [AppPreset::EMPTY; MAX_APP_PROFILES];
+    for (slot, (key, profile)) in presets.iter_mut().zip(&section.profiles) {
+        let digits = key.strip_prefix("0x").unwrap_or(key.as_str());
+        let Ok(raw) = u64::from_str_radix(digits, 16) else {
+            continue;
+        };
+        *slot = AppPreset {
+            app: raw,
+            modes: *profile,
+        };
+    }
+    presets
 }
 
 /// The configuration key the ambiguous custom section is reported under.

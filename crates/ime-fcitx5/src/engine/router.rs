@@ -69,25 +69,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ime_config::ShareState;
-use ime_core::assoc::AssocRuntime;
-use ime_core::passthrough::{PassthroughDecision, classify};
+use ime_core::aux::AuxSource;
 use ime_core::privacy::InputContextKind;
+use ime_core::reverse::ReverseSource;
 use ime_core::state::{SessionEnv, SessionEvent, SessionState};
 use ime_dict::hot_swap::{LexiconBundle, LexiconSlot};
 use ime_dict::script::ScriptIndex;
 use ime_dict::symbols::SymbolSlot;
-use ime_dict::user_lexicon::{ChainedLexicon, UserLexiconHandle};
-use ime_types::{Anchor, KeyAction, UiEvent};
+use ime_dict::user_lexicon::UserLexiconHandle;
 
 use crate::engine::badge::BadgeState;
-use crate::engine::compose::ComposeFallback;
-use crate::engine::host::ComposeOutcome;
 use crate::engine::host::Host;
-use crate::engine::{
-    carries_compose_blocking_modifier, claims_key, is_policy_mark, is_shift_press,
-    is_syllable_separator, leaves_temp_english, translate_key,
-};
-use crate::ffi::{FcitxKeyEvent, emit_diagnostic};
 use crate::privacy_impl::{ContextPrivacy, ContextReport, report_suppression};
 
 /// Extracts the client-preedit capability a host report carries.
@@ -110,8 +102,11 @@ pub mod phrases;
 mod config;
 mod context;
 mod effects;
+mod key;
 mod lifecycle;
 mod modes;
+mod step;
+mod window;
 
 pub use self::config::RoutingConfig;
 
@@ -120,9 +115,10 @@ pub use self::config::RoutingConfig;
 /// process environment on their own.
 pub(crate) use self::effects::quick::install_clock;
 
-use self::context::{Context, PoolKey, PoolSlot, ScriptState, pool_key};
+use self::context::{Context, FreshEnv, PoolKey, PoolSlot, ScriptState, pool_key};
 use self::lifecycle::step_env;
 use self::phrases::PhraseHandle;
+use self::step::StepCtx;
 
 #[cfg(test)]
 mod tests;
@@ -141,39 +137,6 @@ pub const STALE_IC_CODE: &str = "ffi/stale-ic";
 /// per context is far past what a session can reach, and the counter saturates rather
 /// than wrapping into another context's range.
 const SESSION_ID_STRIDE: u64 = 1 << 32;
-
-/// Everything a step and its effect executor read besides the session itself.
-///
-/// Grouped so that a step, its effects and the commit path that closes them take the
-/// session, this context and the host, which keeps every handler inside the parameter
-/// budget. The badge state is the one mutable piece: the process-local hint bit the
-/// frame executor consumes, which the router owns beside its other process state.
-struct StepCtx<'a, 'b> {
-    /// The decoder, the dictionary, the user's frequencies and the language model.
-    env: &'b SessionEnv<'a>,
-    /// The configuration in force for this step.
-    config: &'b RoutingConfig,
-    /// The per-context decisions the learning path asks before it records anything.
-    privacy: &'b ContextPrivacy,
-    /// The process-local state the header's slot is resolved through when a frame is
-    /// posted; the `engine::badge` module owns the resolution.
-    badge: &'b mut BadgeState,
-    /// The user's own words, when the process assembled them: the handle the
-    /// negative-feedback receipt is executed through. The frozen frequency trait the
-    /// environment carries has no penalty call -- the penalty is store state the frozen
-    /// contract does not name -- so the store half travels the handle the router was
-    /// built with, the same store the environment's frequencies answer from.
-    user_lexicon: Option<&'a UserLexiconHandle>,
-    /// The word pairs a commit coined, waiting for the user-lexicon write the step's
-    /// dictionary lock forbids. Collected here, drained by the caller after the step.
-    coins: Vec<(String, String)>,
-    /// The words whose in-memory coin entries a forget must remove -- the store's half
-    /// travelled through the frozen trait while the step ran.
-    forget_words: Vec<String>,
-    /// The words whose pin a toggle flipped, for the lexicon's own eviction-protection
-    /// flag.
-    pin_changes: Vec<String>,
-}
 
 /// The engine's routing state: a session per input context, pooled by the tier in force.
 ///
@@ -205,6 +168,27 @@ pub struct KeyRouter<'a> {
     /// The user's own words, when the process assembled them: read under a lock held for
     /// the length of a decode-bearing step, written by the drain that runs after it.
     user_lexicon: Option<&'a UserLexiconHandle>,
+    /// The aux-column view of the active container, when the process assembled one: the
+    /// reads the lead key's gate and a session's entry resolve their codes through. A
+    /// router without one degrades the same way a container without the column does --
+    /// the lead key passes through and the absence is reported once -- which is the
+    /// shipped configuration's shape, since the switch itself defaults off.
+    aux_source: Option<&'a dyn AuxSource>,
+    /// Whether the absent-column diagnostic is already owed nothing: the code is a
+    /// once-per-process report, so the flag lives on the process router beside the
+    /// other state that outlives every context.
+    aux_absent_reported: bool,
+    /// The reverse-lookup view of the active container, when the process assembled
+    /// one: the reads a `u`-payload's gate and query resolve through. A router
+    /// without one degrades the same way a container without the index does -- the
+    /// payload passes through to the ordinary decode and the absence is reported
+    /// once -- which is the shipped configuration's shape, since the switch itself
+    /// defaults off.
+    reverse_source: Option<&'a dyn ReverseSource>,
+    /// Whether the absent-reverse-index diagnostic is already owed nothing: the code
+    /// is a once-per-process report, so the flag lives on the process router beside
+    /// the other state that outlives every context.
+    reverse_absent_reported: bool,
     /// The per-context privacy decisions and the gate every commit's learning goes
     /// through.
     privacy: ContextPrivacy,
@@ -229,12 +213,6 @@ pub struct KeyRouter<'a> {
     pool: HashMap<PoolKey, PoolSlot>,
     /// The base of the next session id range; see [`SESSION_ID_STRIDE`].
     next_session_base: u64,
-    /// The built-in compose state used only when the host answers unsupported.
-    ///
-    /// It is router-level because the unsupported-host condition is router-level; a
-    /// context reset clears the pending dead key, while a host that can compose never
-    /// touches this state at all.
-    compose_fallback: ComposeFallback,
     /// Whether the header's first-run key hint is still owed: the one badge bit that
     /// outlives every context, which is why it lives on the router rather than on a
     /// session. The `engine::badge` module owns the resolution it feeds.
@@ -270,6 +248,10 @@ impl<'a> KeyRouter<'a> {
             lexicon_slot: None,
             symbol_slot: None,
             user_lexicon: None,
+            aux_source: None,
+            aux_absent_reported: false,
+            reverse_source: None,
+            reverse_absent_reported: false,
             privacy,
             config,
             phrases: phrases::handle(),
@@ -278,7 +260,6 @@ impl<'a> KeyRouter<'a> {
             pool: HashMap::new(),
             next_session_base: 1,
             badge: BadgeState::new(),
-            compose_fallback: ComposeFallback::new(),
         }
     }
 
@@ -304,6 +285,40 @@ impl<'a> KeyRouter<'a> {
     /// Never.
     pub fn with_user_lexicon(mut self, handle: &'a UserLexiconHandle) -> Self {
         self.user_lexicon = Some(handle);
+        self
+    }
+
+    /// Hands the router the aux-column view of the active container, which the lead
+    /// key's gate and a session's entry resolve their reads and codes through.
+    ///
+    /// The process router's builder calls this once, right after [`KeyRouter::new`],
+    /// with the reader the data assembly holds over the mapped container; a router
+    /// built without it treats the column as absent, which is the degradation the
+    /// [`ABSENT_COLUMN_CODE`](ime_core::aux::ABSENT_COLUMN_CODE) diagnostic names and
+    /// the whole story for a router over a container that carries no column.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn with_aux_source(mut self, source: &'a dyn AuxSource) -> Self {
+        self.aux_source = Some(source);
+        self
+    }
+
+    /// Hands the router the reverse-lookup view of the active container, which a
+    /// `u`-payload's gate and query resolve their reads through.
+    ///
+    /// The process router's builder calls this once, right after [`KeyRouter::new`],
+    /// with the reader the data assembly holds over the mapped container; a router
+    /// built without it treats the index as absent, which is the degradation the
+    /// [`ABSENT_INDEX_CODE`](ime_core::reverse::ABSENT_INDEX_CODE) diagnostic names
+    /// and the whole story for a router over a container that carries no index.
+    ///
+    /// # Panics
+    ///
+    /// Never.
+    pub fn with_reverse_source(mut self, source: &'a dyn ReverseSource) -> Self {
+        self.reverse_source = Some(source);
         self
     }
 
@@ -343,337 +358,6 @@ impl<'a> KeyRouter<'a> {
         self.phrases = phrases;
     }
 
-    pub fn key_event(&mut self, ic: u64, key: &FcitxKeyEvent, host: &mut dyn Host) -> bool {
-        // The compose step runs before anything claims the key: a dead-key
-        // sequence the host is composing is the layout's, and a chord with Ctrl
-        // or Super held is the application's shortcut, never a letter to
-        // compose through. The step asks only for a press on an idle session --
-        // a composing session is never asked, which is what keeps the hot path
-        // free of the call -- and with the switch off it is never asked at all,
-        // so the default configuration routes every key byte for byte as a
-        // build before the step did.
-        if self.config.compose
-            && !key.is_release
-            && !carries_compose_blocking_modifier(key)
-            && self.compose_may_ask(ic)
-        {
-            match host.process_compose(ic, key) {
-                ComposeOutcome::Unsupported => {
-                    if let Some((character, stop)) = self.compose_fallback.process(key) {
-                        let mut text = [0u8; 4];
-                        host.commit(ic, character.encode_utf8(&mut text));
-                        if stop {
-                            return true;
-                        }
-                    }
-                }
-                ComposeOutcome::Swallowed => {
-                    self.compose_fallback.reset();
-                    return true;
-                }
-                ComposeOutcome::Committed(character) => {
-                    self.compose_fallback.reset();
-                    let mut text = [0u8; 4];
-                    host.commit(ic, character.encode_utf8(&mut text));
-                    return true;
-                }
-            }
-        }
-        let action = translate_key(key, &self.config.keys);
-        if !claims_key(action) || is_shift_press(key) {
-            return false;
-        }
-        // The dictionary the step decodes against is assembled here, once: the slot's
-        // current container, the user's own words locked ahead of it, and the environment
-        // over the two. The guard and the bundle are held to the end of the step -- a
-        // decode may not wait behind a writer, and the words a lookup hands back point
-        // into both -- which is what makes the writes the step collects wait for the
-        // drain at the end instead of running inside it.
-        let assoc_sensitive = !self.privacy.should_learn(ic);
-        let bundle = self.lexicon_slot.map(LexiconSlot::load);
-        // The panel's table travels the same atomic road the dictionary does: the
-        // Arc this load hands back keeps the table whole to the end of the step.
-        let symbols = self.symbol_slot.and_then(SymbolSlot::load);
-        let user = self.user_lexicon.map(UserLexiconHandle::lock);
-        let chain = match (&user, &bundle) {
-            (Some(user), Some(bundle)) => Some(ChainedLexicon::new(user, bundle.lexicon())),
-            (Some(user), None) => Some(ChainedLexicon::new(user, self.env.lexicon)),
-            _ => None,
-        };
-        let live_env = SessionEnv {
-            decoder: self.env.decoder,
-            lexicon: match (&chain, &bundle) {
-                (Some(chain), _) => chain,
-                (None, Some(bundle)) => bundle.lexicon(),
-                (None, None) => self.env.lexicon,
-            },
-            user_freq: self.env.user_freq,
-            lm: match &bundle {
-                Some(bundle) => bundle.lm(),
-                None => self.env.lm,
-            },
-            english: self.env.english,
-            confusables: self.env.confusables,
-            symbols: symbols.as_deref().or(self.env.symbols),
-            assoc: self.env.assoc.map(|runtime| AssocRuntime {
-                sensitive: assoc_sensitive,
-                ..runtime
-            }),
-        };
-        let Self {
-            contexts,
-            config,
-            privacy,
-            badge,
-            user_lexicon,
-            ..
-        } = self;
-        let mut step = StepCtx {
-            env: &live_env,
-            config,
-            privacy,
-            badge,
-            user_lexicon: *user_lexicon,
-            coins: Vec::new(),
-            forget_words: Vec::new(),
-            pin_changes: Vec::new(),
-        };
-        let Some(ctx) = contexts.get_mut(&ic) else {
-            emit_diagnostic(STALE_IC_CODE);
-            return false;
-        };
-        if ctx.session.temp_english {
-            // Temporary English hands every key back to the application, the two that leave
-            // the mode included: what ends the mode changes nothing else, so taking the key
-            // would take a keystroke the user typed for the application.
-            //
-            // The session is not stepped here, because the mode's only transition is the one
-            // that leaves it and which key leaves it is a fact about the key rather than
-            // about the action the table made of it. The space bar and the `Return` key are
-            // both `CommitHighlighted` unless the document moves `Return` to `CommitRaw`, so
-            // an action that ended the mode ended it on a space bar press. Asking
-            // `leaves_temp_english` and taking the mode off through the session keeps the
-            // two answers from being able to disagree.
-            if leaves_temp_english(key) {
-                ctx.session.leave_temp_english();
-            }
-            return false;
-        }
-        // The apostrophe pins a syllable boundary inside a composition and is an ordinary
-        // character outside one. The session would take it as the first character of a new
-        // composition -- the input alphabet accepts it, which is what makes `ni'hao`
-        // typeable -- and opening a candidate window on it would take a key the user typed
-        // for the application. The table is a function of the key and the modifiers and
-        // cannot see the session, so the guard lives here, where the session is.
-        if is_syllable_separator(action) && ctx.session.state != SessionState::Composing {
-            return false;
-        }
-        // A text-producing key that lands on an idle session is the passthrough policy's
-        // to answer, not the session's: the uppercase letter, the URL keystroke and the
-        // bare punctuation mark are decisions about text the user typed, and the decoder
-        // must not see them — a character outside the pinyin alphabet would only be
-        // swallowed with a diagnostic, which is the defect this answers. While a
-        // composition is live the session keeps every key it has always had: the
-        // policy's composition half — a mark that carries the pending candidates out —
-        // is session-machine work and stays there.
-        if let KeyAction::InputChar(ch) = action {
-            // While a composition is live a mark belongs to the application, exactly as
-            // it did when the table claimed no punctuation: the policy's composition
-            // half — a mark that carries the pending candidates out — is session-machine
-            // work that has not landed. A letter never satisfies this, so the composing
-            // input is untouched. The two brackets are the one exception: when the
-            // highlight sits on a candidate a character can be taken from they are the
-            // character-selection route's, and `effects::select_char` answers `None`
-            // for a mark that is not a selection, which keeps the old answer here.
-            if ctx.session.state != SessionState::Idle && is_policy_mark(ch) {
-                if let Some(acted) = effects::select_char::answer(ctx, &mut step, ic, ch, host) {
-                    return acted;
-                }
-                return false;
-            }
-            if ctx.session.state == SessionState::Idle {
-                // The typed character as the keyboard produced it, read off the raw
-                // keysym: the routing table folds a shifted letter before its rows see
-                // it, and the uppercase signal is the user's rather than the fold's.
-                // The ASCII filter keeps the non-Latin keysym ranges — a frontend's
-                // function and modifier keys — out of the policy entirely; they are not
-                // `InputChar` actions anyway, so this is the guard that keeps the two
-                // tables from being able to disagree.
-                let typed = char::from_u32(key.sym).filter(char::is_ascii);
-                if let Some(ch) = typed {
-                    // The typed character is the whole raw text the policy sees; the
-                    // stack buffer keeps the key path allocation-free. The surrounding
-                    // text stays `None` because the `Host` boundary carries no accessor
-                    // for it yet, so the URL rule sees only the evidence the keystroke
-                    // itself provides.
-                    let flags = ctx.modes.passthrough_flags(
-                        config.auto_english_on_uppercase,
-                        config.passthrough_url,
-                    );
-                    let mut raw = [0u8; 4];
-                    match classify(ch.encode_utf8(&mut raw), flags, None) {
-                        PassthroughDecision::HostHandles => return false,
-                        PassthroughDecision::CommitDirectly(text) => {
-                            // The same door a session commit leaves through, minus the
-                            // hide: an idle session has no window to take down.
-                            // Learning is untouched — typed English is not a candidate
-                            // choice.
-                            let text = ctx.modes.transform_output(&text, ctx.script.index());
-                            host.commit(ic, &text);
-                            return true;
-                        }
-                        // The shortcut is the router's own chord: `classify` never
-                        // answers it, so the arm is unreachable, and a key the policy
-                        // has no answer for belongs to the session below.
-                        PassthroughDecision::EnterTempEnglish | PassthroughDecision::Decode => {}
-                    }
-                }
-            }
-        }
-        // The mode bits go into the session before the step, so the frame a mode key
-        // repaints carries the switch that key just made.
-        let mode_acted = match action {
-            // The script toggle reads a table the mode bits cannot hold, so its arm is
-            // the context's own: flip the bit through the table, or report the
-            // degradation and hand the key back.
-            KeyAction::ToggleScript => ctx.toggle_script(),
-            _ => ctx.modes.apply(action, ctx.ic, host),
-        };
-        // A refused script toggle is the one mode key that reaches here without acting:
-        // the degradation is reported, the bit never moved, and nothing the session
-        // could repaint would differ -- so the step is skipped and the key goes back to
-        // the application rather than being swallowed by a switch that answered
-        // nothing.
-        let refused_toggle = action == KeyAction::ToggleScript && !mode_acted;
-        let session_acted = if refused_toggle {
-            false
-        } else {
-            ctx.write_frame_context(config);
-            ctx.run(SessionEvent::Key(action), &mut step, host)
-        };
-        // `EnterTempEnglish` is the one action whose whole effect is a session flag: with
-        // nothing composing it emits no effect, and the key would be handed back even
-        // though the mode changed.
-        let acted = mode_acted || session_acted || ctx.session.temp_english;
-        // The dictionary lock outlived the step; the writes it deferred are the drain's
-        // now, and every borrow they waited behind ends here, oldest first.
-        let coins = std::mem::take(&mut step.coins);
-        let forget_words = std::mem::take(&mut step.forget_words);
-        let pin_changes = std::mem::take(&mut step.pin_changes);
-        drop(step);
-        drop(user);
-        drop(bundle);
-        self.apply_user_lexicon_changes(coins, forget_words, pin_changes);
-        acted
-    }
-
-    /// Routes one event from the candidate window.
-    ///
-    /// The window is a reader of frames and a writer of events; a click, a hover, a page
-    /// request or a dismissal all come back through here. An event whose revision is not
-    /// the one the session is holding is dropped by the session as stale, and a context
-    /// with no session is answered the way a stale key is.
-    ///
-    /// # Arguments
-    ///
-    /// * `ic` — the host's identity for the input context the event belongs to.
-    /// * `event` — what the user did to the window.
-    /// * `host` — the boundary the resulting effects are executed against.
-    ///
-    /// # Returns
-    ///
-    /// Whether anything other than a diagnostic reached the host.
-    ///
-    /// # Errors
-    ///
-    /// None.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub fn ui_event(&mut self, ic: u64, event: UiEvent, host: &mut dyn Host) -> bool {
-        // The same assembly a key event runs: the slot's container and the user's words,
-        // locked and chained for the step's whole run, the writes drained after it.
-        let assoc_sensitive = !self.privacy.should_learn(ic);
-        let bundle = self.lexicon_slot.map(LexiconSlot::load);
-        let symbols = self.symbol_slot.and_then(SymbolSlot::load);
-        let user = self.user_lexicon.map(UserLexiconHandle::lock);
-        let chain = match (&user, &bundle) {
-            (Some(user), Some(bundle)) => Some(ChainedLexicon::new(user, bundle.lexicon())),
-            (Some(user), None) => Some(ChainedLexicon::new(user, self.env.lexicon)),
-            _ => None,
-        };
-        let live_env = SessionEnv {
-            decoder: self.env.decoder,
-            lexicon: match (&chain, &bundle) {
-                (Some(chain), _) => chain,
-                (None, Some(bundle)) => bundle.lexicon(),
-                (None, None) => self.env.lexicon,
-            },
-            user_freq: self.env.user_freq,
-            lm: match &bundle {
-                Some(bundle) => bundle.lm(),
-                None => self.env.lm,
-            },
-            english: self.env.english,
-            confusables: self.env.confusables,
-            symbols: symbols.as_deref().or(self.env.symbols),
-            assoc: self.env.assoc.map(|runtime| AssocRuntime {
-                sensitive: assoc_sensitive,
-                ..runtime
-            }),
-        };
-        let mut step = StepCtx {
-            env: &live_env,
-            config: &self.config,
-            privacy: &self.privacy,
-            badge: &mut self.badge,
-            user_lexicon: self.user_lexicon,
-            coins: Vec::new(),
-            forget_words: Vec::new(),
-            pin_changes: Vec::new(),
-        };
-        let acted = match self.contexts.get_mut(&ic) {
-            Some(ctx) => {
-                ctx.write_frame_context(&self.config);
-                ctx.run(SessionEvent::Ui(event), &mut step, host)
-            }
-            None => {
-                emit_diagnostic(STALE_IC_CODE);
-                false
-            }
-        };
-        let coins = std::mem::take(&mut step.coins);
-        let forget_words = std::mem::take(&mut step.forget_words);
-        let pin_changes = std::mem::take(&mut step.pin_changes);
-        drop(step);
-        drop(user);
-        drop(bundle);
-        self.apply_user_lexicon_changes(coins, forget_words, pin_changes);
-        acted
-    }
-
-    /// Records where the host reports the caret, for the frames that follow.
-    ///
-    /// # Arguments
-    ///
-    /// * `ic` — the host's identity for the input context.
-    /// * `anchor` — the cursor rectangle in screen physical pixels, the screen it is on
-    ///   and the scale factor.
-    ///
-    /// # Errors
-    ///
-    /// None: an anchor for a context with no session is dropped.
-    ///
-    /// # Panics
-    ///
-    /// Never.
-    pub fn set_anchor(&mut self, ic: u64, anchor: Anchor) {
-        if let Some(ctx) = self.contexts.get_mut(&ic) {
-            ctx.anchor = anchor;
-        }
-    }
-
     /// Adopts a reloaded configuration without disturbing a composition in progress.
     ///
     /// Every live session is told the new values, so the page size and the layout hint
@@ -711,6 +395,8 @@ impl<'a> KeyRouter<'a> {
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            reverse: self.reverse_source,
+            reverse_absent_reported: &mut self.reverse_absent_reported,
             user_lexicon: self.user_lexicon,
             coins: Vec::new(),
             forget_words: Vec::new(),
@@ -770,6 +456,8 @@ impl<'a> KeyRouter<'a> {
             config: &self.config,
             privacy: &self.privacy,
             badge: &mut self.badge,
+            reverse: self.reverse_source,
+            reverse_absent_reported: &mut self.reverse_absent_reported,
             user_lexicon: self.user_lexicon,
             coins: Vec::new(),
             forget_words: Vec::new(),

@@ -5,6 +5,11 @@
 //! lowercase spelling as the key and the word's own casing as the display text, so that
 //! `github` reaches the entry spelled `GitHub` (ADR-0016).
 //!
+//! The admitted charset covers the special entries the benchmark's own main table holds
+//! beside its plain words: ASCII letters and digits with at least one letter, which is
+//! what admits `3D`, `MP3` and `DNA` while still keying every row by its lowercased
+//! spelling. Comment lines opening with `#` carry the list's provenance and are skipped.
+//!
 //! The compiler also applies the build-time ranking mark the collision reduce list
 //! carries (`data/raw/reduce-eng.tsv`): an entry whose spelling a pinyin typist leaves
 //! mid-syllable — `ranch` cuts `ran|ch` — carries a quarter of its rank into the unigram
@@ -61,13 +66,36 @@ struct Row {
     weight: u32,
 }
 
+/// Longest word spelling the list admits, in bytes.
+///
+/// The bound keeps the entry's fixed-width fields comfortable (the byte length travels
+/// in a `u16`, the character count in a `u8`) and keeps the key inside the length the
+/// decode path can spell: an entry is answered by the input's own normalized spelling,
+/// which no composition approaches at this length. The list's longest entry today is
+/// 13 bytes.
+const MAX_WORD_BYTES: usize = 32;
+
+/// Whether `word` is a spelling the mixed-English container admits.
+///
+/// ASCII letters and digits, at most [`MAX_WORD_BYTES`] bytes, with at least one
+/// letter. The digits widen the alphabet-only rule to the special entries the
+/// benchmark's main table holds (`3D`, `MP3`), and the letter requirement keeps a bare
+/// number out, because digits never reach the decode path and a number-only row would
+/// be a dead entry. The empty spelling fails the same `any` check.
+fn is_admitted_word(word: &str) -> bool {
+    word.len() <= MAX_WORD_BYTES
+        && word.chars().all(|ch| ch.is_ascii_alphanumeric())
+        && word.chars().any(|ch| ch.is_ascii_alphabetic())
+}
+
 /// Compiles the mixed-English word list into `eng.dict`.
 ///
 /// # Errors
 /// Returns an error when the source is not on the allowlist, when a row is not two
-/// columns of an alphabetic word and a decimal rank, when two rows fold onto the same
-/// lowercase key, or when any file cannot be read or written. The error names the file
-/// and line, so the offending input can be fixed directly.
+/// columns of an admitted word (ASCII letters and digits, at least one letter) and a
+/// decimal rank, or when any file cannot be read or written. A repeated lowercase
+/// key is not an error: the stronger row is the one compiled. The error names the
+/// file and line, so the offending input can be fixed directly.
 pub fn run(args: EngArgs) -> Result<()> {
     let root = super::resolve_root(args.root.as_deref())?;
     let allowlist = super::load_allowlist(&root.join(&args.sources))?;
@@ -85,7 +113,9 @@ pub fn run(args: EngArgs) -> Result<()> {
     let mut rows: BTreeMap<String, Row> = BTreeMap::new();
     for (number, line) in text.lines().enumerate() {
         let line = line.trim_end();
-        if line.is_empty() {
+        // A `#` line is the list's own header: the provenance a reviewer reads,
+        // not a row the compiler parses.
+        if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let number = number + 1;
@@ -99,9 +129,9 @@ pub fn run(args: EngArgs) -> Result<()> {
             .parse()
             .with_context(|| format!("{}:{number}: rank is not a number", input_path.display()))?;
         ensure!(
-            !word.is_empty() && word.chars().all(|ch| ch.is_ascii_alphabetic()),
-            "{}:{number}: `{word}` is not one ASCII word; the mixed-English key is the \
-             lowercased spelling and nothing else",
+            is_admitted_word(word),
+            "{}:{number}: `{word}` is not one ASCII word of letters and digits; the \
+             mixed-English key is the lowercased spelling and nothing else",
             input_path.display()
         );
         let key = word.to_lowercase();
@@ -137,8 +167,7 @@ pub fn run(args: EngArgs) -> Result<()> {
             report.push_str(&format!("{word}\t{rank}\t{cut}\n"));
         }
         if let Some(parent) = report_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
         fs::write(&report_path, &report)
             .with_context(|| format!("writing {}", report_path.display()))?;
@@ -292,6 +321,8 @@ fn collision_rows(rows: &BTreeMap<String, Row>) -> Vec<(&str, u32, String)> {
 mod tests {
     use super::*;
 
+    use ime_dict::format::reader::Reader;
+
     #[test]
     fn test_prob_q12_scales_the_heaviest_rank_to_half_the_ceiling() {
         assert_eq!(prob_q12(1000, 1000), PROB_Q12_MAX / 2);
@@ -320,23 +351,19 @@ mod tests {
 
     #[test]
     fn test_collision_rows_lists_only_the_judged_rows_heaviest_first() {
-        let rows: BTreeMap<String, Row> = [
-            ("butter", 796),
-            ("sad", 798),
-            ("mama", 500),
-            ("push", 643),
-        ]
-        .into_iter()
-        .map(|(word, weight)| {
-            (
-                word.to_owned(),
-                Row {
-                    word: word.to_owned(),
-                    weight,
-                },
-            )
-        })
-        .collect();
+        let rows: BTreeMap<String, Row> =
+            [("butter", 796), ("sad", 798), ("mama", 500), ("push", 643)]
+                .into_iter()
+                .map(|(word, weight)| {
+                    (
+                        word.to_owned(),
+                        Row {
+                            word: word.to_owned(),
+                            weight,
+                        },
+                    )
+                })
+                .collect();
         let judged = collision_rows(&rows);
         assert_eq!(
             judged,
@@ -346,5 +373,261 @@ mod tests {
             ],
             "`butter` and `mama` cut no syllable-plus-initial"
         );
+    }
+
+    #[test]
+    fn test_is_admitted_word_accepts_words_and_digit_entries() {
+        // The plain words the list has always carried, and the special entries
+        // the digit-bearing charset admits. The key stays the lowercased
+        // spelling either way, so `3D` keys as `3d` exactly as `GitHub` keys
+        // as `github`.
+        for word in ["the", "GitHub", "iPad", "3D", "MP3", "DNA", "M1"] {
+            assert!(is_admitted_word(word), "{word} must be admitted");
+        }
+    }
+
+    #[test]
+    fn test_is_admitted_word_rejects_the_spellings_outside_the_charset() {
+        // Outside the charset (a separator, punctuation, full-width digits), a
+        // number with no letter in it, and a spelling past the length cap: all
+        // refused, so a typo fails the build instead of compiling a dead entry.
+        let over_cap = "a".repeat(MAX_WORD_BYTES + 1);
+        for word in [
+            "",
+            "3.14",
+            "mp#3",
+            "\u{ff13}\u{ff24}",
+            "42",
+            over_cap.as_str(),
+        ] {
+            assert!(!is_admitted_word(word), "{word:?} must be refused");
+        }
+        // A spelling exactly at the cap is admitted: the bound is inclusive.
+        assert!(is_admitted_word("a".repeat(MAX_WORD_BYTES).as_str()));
+    }
+
+    /// The tmpfs base the scratch roots live under.
+    ///
+    /// `/dev/shm` keeps the fixture's container writes off the workspace
+    /// filesystem: the idempotence test compiles twice, and on a WSL2 checkout
+    /// the writes would otherwise pay the same slow fsync round trip for bytes
+    /// only the assertions read back. A system without the mount falls back to
+    /// the platform temp directory.
+    fn scratch_base() -> PathBuf {
+        if std::path::Path::new("/dev/shm").is_dir() {
+            PathBuf::from("/dev/shm")
+        } else {
+            std::env::temp_dir()
+        }
+    }
+
+    /// The scratch repository one fixture compile runs against, and its root.
+    ///
+    /// The root carries its own allowlist and the two derived sources the
+    /// mixed-English build reads, laid out exactly as the paths the production
+    /// defaults name, so a test drives the whole command -- allowlist gate,
+    /// row parse, reduce mark, container write -- against no committed data.
+    /// The process id and the tag keep concurrent runs from colliding, a
+    /// stale root from an interrupted run is removed before the fixture is
+    /// written, and the test removes the root when it is done.
+    fn eng_fixture(tag: &str, list: &str, reduce_list: &str) -> PathBuf {
+        let root = scratch_base().join(format!("rspinyin-eng-test-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let raw = root.join("data/raw");
+        fs::create_dir_all(&raw).expect("creating data/raw");
+        fs::write(raw.join("melt-eng.tsv"), list).expect("writing the word list");
+        fs::write(raw.join("reduce-eng.tsv"), reduce_list).expect("writing the reduce list");
+        fs::write(root.join("data/sources.toml"), ENG_ALLOWLIST).expect("writing the allowlist");
+        root
+    }
+
+    /// The allowlist of the scratch repository: the two project-derived sources
+    /// the mixed-English build reads, registered pin-free the way the
+    /// production allowlist registers generated files.
+    const ENG_ALLOWLIST: &str = "[[source]]\n\
+         id = \"melt-eng\"\nkind = \"derived\"\nlayer = \"L5\"\n\
+         url = \"https://example.invalid/melt-eng\"\nlicense = \"Project-owned\"\n\
+         spdx = \"MIT OR Apache-2.0\"\npermissive = true\n\n\
+         [[source]]\nid = \"reduce-eng\"\nkind = \"derived\"\nlayer = \"L5\"\n\
+         url = \"https://example.invalid/reduce-eng\"\nlicense = \"Project-owned\"\n\
+         spdx = \"MIT OR Apache-2.0\"\npermissive = true\n";
+
+    /// The arguments one fixture compile uses, rooted at `root`.
+    ///
+    /// The paths are the production layout relative to the root; the collision
+    /// review is off, because these tests compile, they do not emit the
+    /// review artifact.
+    fn eng_args(root: &std::path::Path) -> EngArgs {
+        EngArgs {
+            root: Some(root.to_path_buf()),
+            input: PathBuf::from("data/raw/melt-eng.tsv"),
+            output: PathBuf::from("data/compiled/eng.dict"),
+            sources: PathBuf::from("data/sources.toml"),
+            reduce_list: PathBuf::from("data/raw/reduce-eng.tsv"),
+            emit_collisions: None,
+        }
+    }
+
+    #[test]
+    fn test_run_compiles_lowercase_keys_and_preserves_display_casing() {
+        let root = eng_fixture(
+            "keys",
+            "# header: a provenance line compiles nothing\n\
+             GitHub\t900\n\
+             3D\t700\n\
+             MP3\t500\n\n",
+            "# empty: no entry of this fixture is reduced\n",
+        );
+        let output = root.join("data/compiled/eng.dict");
+
+        run(eng_args(&root)).expect("the fixture compiles");
+
+        // The key is the lowercased spelling and the display text the word's
+        // own casing: `github` reaches the entry spelled `GitHub`, and the
+        // digit-bearing entries key beside them. The comment line and the
+        // blank line parse into nothing.
+        let reader = Reader::open(&output).expect("opening the compiled container");
+        assert_eq!(reader.entry_count(), 3);
+        assert_eq!(reader.key_words("github").expect("lookup"), vec!["GitHub"]);
+        assert_eq!(reader.key_words("3d").expect("lookup"), vec!["3D"]);
+        assert_eq!(reader.key_words("mp3").expect("lookup"), vec!["MP3"]);
+        assert!(
+            reader.key_words("provenance").expect("lookup").is_empty(),
+            "a comment line left no key behind"
+        );
+
+        fs::remove_dir_all(&root).expect("cleaning up");
+    }
+
+    #[test]
+    fn test_run_folds_duplicate_keys_onto_the_stronger_row() {
+        // The list is hand-curated, so a repeated lowercase key is two editors
+        // writing one word, not two words: the stronger rank is the row the
+        // container keeps, and a tie keeps the first spelling.
+        let root = eng_fixture(
+            "dup",
+            "GitHub\t900\n\
+             github\t400\n\
+             iPad\t300\n\
+             ipad\t300\n",
+            "# empty\n",
+        );
+        let output = root.join("data/compiled/eng.dict");
+
+        run(eng_args(&root)).expect("the fixture compiles");
+
+        let reader = Reader::open(&output).expect("opening the compiled container");
+        assert_eq!(reader.entry_count(), 2);
+        assert_eq!(
+            reader.key_words("github").expect("lookup"),
+            vec!["GitHub"],
+            "the stronger row's spelling survives the fold"
+        );
+        assert_eq!(
+            reader.key_words("ipad").expect("lookup"),
+            vec!["iPad"],
+            "a tie keeps the first row's spelling"
+        );
+
+        fs::remove_dir_all(&root).expect("cleaning up");
+    }
+
+    #[test]
+    fn test_run_refuses_a_row_missing_the_rank_column_and_names_the_line() {
+        let root = eng_fixture(
+            "no-tab",
+            "melt\t100\nbroken-row-without-a-tab\n",
+            "# empty\n",
+        );
+        let input = root.join("data/raw/melt-eng.tsv");
+        let output = root.join("data/compiled/eng.dict");
+        let locator = format!("{}:2", input.display());
+
+        let refusal = run(eng_args(&root)).expect_err("a column-less row must stop the build");
+        assert!(
+            refusal.to_string().contains(locator.as_str()),
+            "the refusal names the file and line: {refusal}"
+        );
+        assert!(
+            refusal.to_string().contains("expected `word<TAB>rank`"),
+            "the refusal names the defect: {refusal}"
+        );
+        assert!(!output.exists(), "nothing is written past a refused row");
+
+        fs::remove_dir_all(&root).expect("cleaning up");
+    }
+
+    #[test]
+    fn test_run_refuses_a_word_outside_the_charset_and_names_the_line() {
+        let root = eng_fixture("charset", "melt\t100\nhe.llo\t70\n", "# empty\n");
+        let input = root.join("data/raw/melt-eng.tsv");
+        let output = root.join("data/compiled/eng.dict");
+        let locator = format!("{}:2", input.display());
+
+        let refusal =
+            run(eng_args(&root)).expect_err("a punctuation-bearing word must stop the build");
+        assert!(
+            refusal.to_string().contains(locator.as_str()),
+            "the refusal names the file and line: {refusal}"
+        );
+        assert!(
+            refusal.to_string().contains("is not one ASCII word"),
+            "the refusal names the defect: {refusal}"
+        );
+        assert!(!output.exists(), "nothing is written past a refused row");
+
+        fs::remove_dir_all(&root).expect("cleaning up");
+    }
+
+    #[test]
+    fn test_run_recompiles_one_fixture_to_identical_bytes() {
+        let root = eng_fixture(
+            "idem",
+            "# header\nGitHub\t900\n3D\t700\nranch\t500\n",
+            "ranch\n",
+        );
+        let output = root.join("data/compiled/eng.dict");
+
+        run(eng_args(&root)).expect("the first compile");
+        let first = fs::read(&output).expect("reading the first container");
+        run(eng_args(&root)).expect("the second compile");
+        let second = fs::read(&output).expect("reading the second container");
+
+        // Recompiling the same sources writes the same bytes: `eng.dict` is a
+        // shipped artifact whose digest is what a release records.
+        assert_eq!(first, second, "the container must be reproducible");
+        assert_eq!(&first[0..4], b"RSPD", "the image is a container");
+
+        fs::remove_dir_all(&root).expect("cleaning up");
+    }
+
+    #[test]
+    fn test_run_applies_the_reduce_list_to_the_compiled_weight() {
+        // Two entries carrying the same rank, one named by the reduce list:
+        // only the listed one may sink, and the sink has to be visible in the
+        // unigram probability the reader serves, because that scaling is the
+        // only rank channel an English entry has.
+        let root = eng_fixture("reduce", "ranch\t800\ndogma\t800\n", "ranch\n");
+        let output = root.join("data/compiled/eng.dict");
+
+        run(eng_args(&root)).expect("the fixture compiles");
+
+        let reader = Reader::open(&output).expect("opening the compiled container");
+        assert_eq!(reader.entry_count(), 2);
+        assert_eq!(reader.key_words("ranch").expect("lookup"), vec!["ranch"]);
+        let (_, reduced) = reader
+            .unigram_lookup("ranch")
+            .expect("the unigram lookup")
+            .expect("ranch is in the table");
+        let (_, intact) = reader
+            .unigram_lookup("dogma")
+            .expect("the unigram lookup")
+            .expect("dogma is in the table");
+        assert!(
+            reduced < intact,
+            "the listed entry sank below the unlisted one: {reduced} vs {intact}"
+        );
+
+        fs::remove_dir_all(&root).expect("cleaning up");
     }
 }

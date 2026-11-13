@@ -15,8 +15,9 @@
 //! ```text
 //! offset  size  field
 //!      0     4  magic           b"RSPD"
-//!      4     2  format_version  1 (legacy) or 2 (BIGRAM optional)
-//!      6     2  flags           bit0: a BIGRAM section is present (v1: never)
+//!      4     2  format_version  1 (legacy) or 2 (BIGRAM, AUX optional)
+//!      6     2  flags           bit0: BIGRAM present, bit1: AUX column present,
+//!                                 bit2: REVERSE index present (v1: never)
 //!      8     4  header_size     64
 //!     12     4  section_count   6
 //!     16     8  total_len       file length in bytes
@@ -25,10 +26,18 @@
 //!     32    32  reserved        all zero
 //!     64   144  section table   6 entries x 24 bytes
 //!    208   ...  sections        ascending kind, each 8-byte aligned
+//!    tail  ...  AUX block       present iff flags bit1; see [`aux`]
+//!    tail  ...  REVERSE block   present iff flags bit2; see [`crate::reverse`]
 //! ```
 //!
 //! Every integer is little-endian. `file_crc32` deliberately does not cover the
-//! header: a checksum cannot cover its own storage.
+//! header: a checksum cannot cover its own storage. The AUX block lives past
+//! the section table's reach -- the table's six slots are fixed by the v1/v2
+//! layout, and growing it would turn every container a pre-AUX reader can open
+//! into an unreadable one -- so its presence is carried by the header flag and
+//! its bytes occupy the aligned tail of the file. An old container (flag clear)
+//! reads exactly as before, and a reader without the AUX extension refuses a
+//! flagged container the way it refuses any unknown flag bit.
 //!
 //! # Section table entry
 //!
@@ -46,10 +55,12 @@
 //! key -> word mapping into `WORDLIST` keeps `ENTRIES` at one record per word and
 //! puts the expansion cost on a 4-byte word-list pair instead of a 16-byte entry.
 
+pub mod aux;
 pub mod collisions;
 pub mod reader;
 pub mod writer;
 
+pub use crate::format::aux::{AUX_HEADER_SIZE, AUX_MAGIC, AUX_MAX_CODE_LEN, AUX_ROW_SIZE};
 pub use crate::format::collisions::{
     collision_limit, count_colliding_hashes, find_colliding_hashes,
 };
@@ -90,8 +101,17 @@ pub const SECTION_ALIGN: u64 = 8;
 /// `flags` bit 0: a `BIGRAM` section is present. Always clear in version 1.
 pub const FLAG_BIGRAM_PRESENT: u16 = 0b0000_0001;
 
+/// `flags` bit 1: an AUX column block is present at the aligned tail of the
+/// file. Always clear in version 1; see [`aux`] for the block layout.
+pub const FLAG_AUX_PRESENT: u16 = 0b0000_0010;
+
+/// `flags` bit 2: a REVERSE index block is present at the aligned tail of the
+/// file, stacked after the AUX block when that one is also present. Always
+/// clear in version 1; see [`crate::reverse`] for the block layout.
+pub const FLAG_REVERSE_PRESENT: u16 = 0b0000_0100;
+
 /// Every bit of `flags` defined through version 2.
-pub const FLAG_MASK: u16 = FLAG_BIGRAM_PRESENT;
+pub const FLAG_MASK: u16 = FLAG_BIGRAM_PRESENT | FLAG_AUX_PRESENT | FLAG_REVERSE_PRESENT;
 
 /// Encoded size of one `BIGRAM` element: `u64 key, u16 prob_q12, u16 pad`.
 pub const BIGRAM_ENTRY_SIZE: usize = 12;
@@ -549,6 +569,25 @@ pub fn pack_fst_value(start: u64, count: u32) -> Result<u64, DictError> {
 pub fn unpack_fst_value(value: u64) -> (u64, u32) {
     let mask = (1u64 << FST_COUNT_BITS) - 1;
     (value >> FST_COUNT_BITS, (value & mask) as u32)
+}
+
+/// Rounds `offset` up to the next [`SECTION_ALIGN`] boundary, which is where
+/// every section (and the tail AUX block) must start.
+///
+/// # Errors
+/// Returns [`DictError::LengthOutOfRange`] when the rounded offset overflows
+/// `u64`, which cannot happen for any container the size budget allows.
+pub(crate) fn align_up(offset: u64) -> Result<u64, DictError> {
+    let remainder = offset % SECTION_ALIGN;
+    if remainder == 0 {
+        return Ok(offset);
+    }
+    offset
+        .checked_add(SECTION_ALIGN - remainder)
+        .ok_or(DictError::LengthOutOfRange {
+            field: "section_offset",
+            value: offset,
+        })
 }
 
 /// Reads a little-endian `u16` at `at`.

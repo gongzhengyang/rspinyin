@@ -49,7 +49,7 @@
 //! lexicon keeps alive, the score table is immutable, and both methods are pure reads of
 //! that memory. No method blocks, allocates or takes a lock.
 
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
 use ime_core::lm::{BIGRAM_MISS_PENALTY, UNIGRAM_MISS, log2_q8};
@@ -58,6 +58,34 @@ use ime_types::{LanguageModel, WordId};
 use crate::format::{
     BIGRAM_ENTRY_SIZE, PROB_Q12_MAX, UNIGRAM_ENTRY_SIZE, hash_word, read_u16, read_u32,
 };
+
+/// The bounded-heap key ranking a successor row of one predecessor.
+///
+/// A better row has the higher Q8.8 score and, on equal scores, the lower
+/// successor id. The ordering is deliberately mixed-direction — scores order
+/// descending while ids order ascending — so it cannot fall out of a plain
+/// tuple comparison; the heap below stores [`Reverse`]d keys, which turns its
+/// maximum into the worst retained row and makes popping plus one reverse
+/// yield the contract order directly.
+#[derive(PartialEq, Eq)]
+struct RankedSuccessor {
+    score: i32,
+    id: u32,
+}
+
+impl Ord for RankedSuccessor {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score
+            .cmp(&other.score)
+            .then_with(|| other.id.cmp(&self.id))
+    }
+}
+
+impl PartialOrd for RankedSuccessor {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 use super::FstLexicon;
 
@@ -141,10 +169,13 @@ impl BigramTable {
                 .copied()
                 .unwrap_or(UNIGRAM_MISS);
             let next = WordId::new((pair_key & u64::from(u32::MAX)) as u32);
-            let candidate = Reverse((score, next.value()));
+            let candidate = Reverse(RankedSuccessor {
+                score,
+                id: next.value(),
+            });
             if best.len() < limit {
                 best.push(candidate);
-            } else if best.peek().is_some_and(|worst| candidate > *worst) {
+            } else if best.peek().is_some_and(|worst| candidate < *worst) {
                 best.pop();
                 best.push(candidate);
             }
@@ -152,8 +183,8 @@ impl BigramTable {
         }
 
         let mut successors = Vec::with_capacity(best.len());
-        while let Some(Reverse((score, next))) = best.pop() {
-            successors.push((WordId::new(next), score));
+        while let Some(Reverse(row)) = best.pop() {
+            successors.push((WordId::new(row.id), row.score));
         }
         successors.reverse();
         successors

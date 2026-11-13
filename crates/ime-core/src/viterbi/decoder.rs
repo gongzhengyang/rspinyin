@@ -319,7 +319,7 @@ impl UserFreqSource for Silent {
 mod tests {
     use super::{
         DecodeRequest, Decoder, EXPANDED_CANDIDATE_QUOTA, INITIAL_CANDIDATE_QUOTA, MAX_CANDIDATES,
-        candidate_supply_quota, has_more_candidate_supply,
+        SUPPLY_CANDIDATE_CAP, candidate_supply_quota, has_more_candidate_supply,
     };
     use crate::lm::InMemoryLm;
     use crate::state::SessionConfig;
@@ -378,5 +378,26 @@ mod tests {
                 .first()
                 .map(|candidate| candidate.text.as_str())
         );
+    }
+
+    #[test]
+    fn test_decode_same_input_double_run_is_identical_on_both_supply_paths() {
+        // Determinism pin for the supply ladder: whatever one decode produced, the same
+        // input must produce again -- on the plain per-keystroke path and through the
+        // expansion hook alike, whole owned results down to every candidate field.
+        let decoder = Decoder::default();
+        let lexicon = MockLexicon::phrase();
+        let lm = InMemoryLm::new();
+        let request = DecodeRequest::new("wo'ai'ni");
+        let first = decoder.decode(&request, &lexicon, &NoUser, &lm);
+        let second = decoder.decode(&request, &lexicon, &NoUser, &lm);
+        assert_eq!(first, second);
+        let expanded_first = decoder
+            .decode_with_candidate_quota(&request, &lexicon, &NoUser, &lm, SUPPLY_CANDIDATE_CAP)
+            .unwrap_or_else(|error| panic!("quota {SUPPLY_CANDIDATE_CAP} is valid: {error}"));
+        let expanded_second = decoder
+            .decode_with_candidate_quota(&request, &lexicon, &NoUser, &lm, SUPPLY_CANDIDATE_CAP)
+            .unwrap_or_else(|error| panic!("quota {SUPPLY_CANDIDATE_CAP} is valid: {error}"));
+        assert_eq!(expanded_first, expanded_second);
     }
 }

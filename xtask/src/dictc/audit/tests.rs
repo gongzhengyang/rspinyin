@@ -240,8 +240,10 @@ fn write_fixture_container(path: &std::path::Path) {
     writer.finish(path).expect("writing the fixture container");
 }
 
-/// Runs the audit channel over the fixture container and returns the report.
-fn audit_fixture(tag: &str, trim_target_mib: Option<f64>) -> AuditReport {
+/// Runs the audit channel over the fixture container and hands the report and
+/// the fixture directory to a [`Fixture`] guard: the report-file test reads the
+/// file the channel wrote, and a failing assert must not leak the directory.
+fn fixture(tag: &str, trim_target_mib: Option<f64>) -> Fixture {
     let dir = std::env::temp_dir().join(format!("rspinyin-audit-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("creating the audit fixture directory");
@@ -260,13 +262,26 @@ fn audit_fixture(tag: &str, trim_target_mib: Option<f64>) -> AuditReport {
         json: false,
     };
     let report = run(args).expect("the audit runs");
-    std::fs::remove_dir_all(&dir).expect("cleaning up");
-    report
+    Fixture { report, dir }
+}
+
+/// One fixture run: the report plus a guard that removes the fixture directory
+/// on drop, however the test ends.
+struct Fixture {
+    report: AuditReport,
+    dir: PathBuf,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 #[test]
 fn test_audit_channel_partitions_the_container_into_three_bands() {
-    let report = audit_fixture("bands", None);
+    let f = fixture("bands", None);
+    let report = &f.report;
     assert_eq!(report.entries, 3);
     assert_eq!(report.bands.len(), 3);
     let char_freq = &report.bands[0];
@@ -305,7 +320,8 @@ fn test_audit_channel_partitions_the_container_into_three_bands() {
 fn test_audit_channel_simulates_the_trim_per_band() {
     // An unreachable target sends the simulation over the whole tail: one
     // candidate, reported on the tail row and nowhere else.
-    let report = audit_fixture("trim-sim", Some(0.000001));
+    let f = fixture("trim-sim", Some(0.000001));
+    let report = &f.report;
     let trim = report.trim.expect("the target was requested");
     assert_eq!(trim.candidates, 1);
     assert_eq!(trim.would_drop, 1);
@@ -318,8 +334,31 @@ fn test_audit_channel_simulates_the_trim_per_band() {
     assert_eq!(report.bands[1].trim_candidates, 0);
 
     // A target the tiny fixture already fits plans no drops.
-    let report = audit_fixture("trim-sim-fits", Some(1_000.0));
-    let trim = report.trim.expect("the target was requested");
+    let f = fixture("trim-sim-fits", Some(1_000.0));
+    let trim = f.report.trim.expect("the target was requested");
     assert_eq!(trim.would_drop, 0);
     assert!(trim.reaches_target);
+}
+
+#[test]
+fn test_audit_channel_writes_the_report_beside_the_manifest() {
+    let f = fixture("report-file", None);
+    // The report derives its name from the container the way the manifest
+    // derives its own, so the three artifacts travel together as one set.
+    let path = f.dir.join("base.dict.audit.json");
+    let text = std::fs::read_to_string(&path).expect("the report sits beside the manifest");
+    for label in ["char-freq", "2char-core", "tail-flat"] {
+        assert!(
+            text.contains(&format!("\"band\": \"{label}\"")),
+            "the report carries the {label} band row"
+        );
+    }
+    assert!(
+        text.contains(&format!("\"entries\": {}", f.report.entries)),
+        "the report carries the entry count"
+    );
+    assert!(
+        text.ends_with('\n'),
+        "the report is a well-formed text file"
+    );
 }

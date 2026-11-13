@@ -24,9 +24,11 @@ use std::path::{Path, PathBuf};
 
 use ime_types::DictError;
 
+use crate::format::aux::encode_block;
 use crate::format::{
-    self, BIGRAM_ENTRY_SIZE, ENTRY_SIZE, FLAG_BIGRAM_PRESENT, FORMAT_VERSION, HEADER_SIZE, MAGIC,
-    SECTION_ALIGN, SECTION_COUNT, SECTION_ENTRY_SIZE, SECTIONS_OFFSET, SectionEntry, SectionKind,
+    self, AUX_ROW_SIZE, BIGRAM_ENTRY_SIZE, ENTRY_SIZE, FLAG_AUX_PRESENT, FLAG_BIGRAM_PRESENT,
+    FLAG_REVERSE_PRESENT, FORMAT_VERSION, HEADER_SIZE, MAGIC, SECTION_COUNT, SECTION_ENTRY_SIZE,
+    SECTIONS_OFFSET, SectionEntry, SectionKind, align_up,
 };
 
 /// Suffix appended to the destination path while the image is being written.
@@ -38,9 +40,17 @@ pub const TEMP_SUFFIX: &str = ".tmp";
 /// ascending [`SectionKind`] order, which is what the reader validates. A payload
 /// that is empty is treated as an absent section: its table entry carries a zero
 /// length and a zero offset, exactly as a section the compiler chose not to emit.
+///
+/// The AUX column is not a table section: the six-slot table is fixed by the
+/// v1/v2 layout, so the column is stored as a self-describing block at the
+/// aligned tail of the file and announced by [`FLAG_AUX_PRESENT`] in the
+/// header. See [`crate::format::aux`]. The reverse index follows the same
+/// rule, stacked after the AUX block; see [`crate::reverse`].
 #[derive(Debug, Default)]
 pub struct DictWriter {
     sections: BTreeMap<SectionKind, Vec<u8>>,
+    aux: Option<Vec<u8>>,
+    reverse: Option<Vec<u8>>,
 }
 
 impl DictWriter {
@@ -98,6 +108,104 @@ impl DictWriter {
         Ok(())
     }
 
+    /// Adds the AUX column payload: one [`AUX_ROW_SIZE`]-byte row per word
+    /// record, in the `ENTRIES` ordering.
+    ///
+    /// The payload is taken by value. The writer checks only what the layout
+    /// itself requires -- a whole number of rows, one row per entry, added once
+    /// -- and leaves the row contents to the compiler, exactly as it does for
+    /// the FST payload; the reader re-validates every row of the untrusted
+    /// image on parse.
+    ///
+    /// # Errors
+    /// Returns [`DictError::LengthOutOfRange`] when the payload is empty, is
+    /// not a whole number of [`AUX_ROW_SIZE`]-byte rows, does not hold one row
+    /// per `ENTRIES` record, or when the column was added twice.
+    // `is_multiple_of` stabilized in Rust 1.87, while the workspace MSRV is 1.85.
+    #[allow(clippy::manual_is_multiple_of)]
+    pub fn add_aux_column(&mut self, rows: Vec<u8>) -> Result<(), DictError> {
+        if rows.is_empty() {
+            return Err(DictError::LengthOutOfRange {
+                field: "aux_len",
+                value: 0,
+            });
+        }
+        if rows.len() % AUX_ROW_SIZE != 0 {
+            return Err(DictError::LengthOutOfRange {
+                field: "aux_len",
+                value: rows.len() as u64,
+            });
+        }
+        let row_count = rows.len() / AUX_ROW_SIZE;
+        let entries = self.entry_count()? as usize;
+        if row_count != entries {
+            return Err(DictError::LengthOutOfRange {
+                field: "aux_count",
+                value: row_count as u64,
+            });
+        }
+        if self.aux.is_some() {
+            return Err(DictError::LengthOutOfRange {
+                field: "aux_duplicate",
+                value: 1,
+            });
+        }
+        self.aux = Some(rows);
+        Ok(())
+    }
+
+    /// Adds the reverse-lookup index payload: the self-describing block
+    /// [`crate::reverse`] lays out, header included.
+    ///
+    /// The payload is taken by value. The writer checks only what the layout
+    /// itself requires -- a present header of the right magic and a length
+    /// that exactly matches the counts it declares -- and leaves the row
+    /// contents to the compiler; the reader re-validates every row of the
+    /// untrusted image on parse.
+    ///
+    /// # Errors
+    /// Returns [`DictError::LengthOutOfRange`] when the payload is empty,
+    /// shorter than its header, carries the wrong magic, does not hold exactly
+    /// the characters, keys and postings its header declares, or when the
+    /// index was added twice.
+    pub fn add_reverse_index(&mut self, bytes: Vec<u8>) -> Result<(), DictError> {
+        if bytes.is_empty() {
+            return Err(DictError::LengthOutOfRange {
+                field: "reverse_len",
+                value: 0,
+            });
+        }
+        if bytes.len() < crate::reverse::REVERSE_HEADER_SIZE
+            || bytes.get(0..4) != Some(&crate::reverse::REVERSE_MAGIC[..])
+        {
+            return Err(DictError::LengthOutOfRange {
+                field: "reverse_magic",
+                value: bytes.len() as u64,
+            });
+        }
+        let char_count = format::read_u32(&bytes, 8, "reverse_char_count")? as usize;
+        let key_count = format::read_u32(&bytes, 12, "reverse_key_count")? as usize;
+        let posting_count = format::read_u32(&bytes, 16, "reverse_posting_count")? as usize;
+        let expected = crate::reverse::REVERSE_HEADER_SIZE
+            + char_count * crate::reverse::REVERSE_CHAR_ROW_SIZE
+            + key_count * crate::reverse::REVERSE_KEY_ROW_SIZE
+            + posting_count * 4;
+        if bytes.len() != expected {
+            return Err(DictError::LengthOutOfRange {
+                field: "reverse_len",
+                value: bytes.len() as u64,
+            });
+        }
+        if self.reverse.is_some() {
+            return Err(DictError::LengthOutOfRange {
+                field: "reverse_duplicate",
+                value: 1,
+            });
+        }
+        self.reverse = Some(bytes);
+        Ok(())
+    }
+
     /// Returns the number of word records the container will declare.
     ///
     /// The count is derived from the `ENTRIES` payload rather than passed in
@@ -112,12 +220,26 @@ impl DictWriter {
     }
 
     /// Returns the `flags` word the header will carry.
+    ///
+    /// The AUX and REVERSE bits are set exactly when the matching tail payload
+    /// was added, which is the same flag-iff-present contract the `BIGRAM` bit
+    /// follows.
     pub fn flags(&self) -> u16 {
         let has_bigram = self
             .sections
             .get(&SectionKind::Bigram)
             .is_some_and(|bytes| !bytes.is_empty());
-        if has_bigram { FLAG_BIGRAM_PRESENT } else { 0 }
+        let mut flags = 0;
+        if has_bigram {
+            flags |= FLAG_BIGRAM_PRESENT;
+        }
+        if self.aux.is_some() {
+            flags |= FLAG_AUX_PRESENT;
+        }
+        if self.reverse.is_some() {
+            flags |= FLAG_REVERSE_PRESENT;
+        }
+        flags
     }
 
     /// Returns the section bytes this writer will lay out, for callers that want
@@ -228,6 +350,89 @@ impl DictWriter {
             slot.copy_from_slice(bytes);
         }
 
+        // The AUX column, when present, is the aligned tail of the file: it has
+        // no table slot, so the reader finds it by this same rule (aligned past
+        // the last table section) and validates the block header there. The
+        // reverse index, when present too, stacks after it by the same rule,
+        // so the walk ends at whichever tail block was written last.
+        let mut tail_end = cursor;
+        if let Some(rows) = &self.aux {
+            let offset = align_up(cursor)?;
+            let block = encode_block(entry_count, rows)?;
+            let block_len = block.len() as u64;
+            let total_len = offset
+                .checked_add(block_len)
+                .ok_or(DictError::LengthOutOfRange {
+                    field: "total_len",
+                    value: offset,
+                })?;
+            tail_end = total_len;
+            let total = usize::try_from(total_len).map_err(|_| DictError::LengthOutOfRange {
+                field: "total_len",
+                value: total_len,
+            })?;
+            image.resize(total, 0);
+            let start = usize::try_from(offset).map_err(|_| DictError::LengthOutOfRange {
+                field: "section_offset",
+                value: offset,
+            })?;
+            let end = start + block.len();
+            let slot = image
+                .get_mut(start..end)
+                .ok_or(DictError::LengthOutOfRange {
+                    field: "section_offset",
+                    value: offset,
+                })?;
+            slot.copy_from_slice(&block);
+            // The header was written against the six-section total above; the
+            // length is corrected now that the tail is in place.
+            let header_len = image.get_mut(16..24).ok_or(DictError::LengthOutOfRange {
+                field: "header",
+                value: total_len,
+            })?;
+            header_len.copy_from_slice(&total_len.to_le_bytes());
+        }
+
+        // The reverse index, when present, is the next aligned tail block: it
+        // stacks after the AUX column's end, and the reader resolves it by the
+        // same rule this placement follows.
+        if let Some(bytes) = &self.reverse {
+            let offset = align_up(tail_end)?;
+            let block_len = bytes.len() as u64;
+            let total_len = offset
+                .checked_add(block_len)
+                .ok_or(DictError::LengthOutOfRange {
+                    field: "total_len",
+                    value: offset,
+                })?;
+            let total = usize::try_from(total_len).map_err(|_| DictError::LengthOutOfRange {
+                field: "total_len",
+                value: total_len,
+            })?;
+            image.resize(total, 0);
+            let start = usize::try_from(offset).map_err(|_| DictError::LengthOutOfRange {
+                field: "section_offset",
+                value: offset,
+            })?;
+            let end = start + bytes.len();
+            let slot = image
+                .get_mut(start..end)
+                .ok_or(DictError::LengthOutOfRange {
+                    field: "section_offset",
+                    value: offset,
+                })?;
+            slot.copy_from_slice(bytes);
+            // The header was written against the earlier total above; the
+            // length is corrected again now that this tail is in place. The
+            // file checksum below is computed after this, so it covers the
+            // block.
+            let header_len = image.get_mut(16..24).ok_or(DictError::LengthOutOfRange {
+                field: "header",
+                value: total_len,
+            })?;
+            header_len.copy_from_slice(&total_len.to_le_bytes());
+        }
+
         // The file checksum covers everything after the header, so it is computed
         // last and then written into the one field it deliberately excludes.
         let file_crc32 = format::crc32(&image[HEADER_SIZE..]);
@@ -295,467 +500,5 @@ pub fn temp_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// Rounds `offset` up to the next [`SECTION_ALIGN`] boundary.
-fn align_up(offset: u64) -> Result<u64, DictError> {
-    let remainder = offset % SECTION_ALIGN;
-    if remainder == 0 {
-        return Ok(offset);
-    }
-    offset
-        .checked_add(SECTION_ALIGN - remainder)
-        .ok_or(DictError::LengthOutOfRange {
-            field: "section_offset",
-            value: offset,
-        })
-}
-
 #[cfg(test)]
-mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    use super::*;
-    use crate::format::BigramRecord;
-    use crate::format::reader::{Reader, Verify};
-
-    /// Serial number for temporary directories; tests in one binary run in
-    /// parallel threads, and nextest runs several binaries at once.
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-    /// A directory of this test process, unique per call and per test name.
-    fn scratch_dir(tag: &str) -> PathBuf {
-        let serial = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "rspinyin-dict-writer-{}-{tag}-{serial}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).expect("creating the scratch directory");
-        dir
-    }
-
-    /// Two entries and a small string pool, enough to exercise every section.
-    fn sample_writer() -> DictWriter {
-        let mut entries = Vec::new();
-        entries.extend_from_slice(&format::DictEntry::new(0, 3, 1, 0, 900).encode());
-        entries
-            .extend_from_slice(&format::DictEntry::new(3, 6, 2, format::FLAG_PLACE, 300).encode());
-
-        let mut wordlist = Vec::new();
-        wordlist.extend_from_slice(&0u32.to_le_bytes());
-        wordlist.extend_from_slice(&1u32.to_le_bytes());
-
-        let mut unigram = Vec::new();
-        unigram.extend_from_slice(&format::hash_word("中").to_le_bytes());
-        unigram.extend_from_slice(&format::PROB_Q12_MAX.to_le_bytes());
-        unigram.extend_from_slice(&0u16.to_le_bytes());
-        unigram.extend_from_slice(&format::hash_word("中国").to_le_bytes());
-        unigram.extend_from_slice(&1u16.to_le_bytes());
-        unigram.extend_from_slice(&0u16.to_le_bytes());
-
-        let mut writer = DictWriter::new();
-        writer
-            .add_section(SectionKind::Fst, vec![0xAA; 16])
-            .expect("fst");
-        writer
-            .add_section(SectionKind::Entries, entries)
-            .expect("entries");
-        writer
-            .add_section(SectionKind::StrPool, "中中国".as_bytes().to_vec())
-            .expect("strpool");
-        writer
-            .add_section(SectionKind::Unigram, unigram)
-            .expect("unigram");
-        writer
-            .add_section(SectionKind::WordList, wordlist)
-            .expect("wordlist");
-        writer
-    }
-
-    #[test]
-    fn test_encode_places_sections_on_alignment_boundaries() {
-        let writer = sample_writer();
-        let image = writer.encode().expect("encoding");
-        let sections = format::parse_section_table(&image).expect("table");
-        let mut previous_end = SECTIONS_OFFSET;
-        for entry in sections.iter().filter(|entry| !entry.is_absent()) {
-            assert_eq!(entry.offset % SECTION_ALIGN, 0, "{entry:?} is unaligned");
-            assert!(
-                entry.offset >= previous_end,
-                "{entry:?} overlaps the previous section"
-            );
-            assert_eq!(
-                entry.crc32,
-                format::crc32(&image[entry.offset as usize..(entry.offset + entry.len) as usize])
-            );
-            previous_end = entry.offset + entry.len;
-        }
-        assert_eq!(previous_end, image.len() as u64);
-    }
-
-    #[test]
-    fn test_encode_writes_a_header_that_parses_back() {
-        let writer = sample_writer();
-        let image = writer.encode().expect("encoding");
-        let header = format::parse_header(&image).expect("header");
-        assert_eq!(header.format_version, FORMAT_VERSION);
-        assert_eq!(header.entry_count, 2);
-        assert_eq!(header.total_len, image.len() as u64);
-        assert_eq!(header.flags, 0);
-        assert_eq!(header.file_crc32, format::crc32(&image[HEADER_SIZE..]));
-        assert!(image[32..HEADER_SIZE].iter().all(|byte| *byte == 0));
-    }
-
-    #[test]
-    fn test_encode_omits_empty_sections() {
-        let mut writer = DictWriter::new();
-        writer
-            .add_section(SectionKind::StrPool, Vec::new())
-            .expect("empty section");
-        writer
-            .add_section(SectionKind::Fst, vec![1, 2, 3, 4, 5, 6, 7, 8])
-            .expect("fst");
-        let image = writer.encode().expect("encoding");
-        let sections = format::parse_section_table(&image).expect("table");
-        assert!(sections[2].is_absent(), "an empty payload is absent");
-        assert_eq!(sections[2].offset, 0);
-        assert!(!sections[0].is_absent());
-        assert_eq!(writer.entry_count().expect("entry count"), 0);
-    }
-
-    #[test]
-    fn test_add_section_rejects_a_duplicate_kind() {
-        let mut writer = DictWriter::new();
-        writer
-            .add_section(SectionKind::StrPool, b"abc".to_vec())
-            .expect("first");
-        let result = writer.add_section(SectionKind::StrPool, b"def".to_vec());
-        assert!(matches!(
-            result,
-            Err(DictError::LengthOutOfRange {
-                field: "section_duplicate",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn test_add_section_rejects_misaligned_record_payloads() {
-        let cases = [
-            (SectionKind::Entries, vec![0u8; ENTRY_SIZE + 1]),
-            (
-                SectionKind::Unigram,
-                vec![0u8; format::UNIGRAM_ENTRY_SIZE + 1],
-            ),
-            (SectionKind::WordList, vec![0u8; 5]),
-        ];
-        for (kind, payload) in cases {
-            let mut writer = DictWriter::new();
-            let result = writer.add_section(kind, payload);
-            assert!(
-                matches!(
-                    result,
-                    Err(DictError::LengthOutOfRange {
-                        field: "section_len",
-                        ..
-                    })
-                ),
-                "{kind:?} with a partial record must be rejected"
-            );
-        }
-    }
-
-    #[test]
-    fn test_add_section_accepts_a_bigram_payload_and_rejects_a_partial_record() {
-        let mut writer = DictWriter::new();
-        writer
-            .add_section(
-                SectionKind::Bigram,
-                BigramRecord::new(7, 9).encode().to_vec(),
-            )
-            .expect("a v2 container may carry a bigram section");
-        assert_eq!(writer.flags(), FLAG_BIGRAM_PRESENT);
-        let image = writer.encode().expect("encoding");
-        let reader =
-            crate::format::reader::Reader::parse(image, crate::format::reader::Verify::Full)
-                .expect("the image is valid");
-        assert_eq!(reader.header().format_version, FORMAT_VERSION);
-        assert_eq!(reader.bigram_count(), 1);
-        assert_eq!(reader.bigram(0).expect("record"), BigramRecord::new(7, 9));
-
-        let mut writer = DictWriter::new();
-        assert!(matches!(
-            writer.add_section(SectionKind::Bigram, vec![1, 2, 3, 4]),
-            Err(DictError::LengthOutOfRange {
-                field: "section_len",
-                ..
-            })
-        ));
-        assert_eq!(writer.flags(), 0);
-    }
-
-    #[test]
-    fn test_finish_writes_a_readable_file_and_leaves_no_temporary() {
-        let dir = scratch_dir("atomic");
-        let path = dir.join("base.dict");
-        let writer = sample_writer();
-        writer.finish(&path).expect("finish");
-
-        assert!(path.exists(), "the destination must exist");
-        assert!(
-            !temp_path(&path).exists(),
-            "the temporary file must be gone after the rename"
-        );
-        let reader = Reader::open(&path).expect("opening the written file");
-        assert_eq!(reader.entry_count(), 2);
-        assert_eq!(reader.word_at(1).expect("second word"), "中国");
-        assert_eq!(reader.section(SectionKind::Fst).expect("fst"), &[0xAA; 16]);
-        assert_eq!(
-            reader.unigram(0).expect("unigram"),
-            (format::hash_word("中"), format::PROB_Q12_MAX)
-        );
-
-        fs::remove_dir_all(&dir).expect("cleaning up");
-    }
-
-    // A destination that exists as a non-empty directory is the deterministic way to
-    // fail the final rename after the temporary file has been written in full; a
-    // failing write (ENOSPC) leaves the same residue, and this test pins the cleanup
-    // that must run on every error path once the temporary exists.
-    #[test]
-    fn test_finish_removes_the_temporary_file_when_the_write_fails() {
-        let dir = scratch_dir("failed-write");
-        let path = dir.join("base.dict");
-        fs::create_dir(&path).expect("the destination as a directory");
-        fs::write(path.join("occupied"), b"rename onto a directory must fail")
-            .expect("occupying the destination");
-
-        let writer = sample_writer();
-        let result = writer.finish(&path);
-        assert!(result.is_err(), "rename onto a non-empty directory fails");
-        assert!(
-            !temp_path(&path).exists(),
-            "a failed finish must not leave the temporary file behind"
-        );
-    }
-
-    #[test]
-    fn test_finish_replaces_an_existing_file_atomically() {
-        let dir = scratch_dir("replace");
-        let path = dir.join("base.dict");
-
-        let mut first = DictWriter::new();
-        first
-            .add_section(SectionKind::StrPool, b"first".to_vec())
-            .expect("first section");
-        first.finish(&path).expect("first finish");
-
-        let mut second = DictWriter::new();
-        second
-            .add_section(SectionKind::StrPool, b"second payload".to_vec())
-            .expect("second section");
-        second.finish(&path).expect("second finish");
-
-        let reader = Reader::open_with(&path, Verify::Full).expect("opening the replaced file");
-        assert_eq!(
-            reader.section(SectionKind::StrPool).expect("strpool"),
-            b"second payload"
-        );
-        assert!(!temp_path(&path).exists());
-
-        fs::remove_dir_all(&dir).expect("cleaning up");
-    }
-
-    #[test]
-    fn test_finish_creates_a_missing_parent_directory() {
-        let dir = scratch_dir("parents");
-        let path = dir.join("nested/deeper/base.dict");
-        let writer = sample_writer();
-        writer.finish(&path).expect("finish into a new directory");
-        assert!(path.exists());
-        fs::remove_dir_all(&dir).expect("cleaning up");
-    }
-
-    #[test]
-    fn test_temp_path_keeps_the_file_in_its_directory() {
-        let temp = temp_path(Path::new("/data/compiled/base.dict"));
-        assert_eq!(temp, PathBuf::from("/data/compiled/base.dict.tmp"));
-        assert_eq!(temp.parent(), Some(Path::new("/data/compiled")));
-    }
-
-    #[test]
-    fn test_align_up_rounds_to_the_section_boundary() {
-        assert_eq!(align_up(208).expect("aligned"), 208);
-        assert_eq!(align_up(209).expect("rounding"), 216);
-        assert_eq!(align_up(215).expect("rounding"), 216);
-        assert_eq!(align_up(216).expect("aligned"), 216);
-    }
-
-    /// A container image built by the writer, for the parser tests below: the
-    /// header and the section table are the writer's other half of the contract.
-    fn image() -> Vec<u8> {
-        sample_writer().encode().expect("encoding")
-    }
-
-    #[test]
-    fn test_parse_header_rejects_magic_and_version() {
-        let mut bytes = image();
-        bytes[0] = b'X';
-        assert!(matches!(
-            format::parse_header(&bytes),
-            Err(DictError::MagicMismatch)
-        ));
-
-        let mut bytes = image();
-        bytes[4..6].copy_from_slice(&3u16.to_le_bytes());
-        assert!(matches!(
-            format::parse_header(&bytes),
-            Err(DictError::FormatVersion { found: 3 })
-        ));
-
-        let mut bytes = image();
-        bytes[4..6].copy_from_slice(&0u16.to_le_bytes());
-        assert!(matches!(
-            format::parse_header(&bytes),
-            Err(DictError::FormatVersion { found: 0 })
-        ));
-    }
-
-    #[test]
-    fn test_parse_header_rejects_layout_disagreements() {
-        let mut bytes = image();
-        bytes[8..12].copy_from_slice(&32u32.to_le_bytes());
-        assert!(matches!(
-            format::parse_header(&bytes),
-            Err(DictError::LengthOutOfRange {
-                field: "header_size",
-                ..
-            })
-        ));
-
-        let mut bytes = image();
-        bytes[12..16].copy_from_slice(&5u32.to_le_bytes());
-        assert!(matches!(
-            format::parse_header(&bytes),
-            Err(DictError::LengthOutOfRange {
-                field: "section_count",
-                ..
-            })
-        ));
-
-        let mut bytes = image();
-        let wrong = bytes.len() as u64 + 1;
-        bytes[16..24].copy_from_slice(&wrong.to_le_bytes());
-        assert!(matches!(
-            format::parse_header(&bytes),
-            Err(DictError::LengthOutOfRange {
-                field: "total_len",
-                ..
-            })
-        ));
-
-        let mut bytes = image();
-        bytes[6..8].copy_from_slice(&2u16.to_le_bytes());
-        assert!(matches!(
-            format::parse_header(&bytes),
-            Err(DictError::LengthOutOfRange { field: "flags", .. })
-        ));
-
-        let mut bytes = image();
-        bytes[40] = 1;
-        assert!(matches!(
-            format::parse_header(&bytes),
-            Err(DictError::LengthOutOfRange {
-                field: "reserved",
-                ..
-            })
-        ));
-
-        let short = vec![0u8; HEADER_SIZE - 1];
-        assert!(matches!(
-            format::parse_header(&short),
-            Err(DictError::LengthOutOfRange {
-                field: "file_len",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn test_parse_section_table_rejects_an_unknown_kind() {
-        let mut bytes = image();
-        bytes[HEADER_SIZE..HEADER_SIZE + 4].copy_from_slice(&9u32.to_le_bytes());
-        assert!(matches!(
-            format::parse_section_table(&bytes),
-            Err(DictError::LengthOutOfRange {
-                field: "section_kind",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn test_parse_section_table_rejects_a_misordered_table() {
-        let mut bytes = image();
-        // Swap the kinds of the first two entries; both are known values, so the
-        // failure has to be caught by the ordering check.
-        bytes[HEADER_SIZE..HEADER_SIZE + 4].copy_from_slice(&2u32.to_le_bytes());
-        bytes[HEADER_SIZE + SECTION_ENTRY_SIZE..HEADER_SIZE + SECTION_ENTRY_SIZE + 4]
-            .copy_from_slice(&1u32.to_le_bytes());
-        assert!(matches!(
-            format::parse_section_table(&bytes),
-            Err(DictError::LengthOutOfRange {
-                field: "section_order",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn test_parse_section_table_rejects_unaligned_and_out_of_range_offsets() {
-        let mut bytes = image();
-        bytes[HEADER_SIZE + 8..HEADER_SIZE + 16].copy_from_slice(&209u64.to_le_bytes());
-        assert!(matches!(
-            format::parse_section_table(&bytes),
-            Err(DictError::LengthOutOfRange {
-                field: "section_offset",
-                ..
-            })
-        ));
-
-        let mut bytes = image();
-        bytes[HEADER_SIZE + 8..HEADER_SIZE + 16].copy_from_slice(&64u64.to_le_bytes());
-        assert!(matches!(
-            format::parse_section_table(&bytes),
-            Err(DictError::LengthOutOfRange {
-                field: "section_offset",
-                ..
-            })
-        ));
-
-        let mut bytes = image();
-        let total_len = bytes.len() as u64;
-        bytes[HEADER_SIZE + 16..HEADER_SIZE + 24].copy_from_slice(&total_len.to_le_bytes());
-        assert!(matches!(
-            format::parse_section_table(&bytes),
-            Err(DictError::LengthOutOfRange {
-                field: "section_len",
-                ..
-            })
-        ));
-
-        let mut bytes = image();
-        // An absent section must not point anywhere. Absence is expressed by a zero
-        // *length*, so the length has to be cleared too — an offset alone describes a
-        // present section, which is legitimately allowed to point at its data.
-        bytes[HEADER_SIZE + SECTION_ENTRY_SIZE + 16..HEADER_SIZE + SECTION_ENTRY_SIZE + 24]
-            .copy_from_slice(&0u64.to_le_bytes());
-        bytes[HEADER_SIZE + SECTION_ENTRY_SIZE + 8..HEADER_SIZE + SECTION_ENTRY_SIZE + 16]
-            .copy_from_slice(&208u64.to_le_bytes());
-        assert!(matches!(
-            format::parse_section_table(&bytes),
-            Err(DictError::LengthOutOfRange {
-                field: "section_offset",
-                ..
-            })
-        ));
-    }
-}
+mod tests;

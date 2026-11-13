@@ -23,9 +23,12 @@
 //! temporary directory, and no test here touches the environment, the clock or a display
 //! server.
 
+mod aux;
 mod feedback;
 mod pool;
+mod profiles;
 mod quick;
+mod reverse;
 mod select_char;
 
 use std::fs;
@@ -628,9 +631,9 @@ fn test_compose_host_missing_hit_commits_and_swallows_the_letter() {
 
     assert!(router.key_event(IC, &press(0xb4, 0), &mut host));
     assert!(router.key_event(IC, &press(b'e' as u32, 0), &mut host));
-    assert_eq!(host.commits, ["´", "é"]);
+    assert_eq!(host.commits, ["é"]);
     assert!(!router.key_event(IC, &press(0xffbe, 0), &mut host));
-    assert_eq!(host.commits, ["´", "é"]);
+    assert_eq!(host.commits, ["é"]);
 }
 
 #[test]
@@ -649,10 +652,10 @@ fn test_compose_host_missing_miss_commits_mark_and_routes_letter_normally() {
 
     assert!(router.key_event(IC, &press(0xa8, 0), &mut host));
     assert!(router.key_event(IC, &press(b'x' as u32, 0), &mut host));
-    assert_eq!(host.commits, ["¨", "¨"]);
+    assert_eq!(host.commits, ["¨"]);
     // A function key is left for the application and proves the pending state ended.
     assert!(!router.key_event(IC, &press(0xffbe, 0), &mut host));
-    assert_eq!(host.commits, ["¨", "¨"]);
+    assert_eq!(host.commits, ["¨"]);
 }
 
 #[test]
@@ -672,7 +675,9 @@ fn test_compose_fallback_reset_on_context_reset() {
     assert!(router.key_event(IC, &press(0xb8, 0), &mut host));
     router.reset(IC, &mut host);
     assert!(router.key_event(IC, &press(b'c' as u32, 0), &mut host));
-    assert_eq!(host.commits, ["¸"]);
+    // The opening mark was swallowed with no output, and the reset cancelled the
+    // sequence before any letter resolved, so nothing was ever committed.
+    assert!(host.commits.is_empty(), "{:?}", host.commits);
 }
 
 #[test]

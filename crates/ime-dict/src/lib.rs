@@ -16,6 +16,7 @@ pub mod hot_swap;
 pub mod mmap;
 pub mod paths;
 pub mod recover;
+pub mod reverse;
 pub mod script;
 pub mod symbols;
 pub mod user_db;

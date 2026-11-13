@@ -18,7 +18,8 @@
   - 对标参考锚点 (Benchmark Reference)：rime-ice `symbols_v.yaml:12-13` 66 子域 + vhelp/vlist 自描述索引页（SCOUT-ICE-13）；WindInput `OnceLock` 内置表进程单例教训反例（SCOUT-E-14 相邻）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-dict/src/symbols.rs`（域扩展 + 索引页）、`crates/ime-fcitx5/src/addon/session.rs:334-368`（OnceLock → 可换槽）、`data/`（emoji 域符号表 derived 条目 + `sources.toml` 登记）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：ime-dict symbols.rs ArcSwap槽+session.rs install_emoji_domain+symbols_view.rs vhelp索引页+data/raw/emoji.tsv; 热重载/降级测试齐备; 侦察核对 DONE
 - **目标与价值**：符号域从「v1/vx/vym 静态三类（B-07）」扩展为「分域 + 自描述索引页」：新增 emoji 域（自建表，GPL emoji.json 不拷贝）、`vhelp` 式「输入即列出全部域及其触发键」的索引页，并把符号表装载从 OnceLock 改为与短语表同款的 ArcSwap 可换槽（B-05：重载后符号表刷新）。
 - **技术设计与代码级接入细节**：
   - **热重载改造**：
@@ -55,7 +56,8 @@ fn swap_symbol_table(next: Arc<SymbolTable>) { SYMBOL_TABLE.store(next); }
   - 对标参考锚点 (Benchmark Reference)：rime-ice `select_character.lua:20-60`（`[`/`]` 取候选首/尾字 + 光标不在末尾时保留右侧未处理输入，SCOUT-ICE-14）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-fcitx5/src/engine/router.rs`（KeyAction 路由臂，≤20 行）+ `crates/ime-fcitx5/src/engine/router/effects.rs`（字级提交 Effect）、`crates/ime-core/src/state/transitions.rs`（跃迁）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：以词定字键位可配: keys.select_first_char/select_last_char 默认bracket_left/right, 贯穿声明(SelectCharKey闭集枚举+off)→合并→投影(同mark冲突投影层裁决复用keys/binding-conflict,首字键保留)→写回→模板→路由臂(select_char which_of零分配热路径); ime-config 162/162绿(cargo nextest run -p ime-config 0.137s); ime-fcitx5侧5+审计测试随交付check --all-targets零警告, 全量nextest因ime-dict被6.06.01在途编辑顺延阶段3; 白名单外2处一行级机械增补已申报(schema.rs pub use SelectCharKey, reload.rs PartialKeys+2字段)
 - **目标与价值**：打出「中国」后按 `[` 只上屏「中」、按 `]` 只上屏「国」——单字候选排序不佳时的精确定位手段。键位默认 `[`/`]`（可配），消费 Round-1 已预留给宿主的按键通道。
 - **技术设计与代码级接入细节**：
 
@@ -96,7 +98,8 @@ fn char_at_boundaries(text: &str, which: Which) -> Option<&str> {
   - 对标参考锚点 (Benchmark Reference)：rime-ice `cold_word_drop/processor.lua:169-202`（快捷键负反馈三态）+ `filter.lua:24-70`（降频压位语义，SCOUT-ICE-04）；其 lua 文件当存储的做法被否决——存储进用户词库
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-dict/src/user_db.rs`（`penalty` 位与 `hidden` 会话集）、`crates/ime-core/src/state/transitions.rs`（两跃迁）、`crates/ime-fcitx5/src/engine/router/effects.rs`（回执 Effect）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：ime-dict user_db.rs penalty表(schema2向后兼容)+transitions/feedback.rs reduce/hide_highlighted+Session.hidden; penalty_tests 14+feedback测试 12; 侦察核对 DONE
 - **目标与价值**：用户负反馈目前只有 Forget 一态（删词）。补齐 **降频**（用户词权重乘惩罚因子，可被后续正常使用恢复——区别于 forget 的删除）与 **隐藏**（仅本会话不再产出该候选，不落盘），对齐 rime-ice「删词/隐藏/降频」三态语义；交互沿用「对高亮候选按键」。
 - **技术设计与代码级接入细节**：
   - **存储语义**：降频 = 用户词记录增 `penalty: u8` 位（`effective_freq` 计算时右移），正常 commit 使 penalty 衰减一档；隐藏 = 会话内存 `HashSet<(key, text)>`，不落盘（跨会话隐藏是 Forget 的职责，不重复建设）。
@@ -123,7 +126,8 @@ fn char_at_boundaries(text: &str, which: Which) -> Option<&str> {
   - 对标参考锚点 (Benchmark Reference)：rime-ice `autocap_filter.lua:63-112`（按输入码形态套壳；「大写时无法动态调频」取舍注释，SCOUT-ICE-10）、`cn_en_spacer.lua:9-28` + `en_spacer.lua:7-14`（交界/连排空格，SCOUT-ICE-16）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-core/src/segment/english.rs`（大小形变）、`crates/ime-core/src/state/`（commit 前空格后处理，挂在 transform_output 管线）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：ime-core segment/english.rs(InputShape/apply_shape 大小写套壳)+state/spacing.rs(连排空格规则表)+[english] spacing 配置默认 Auto; spacing 4测试钉死; 侦察核对 DONE(X11手验产物归阶段3)
 - **目标与价值**：ENGLISH 混输 v1 直通输出的打磨：输入 `github`→`GitHub` 式首字母套壳、`GITHUB`→全大写匹配；中文后接英文候选自动补空格、连续英文候选间自动补空格（`en_spacer` 语义）。全部为 commit 前的确定性文本后处理。
 - **技术设计与代码级接入细节**：
 
@@ -159,7 +163,8 @@ pub fn apply_shape(entry: &str, shape: InputShape) -> String;
   - 对标参考锚点 (Benchmark Reference)：rime-ice `reduce_english_filter.lua:17-56`（撞车英文降权名单机制，SCOUT-ICE-12）、`long_word_filter.lua:16-50`（长词提前 ≤count 到第 idx 位，SCOUT-ICE-11）、`rime_ice.dict.yaml:22-76`（大写/数字入词参与造句，SCOUT-ICE-20）
   - 本项目代码落地锚点 (Code Anchor)：`xtask/src/dictc/`（标记 pass）、`data/`（降权名单 derived 表）、`crates/ime-dict/src/format/`（排序已编译期定序——标记作用于权重而非新增段）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：构建期排序标记收尾: eng.rs 404→627行, 新增6条fixture级编译器端测试(小写键+大小写显示保留/同键强排名折迭/缺列与字符集报错含文件行号/双编译逐字节幂等/reduce名单降权接线实证), fixture落/dev/shm防WSL2 fsync延迟; 交付时cargo check -p xtask --tests绿; 重复键语义按实现钉死(强排名折迭非报错, 卡面与旧doccomment已对齐); 全量nextest因ime-config/ime-dict被并行任务占用编辑延至阶段3终门禁统一验证
 - **目标与价值**：把 rime-ice 三个「运行期滤镜」转写为 **dictc 构建期标记**（己方路线：运行期零滤镜）：① 与拼音简拼撞车的英文短词（`ranch` 类）权重下调；② 长词优先位次表（同键候选按词长分桶的显示梯度，编译进权重序）；③ 大写字母/数字特殊词条入词（`3D`、`DNA` 参与整句）。
 - **技术设计与代码级接入细节**：
   - **标记通道**：dictc 新 `marks` pass——降权名单条目命中 → 权重乘 `REDUCE_FACTOR`；长词梯度 → 同键内按词长分桶乘梯度因子（ Round-1 归一化的词长梯度延续，粒度细化到键内）；大写/数字词条 → 允许进入整句词格（现仅候选域）。
@@ -186,7 +191,8 @@ pub fn apply_shape(entry: &str, shape: InputShape) -> String;
   - 对标参考锚点 (Benchmark Reference)：rime-ice `search.lua:114-284`（`` ` `` 引导 + 候选流筛选 + wildcard + fuma 转写，SCOUT-ICE-02）；WindInput `wind-aux-code/session.rs:25` 快照 + 子序列重筛不变量 + 门卫五道不吞键（SCOUT-D-10）
   - 本项目代码落地锚点 (Code Anchor)：`xtask/src/dictc/`（辅码列生成：拆字码 → 词条列）、`crates/ime-dict/src/format/`（AUX 可选段或 STRPOOL 扩展列）、`crates/ime-core/src/aux/`（筛选会话，新建）、`crates/ime-fcitx5/src/engine/router/`（引导键路由）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：引擎面(router五道门卫+会话+18测试)+配置面(aux_refinement默认关,9+2测试)+生产接线(FstLexicon保留Reader实现AuxSource零拷贝委托;addon锚点aux_source()装配with_aux_source;缺列降级aux/absent一次穿透)全绿: ime-dict 359+ime-fcitx5 596+ime-config 181(clippy清零); 已知v1限制: 热换库后辅码锚定安装时容器(词级纯函数,未见词读作未记录,已披露于aux_view.rs); X11手验归阶段3
 - **目标与价值**：重码精确定位：输入拼音后按 `` ` `` 进入辅码会话，续输拆字/笔画码对当前候选集做**子序列重筛**（候选集合只缩不排——WindInput 子序列不变量转写），快速定位「会打不会选」的重码字。词典构建期预存辅码列使筛选 O(候选数)，避免 rime-ice 运行期 reverse lookup 的量级开销。
 - **技术设计与代码级接入细节**：
   - **会话模型（WindInput 两形态取快照式）**：
@@ -230,7 +236,8 @@ impl AuxSession {
   - 对标参考锚点 (Benchmark Reference)：rime-ice `uU` 部件拆字反查域（recognizer/patterns 声明，SCOUT-ICE §2）；WindInput `wind-reverse/lib.rs:856-1040` 多源注释库「路径优先级先到先得 + 每源独立验鲜」（SCOUT-D-16）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-dict/src/reverse.rs`（新建：拆字反查索引）、`crates/ime-core/src/segment/`（反查域判定）、`crates/ime-fcitx5/src/engine/router/`（反查域路由）、`data/`（拆字反查表 derived）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：u反查域全链路: dictc反查pass(chaizi复用+70‰预算+9测试)+core recognize域判定(冻结层已有:纯u归拼音/数字载荷归码点/大小写分域)+router面板(16+3测试:命中/未命中/越界clamp/大小写互斥/他域/默认关回归)+reverse_lookup默认关开关端到端(schema->merge->投影->门)+生产接线(FstLexicon委托Reader实现ReverseSource;addon双锚点reverse_view;install喂with_reverse_source)+features.md登记reverse/absent与reverse/row-unreadable; 主agent收编修复: ReverseSource:Sync, clamp臂按doc语义认领, post_frame聚合PanelFrame, session_host/session拆分(800上限); 全绿: ime-dict+ime-fcitx5 984/984, xtask 1468/1468, clippy清零; X11手验归阶段3
 - **目标与价值**：不知读音的字打得出：`u` 前缀进入拆字域，按「字→部件分解序列」反查候选（如 `u`+`fang` 出「房」类部件组合）。与辅码共享拆字数据但查询方向相反（辅码=已知拼音筛字，反查=不知拼音寻字）。
 - **技术设计与代码级接入细节**：
   - **索引形态**：拆字表（字\t部件码）构建期物化为「部件码前缀 → 字集」有序索引（FST 或排序区间，复用既有索引原语）；候选带 annotation 显示完整拆字与读音（错音提示通道复用）。
@@ -257,7 +264,8 @@ impl AuxSession {
   - 对标参考锚点 (Benchmark Reference)：librime `tools/rime_dict_manager`（用户库导入导出/同步的独立运维 CLI 定位，SCOUT-C T4）；`rime_table_decompiler`「产物可逆向」的可调试性思想
   - 本项目代码落地锚点 (Code Anchor)：`xtask/src/userdict/`（新建模块）、`xtask/src/main.rs`（Command 枚举增 `UserDict` 变体——本 Phase 唯一允许动枚举的卡）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：xtask userdict.rs(六子命令)+tests.rs 13测试+main.rs Command::UserDict; 双轮定向冒烟 11/11 PASS(总耗时 0.29s/0.26s, 单测远低 1s 门禁); flake 根因(FixedClock+异步 flush 竞态)已结构性关闭; 已知适配: unpin 按库层 ADR-0013 以输入编码为主参数(pin WORD --key KEY)
 - **目标与价值**：用户词典的库层能力（导出/导入/备份/forget/pin）早已完备（`user_db/export.rs`、`backup.rs`），但没有运维入口（B-13）。本卡提供 `xtask user-dict <list|export|import|forget|pin|stats>` 子命令，让备份/迁移/问题排查有文档化路径；输出全部走结构化 stdout（xtask CLI 豁免区）。
 - **技术设计与代码级接入细节**：
   - **子命令面**：`list [--limit N]`（按频次序列出）、`export [--out FILE]`（复用 TSV 导出，8MiB 上限沿用）、`import FILE`（幂等合并）、`forget WORD`、`pin/unpin WORD`、`stats`（条数/体积/最近上屏分布——只出计数不出词文，隐私红线对 CLI 同样生效，`--full` 显式解锁词文输出）。
@@ -284,7 +292,8 @@ impl AuxSession {
   - 对标参考锚点 (Benchmark Reference)：WindInput `wind-config/config.rs:142-193`（RETIRED_KEYS 显式清单 + prune_retired 物理清理 + 「清理前后 load() 逐键相同」不变量 + 值迁移先落盘再清键铁律，SCOUT-F-05）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-config/src/reload/`（退役清单与清理 pass）、`crates/ime-config/src/schema/`（防漂移测试扩展）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：ime-config reload/retired.rs(RETIRED_KEYS 空清单+prune_retired)+reload.rs migrate 后接线(结构性保证迁移先落盘)+retired_tests.rs 6条守护测试(覆盖性/幂等/顺序铁律/往返无残留); 签名以 &mut toml::Value 替代卡面 DocumentMut(toml 1.1.8 不导出,已文档化); 定向冒烟 6/6 PASS
 - **目标与价值**：Round-2 新增了 `[assoc]`/`[quick_input]` 等配置面，未来键改名/合并不可避免。当前机制只有「未知键忽略」——旧键值会在用户层**永久残留**且无人清理。本卡建立退役键显式清单机制：清单内键在加载时从用户层物理删除（值先迁移则先迁移），并有「清理不改变语义」的守护测试。
 - **技术设计与代码级接入细节**：
 
@@ -324,7 +333,8 @@ pub fn prune_retired(doc: &mut DocumentMut) -> usize;
   - 对标参考锚点 (Benchmark Reference)：WindInput 求值坍缩「渲染热路径只读结果」的下沉接缝思想（SCOUT-E-01/04，K-10 路由——只吸收结构原则，不吸收主题模型）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-ui/src/theme.rs`（恰 800 行）、`crates/ime-ui/src/spring.rs`（恰 800）、`crates/ime-ui/src/adapter.rs`（恰 800）、`crates/ime-fcitx5/src/engine/router.rs`（749）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：行限贴顶预防性拆分两相完成: ime-ui三件(800×3→12文件全≤600, theme 143+5子模块/spring 524+2/adapter 517+2, 纯移动逐行验证, pub use收敛外部路径零变化) + router.rs(789→406门面, key.rs 264键路径/window.rs 127窗入向/step.rs 44参数束, lifecycle glob消费逐名核清, 禁碰面git diff零触碰); ime-ui 604/604绿; ime-fcitx5 577/578绿(唯一失败=6.12.01 profiles测试首跑问题已回炉其会话, 非拆分面); 观察项遥测: phrases.rs 664行超600目标(本卡白名单外, 记阶段3)
 - **目标与价值**：四个文件行限贴顶/逼近（B-06）——Round-2 任何涉及它们的增改都会当场触发「先拆分再干活」的强制路径，打断任务原子性。本卡做**零行为变更**的预防性拆分：按职责切子模块（theme.rs → `theme/{tokens,palette,resolve}.rs`；spring.rs → 参数/积分器分离；adapter.rs → 平台适配分档；router.rs → 把剩余职责下沉 `router/` 子模块），为 opt-ui 轨道（主题模型改造）与 Round-2 各卡恢复余量。
 - **技术设计与代码级接入细节**：
   - **拆分纪律（AGENTS §5）**：不删注释、不挤空行、不并长行；每文件拆出后 ≤600 行（预留余量）；`pub use` 收敛公共接口保持外部路径不变（零调用方改动）；测试随归属移动不改断言。
@@ -351,7 +361,8 @@ pub fn prune_retired(doc: &mut DocumentMut) -> usize;
   - 对标参考锚点 (Benchmark Reference)：fcitx5-rime `rimestate.cpp:169-222` compose 协议（单字符结果改写 keysym 再入引擎、多字符直通上屏，SCOUT-FR-09）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-fcitx5/src/engine/host.rs`（缺位探测已有）、`crates/ime-fcitx5/src/engine/compose.rs`（新建：最小兜底表）、`crates/ime-fcitx5/src/engine/router/`（兜底分派）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：compose宿主缺位兜底: 兜底表+分派已在树(stage23), 本卡O(1)首字符桶分派重构+13条新测试+两轮裁决修复: ①ComposeStep{Commit,Swallow,Pass}三态对齐宿主协议(开键零输出,miss单占位+重放=´x,死键替换=´à,pending功能键放行), ②compose状态自router全局单例下沉per-IC Context(lifecycle联动,router.rs 789行); ime-fcitx5 570/570全绿实跑验证; 另主agent修PRNG fill_bytes步长64→8字节存量欠账(host.rs); lifecycle.rs悬空doc块为既有债记录阶段3; X11档手验归验收期
 - **目标与价值**：compose/死键目前完全委托宿主 `processComposeString`（B-12），宿主不提供时静默退化（按键直穿）。本卡内置一张**最小兜底表**（常用重音死键：`´e`→`é` 等 ~30 组，数据自建）：宿主可用时仍委托宿主（优先），缺位时兜底表接管——能力不再因宿主差异静默消失。
 - **技术设计与代码级接入细节**：
   - **分派顺序**：`host.compose_available() ? host.process_compose(key) : builtin_table.lookup(key)`——与既有 trait 询问流程兼容，缺位探测点已在（`engine/host.rs:58-60`）。
@@ -378,7 +389,8 @@ pub fn prune_retired(doc: &mut DocumentMut) -> usize;
   - 对标参考锚点 (Benchmark Reference)：fcitx5-rime `rimesession.cpp:41-48` + `rimeengine.cpp:65-87`（app_options：会话创建时按程序名 set_option，SCOUT-FR-13）；`rimestate.cpp:475-527` 快照恰好一次（SCOUT-FR-02）
   - 本项目代码落地锚点 (Code Anchor)：`crates/ime-config/src/schema/config.rs`（`[app_profiles]` 节）、`crates/ime-fcitx5/src/engine/session_host.rs`（会话创建时投影）、`crates/ime-core/src/state/mod.rs`（初值注入）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
+  - 当前状态：`[x] 已完成`
+  - 落地证据：profile测试首跑失败修复: 根因=测试按键物理不自洽(大写keysym未带SHIFT位, translate_key折叠要求SHIFT, 无位则'N'不在a..z行→Ignore; 真实前端Shift+N必带位, 折叠后直通读原始keysym走classify rule3大写直通, 全角加宽契约成立)——择测试而修: 2处press补SHIFT+形状纪律钉死, 实现 zero改动; 唯一改动文件router/tests/profiles.rs; 证据: 前轮全量577/578(唯一失败即本项)+agent交付check ime-config/ime-fcitx5 --all-targets零警告; 判定性nextest因6.07.01在途ime-dict中间态物理阻塞, 归阶段3终门禁实跑
 - **目标与价值**：不同应用需要不同初态（终端里默认英文、编辑器里默认中文简繁）：按程序名（复用既有 app 标识 hash 通道，**不落明文程序名**——隐私纪律）预设会话初值（中英/简繁/全半角）。同时评估「配置重载后用户开关态保留策略」（fcitx5-rime 快照恰好一次的语义是否引入——评估结论落验收记录，立项与否显式裁决）。
 - **技术设计与代码级接入细节**：
 

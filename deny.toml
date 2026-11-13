@@ -82,6 +82,7 @@ ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode ceased development (2025-12-16) after a harassment incident; upstream considers v1.3.3 complete and there is no fixed release. It is reached only through Slint's build-time `.slint` compiler (`i-slint-compiler -> typed-index-collections -> bincode`), so it is not in the shipped closure." },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz is no longer maintained (2026-07-11) and no fixed release exists. It is the shaper `i-slint-core` (and `usvg`) use to lay out glyph runs; it is Slint's dependency choice and cannot be swapped from this workspace. It does parse font files, so a *vulnerability* advisory against it must be treated as reachable and will fail this gate." },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser is no longer maintained (2026-06-28) and no fixed release exists. It is the font parser behind `fontdb`, `rustybuzz` and `i-slint-common`, all pulled in by Slint. Same reachability caveat as rustybuzz: font parsing reads files, so a real vulnerability advisory must not be exempted by this entry." },
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils was archived upstream (2026-10-01) and no fixed release exists. It is a two-macro utility crate reached through Slint's async/future plumbing (`slint -> i-slint-core` stack), it is Slint's dependency choice and cannot be swapped from this workspace, and it parses no input of ours. Same caveat as the entries above: a real *vulnerability* advisory against it must fail this gate." },
 ]
 
 [licenses]

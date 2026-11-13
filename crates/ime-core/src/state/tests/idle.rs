@@ -136,3 +136,38 @@ fn test_idle_mode_toggles_flash_their_own_bits_and_touch_nothing_else() {
         );
     }
 }
+
+#[test]
+fn test_idle_session_starting_in_temp_english_passes_keys_through_until_left() {
+    // The initial-value injection contract: the engine may build a session with the
+    // flag already on -- a per-application profile's English initial rides exactly
+    // this flag -- and the machine must then behave as if the user had entered the
+    // mode themselves. Every key passes through without opening a composition, the
+    // exit key leaves the mode, and the key after it composes again.
+    let cfg = SessionConfig::default();
+    let fixture = Fixture::new();
+    let env = fixture.env();
+    let mut session = Session::new();
+    session.temp_english = true;
+
+    let effects = session.handle_key(KeyAction::InputChar('n'), &cfg, &env);
+    assert!(session.temp_english, "a letter is not the mode's exit");
+    assert_eq!(
+        session.state,
+        SessionState::Idle,
+        "and opens no composition while it is on"
+    );
+    assert_eq!(session.buf.raw(), "", "and takes no input");
+    assert!(effects.is_empty(), "and produces nothing the host must do");
+
+    let effects = session.handle_key(KeyAction::Escape, &cfg, &env);
+    assert!(!session.temp_english, "the exit key leaves the mode");
+    assert!(effects.is_empty(), "and leaving is itself silent");
+
+    session.handle_key(KeyAction::InputChar('n'), &cfg, &env);
+    assert_eq!(
+        session.state,
+        SessionState::Composing,
+        "the session after the mode is an ordinary one"
+    );
+}

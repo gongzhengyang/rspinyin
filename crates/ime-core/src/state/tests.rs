@@ -183,7 +183,10 @@ impl Fixture {
 
     /// Borrows the sources as the environment a step reads, with one English
     /// lexicon attached beside them, for the mixed-English tests.
-    pub(super) fn env_with_english<'env>(&'env self, english: &'env MockLexicon) -> SessionEnv<'env> {
+    pub(super) fn env_with_english<'env>(
+        &'env self,
+        english: &'env MockLexicon,
+    ) -> SessionEnv<'env> {
         SessionEnv {
             decoder: &self.decoder,
             lexicon: &self.lexicon,

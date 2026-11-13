@@ -87,6 +87,17 @@ impl super::KeyRouter<'_> {
 // state; the visibility stops at the router's own module tree.
 pub(super) mod quick;
 
+// The auxiliary-code refinement view is the same kind of sibling, for the same
+// reason: the context holds its state, the executor answers before the session.
+pub(super) mod aux;
+
+// The decomposition reverse-lookup panel is the third sibling of the same family:
+// a routing-layer composition whose candidates are rendered, not decoded.
+pub(super) mod reverse;
+
+// The paging state and the frame path the rendered panels share.
+pub(super) mod panel;
+
 // The character-selection route answers the composing brackets where the session
 // can take a character from the highlight; the visibility stops at the router.
 pub(super) mod select_char;
@@ -140,12 +151,61 @@ impl Context {
         let mut acted = false;
         let mut pending = Some(event);
         while let Some(event) = pending.take() {
+            // The aux view answers before the quick panel does: it is a refinement of
+            // the session's own candidate list, so a key it owns must never reach the
+            // trigger table underneath it — a digit the view would select must not be
+            // readable as a quick-input payload. The two conditions cover the whole
+            // cost when the feature is off and no view is open — the shipped default —
+            // which is one bool read per step.
+            let composes = matches!(&event, SessionEvent::Key(KeyAction::InputChar(_)));
+            if ctx.config.aux_refinement || self.aux.is_some() {
+                match aux::step(self, &event, ctx, host) {
+                    aux::Verdict::Claimed(key_acted) => {
+                        acted |= key_acted;
+                        continue;
+                    }
+                    aux::Verdict::Committed => {
+                        acted = true;
+                        // The view's candidate left through the commit door; the
+                        // letters the session still composes are taken back the
+                        // ordinary way, which hides the window and empties the
+                        // preedit area as the same step.
+                        pending = Some(SessionEvent::Key(KeyAction::Escape));
+                        continue;
+                    }
+                    aux::Verdict::Pass => {}
+                }
+            }
+            // The reverse-lookup panel answers before the quick panel does: the
+            // frozen contract resolves the lowercase-`u` overlap by consulting the
+            // reverse recognizer ahead of the quick trigger table, so a payload the
+            // reverse domain claims must never be readable as a quick-input one.
+            // The two conditions cover the whole cost when the feature is off and
+            // no panel is open — the shipped default — which is one bool read per
+            // step.
+            if ctx.config.reverse_lookup || self.reverse.is_some() {
+                match reverse::step(self, &event, ctx, host) {
+                    reverse::Verdict::Claimed(key_acted) => {
+                        acted |= key_acted;
+                        continue;
+                    }
+                    reverse::Verdict::Committed => {
+                        acted = true;
+                        // The panel's candidate left through the commit door; the
+                        // letters the session still composes are taken back the
+                        // ordinary way, which hides the window and empties the
+                        // preedit area as the same step.
+                        pending = Some(SessionEvent::Key(KeyAction::Escape));
+                        continue;
+                    }
+                    reverse::Verdict::Pass => {}
+                }
+            }
             // The quick-input panel answers before the session does: a key it claims
             // never reaches the machine, and a trigger it names opens its own
             // composition. The two conditions cover the whole cost when the feature
             // is off and no panel is open — the shipped default — which is one bool
             // read per step.
-            let composes = matches!(&event, SessionEvent::Key(KeyAction::InputChar(_)));
             if ctx.config.quick.enabled || self.quick.is_some() {
                 match quick::step(self, &event, ctx, host) {
                     quick::Verdict::Claimed(key_acted) => {
@@ -167,12 +227,20 @@ impl Context {
             let effects = step(&mut self.session, event, &ctx.config.session, ctx.env);
             let applied = self.apply_effects(ctx, effects, host);
             acted |= applied.acted;
-            // A composing key may have completed a letter trigger in the session
-            // buffer; the panel checks once, after the step, and opens only when the
-            // trigger renders candidates. A commit emptied the buffer, so there is
-            // nothing to match and the check costs nothing.
-            if ctx.config.quick.enabled && composes && !applied.committed {
-                quick::open_from_buffer(self, ctx, host);
+            // A composing key may have completed a trigger in the session buffer;
+            // each panel checks once, after the step, and opens only when its gates
+            // pass. The reverse domain checks first — the frozen ordering — and a
+            // panel it opened keeps the quick trigger table off this buffer; a gate
+            // it failed leaves the buffer to the codepoint spelling, which is the
+            // documented precedence chain. A commit emptied the buffer, so there is
+            // nothing to match and the checks cost nothing.
+            if composes && !applied.committed {
+                if ctx.config.reverse_lookup {
+                    reverse::open_from_buffer(self, ctx, host);
+                }
+                if ctx.config.quick.enabled && self.reverse.is_none() {
+                    quick::open_from_buffer(self, ctx, host);
+                }
             }
             if applied.committed {
                 pending = Some(SessionEvent::CommitDone);

@@ -275,9 +275,11 @@ impl Default for PrngSource {
 impl RngSource for PrngSource {
     fn fill_bytes(&self, dest: &mut [u8]) {
         use std::sync::atomic::Ordering;
+        // One xorshift step yields one `u64`; its bytes are consumed lowest first.
+        const BLOCK_BYTES: usize = (u64::BITS as usize) / 8;
         let mut block = 0_u64;
         for (index, byte) in dest.iter_mut().enumerate() {
-            if index % u64::BITS as usize == 0 {
+            if index % BLOCK_BYTES == 0 {
                 let previous = self.state.load(Ordering::Relaxed);
                 let next = previous ^ (previous << 13);
                 let next = next ^ (next >> 7);
@@ -285,7 +287,7 @@ impl RngSource for PrngSource {
                 self.state.store(next.max(1), Ordering::Relaxed);
                 block = next;
             }
-            *byte = (block >> ((index % u64::BITS as usize) * 8)) as u8;
+            *byte = (block >> ((index % BLOCK_BYTES) * 8)) as u8;
         }
     }
 }

@@ -6,6 +6,7 @@
 //! file, the clock, the environment or a display server, which is what makes the whole
 //! routing layer verifiable without Fcitx5 present.
 
+mod compose;
 mod effects;
 mod passthrough_route;
 mod routing;

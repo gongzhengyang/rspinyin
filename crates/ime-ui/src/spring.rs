@@ -56,12 +56,22 @@
 //! caller-supplied value, and no conversion that can trap; every failure mode above
 //! is answered with a clamped value instead.
 
+mod integrator;
+mod params;
+
 pub mod highlight;
 pub mod press;
 pub mod set;
 pub mod transition;
 
 pub use self::highlight::{HighlightAnim, HighlightRect, HighlightStep, union_rects};
+pub use self::integrator::{
+    MAX_STEP_S, PAGE_SLIDE_DP, REST_POSITION_DP, REST_VELOCITY_DP_PER_S, Spring1D,
+};
+pub use self::params::{
+    DEFAULT_MASS, HIGHLIGHT_OMEGA0, HIGHLIGHT_ZETA, PAGE_OMEGA0, PAGE_ZETA, RESIZE_OMEGA0,
+    RESIZE_ZETA, SCALE_OMEGA0, SCALE_ZETA, SpringParams,
+};
 pub use self::press::{PRESS_OMEGA0, PRESS_SCALE_TO, PRESS_ZETA, PressSpring};
 pub use self::set::{AnimationSet, FrameMotion};
 pub use self::transition::{
@@ -70,301 +80,8 @@ pub use self::transition::{
 };
 
 use ime_config::AnimationConfig;
+#[cfg(test)]
 use ime_types::PageDir;
-
-/// The largest time step the integrator will accept, in seconds.
-///
-/// A late frame -- a stalled compositor, a debugger break, a suspended laptop -- must
-/// slow an animation down rather than inject a large step into an explicit
-/// integrator, which is exactly where such an integrator goes unstable. Clamping is
-/// the whole stability argument, and it is why a dropped frame degrades to "slower"
-/// instead of "diverged".
-pub const MAX_STEP_S: f32 = 1.0 / 60.0;
-
-/// Position error below which a spring counts as at rest, in dp.
-pub const REST_POSITION_DP: f32 = 0.5;
-
-/// Speed below which a spring counts as at rest, in dp/s.
-pub const REST_VELOCITY_DP_PER_S: f32 = 20.0;
-
-/// Natural frequency of the highlight-slide spring, in rad/s.
-pub const HIGHLIGHT_OMEGA0: f32 = 26.0;
-
-/// Damping ratio of the highlight-slide spring.
-pub const HIGHLIGHT_ZETA: f32 = 0.85;
-
-/// Natural frequency of the page-slide spring, in rad/s.
-pub const PAGE_OMEGA0: f32 = 32.0;
-
-/// Damping ratio of the page-slide spring.
-pub const PAGE_ZETA: f32 = 0.90;
-
-/// Natural frequency of the window-resize spring, in rad/s.
-pub const RESIZE_OMEGA0: f32 = 30.0;
-
-/// Damping ratio of the window-resize spring.
-pub const RESIZE_ZETA: f32 = 0.92;
-
-/// Natural frequency of the scale spring the appear and disappear fades run on, in
-/// rad/s. It is the built-in default of `[ui.animation]`'s `omega0`.
-pub const SCALE_OMEGA0: f32 = 26.0;
-
-/// Damping ratio of the scale spring the appear and disappear fades run on. It is the
-/// built-in default of `[ui.animation]`'s `zeta`.
-pub const SCALE_ZETA: f32 = 0.85;
-
-/// The mass every spring in the window runs with.
-pub const DEFAULT_MASS: f32 = 1.0;
-
-/// How far from its resting place the page content starts, in dp.
-///
-/// A page turn slides the content in from the side it came from; the sign is applied
-/// by [`Spring1D::for_page_slide`].
-pub const PAGE_SLIDE_DP: f32 = 12.0;
-
-/// The largest coordinate a spring may carry, in dp.
-///
-/// Positions come from candidate geometry, so a value past this is a caller bug
-/// rather than a real layout. Clamping here is what bounds every product in the
-/// integrator, and it sits far outside any display.
-const MAX_COORD_DP: f32 = 1.0e6;
-
-/// The physical parameters of one spring.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SpringParams {
-    /// Undamped angular frequency, in rad/s.
-    pub omega0: f32,
-    /// Damping ratio: below `1.0` overshoots, at `1.0` is critically damped.
-    pub zeta: f32,
-    /// Mass. Only the ratios `k / m` and `c / m` reach the integrator, so this is a
-    /// scale rather than a physical quantity.
-    pub mass: f32,
-}
-
-impl SpringParams {
-    /// The highlight-slide spring of 3.3.1.
-    pub const HIGHLIGHT: Self = Self {
-        omega0: HIGHLIGHT_OMEGA0,
-        zeta: HIGHLIGHT_ZETA,
-        mass: DEFAULT_MASS,
-    };
-
-    /// The page-content slide of 3.3.2.
-    pub const PAGE_SLIDE: Self = Self {
-        omega0: PAGE_OMEGA0,
-        zeta: PAGE_ZETA,
-        mass: DEFAULT_MASS,
-    };
-
-    /// The window-resize spring of 3.3.2.
-    pub const RESIZE: Self = Self {
-        omega0: RESIZE_OMEGA0,
-        zeta: RESIZE_ZETA,
-        mass: DEFAULT_MASS,
-    };
-
-    /// The spring that carries the window's scale through the appear and disappear
-    /// fades. `[ui.animation]`'s `omega0` and `zeta` replace it in a
-    /// configuration-assembled [`MotionConfig`].
-    pub const SCALE: Self = Self {
-        omega0: SCALE_OMEGA0,
-        zeta: SCALE_ZETA,
-        mass: DEFAULT_MASS,
-    };
-
-    /// Builds parameters, replacing values the integrator cannot use.
-    ///
-    /// A frequency, damping ratio or mass that is zero, negative or not a number is
-    /// answered with the highlight-slide default rather than propagated: a window
-    /// that moves at slightly the wrong speed is usable, while a window whose
-    /// integrator produces `NaN` is not. The configuration layer rejects these
-    /// values before they get here; this is the second line.
-    pub fn new(omega0: f32, zeta: f32, mass: f32) -> Self {
-        Self {
-            omega0: if omega0.is_finite() && omega0 > 0.0 {
-                omega0
-            } else {
-                HIGHLIGHT_OMEGA0
-            },
-            zeta: if zeta.is_finite() && zeta >= 0.0 {
-                zeta
-            } else {
-                HIGHLIGHT_ZETA
-            },
-            mass: if mass.is_finite() && mass > 0.0 {
-                mass
-            } else {
-                DEFAULT_MASS
-            },
-        }
-    }
-
-    /// Builds the highlight-slide parameters from the tunable configuration keys.
-    ///
-    /// Only the frequency and the damping ratio are user-configurable, so the mass
-    /// comes from [`DEFAULT_MASS`].
-    pub fn from_config(omega0: f32, zeta: f32) -> Self {
-        Self::new(omega0, zeta, DEFAULT_MASS)
-    }
-
-    /// The time the spring needs to stay inside a two-percent band, in seconds.
-    ///
-    /// `4 / (zeta * omega0)`, the standard first-order envelope estimate. It is the
-    /// figure 3.3.1 derives from the highlight parameters, and the value the
-    /// implementation's measured settling time is checked against.
-    pub fn settling_time_s(self) -> f32 {
-        let decay = self.zeta * self.omega0;
-        if decay > 0.0 { 4.0 / decay } else { 0.0 }
-    }
-
-    /// The peak overshoot of a step response, as a fraction of the step.
-    ///
-    /// `exp(-pi * zeta / sqrt(1 - zeta^2))` while the spring is underdamped, and zero
-    /// once it is critically damped or over-damped.
-    pub fn overshoot(self) -> f32 {
-        if self.zeta >= 1.0 {
-            return 0.0;
-        }
-        let root = 1.0 - self.zeta * self.zeta;
-        if root <= 0.0 {
-            return 0.0;
-        }
-        let exponent = core::f32::consts::PI * self.zeta / root.sqrt();
-        (-exponent).exp()
-    }
-}
-
-/// A one-dimensional spring integrated with semi-implicit Euler.
-///
-/// The integrator is the one 3.3.1 fixes: acceleration from Hooke's law plus linear
-/// damping, velocity updated first and position second. That ordering is what makes
-/// the scheme stable at the step sizes a frame clock produces; updating the position
-/// first is not.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Spring1D {
-    /// Current position, in dp.
-    pub x: f32,
-    /// Current velocity, in dp/s.
-    pub v: f32,
-    target: f32,
-    k: f32,
-    c: f32,
-    m: f32,
-}
-
-impl Spring1D {
-    /// Creates a spring at rest on `x0` and targeting `x0`.
-    ///
-    /// `k` and `c` are derived from the natural frequency and the damping ratio as
-    /// `k = m * omega0^2` and `c = 2 * zeta * omega0 * m`; an unusable frequency,
-    /// damping ratio or mass is replaced, per [`SpringParams::new`]. An unusable `x0`
-    /// becomes zero.
-    pub fn new(omega0: f32, zeta: f32, mass: f32, x0: f32) -> Self {
-        let params = SpringParams::new(omega0, zeta, mass);
-        let x0 = clamp_coord(x0);
-        Self {
-            x: x0,
-            v: 0.0,
-            target: x0,
-            k: params.mass * params.omega0 * params.omega0,
-            c: 2.0 * params.zeta * params.omega0 * params.mass,
-            m: params.mass,
-        }
-    }
-
-    /// Redirects the spring to `target`, keeping the current velocity.
-    ///
-    /// This is the behaviour a bezier cannot reproduce, and the reason the highlight
-    /// uses a spring at all: when the user presses an arrow key again while the box
-    /// is still flying, the box bends toward the new cell instead of restarting from
-    /// a standstill. A non-finite target is refused rather than allowed to poison the
-    /// integrator.
-    pub fn retarget(&mut self, target: f32) {
-        if !target.is_finite() {
-            return;
-        }
-        self.target = clamp_coord(target);
-    }
-
-    /// Places the spring at `x` with no velocity and makes it target `target`.
-    ///
-    /// One-shot motions such as the page-content slide start displaced and travel
-    /// home, which is not a redirect: the velocity from the previous motion would be
-    /// meaningless. A non-finite target leaves the existing one in place.
-    pub fn restart(&mut self, x: f32, target: f32) {
-        self.x = clamp_coord(x);
-        self.v = 0.0;
-        if target.is_finite() {
-            self.target = clamp_coord(target);
-        }
-    }
-
-    /// Jumps to the target and stops.
-    ///
-    /// Used when `[ui.animation] enabled = false`, where the motion must be
-    /// instantaneous, and by the tests that need a deterministic frame.
-    pub fn snap(&mut self) {
-        self.x = self.target;
-        self.v = 0.0;
-    }
-
-    /// The position this spring is travelling toward, in dp.
-    pub fn target(&self) -> f32 {
-        self.target
-    }
-
-    /// Whether the spring is close enough to its target to stop integrating.
-    ///
-    /// The answer is computed from the state rather than latched, so it cannot drift
-    /// out of step with the position it describes.
-    pub fn is_settled(&self) -> bool {
-        self.at_rest()
-    }
-
-    /// Advances the spring by `dt` and reports whether it is at rest.
-    ///
-    /// `dt` is clamped into `0.0..=`[`MAX_STEP_S`] first, so a late frame slows the
-    /// motion down, a zero or negative delta carries no time at all, and a
-    /// non-finite delta is treated as zero. Once the rest condition holds, the
-    /// remaining sub-threshold error is snapped away, so a spring that settled and a
-    /// spring that was snapped produce the same value.
-    pub fn step(&mut self, dt: f32) -> bool {
-        let dt = clamp_step(dt);
-        let acceleration = (-self.k * (self.x - self.target) - self.c * self.v) / self.m;
-        self.v += acceleration * dt;
-        self.x += self.v * dt;
-        if !(self.x.is_finite() && self.v.is_finite()) {
-            // An explicit integrator that has been fed something it cannot represent
-            // can only be recovered by returning to rest: a non-finite position would
-            // reach the rasterizer and blank the window.
-            self.snap();
-            return true;
-        }
-        if self.at_rest() {
-            self.snap();
-        }
-        self.at_rest()
-    }
-
-    /// Creates the spring that slides the page content into place.
-    ///
-    /// The content starts one [`PAGE_SLIDE_DP`] to the side the page came from --
-    /// right for the next page, left for the previous one -- and springs home.
-    pub fn for_page_slide(params: SpringParams, dir: PageDir) -> Self {
-        let displaced = match dir {
-            PageDir::Next => PAGE_SLIDE_DP,
-            PageDir::Prev => -PAGE_SLIDE_DP,
-        };
-        let mut spring = Self::new(params.omega0, params.zeta, params.mass, displaced);
-        spring.restart(displaced, 0.0);
-        spring
-    }
-
-    /// The rest condition of 3.3.1: close enough and slow enough.
-    fn at_rest(&self) -> bool {
-        (self.x - self.target).abs() < REST_POSITION_DP && self.v.abs() < REST_VELOCITY_DP_PER_S
-    }
-}
 
 /// The motion settings the window runs on.
 ///
@@ -443,6 +160,13 @@ fn clamp_step(dt: f32) -> f32 {
         0.0
     }
 }
+
+/// The largest coordinate a spring may carry, in dp.
+///
+/// Positions come from candidate geometry, so a value past this is a caller bug
+/// rather than a real layout. Clamping here is what bounds every product in the
+/// integrator, and it sits far outside any display.
+const MAX_COORD_DP: f32 = 1.0e6;
 
 /// Clamps a position or target into the range the window can meaningfully occupy.
 fn clamp_coord(dp: f32) -> f32 {

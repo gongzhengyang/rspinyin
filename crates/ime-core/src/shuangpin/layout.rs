@@ -434,7 +434,7 @@ fn validate_conflicts(document: &LayoutDocument, errors: &mut Vec<ImeError>) {
         let holder = claimed
             .iter()
             .find(|(claimed_spelling, _)| *claimed_spelling == spelling)
-            .map(|(holder, _)| *holder);
+            .map(|(_, holder)| *holder);
         match holder {
             Some(first) => {
                 let what = if spelling.is_empty() {

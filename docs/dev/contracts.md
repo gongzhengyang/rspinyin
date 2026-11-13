@@ -42,6 +42,7 @@ fn set_pinned(&self, key: &str, word: Option<&str>) -> Result<(), ImeError> {
 | `data/user-db/schema-migrated` | v1→v2 打开时迁移发生；失败降级只读 | info / warn | 1.02.01 |
 | `dict/bigram/absent` | 容器无 BIGRAM 段或 flag 未置位，`DictLm` miss 降级 | warn（每进程一次） | 1.03.01/1.03.02 |
 | `dict/swap/rejected` | 热替换候选库校验失败，保旧库 | warn | 3.03.02 |
+| `aux/absent` | 容器无辅码列（flag 未置位），辅码筛选域降级为普通解码 | warn（每进程一次） | 6.06.01 |
 
 ## 4. 新增配置键（坏值修默认 + 每键一条 `config/invalid`）
 

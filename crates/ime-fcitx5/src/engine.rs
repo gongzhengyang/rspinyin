@@ -176,6 +176,10 @@ const KEY_A_UPPER: u32 = 0x0041;
 const KEY_Z_UPPER: u32 = 0x005a;
 /// `FcitxKey_a`, the low end of the letter row.
 const KEY_A: u32 = 0x0061;
+/// `FcitxKey_grave`, the backtick that leads the auxiliary-code refinement
+/// session. The routing table has no row for it -- the key belongs to the
+/// application whenever no session is open -- so this is the predicate's key.
+pub(crate) const KEY_GRAVE: u32 = 0x0060;
 /// `FcitxKey_e`, the letter of the temporary-English chord; crate-visible like
 /// [`KEY_SPACE`].
 pub(crate) const KEY_E: u32 = 0x0065;
@@ -545,6 +549,39 @@ pub fn is_shift_press(event: &FcitxKeyEvent) -> bool {
 /// ```
 pub fn leaves_temp_english(event: &FcitxKeyEvent) -> bool {
     !event.is_release && (event.sym == KEY_RETURN || event.sym == KEY_ESCAPE)
+}
+
+// ── The auxiliary-code lead key ──────────────────────────────────────────────────
+
+/// Whether this key is a press of the backtick that leads the auxiliary-code
+/// refinement session.
+///
+/// The routing table names no row for the backtick: it is the one composing
+/// keymap key the application keeps in every build, which is what makes it a
+/// lead key no ordinary spelling ever collides with. The session's gate is
+/// therefore asked on exactly the keys the table was about to hand back, and a
+/// gate that refuses answers the same `false` the table did -- the key's fate
+/// is the pre-feature fate in every refused arm.
+///
+/// A bare press only. Shift produces the tilde's own keysym, and every other
+/// modifier makes the key the application's chord -- the exact-modifier rule
+/// the chord rows apply, applied here for the same reason: an over-specified
+/// press is somebody else's key.
+///
+/// # Arguments
+///
+/// * `event` — the key as the host delivered it.
+///
+/// # Returns
+///
+/// `true` for a press of `FcitxKey_grave` with no modifier held, and `false`
+/// for every other key, for every modified press and for every release.
+///
+/// # Panics
+///
+/// Never.
+pub fn is_aux_lead_press(event: &FcitxKeyEvent) -> bool {
+    !event.is_release && event.sym == KEY_GRAVE && (event.state & MODIFIER_MASK) == 0
 }
 
 #[cfg(test)]

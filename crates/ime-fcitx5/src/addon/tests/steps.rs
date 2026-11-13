@@ -891,6 +891,7 @@ fn test_committing_a_two_character_reading_coins_it_for_the_next_decode() {
                 system: Some(slot),
                 user: Some(lexicon),
                 symbol_slot: None,
+                ..Default::default()
             },
         ),
         "the slot was empty, so this install wins"
@@ -997,6 +998,7 @@ fn test_mixed_english_offers_the_english_word_for_an_input_no_pinyin_cuts() {
                 system: Some(slot),
                 user: None,
                 symbol_slot: None,
+                ..Default::default()
             },
         ),
         "the slot was empty, so this install wins"
@@ -1068,6 +1070,7 @@ fn test_confusable_hint_names_the_correct_form_in_the_frame() {
                 system: Some(slot),
                 user: None,
                 symbol_slot: None,
+                ..Default::default()
             },
         ),
         "the slot was empty, so this install wins"
@@ -1128,6 +1131,7 @@ fn test_v_mode_serves_the_symbol_panel_in_the_frame() {
                 system: Some(slot),
                 user: None,
                 symbol_slot: Some(symbol_slot()),
+                ..Default::default()
             },
         ),
         "the slot was empty, so this install wins"

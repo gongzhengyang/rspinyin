@@ -6,7 +6,9 @@
 
 use ime_types::{CandidateSource, KeyAction, UiEvent};
 
-use crate::state::{Session, SessionConfig, SessionEnv, SessionEvent, SessionState, SpacingMode, step};
+use crate::state::{
+    Session, SessionConfig, SessionEnv, SessionEvent, SessionState, SpacingMode, step,
+};
 use crate::viterbi::lattice::testing::MockLexicon;
 
 use super::{Fixture, committed, composing, kinds, recorded};

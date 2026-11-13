@@ -645,18 +645,24 @@ fn closing_bracket(text: &str) -> Option<usize> {
 
 /// Renders the `[keys]` table for `keys`, in the order the documented template states
 /// them, in the spellings the loader accepts, and always ending with a newline so
-/// whatever follows it starts on a fresh line.
+/// whatever follows it starts on a fresh line. The character-selection keys are
+/// rendered through the type's own `as_str`, so the file and the loader spell a value
+/// one way and cannot drift apart.
 fn render_keys(keys: &KeysConfig) -> String {
     format!(
         "[keys]\n\
          digit_zero = \"{}\"\n\
          enter_commit_raw = {}\n\
          flip_keys = [{}]\n\
-         highlight_keys = [{}]\n",
+         highlight_keys = [{}]\n\
+         select_first_char = \"{}\"\n\
+         select_last_char = \"{}\"\n",
         digit_zero_spelling(keys.digit_zero),
         keys.enter_commit_raw,
         render_names(&keys.flip_keys),
         render_names(&keys.highlight_keys),
+        keys.select_first_char.as_str(),
+        keys.select_last_char.as_str(),
     )
 }
 

@@ -16,6 +16,7 @@ use std::fs;
 
 use ime_config::KeyName;
 use ime_config::keymap::{FlipSet, HighlightSet};
+use ime_config::schema::SelectCharKey;
 use ime_core::viterbi::context::ContextBand;
 use ime_types::{ImeError, SchemeId};
 
@@ -626,4 +627,58 @@ fn test_from_config_makes_the_file_the_layout_when_both_forms_are_named() {
         "the ambiguity is reported: {warnings:?}"
     );
     let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn test_from_config_carries_the_select_char_keys_onto_the_binding_table() {
+    // The route reads the marks off the projected table, so a configured mark has to
+    // arrive there whole: a projection that dropped it would leave the user's key
+    // routing as the shipped bracket whatever the document said.
+    let mut config = Config::default();
+    config.keys.select_first_char = SelectCharKey::Comma;
+    config.keys.select_last_char = SelectCharKey::Period;
+
+    let (projected, warnings) = RoutingConfig::from_config(&config);
+
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(projected.keys.select_first_char, SelectCharKey::Comma);
+    assert_eq!(projected.keys.select_last_char, SelectCharKey::Period);
+}
+
+#[test]
+fn test_every_select_char_mark_is_a_mark_the_composing_row_delivers() {
+    // The whitelist the configuration accepts is the set of marks the routing layer's
+    // punctuation row answers while a composition is live; a mark outside it would be
+    // accepted by the document and then never reach the selection route at all, which
+    // is the accepted-but-unrouted class the binding audit exists for. The audit lives
+    // here because both sides of the boundary are visible from this crate, and the
+    // list is spelled out so that a variant added to the enum without a mark the row
+    // delivers fails here rather than in front of a user.
+    let whitelist = [
+        SelectCharKey::Off,
+        SelectCharKey::Exclamation,
+        SelectCharKey::Quote,
+        SelectCharKey::ParenLeft,
+        SelectCharKey::ParenRight,
+        SelectCharKey::Comma,
+        SelectCharKey::Period,
+        SelectCharKey::Colon,
+        SelectCharKey::Semicolon,
+        SelectCharKey::Question,
+        SelectCharKey::At,
+        SelectCharKey::BracketLeft,
+        SelectCharKey::BracketRight,
+    ];
+    for value in whitelist {
+        let mark = value.mark();
+        if value == SelectCharKey::Off {
+            assert_eq!(mark, None, "off names no mark");
+            continue;
+        }
+        assert!(
+            crate::engine::is_policy_mark(mark.expect("a mark off the whitelist")),
+            "{} names a mark the composing row never delivers",
+            value.as_str()
+        );
+    }
 }

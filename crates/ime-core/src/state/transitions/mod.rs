@@ -403,7 +403,8 @@ impl Session {
         let text = if self.symbol_mode || source == CandidateSource::Assoc {
             entry.clone()
         } else {
-            self.spacing.outgoing(&entry, source, self.buf.raw(), ctx.cfg.english_spacing)
+            self.spacing
+                .outgoing(&entry, source, self.buf.raw(), ctx.cfg.english_spacing)
         };
         if self.symbol_mode {
             // A panel candidate is chosen, not spelled: the commit lands like a

@@ -54,6 +54,8 @@ pub mod ziranma;
 pub(crate) mod builtin;
 
 #[cfg(test)]
+mod layout_tests;
+#[cfg(test)]
 mod tests;
 
 use std::borrow::Cow;

@@ -30,14 +30,19 @@ use ime_types::{CONFIG_SCHEMA_VERSION, ConfigError, ImeError};
 use crate::keymap::BINDING_CONFLICT_CODE;
 use crate::scheme::SchemeConfig;
 
+mod app_profiles;
 mod config;
 mod data;
 mod repair;
 
+pub use self::app_profiles::{AppProfile, AppProfilesConfig, AppScriptPref, MAX_APP_PROFILES};
 pub use self::config::{
     AnimationConfig, AssocConfig, Config, EngineConfig, EnglishConfig, FuzzyConfig, KeysConfig,
-    PhraseConfig, QuickInputConfig, ThemeConfig, UiConfig,
+    PhraseConfig, QuickInputConfig, SelectCharKey, ThemeConfig, UiConfig,
 };
+// Crate-internal, like `KEY_FLIP_KEYS` beside them: the key spellings travel with the
+// type that owns them, and no caller outside this crate names them.
+pub(crate) use self::config::{KEY_SELECT_FIRST_CHAR, KEY_SELECT_LAST_CHAR};
 pub use self::data::{DataConfig, DiagnosticsConfig};
 
 #[cfg(test)]
@@ -635,6 +640,10 @@ impl Config {
         // The order matters: each list is deduplicated and bounded first, so the overlap
         // this settles is between two lists that are already usable.
         repair_cross_list_conflicts(&mut self.keys, &mut warnings);
+        // The per-application presets are the last rule: an entry the document keyed on
+        // something other than a hashed identifier, and the entries past the section's
+        // bound, leave here, each with its diagnostic.
+        self.app_profiles.repair(&mut warnings);
         (self, warnings.entries)
     }
 }
