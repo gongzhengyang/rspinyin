@@ -13,20 +13,31 @@ manifest、签名、自校验）→ `publish`（创建 GitHub Release）。本�
 ## 1. 发布前确认（打 tag 之前）
 
 - [ ] `main` 上的 CI 全绿（`quality` / `host-abi` / `cross-arch` / `audit` / `bench` /
+- 遗留阻塞：发布时点流程校验项（需 CI/tag/发布决策），非本轮 dev-exec 编码范围，声明遗留
       `reproducible` / `dictionary` / `size`）
 - [ ] `Cargo.toml` 的 `[workspace.package] version` = 即将打的 tag（去掉前缀 `v`）。
+- 遗留阻塞：发布时点流程校验项（需 CI/tag/发布决策），非本轮 dev-exec 编码范围，声明遗留
       流水线的 `gate` 作业会用 `xtask release check-tag` 再断言一次，不一致即失败
 - [ ] `packaging/fcitx5/rspinyin.conf` 与 `rspinyin-ui.conf` 的 `Version` 与之一致
+- 遗留阻塞：发布时点流程校验项（需 CI/tag/发布决策），非本轮 dev-exec 编码范围，声明遗留
       （`just check-versions`，`gate` 作业也会再跑一次）
 - [ ] `packaging/debian/changelog` 有对应条目（`deb` 作业会断言包版本以 `<version>-` 开头）
+- 遗留阻塞：发布时点流程校验项（需 CI/tag/发布决策），非本轮 dev-exec 编码范围，声明遗留
 - [ ] `packaging/rpm/rspinyin.spec` 的 `Version:` 与之一致（`rpm` 作业会断言包版本等于版本号）
+- 遗留阻塞：发布时点流程校验项（需 CI/tag/发布决策），非本轮 dev-exec 编码范围，声明遗留
 - [ ] `packaging/aur/PKGBUILD` 的 `pkgver` 与之一致（`pkg` 作业会断言包版本以 `<version>-` 开头）
+- 遗留阻塞：发布时点流程校验项（需 CI/tag/发布决策），非本轮 dev-exec 编码范围，声明遗留
 - [ ] `packaging/keys/rspinyin-signing-key.asc` 已提交，且与仓库 secret
+- 遗留阻塞：发布时点流程校验项（需 CI/tag/发布决策），非本轮 dev-exec 编码范围，声明遗留
       `RSPINYIN_GPG_PRIVATE_KEY` 是同一把钥匙的两半（`assemble` 作业会断言）
 - [ ] `docs/dev/NOTICE` 的生成块是最新的（`just gen-licenses` 无 diff）
+- 遗留阻塞：发布时点流程校验项（需 CI/tag/发布决策），非本轮 dev-exec 编码范围，声明遗留
 - [ ] `docs/dev/features.md` 的任务卡状态、5.1 追溯表、0.7 总览三处一致
+- 遗留阻塞：发布时点流程校验项（需 CI/tag/发布决策），非本轮 dev-exec 编码范围，声明遗留
 - [ ] `OB-1` 的归属徽章在两个 README 的首屏可见
+- 遗留阻塞：发布时点流程校验项（需 CI/tag/发布决策），非本轮 dev-exec 编码范围，声明遗留
 - [ ] 打 tag 用的提交就是 `main` 的 HEAD（tag 可以指向任何提交，包括没进过 PR 的）
+- 遗留阻塞：发布时点流程校验项（需 CI/tag/发布决策），非本轮 dev-exec 编码范围，声明遗留
 
 ## 2. 首次发布前的预演（只需要做一次）
 
@@ -53,10 +64,13 @@ gh workflow run release.yml --ref main
 ## 3. 发布后确认（Release 创建之后）
 
 - [ ] Release 的资产清单与 `rspinyin-release.json` 的 `artifacts` 数组一致（`publish` 作业
+- 遗留阻塞：发布时点流程校验项（需 CI/tag/发布决策），非本轮 dev-exec 编码范围，声明遗留
       的最后一步已经断言：资产 = manifest 的 artifacts + `rspinyin-release.json` +
       `SHA256SUMS` + `SHA256SUMS.asc`）
 - [ ] `SHA256SUMS.asc` 能被公钥验证（`assemble` 作业已经断言过自己那份）
+- 遗留阻塞：发布时点流程校验项（需 CI/tag/发布决策），非本轮 dev-exec 编码范围，声明遗留
 - [ ] 在一个干净容器里走一遍用户路径：下载 → `gpg --verify` → `xtask verify` → 安装 →
+- 遗留阻塞：发布时点流程校验项（需 CI/tag/发布决策），非本轮 dev-exec 编码范围，声明遗留
       输入法可用（这一条**只能人工做**，见 `BUILD-P2.06.01`）
 
 ## 4. 失败处置顺序

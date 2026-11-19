@@ -1,6 +1,6 @@
 # 首轮参数整定（holdout top1 网格 sweep）— 模板
 
-> 状态：**模板**。本文档不含任何实测数字；所有「待回填」栏在空闲机首轮 sweep 落盘后由人工回填。
+> 状态：**已闭环（2026-11-17）**。§6/§7 为两批 sweep 的工具输出原样存档（12 + 9 点，全部 spread 0.00pp）；§8 裁决已签署——维持现状、不回写，门禁值不变。原模板说明保留于下。
 > 工具面：`xtask tune --sweep <spec.toml>`（推荐表 + 参数敏感性摘要）；采集纯净度门禁 `PurityCheck` 在 bench / tune sweep / soak 三入口统一前置。
 
 ## 1. 目的与边界
@@ -68,26 +68,95 @@ min_score        = [1.0, 0.5, 2.0]
 | `compile` | 该点编译墙钟时长（tie-break 第二优先） |
 | `parameters` | 该点的参数赋值 |
 
-（待回填）
+分两批按 §4 拟定网格执行（先归一化两参数联合，再 bigram 两参数联合）。以下为工具输出原样存档。
+
+**Batch 1：归一化两参数联合（`core_min_freq` × `tail_flat_weight`，12 点）**
+
+```text
+sweep: machine clean: load 1.35 on 16 cores (ceiling 4.00)
+sweep: 12 point(s) over 2 parameter(s); holdout 6000 cases from crates/ime-core/tests/fixtures/lm_holdout.tsv
+sweep: #    parameters                                           top1       2字       1字      3+字     top9  unreach   compile
+sweep: 1    core_min_freq=80 tail_flat_weight=50               73.75%   88.32%   15.78%  100.00%   96.35%        0   15.36s
+sweep: 2    core_min_freq=40 tail_flat_weight=200              73.75%   88.32%   15.78%  100.00%   96.35%        0   15.50s
+sweep: 3    core_min_freq=40 tail_flat_weight=50               73.75%   88.32%   15.78%  100.00%   96.35%        0   15.80s
+sweep: 4    core_min_freq=80 tail_flat_weight=100              73.75%   88.32%   15.78%  100.00%   96.35%        0   15.88s
+sweep: 5    core_min_freq=80 tail_flat_weight=200              73.75%   88.32%   15.78%  100.00%   96.35%        0   16.23s
+sweep: 6    core_min_freq=20 tail_flat_weight=50               73.75%   88.32%   15.78%  100.00%   96.35%        0   16.37s
+sweep: 7    core_min_freq=20 tail_flat_weight=200              73.75%   88.32%   15.78%  100.00%   96.35%        0   16.72s
+sweep: 8    core_min_freq=40 tail_flat_weight=100              73.75%   88.32%   15.78%  100.00%   96.35%        0   18.57s
+sweep: 9    core_min_freq=10 tail_flat_weight=50               73.75%   88.32%   15.78%  100.00%   96.35%        0   20.99s
+sweep: 10   core_min_freq=10 tail_flat_weight=200              73.75%   88.32%   15.78%  100.00%   96.35%        0   21.29s
+sweep: 11   core_min_freq=10 tail_flat_weight=100              73.75%   88.32%   15.78%  100.00%   96.35%        0   21.32s
+sweep: 12   core_min_freq=20 tail_flat_weight=100              73.75%   88.32%   15.78%  100.00%   96.35%        0   21.94s
+sweep: sensitivity (best top1 over the points holding each declared value):
+sweep:   core_min_freq: 20 -> 73.75% (3 pt) | 10 -> 73.75% (3 pt) | 40 -> 73.75% (3 pt) | 80 -> 73.75% (3 pt)
+sweep:   core_min_freq: spread 0.00pp across the declared values
+sweep:   tail_flat_weight: 100 -> 73.75% (4 pt) | 50 -> 73.75% (4 pt) | 200 -> 73.75% (4 pt)
+sweep:   tail_flat_weight: spread 0.00pp across the declared values
+sweep: recommendation: core_min_freq=80 tail_flat_weight=50
+```
+
+**Batch 2：bigram 两参数联合（`max_pairs` × `min_score`，9 点）**
+
+```text
+sweep: machine clean: load 1.68 on 16 cores (ceiling 4.00)
+sweep: 9 point(s) over 2 parameter(s); holdout 6000 cases from crates/ime-core/tests/fixtures/lm_holdout.tsv
+sweep: #    parameters                                           top1       2字       1字      3+字     top9  unreach   compile
+sweep: 1    max_pairs=120000 min_score=1                       73.75%   88.32%   15.78%  100.00%   96.35%        0   14.88s
+sweep: 2    max_pairs=200000 min_score=0.5                     73.75%   88.32%   15.78%  100.00%   96.35%        0   14.90s
+sweep: 3    max_pairs=400000 min_score=1                       73.75%   88.32%   15.78%  100.00%   96.35%        0   15.14s
+sweep: 4    max_pairs=400000 min_score=2                       73.75%   88.32%   15.78%  100.00%   96.35%        0   15.27s
+sweep: 5    max_pairs=400000 min_score=0.5                     73.75%   88.32%   15.78%  100.00%   96.35%        0   15.27s
+sweep: 6    max_pairs=120000 min_score=2                       73.75%   88.32%   15.78%  100.00%   96.35%        0   15.32s
+sweep: 7    max_pairs=120000 min_score=0.5                     73.75%   88.32%   15.78%  100.00%   96.35%        0   15.56s
+sweep: 8    max_pairs=200000 min_score=2                       73.75%   88.32%   15.78%  100.00%   96.35%        0   16.20s
+sweep: 9    max_pairs=200000 min_score=1                       73.75%   88.32%   15.78%  100.00%   96.35%        0   17.91s
+sweep: sensitivity (best top1 over the points holding each declared value):
+sweep:   max_pairs: 200000 -> 73.75% (3 pt) | 120000 -> 73.75% (3 pt) | 400000 -> 73.75% (3 pt)
+sweep:   max_pairs: spread 0.00pp across the declared values
+sweep:   min_score: 1 -> 73.75% (3 pt) | 0.5 -> 73.75% (3 pt) | 2 -> 73.75% (3 pt)
+sweep:   min_score: spread 0.00pp across the declared values
+sweep: recommendation: max_pairs=120000 min_score=1
+```
+
+两批的工具推荐行均为**同分下的编译时长 tie-break**（21 点总分与全部分带完全一致），不是质量信号；见 §7 结论与 §8 裁决。现行工作点即 Batch 1 第 12 行 / Batch 2 第 9 行，复测 73.75% 与既往基线一致。
 
 ## 7. 参数敏感性摘要（待回填）
 
 （待回填。关注点：某参数各取值的 best top1 拉不开（spread ≈ 0）说明该参数在此网格密度下目标函数分辨不出——这本身是结论，登记「本轮不动该参数」即可，不视为失败。）
 
+**首轮实测结论（2026-11-17）**：四个参数 spread 全部 0.00pp——
+
+- `core_min_freq`（20/10/40/80）、`tail_flat_weight`（100/50/200）、`max_pairs`（200k/120k/400k）、`min_score`（1.0/0.5/2.0）在受测范围内对 holdout top1 及全部分带**零分辨力**（21 点总分、分带、top9、unreach 完全一致）。
+- 按 §7 协议登记：**本轮四个参数全部不动**，不视为失败。
+- 附带观察：`unreach` 全程为 0、`top9` 恒 96.35%，说明 top1 的 26.25% 缺口不在「容器服务不到」也不在这四个构建期旋钮的烤入排序上；改进抓手在解码/权重侧（`tune --grid` 权重通道，TASK-4.03.01 已覆盖）与 §3 列出的尚不可观测通道（衰减、上文带）。
+
 ## 8. 裁决记录（骨架，待回填）
 
 ```
-日期：            （____）
-机器状态：        uptime ____；1m 负载 ____；核数 ____（sweep 启动时门禁放行的读数）
-采用工作点：      （逐参数列出；或「维持现状，不回写」）
-否决的备选点：    （表内次优点及否决理由，如：总 top1 持平但 2字带下降）
-回写位置：        dictc 默认值（xtask/src/dictc.rs）与/或 ime-config 默认值
-                  （crates/ime-config/src/schema.rs）——由人工编辑，工具不自动回写
-门禁值变化：      总体 top1 门禁 ____ → ____（必须 ≥）；2字带门禁 ____ → ____（必须 ≥，只升不降）
-回写前后对照：    回写前 holdout top1 ____；回写后 holdout top1 ____（必须 ≥ 回写前）
-回写后验证：      `cargo run -p xtask -- quality` 全绿（门禁值按上两行更新后）
-裁决理由：
-裁决人：
+日期：            2026-11-17（首轮实跑）；裁决签署：2026-11-17
+机器状态：        uptime 4:34；1m 负载 1.35（batch1）/ 1.68（batch2）；核数 16
+                  （sweep 启动时门禁放行读数，ceiling 4.00 = 25% × 16）
+采用工作点：      （建议）维持现状，不回写——core_min_freq=20 tail_flat_weight=100
+                  max_pairs=200000 min_score=1.0
+否决的备选点：    batch1 机械推荐 core_min_freq=80 tail_flat_weight=50；
+                  batch2 机械推荐 max_pairs=120000 min_score=1。
+                  否决理由：与现行点总分及全部分带完全相同（73.75%），「推荐」仅为
+                  编译时长 tie-break，采纳无质量增益且扩大 diff；按 §7 协议
+                  spread≈0 → 登记本轮不动
+回写位置：        无回写（xtask/src/dictc.rs 与 crates/ime-config/src/schema.rs 均不动）
+门禁值变化：      无（总体 top1 门禁维持 73.75%；2字带门禁维持 88.32%）
+回写前后对照：    无回写；现行点在两批 sweep 中复测均为 73.75%（batch1 第12行 /
+                  batch2 第9行），与既有基线一致，「回写后 ≥ 回写前」平凡满足
+回写后验证：      不适用（无回写、门禁值未变）
+裁决理由：        两批 sweep 21 点总分与全部分带完全一致（73.75% / 2字带 88.32% /
+                  1字带 15.78% / top9 96.35% / unreach 0），四个构建期旋钮在受测
+                  范围内对 holdout 目标零分辨力；两行工具「recommendation」仅为
+                  同分编译时长 tie-break，采纳无质量增益且扩大 diff，按 §7 协议
+                  登记本轮不动。门禁值只升不降：总体 top1 维持 73.75%、2字带
+                  维持 88.32%。top1 缺口的后续抓手在解码/权重侧（tune --grid
+                  权重通道）与 §3 尚不可观测通道（衰减、上文带，需先扩展目标函数）。
+裁决人：          gongzhengyang（用户于 2026-11-17 会话中确认「维持现状，不回写」）
 ```
 
 ## 9. 纪律与红线

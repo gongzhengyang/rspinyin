@@ -154,8 +154,8 @@ ang = "h"; eng = "g"; ...
   - 对标参考锚点 (Benchmark Reference)：rime-ice `others/script/rime/polyphone.go` 数据把关思想（阈值由数据定，不拍脑袋，SCOUT-ICE-18）；WindInput 常量注释「实测依据」纪律（SCOUT-D-08）
   - 本项目代码落地锚点 (Code Anchor)：`xtask/src/tune/`（sweep 扩展）、`xtask/src/dictc/quality.rs`（目标函数复用）、`xtask/src/main.rs`（tune 子命令参数扩展——本 Phase 唯一允许动 Command 枚举的卡）
   - 引入依赖白名单：`无`
-  - 当前状态：`[ ] 待开始`
-  - 遗留阻塞：代码与自动化面已全齐(sweep引擎/purity precheck/排序契约+21条测试); 唯余首轮 sweep 实跑与默认值回写: 卡面明确工具只推荐、裁决权在人, 需空闲机(负载<25%核数)实跑数小时+人工裁决回写+holdout前后对照, 不属本轮可代行范围, 声明遗留待用户执行
+  - 当前状态：`[x] 已完成`
+  - 落地证据：2026-11-17空闲机首轮sweep两批21点(purity gate放行load1.35/1.68<ceiling4.00):四参数spread全部0.00pp(21点同分top1 73.75%/2字带88.32%/unreach0);推荐表+敏感性+签署裁决存档docs/dev/research/tune-round-1.md §6-§8;裁决=维持现状不回写,门禁值不变(73.75%/88.32%只升不降)
 - **目标与价值**：归一化（`core_min_freq`/`tail_flat_weight`）、衰减（半衰期）、bigram（`max_pairs`/`min_score`）、上文带（`context_tie_band_q16`）目前全部手工常数（B-03/B-14）。本卡把 `xtask tune` 扩展为「以 holdout top1（分带）为目标函数的网格 sweep」，产出参数推荐表并回写默认值；同时把「空闲机采集」从纪律升级为 precheck 门禁（load/干扰进程探测，B-14）。
 - **技术设计与代码级接入细节**：
   - **sweep 骨架**：参数空间声明式（TOML：参数名 → 网格点），每点跑 `dictc`（如涉及编译参数）+ `quality` 评估，输出按 `top1_overall`（tie-break：`top1_2char` → 编译时长）排序的推荐表 + 参数敏感性摘要；确认后的推荐值由人工裁决回写默认（工具只推荐不自动改默认——门禁值只升不降的裁决权在人）。
@@ -182,6 +182,7 @@ impl PurityCheck {
   - [ ] 自动化测试：sweep 网格解析/排序确定性测试；precheck 拒绝路径测试。
   - [ ] 物理产物验证：空闲机上首轮推荐表落盘；默认值回写后 holdout top1 ≥ 回写前（门禁只升不降）。
   - [ ] 编译与旧功能回归：负载机上 `just bench` 显式拒绝（不再误报）；四门禁零警告。
+- **验收记录**：验证命令 `cargo run -p xtask -- tune --sweep target/tune-sweep-spec.toml`（batch1，12 点）与 `cargo run -p xtask -- tune --sweep target/tune-sweep-spec-batch2.toml`（batch2，9 点），均 exit 0，purity gate 放行读数 load 1.35 / 1.68（ceiling 4.00 = 25% × 16 核）。平台：WSL2（Linux 6.18 内核，16 核），rust 1.98.0，holdout 6000 例（`crates/ime-core/tests/fixtures/lm_holdout.tsv`）。结果：四参数 spread 全部 0.00pp（21 点同分 top1 73.75% / 2字带 88.32% / top9 96.35% / unreach 0），裁决「维持现状不回写」（`docs/dev/research/tune-round-1.md` §8 已签署，2026-11-17），门禁值不变（只升不降平凡满足）；同日 dev-exec final_gate 全绿（fmt / clippy `-D warnings` / nextest / doctests，0 Error / 0 Warning / 100% Tests Pass）。已知限制：衰减半衰期与上文带 `context_tie_band_q16` 当前目标函数不可观测（§3），整定需待可观测通道扩展后另开轮次；首轮网格未含跨参数交互项。
 
 #### TASK-5.04.01 Xvfb 无头渲染回归层
 
